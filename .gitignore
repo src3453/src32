@@ -3,3 +3,5 @@
 *.log
 /work
 Cargo.lock
+.DS_Store
+__MACOSX
