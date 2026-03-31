@@ -57,47 +57,106 @@ SRC32-A: Advanced ALU Instructions
 */
 struct DeviceMap {
     // Memory-mapped I/O device mapping
-    addr_start: u32,
-    addr_end: u32,
+    addr: u32,
     device: Box<dyn Device>,
+    size: u32, // Size of the device's addressable space
 } 
 trait Device {
     // Device interface for memory-mapped I/O
+    // All devices (RAM, ROM, MMIO peripherals) must implement this trait
     fn read(&self, addr: u32) -> u8;
     fn write(&mut self, addr: u32, value: u8);
+    fn size(&self) -> u32; // Return the size of the device's addressable space
+}
+
+struct RAM {
+    data: Vec<u8>, // RAM storage as a device
+}
+
+impl Device for RAM { // Implement Device trait for RAM
+    fn read(&self, addr: u32) -> u8 {
+        self.data[addr as usize]
+    }
+    fn write(&mut self, addr: u32, value: u8) {
+        self.data[addr as usize] = value;
+    }
+
+    fn size(&self) -> u32 {
+        self.data.len() as u32
+    }
+}
+
+impl RAM {
+    fn new(size: usize) -> Self {
+        RAM {
+            data: vec![0; size],
+        }
+    }
 }
 
 struct Bus {
-    memory: Vec<u8>, // Simple memory model (byte-addressable)
     devices: Vec<DeviceMap>, // List of memory-mapped devices
 }
 
 const MMIO_START: u32 = 0xFFFF0000; // Start of memory-mapped I/O region
+const RAM_SIZE: usize = 0x10000; // 64KB of RAM for the system
 
 impl Bus {
-    fn new(size: usize) -> Self {
+    fn new() -> Self {
         Bus {
-            memory: vec![0; size],
             devices: Vec::new(),
         }
     }
-    fn read_mmio(&self, addr: u32) -> u8 {
-        // Handle MMIO read (for simplicity, return 0)
-        match addr {
-            0xFFFF0000 => {
-                // UART Data Register (read returns received byte or 0 if empty)
-                0 // Placeholder: always return 0 (no data)
-            }
-            _ => panic!("Unhandled MMIO read: 0x{:08X}", addr),
+    // Add a memory-mapped device to the bus
+    // if size is 0, the device will not be mapped and will not be accessible
+    fn add_device(&mut self, addr: u32, device: Box<dyn Device>) {
+        let size = device.size();
+        if size == 0 {
+            return;
         }
+        let new_end = addr.checked_add(size)
+            .expect("Device range overflow");
+
+        for m in &self.devices {
+            let end = m.addr.checked_add(m.size)
+                .expect("Existing device range overflow");
+
+            if !(new_end <= m.addr || addr >= end) {
+                panic!(
+                    "Device overlap detected: new [0x{:08X}-0x{:08X}) overlaps with [0x{:08X}-0x{:08X})",
+                    addr, new_end, m.addr, end
+                );
+            }
+        }
+        self.devices.push(DeviceMap { addr, size, device });
+    }
+    // Find the device responsible for a given address (if any)
+    fn find_device(&self, addr: u32) -> Option<(&dyn Device, u32)> {
+        for m in &self.devices {
+            let end = m.addr.checked_add(m.size)
+                .expect("Existing device range overflow");
+            if addr >= m.addr && addr < end {
+                return Some((&*m.device, addr - m.addr));
+            }
+        }
+        None
+    }
+    // Mutable version of find_device for write operations
+    fn find_device_mut(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
+        for m in &mut self.devices {
+            let end = m.addr.checked_add(m.size)
+                .expect("Existing device range overflow");
+            if addr >= m.addr && addr < end {
+                return Some((&mut *m.device, addr - m.addr));
+            }
+        }
+        None
     }
     fn read_u8(&self, addr: u32) -> u8 {
-        if addr >= MMIO_START {
-            self.read_mmio(addr)
-        } else if addr < self.memory.len() as u32 {
-            self.memory[addr as usize]
+        if let Some((device, offset)) = self.find_device(addr) {
+            device.read(offset)
         } else {
-            panic!("Memory read out of bounds: 0x{:08X}", addr);
+            panic!("Invalid I/O read: 0x{:08X}", addr);
         }
     }
     fn read_u32(&self, addr: u32) -> u32 {
@@ -108,27 +167,15 @@ impl Bus {
         let b3 = self.read_u8(addr + 3) as u32;
         (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
     }
-    fn write_mmio(&mut self, addr: u32, value: u8) {
-        // Handle MMIO write
-        match addr {
-            0xFFFF0000 => {
-                // UART Data Register (write sends byte to output)
-                print!("{}", value as char); // Output character to console
-            }
-            _ => panic!("Unhandled MMIO write: 0x{:08X}", addr),
-        }
-    }
     fn write_u8(&mut self, addr: u32, value: u8) {
-        if addr >= MMIO_START {
-            self.write_mmio(addr, value);
-        } else if addr < self.memory.len() as u32 {
-            self.memory[addr as usize] = value;
+        if let Some((device, offset)) = self.find_device_mut(addr) {
+            device.write(offset, value);
         } else {
-            panic!("Memory write out of bounds: 0x{:08X}", addr);
+            panic!("Invalid I/O write: 0x{:08X}", addr);
         }
     }
     fn write_u32(&mut self, addr: u32, value: u32) {
-        // Big-endian write (store least significant byte at lowest address)
+        // Big-endian write (store most significant byte at first address)
         self.write_u8(addr + 0, ((value >> 24) & 0xFF) as u8);
         self.write_u8(addr + 1, ((value >> 16) & 0xFF) as u8);
         self.write_u8(addr + 2, ((value >> 8) & 0xFF) as u8);
@@ -171,10 +218,41 @@ struct CPU {
     reg: [u32; 32], // 32 general-purpose registers
     pc: u32,        // Program Counter
     running: bool,  // CPU running state
+    bus: Bus,       // System bus for memory and I/O access
 }
 
 impl CPU {
-
+    fn new() -> Self {
+        let mut bus = Bus::new();
+        // Initialize RAM and add it to the bus
+        let ram = Box::new(RAM::new(RAM_SIZE));
+        bus.add_device(0, ram); // Map RAM to address 0
+        CPU {
+            reg: [0; 32],
+            pc: 0,
+            running: true,
+            bus,
+        }
+    }
+    fn read_reg(&self, reg: usize) -> u32 {
+        if reg >= self.reg.len() {
+            panic!("Invalid register index: {}", reg);
+        }
+        if reg != REG_ZERO {
+            self.reg[reg]
+        } else {
+            0 // R0 always reads as zero
+        }
+    }
+    fn write_reg(&mut self, reg: usize, value: u32) {
+        if reg >= self.reg.len() {
+            panic!("Invalid register index: {}", reg);
+        }
+        if reg == REG_ZERO { // Skip writes to R0
+            return;
+        }
+        self.reg[reg] = value; // Write value to register (except R0)
+    }
 }
 fn main() {
     println!("Placeholder");
