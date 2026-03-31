@@ -1,3 +1,5 @@
+use std::ops::Add;
+
 // SRC32: Scalable RISC 32-bit CPU
 // Minimal and Scalable CPU ISA for learning and experimentation
 /*
@@ -207,6 +209,7 @@ enum Instruction {
     SRL { rd: u8, rs1: u8, rs2: u8 },
     SLA { rd: u8, rs1: u8, rs2: u8 },
     SRA { rd: u8, rs1: u8, rs2: u8 },
+    Unknown(u64), // For unrecognized opcodes, store the raw opcode for debugging
 }
 
 const REG_ZERO: usize = 0; // R0 is hardwired to zero
@@ -219,6 +222,32 @@ struct CPU {
     pc: u32,        // Program Counter
     running: bool,  // CPU running state
     bus: Bus,       // System bus for memory and I/O access
+}
+
+#[derive(Debug, Clone, Copy)] // Trait for debugging and copying instructions
+enum AddrMode {
+    Register, // Register mode (mode 0)
+    Immediate, // Immediate mode (mode 1)
+    Memory, // Memory mode (mode 2)
+    Extension, // Extension mode (mode 3)
+}
+
+impl AddrMode {
+    fn from_bits(bits: u8) -> Self {
+        match bits {
+            0 => AddrMode::Register,
+            1 => AddrMode::Immediate,
+            2 => AddrMode::Memory,
+            3 => AddrMode::Extension,
+            _ => AddrMode::Register, // Default to Register mode for invalid bits (normally not possible with 2 bits)
+        }
+    }
+}
+
+enum Operand { // Operand types for instruction decoding
+    Reg(usize), // Register operand (index into reg array 0-31)
+    Imm(u32), // Immediate operand (16-bit or 32-bit value)
+    Mem { base: usize, offset: i32 }, // Memory operand (base register index and offset)
 }
 
 impl CPU {
@@ -252,6 +281,39 @@ impl CPU {
             return;
         }
         self.reg[reg] = value; // Write value to register (except R0)
+    }
+    fn fetch_u40(&mut self) -> u64 {
+        // Fetch a 40-bit instruction (5 bytes) from memory
+        let b0 = self.bus.read_u8(self.pc) as u64;
+        let b1 = self.bus.read_u8(self.pc + 1) as u64;
+        let b2 = self.bus.read_u8(self.pc + 2) as u64;
+        let b3 = self.bus.read_u8(self.pc + 3) as u64;
+        let b4 = self.bus.read_u8(self.pc + 4) as u64;
+        (b0 << 32) | (b1 << 24) | (b2 << 16) | (b3 << 8) | b4 // Combine bytes into a 40-bit instruction as u64
+    }
+    fn decode(&self, opcode: u64) -> Instruction {
+        let op = (opcode >> 32) as u8; // Extract the opcode (bits 39-32)
+        let mode = AddrMode::from_bits(((opcode >> 30) & 0x03) as u8); // Extract addressing mode (bits 31-30)
+        let rd = ((opcode >> 27) & 0x1F) as usize; // Extract rd (bits 31-27)
+        let rs1 = ((opcode >> 22) & 0x1F) as usize; // Extract rs1 (bits 26-22)
+        let rs2 = ((opcode >> 17) & 0x1F) as usize; // Extract rs2 (bits 21-17)
+        match (op, mode) {
+            (0x00, AddrMode::Register) => Instruction::NOP,
+            (0x01, AddrMode::Memory) => {
+                let offset = (opcode & 0xFFFF) as i16; // Extract 16-bit offset
+                Instruction::LD { rd: rd as u8, base: rs1 as u8, offset }
+            }
+            (0x02, AddrMode::Memory) => {
+                let offset = (opcode & 0xFFFF) as i16; // Extract 16-bit offset
+                Instruction::ST { rd: rd as u8, base: rs1 as u8, offset }
+            }
+            // ...
+            (0xE0..=0xFF, AddrMode::Immediate) => {
+                let imm = (opcode & 0xFFFFFFFF) as u32; // Extract 32-bit immediate
+                Instruction::LDI { rd: rd as u8, imm }
+            }
+            _ => Instruction::Unknown(opcode), // For unrecognized opcodes, return an Unknown instruction with the raw opcode for debugging
+        }
     }
 }
 fn main() {
