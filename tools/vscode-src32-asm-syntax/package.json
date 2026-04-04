@@ -1,0 +1,38 @@
+{
+  "name": "src32-asm-syntax",
+  "displayName": "SRC32 Assembly Syntax",
+  "description": "Syntax highlighting for SRC32 CPU assembly language",
+  "version": "0.0.1",
+  "publisher": "src3453",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "src32asm",
+        "aliases": [
+          "SRC32 ASM",
+          "src32asm"
+        ],
+        "extensions": [
+          ".a",
+          ".asm",
+          ".s32a"
+        ],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "src32asm",
+        "scopeName": "source.src32asm",
+        "path": "./syntaxes/src32asm.tmLanguage.json"
+      }
+    ]
+  }
+}

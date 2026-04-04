@@ -1,0 +1,7 @@
+LDI R1, 42
+LDI R2, 1
+
+loop:
+    SUB R1, R1, R2
+    BNE R1, R0, loop
+HALT

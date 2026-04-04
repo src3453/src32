@@ -1,131 +1,4 @@
-struct DeviceMap {
-    addr: u32,
-    size: u32,
-    device: Box<dyn Device>,
-}
-
-trait Device {
-    fn read(&self, addr: u32) -> u8;
-    fn write(&mut self, addr: u32, value: u8);
-    fn size(&self) -> u32;
-}
-
-struct Ram {
-    data: Vec<u8>,
-}
-
-impl Ram {
-    fn new(size: usize) -> Self {
-        Self {
-            data: vec![0; size],
-        }
-    }
-}
-
-impl Device for Ram {
-    fn read(&self, addr: u32) -> u8 {
-        self.data[addr as usize]
-    }
-
-    fn write(&mut self, addr: u32, value: u8) {
-        self.data[addr as usize] = value;
-    }
-
-    fn size(&self) -> u32 {
-        self.data.len() as u32
-    }
-}
-
-struct Bus {
-    devices: Vec<DeviceMap>,
-}
-
-impl Bus {
-    fn new() -> Self {
-        Self {
-            devices: Vec::new(),
-        }
-    }
-
-    fn add_device(&mut self, addr: u32, device: Box<dyn Device>) {
-        let size = device.size();
-        if size == 0 {
-            return;
-        }
-
-        let new_end = addr.checked_add(size).expect("Device range overflow");
-        for mapped in &self.devices {
-            let end = mapped
-                .addr
-                .checked_add(mapped.size)
-                .expect("Existing device range overflow");
-            if !(new_end <= mapped.addr || addr >= end) {
-                panic!(
-                    "Device overlap detected: new [0x{:08X}-0x{:08X}) overlaps with [0x{:08X}-0x{:08X})",
-                    addr, new_end, mapped.addr, end
-                );
-            }
-        }
-
-        self.devices.push(DeviceMap { addr, size, device });
-    }
-
-    fn find_device(&self, addr: u32) -> Option<(&dyn Device, u32)> {
-        for mapped in &self.devices {
-            let end = mapped
-                .addr
-                .checked_add(mapped.size)
-                .expect("Existing device range overflow");
-            if addr >= mapped.addr && addr < end {
-                return Some((&*mapped.device, addr - mapped.addr));
-            }
-        }
-        None
-    }
-
-    fn find_device_mut(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
-        for mapped in &mut self.devices {
-            let end = mapped
-                .addr
-                .checked_add(mapped.size)
-                .expect("Existing device range overflow");
-            if addr >= mapped.addr && addr < end {
-                return Some((&mut *mapped.device, addr - mapped.addr));
-            }
-        }
-        None
-    }
-
-    fn read_u8(&self, addr: u32) -> u8 {
-        if let Some((device, offset)) = self.find_device(addr) {
-            return device.read(offset);
-        }
-        panic!("Invalid I/O read: 0x{:08X}", addr);
-    }
-
-    fn write_u8(&mut self, addr: u32, value: u8) {
-        if let Some((device, offset)) = self.find_device_mut(addr) {
-            device.write(offset, value);
-            return;
-        }
-        panic!("Invalid I/O write: 0x{:08X}", addr);
-    }
-
-    fn read_u32_be(&self, addr: u32) -> u32 {
-        let b0 = self.read_u8(addr) as u32;
-        let b1 = self.read_u8(addr.wrapping_add(1)) as u32;
-        let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
-        let b3 = self.read_u8(addr.wrapping_add(3)) as u32;
-        (b0 << 24) | (b1 << 16) | (b2 << 8) | b3
-    }
-
-    fn write_u32_be(&mut self, addr: u32, value: u32) {
-        self.write_u8(addr, ((value >> 24) & 0xFF) as u8);
-        self.write_u8(addr.wrapping_add(1), ((value >> 16) & 0xFF) as u8);
-        self.write_u8(addr.wrapping_add(2), ((value >> 8) & 0xFF) as u8);
-        self.write_u8(addr.wrapping_add(3), (value & 0xFF) as u8);
-    }
-}
+use crate::bus::Bus;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddrMode {
@@ -185,7 +58,6 @@ const CPU_FEATURES: u32 = EXT_BASE | EXT_A;
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 
 const INSN_SIZE: u32 = 5;
-const RAM_SIZE: usize = 0x10000;
 
 pub struct Cpu {
     reg: [u32; 32],
@@ -193,12 +65,11 @@ pub struct Cpu {
     running: bool,
     bus: Bus,
 }
-
+    
 impl Cpu {
     pub fn new() -> Self {
         let mut bus = Bus::new();
-        bus.add_device(0, Box::new(Ram::new(RAM_SIZE)));
-
+        crate::bus::connect_devices(&mut bus);
         Self {
             reg: [0; 32],
             pc: 0,

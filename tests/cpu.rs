@@ -1,4 +1,4 @@
-use src32::cpu::Cpu;
+use cpt32::cpu::Cpu;
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 5] {
     let raw = ((op as u64) << 32)

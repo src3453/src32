@@ -1,5 +1,5 @@
 [package]
-name = "src32"
+name = "cpt32"
 version = "0.1.0"
 edition = "2024"
 

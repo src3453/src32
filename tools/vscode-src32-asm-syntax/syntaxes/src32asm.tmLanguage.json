@@ -1,0 +1,122 @@
+{
+  "name": "SRC32 Assembly",
+  "scopeName": "source.src32asm",
+  "patterns": [
+    {
+      "include": "#comments"
+    },
+    {
+      "include": "#label-definition"
+    },
+    {
+      "include": "#directives"
+    },
+    {
+      "include": "#opcodes"
+    },
+    {
+      "include": "#registers"
+    },
+    {
+      "include": "#numbers"
+    },
+    {
+      "include": "#strings"
+    },
+    {
+      "include": "#memory-brackets"
+    },
+    {
+      "include": "#label-reference"
+    }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        {
+          "name": "comment.line.semicolon.src16asm",
+          "match": ";.*$"
+        }
+      ]
+    },
+    "label-definition": {
+      "patterns": [
+        {
+          "name": "entity.name.function.label.src16asm",
+          "match": "^\\s*([A-Za-z_.$][\\w.$]*)\\s*:"
+        }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "keyword.control.directive.src16asm",
+          "match": "(?i)\\.(ORG|WORD|BYTE|DB|STRING|DEFINE|ENDDEF|INCLUDE)\\b"
+        }
+      ]
+    },
+    "opcodes": {
+      "patterns": [
+        {
+          "name": "keyword.instruction.src16asm",
+          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|CPUID|HALT|LDI)\\b"
+        }
+      ]
+    },
+    "registers": {
+      "patterns": [
+        {
+          "name": "variable.language.register.src16asm",
+          "match": "(?i)\\b(R(?:3[0-1]|[1-2][0-9]|[0-9]))\\b"
+        }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        {
+          "name": "constant.numeric.hex.src16asm",
+          "match": "(?i)\\b-?0x[0-9a-f]+\\b"
+        },
+        {
+          "name": "constant.numeric.binary.src16asm",
+          "match": "(?i)\\b-?0b[01]+\\b"
+        },
+        {
+          "name": "constant.numeric.decimal.src16asm",
+          "match": "\\b-?[0-9]+\\b"
+        }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        {
+          "name": "string.quoted.double.src16asm",
+          "begin": "\"",
+          "end": "\"",
+          "patterns": [
+            {
+              "name": "constant.character.escape.src16asm",
+              "match": "\\\\."
+            }
+          ]
+        }
+      ]
+    },
+    "memory-brackets": {
+      "patterns": [
+        {
+          "name": "meta.brackets.memory.src16asm",
+          "match": "[\\[\\]]"
+        }
+      ]
+    },
+    "label-reference": {
+      "patterns": [
+        {
+          "name": "entity.name.label.reference.src16asm",
+          "match": "\\b[A-Za-z_.$][\\w.$]*\\b"
+        }
+      ]
+    }
+  }
+}

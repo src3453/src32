@@ -1,4 +1,4 @@
-use src32::cpu::Cpu;
+use cpt32::cpu::Cpu;
 
 fn main() {
     let mut cpu = Cpu::new();
