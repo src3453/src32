@@ -6,6 +6,7 @@ use sdl2::{
 
 use cpt32::bus::Bus;
 use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
+use cpt32::devices::ram::connect_ram;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -30,10 +31,16 @@ fn main() {
         .create_texture_streaming(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
         .unwrap();
 
+
+    // =========================
+    // バスとデバイスの初期化
+    // =========================
+    let mut bus = Bus::new();
+    connect_ram(&mut bus); // RAMを接続
+
     // =========================
     // VDP
     // =========================
-    let mut bus = Bus::new();
     let vdp = connect_vdp(&mut bus);
 
     // テストパターン
@@ -68,14 +75,14 @@ fn main() {
                 for y in 0..HEIGHT as usize {
                     for x in 0..WIDTH as usize {
                         let i = y * WIDTH as usize + x;
-                        let v = fb[i];
+                        let v = fb[i]&0x3F; // 6ビットカラーを仮にグレースケールに変換
 
                         let offset = y * pitch + x * 3;
 
                         // 仮: グレースケール
-                        buf[offset] = v;
-                        buf[offset + 1] = v;
-                        buf[offset + 2] = v;
+                        buf[offset] = v*4;
+                        buf[offset + 1] = v*4;
+                        buf[offset + 2] = v*4;
                     }
                 }
             })

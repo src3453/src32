@@ -10,10 +10,10 @@ use crate::bus::{Bus, Device};
 use crate::devices::vdp::gp::Gp0;
 use crate::devices::vdp::reg::VdpRegs;
 
-pub const VDP_VRAM_BASE: u32 = 0x1000_0000;
-pub const VDP_VRAM_SIZE: u32 = 0x0002_0000;
-pub const VDP_REG_BASE: u32 = 0x8003_0000;
-pub const VDP_REG_SIZE: u32 = 0x0000_0100;
+pub const VDP_VRAM_BASE: u32 = 0x10000000; 
+pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
+pub const VDP_REG_BASE: u32 = 0x80030000;
+pub const VDP_REG_SIZE: u32 = 0x00000100;
 
 pub struct Vdp {
     gp0: Gp0,
