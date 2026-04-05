@@ -1,19 +1,88 @@
-use cpt32::cpu::Cpu;
+use sdl2::{
+    event::Event,
+    keyboard::Keycode,
+    pixels::PixelFormatEnum,
+};
+
+use cpt32::bus::Bus;
+use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
+
+const WIDTH: u32 = 320;
+const HEIGHT: u32 = 240;
 
 fn main() {
-    let mut cpu = Cpu::new();
+    // =========================
+    // SDL初期化
+    // =========================
+    let sdl = sdl2::init().unwrap();
+    let video = sdl.video().unwrap();
 
-    // Small demo: LDI R3, 40; LDI R4, 2; ADD R5, R3, R4; HALT
-    let program: [u8; 20] = [
-        0xE3, 0x00, 0x00, 0x00, 0x28, // LDI R3, 40
-        0xE4, 0x00, 0x00, 0x00, 0x02, // LDI R4, 2
-        0x03, 0x0A, 0x32, 0x00, 0x00, // ADD R5, R3, R4
-        0xDF, 0x00, 0x00, 0x00, 0x00, // HALT
-    ];
+    let window = video
+        .window("CPT32", WIDTH * 2, HEIGHT * 2)
+        .position_centered()
+        .build()
+        .unwrap();
 
-    cpu.reset(0);
-    cpu.load_program(0, &program);
-    cpu.run(64);
+    let mut canvas = window.into_canvas().accelerated().build().unwrap();
 
-    println!("R5 = {}", cpu.read_reg(5));
+    let texture_creator = canvas.texture_creator();
+    let mut texture = texture_creator
+        .create_texture_streaming(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
+        .unwrap();
+
+    // =========================
+    // VDP
+    // =========================
+    let mut bus = Bus::new();
+    let vdp = connect_vdp(&mut bus);
+
+    // テストパターン
+    for i in 0..(WIDTH * HEIGHT) as usize {
+        bus.write_u8(VDP_VRAM_BASE.wrapping_add(i as u32), (i % 256) as u8);
+    }
+
+    let mut event_pump = sdl.event_pump().unwrap();
+
+    // =========================
+    // メインループ
+    // =========================
+    'running: loop {
+        // --- イベント ---
+        for event in event_pump.poll_iter() {
+            match event {
+                Event::Quit { .. }
+                | Event::KeyDown {
+                    keycode: Some(Keycode::Escape),
+                    ..
+                } => break 'running,
+                _ => {}
+            }
+        }
+
+        // --- 描画 ---
+        let vdp_ref = vdp.borrow();
+        let fb = vdp_ref.framebuffer();
+
+        texture
+            .with_lock(None, |buf: &mut [u8], pitch: usize| {
+                for y in 0..HEIGHT as usize {
+                    for x in 0..WIDTH as usize {
+                        let i = y * WIDTH as usize + x;
+                        let v = fb[i];
+
+                        let offset = y * pitch + x * 3;
+
+                        // 仮: グレースケール
+                        buf[offset] = v;
+                        buf[offset + 1] = v;
+                        buf[offset + 2] = v;
+                    }
+                }
+            })
+            .unwrap();
+
+        canvas.clear();
+        canvas.copy(&texture, None, None).unwrap();
+        canvas.present();
+    }
 }

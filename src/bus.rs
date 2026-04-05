@@ -1,3 +1,8 @@
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use crate::devices::vdp::vdp::Vdp;
+
 struct DeviceMap {
     addr: u32,
     size: u32,
@@ -104,6 +109,10 @@ impl Bus {
 }
 
 pub fn connect_devices(bus: &mut Bus) {
+    let _ = connect_devices_with_vdp(bus);
+}
+
+pub fn connect_devices_with_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
     crate::devices::ram::connect_ram(bus);
-    crate::devices::vdp::vdp::connect_vdp(bus);
+    crate::devices::vdp::vdp::connect_vdp(bus)
 }
