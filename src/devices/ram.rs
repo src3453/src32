@@ -1,3 +1,6 @@
+// RAM: Random Access Memory device implementation
+// This module defines a simple RAM device that can be connected to the bus in the CPT32 emulator.
+
 use crate::bus::Device;
 
 pub struct Ram {

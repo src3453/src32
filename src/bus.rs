@@ -1,3 +1,7 @@
+// Bus: Centralized I/O bus for connecting devices in the CPT32 emulator
+// This module defines the Bus struct, which manages memory-mapped devices and 
+// routes read/write operations to the correct device based on address ranges.
+
 use std::cell::RefCell;
 use std::rc::Rc;
 

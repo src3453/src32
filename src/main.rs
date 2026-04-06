@@ -1,3 +1,5 @@
+// Main entry point for the CPT32 emulator
+
 use sdl2::{
     event::Event,
     keyboard::Keycode,
