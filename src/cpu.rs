@@ -62,9 +62,10 @@ const REG_CPUID: usize = 1;
 const REG_FEATURES: usize = 2;
 const REG_LR: usize = 31;
 
-const EXT_BASE: u32 = 0x01;
-const EXT_A: u32 = 0x02;
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A;
+const EXT_BASE: u32 = 0x01; // Base extension: includes basic arithmetic and logic instructions (ADD, SUB, AND, OR, etc.)
+const EXT_A: u32 = 0x02; // Extension A (Arithmetic): adds more arithmetic and logic instructions
+const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/store instructions
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 
 const INSN_SIZE: u32 = 5;
