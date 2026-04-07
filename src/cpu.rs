@@ -50,6 +50,10 @@ enum Instruction {
     Srl { rd: u8, rs1: u8, rs2: u8 },
     Sla { rd: u8, rs1: u8, rs2: u8 },
     Sra { rd: u8, rs1: u8, rs2: u8 },
+    Ldb { rd: u8, base: u8, offset: i16 },
+    Ldh { rd: u8, base: u8, offset: i16 },
+    Stb { rd: u8, base: u8, offset: i16 },
+    Sth { rd: u8, base: u8, offset: i16 },
     Unknown(u64),
 }
 
@@ -70,17 +74,17 @@ pub struct Cpu {
     pc: u32,
     running: bool,
     bus: Bus,
+    cycles: u128,
 }
     
 impl Cpu {
-    pub fn new() -> Self {
-        let mut bus = Bus::new();
-        crate::bus::connect_devices(&mut bus);
+    pub fn new(bus: Bus) -> Self {
         Self {
             reg: [0; 32],
             pc: 0,
             running: true,
             bus,
+            cycles: 0,
         }
     }
 
@@ -181,6 +185,26 @@ impl Cpu {
             (0x10, AddrMode::Register) => Instruction::Srl { rd, rs1, rs2 },
             (0x11, AddrMode::Register) => Instruction::Sla { rd, rs1, rs2 },
             (0x12, AddrMode::Register) => Instruction::Sra { rd, rs1, rs2 },
+            (0x13, AddrMode::Memory) => Instruction::Ldb {
+                rd,
+                base: rs1,
+                offset: imm16,
+            },
+            (0x14, AddrMode::Memory) => Instruction::Ldh {
+                rd,
+                base: rs1,
+                offset: imm16,
+            },
+            (0x15, AddrMode::Memory) => Instruction::Stb {
+                rd,
+                base: rs1,
+                offset: imm16,
+            },
+            (0x16, AddrMode::Memory) => Instruction::Sth {
+                rd,
+                base: rs1,
+                offset: imm16,
+            },
             (0xDE, AddrMode::Register) => Instruction::Cpuid,
             (0xDF, AddrMode::Register) => Instruction::Halt,
             _ => Instruction::Unknown(raw),
@@ -296,6 +320,29 @@ impl Cpu {
                 let value = self.read_reg(rs1 as usize) as i32;
                 self.write_reg(rd as usize, (value >> sh) as u32);
             }
+            Instruction::Ldb { rd, base, offset } => {
+                let addr = Self::add_signed(self.read_reg(base as usize), offset);
+                let value = self.bus.read_u8(addr) as u32;
+                self.write_reg(rd as usize, value);
+            }
+            Instruction::Ldh { rd, base, offset } => {
+                let addr = Self::add_signed(self.read_reg(base as usize), offset);
+                let b0 = self.bus.read_u8(addr) as u32;
+                let b1 = self.bus.read_u8(addr.wrapping_add(1)) as u32;
+                let value = (b0 << 8) | b1;
+                self.write_reg(rd as usize, value);
+            }
+            Instruction::Stb { rd, base, offset } => {
+                let addr = Self::add_signed(self.read_reg(base as usize), offset);
+                let value = self.read_reg(rd as usize) as u8;
+                self.bus.write_u8(addr, value);
+            }
+            Instruction::Sth { rd, base, offset } => {
+                let addr = Self::add_signed(self.read_reg(base as usize), offset);
+                let value = self.read_reg(rd as usize);
+                self.bus.write_u8(addr, (value >> 8) as u8);
+                self.bus.write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
+            }
             Instruction::Unknown(raw) => {
                 panic!("Illegal instruction at PC=0x{:08X}: 0x{:010X}", next_pc - INSN_SIZE, raw);
             }
@@ -312,13 +359,13 @@ impl Cpu {
     }
 
     pub fn run(&mut self, max_cycles: usize) {
-        let mut cycles = 0usize;
-        while self.running {
-            if cycles >= max_cycles {
-                panic!("Execution limit reached: {max_cycles} cycles");
+        for _ in 0..max_cycles {
+            if !self.running {
+                return;
             }
             self.step();
-            cycles += 1;
+            self.cycles += 1;
         }
+        println!("CPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X})", max_cycles, self.cycles, self.pc, self.fetch_u40());
     }
 }

@@ -1,3 +1,8 @@
+// Graphic Plane VRAM Layout (From base address):
+// In graphic mode:
+// 0x00000 - 0x12BFF: 320x240@8bpp (MSB 2bits are reserved; 76,800 bytes) image data
+// 0x12C00 - 0x12CBF: 64 palette entries (RGB888; 192 bytes)
+
 pub struct Gp0 {
     pub vram: Vec<u8>,
 }

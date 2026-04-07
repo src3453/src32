@@ -1,4 +1,5 @@
 import argparse
+import os
 import re
 import struct
 from dataclasses import dataclass
@@ -33,6 +34,10 @@ OP_INFO = {
     "SRL": (0x10, "R"),
     "SLA": (0x11, "R"),
     "SRA": (0x12, "R"),
+    "LDB": (0x13, "M"),
+    "LDH": (0x14, "M"),
+    "STB": (0x15, "M"),
+    "STH": (0x16, "M"),
     "CPUID": (0xDE, "R0"),
     "HALT": (0xDF, "R0"),
     "LDI": (0xE0, "LDI"),
@@ -154,6 +159,7 @@ def enc_ldi(rd: int, imm32: int) -> bytes:
 class SourceLine:
     lineno: int
     text: str
+    source: str = "<input>"
 
 
 class Assembler:
@@ -165,6 +171,154 @@ class Assembler:
 
     def load(self, text: str) -> None:
         self.lines = [SourceLine(i + 1, line) for i, line in enumerate(text.splitlines())]
+
+    def _read_text_file(self, path: str) -> str:
+        with open(path, "r", encoding="utf-8") as f:
+            return f.read()
+
+    def _preprocess_text(self, text: str, source: str, base_dir: str) -> list[SourceLine]:
+        macros: dict[str, tuple[list[str], list[str]]] = {}
+        include_stack: list[str] = []
+        macro_stack: list[str] = []
+
+        def preprocess_source(src_text: str, src_name: str, src_dir: str) -> list[SourceLine]:
+            out: list[SourceLine] = []
+            raw_lines = src_text.splitlines()
+            i = 0
+
+            while i < len(raw_lines):
+                lineno = i + 1
+                raw = raw_lines[i]
+                stripped = strip_comment(raw)
+                i += 1
+
+                if not stripped:
+                    continue
+
+                tokens = tokenize(stripped)
+                if not tokens:
+                    continue
+
+                op = tokens[0].upper()
+
+                if op == ".INCLUDE":
+                    if len(tokens) != 2:
+                        raise ValueError(f"line {lineno}: .INCLUDE expects 1 operand")
+
+                    path_token = tokens[1]
+                    if path_token.startswith('"') and path_token.endswith('"'):
+                        rel_path = path_token[1:-1]
+                    else:
+                        rel_path = path_token
+
+                    include_path = rel_path
+                    if not os.path.isabs(include_path):
+                        include_path = os.path.join(src_dir, rel_path)
+                    include_path = os.path.abspath(include_path)
+
+                    if include_path in include_stack:
+                        raise ValueError(
+                            f"line {lineno}: cyclic .INCLUDE detected for '{include_path}'"
+                        )
+
+                    include_stack.append(include_path)
+                    child_text = self._read_text_file(include_path)
+                    child_dir = os.path.dirname(include_path)
+                    out.extend(preprocess_source(child_text, include_path, child_dir))
+                    include_stack.pop()
+                    continue
+
+                if op == ".DEFINE":
+                    if len(tokens) < 2:
+                        raise ValueError(f"line {lineno}: .DEFINE expects a macro name")
+                    name = tokens[1]
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
+                        raise ValueError(f"line {lineno}: invalid macro name '{name}'")
+                    if name in macros:
+                        raise ValueError(f"line {lineno}: duplicate macro '{name}'")
+
+                    params = tokens[2:]
+                    seen_params: set[str] = set()
+                    for param in params:
+                        if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", param):
+                            raise ValueError(
+                                f"line {lineno}: invalid macro parameter '{param}'"
+                            )
+                        if param in seen_params:
+                            raise ValueError(
+                                f"line {lineno}: duplicate macro parameter '{param}'"
+                            )
+                        seen_params.add(param)
+
+                    body: list[str] = []
+                    found_end = False
+                    while i < len(raw_lines):
+                        body_lineno = i + 1
+                        body_raw = raw_lines[i]
+                        body_stripped = strip_comment(body_raw)
+                        i += 1
+
+                        body_tokens = tokenize(body_stripped) if body_stripped else []
+                        if body_tokens and body_tokens[0].upper() == ".ENDDEF":
+                            if len(body_tokens) != 1:
+                                raise ValueError(
+                                    f"line {body_lineno}: .ENDDEF takes no operands"
+                                )
+                            found_end = True
+                            break
+
+                        body.append(body_raw)
+
+                    if not found_end:
+                        raise ValueError(
+                            f"line {lineno}: missing .ENDDEF for macro '{name}'"
+                        )
+
+                    macros[name] = (params, body)
+                    continue
+
+                first = tokens[0]
+                if first in macros:
+                    params, body = macros[first]
+                    args = tokens[1:]
+                    if len(args) != len(params):
+                        raise ValueError(
+                            f"line {lineno}: macro '{first}' expects {len(params)} operands"
+                        )
+
+                    if first in macro_stack:
+                        raise ValueError(
+                            f"line {lineno}: recursive macro expansion detected for '{first}'"
+                        )
+
+                    repl = dict(zip(params, args))
+                    macro_stack.append(first)
+                    for macro_line in body:
+                        expanded_line = macro_line
+                        for param, arg in repl.items():
+                            expanded_line = re.sub(
+                                rf"\b{re.escape(param)}\b",
+                                arg,
+                                expanded_line,
+                            )
+                        out.extend(
+                            preprocess_source(
+                                expanded_line,
+                                src_name,
+                                src_dir,
+                            )
+                        )
+                    macro_stack.pop()
+                    continue
+
+                if op == ".ENDDEF":
+                    raise ValueError(f"line {lineno}: stray .ENDDEF")
+
+                out.append(SourceLine(lineno, raw, src_name))
+
+            return out
+
+        return preprocess_source(text, source, base_dir)
 
     def parse_imm_or_label(self, token: str, lineno: int) -> int:
         if token in self.symbols:
@@ -387,9 +541,10 @@ class Assembler:
 
             raise ValueError(f"line {entry.lineno}: unsupported instruction form for {op}")
 
-    def assemble(self, text: str) -> bytes:
+    def assemble(self, text: str, source: str = "<input>", base_dir: str | None = None) -> bytes:
         self.symbols.clear()
-        self.load(text)
+        root_dir = base_dir or os.getcwd()
+        self.lines = self._preprocess_text(text, source, root_dir)
         self.pass1()
         self.pass2()
         return bytes(self.output)
@@ -405,7 +560,11 @@ def main() -> None:
         text = f.read()
 
     assembler = Assembler()
-    binary = assembler.assemble(text)
+    binary = assembler.assemble(
+        text,
+        source=os.path.abspath(args.input),
+        base_dir=os.path.dirname(os.path.abspath(args.input)),
+    )
 
     out = args.output or (args.input + ".bin")
     with open(out, "wb") as f:

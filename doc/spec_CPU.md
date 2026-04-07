@@ -87,6 +87,12 @@ Bit positions:
 - `0x11 (reg)`: `SLA rd, rs1, rs2` (arithmetic left)
 - `0x12 (reg)`: `SRA rd, rs1, rs2` (arithmetic right)
 
+### 4.3 Extension L (Extended Load/Store)
+- `0x13 (mem)`: `LDB rd, [base + off16]` (load byte)
+- `0x14 (mem)`: `LDH rd, [base + off16]` (load halfword)
+- `0x15 (mem)`: `STB rd, [base + off16]` (store byte)
+- `0x16 (mem)`: `STH rd, [base + off16]` (store halfword)
+
 ## 5. Execution Semantics
 
 Instruction size is always 5 bytes.

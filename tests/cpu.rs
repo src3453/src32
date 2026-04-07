@@ -1,4 +1,5 @@
 use cpt32::cpu::Cpu;
+use cpt32::bus::Bus;
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 5] {
     let raw = ((op as u64) << 32)
@@ -33,7 +34,7 @@ fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 5] {
 
 #[test]
 fn arithmetic_and_halt() {
-    let mut cpu = Cpu::new();
+    let mut cpu = Cpu::new(Bus::new());
     let mut image = Vec::new();
 
     image.extend_from_slice(&[0xE1, 0x00, 0x00, 0x00, 0x05]); // LDI R1, 5
@@ -49,7 +50,7 @@ fn arithmetic_and_halt() {
 
 #[test]
 fn branch_taken() {
-    let mut cpu = Cpu::new();
+    let mut cpu = Cpu::new(Bus::new());
     let mut image = Vec::new();
 
     image.extend_from_slice(&[0xE1, 0x00, 0x00, 0x00, 0x01]); // LDI R1, 1

@@ -1,7 +1,12 @@
-LDI R1, 42
-LDI R2, 1
+LDI R1, 0x10000000
+LDI R2, 0x10012C00
+LDI R3, 4
+LDI R4, 0xFF
+LDI R5, 1
 
 loop:
-    SUB R1, R1, R2
-    BNE R1, R0, loop
+    ADD R1, R1, R3
+    ADD R4, R5, R4
+    ST R4, [R1]
+    BNE R1, R2, loop
 HALT

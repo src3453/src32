@@ -1,5 +1,7 @@
 // Main entry point for the CPT32 emulator
 
+use std::env;
+
 use sdl2::{
     event::Event,
     keyboard::Keycode,
@@ -9,9 +11,17 @@ use sdl2::{
 use cpt32::bus::Bus;
 use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
 use cpt32::devices::ram::connect_ram;
+use cpt32::cpu::Cpu;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
+
+fn load_program(path: &str, bus: &mut Bus) {
+    let data = std::fs::read(path).expect("Failed to read program file");
+    for (i, byte) in data.iter().enumerate() {
+        bus.write_u8(i as u32, *byte);
+    }
+}
 
 fn main() {
     // =========================
@@ -40,6 +50,8 @@ fn main() {
     let mut bus = Bus::new();
     connect_ram(&mut bus); // RAMを接続
 
+    let program_path = env::args().nth(1).expect("Usage: cargo run <program.bin>");
+    load_program(&program_path, &mut bus); // プログラムをロード
     // =========================
     // VDP
     // =========================
@@ -51,11 +63,13 @@ fn main() {
     }
 
     let mut event_pump = sdl.event_pump().unwrap();
-
+    let mut cpu = Cpu::new(bus);
     // =========================
     // メインループ
     // =========================
     'running: loop {
+        //cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
+        cpu.run(100); // step実行
         // --- イベント ---
         for event in event_pump.poll_iter() {
             match event {

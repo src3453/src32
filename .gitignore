@@ -5,4 +5,5 @@
 Cargo.lock
 .DS_Store
 __MACOSX
-*.a.bin
+*.bin
+*dis.a
