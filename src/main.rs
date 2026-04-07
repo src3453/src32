@@ -68,8 +68,8 @@ fn main() {
     // メインループ
     // =========================
     'running: loop {
-        //cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
-        cpu.run(100); // step実行
+        cpu.run(cpt32::cpu::CYCLES_PER_SCANLINE as usize);
+        //cpu.run(1); // step実行
         // --- イベント ---
         for event in event_pump.poll_iter() {
             match event {
@@ -90,15 +90,14 @@ fn main() {
             .with_lock(None, |buf: &mut [u8], pitch: usize| {
                 for y in 0..HEIGHT as usize {
                     for x in 0..WIDTH as usize {
-                        let i = y * WIDTH as usize + x;
-                        let v = fb[i]&0x3F; // 6ビットカラーを仮にグレースケールに変換
-
+                        let (r, g, b) = fb.get_pixel(x, y);
+                        
                         let offset = y * pitch + x * 3;
 
-                        // 仮: グレースケール
-                        buf[offset] = v*4;
-                        buf[offset + 1] = v*4;
-                        buf[offset + 2] = v*4;
+                        // RGB24フォーマットでバッファに書き込む
+                        buf[offset] = r;
+                        buf[offset + 1] = g;
+                        buf[offset + 2] = b;
                     }
                 }
             })

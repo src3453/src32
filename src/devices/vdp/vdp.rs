@@ -42,12 +42,12 @@ impl Vdp {
         }   
     }
 
-    pub fn framebuffer(&self) -> &[u8] {
-        &self.gp0.vram
+    pub fn framebuffer(&self) -> &Gp0 {
+        &self.gp0
     }
 
-    pub fn framebuffer_mut(&mut self) -> &mut [u8] {
-        &mut self.gp0.vram
+    pub fn framebuffer_mut(&mut self) -> &mut Gp0 {
+        &mut self.gp0
     }
 
     pub fn tick(&mut self) {
@@ -108,6 +108,7 @@ impl Device for VdpDevice {
 
 pub fn connect_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
     let vdp = Rc::new(RefCell::new(Vdp::new()));
+    vdp.borrow_mut().gp0.init_clut(); // Initialize CLUT with default values
     bus.add_device(VDP_VRAM_BASE, Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Vram)));
     bus.add_device(VDP_REG_BASE, Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)));
     vdp

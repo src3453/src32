@@ -6,6 +6,7 @@ pub mod sys;
 pub mod devices {
     pub mod ram;
     pub mod vdp {
+        pub mod clut;
         pub mod vdp;
         pub mod gp;
         pub mod reg;

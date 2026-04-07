@@ -1,12 +1,13 @@
 LDI R1, 0x10000000
 LDI R2, 0x10012C00
-LDI R3, 4
-LDI R4, 0xFF
-LDI R5, 1
+LDI R3, 1
+LDI R4, 0
+LDI R5, 255
 
 loop:
-    ADD R1, R1, R3
+    STB R4, [R1] ; New instruction: STB (store byte, SRC32-L Extension) - Store the least significant byte of R4 into memory at address R1
     ADD R4, R5, R4
-    ST R4, [R1]
+    ADD R1, R1, R3
     BNE R1, R2, loop
 HALT
+

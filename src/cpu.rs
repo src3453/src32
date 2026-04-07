@@ -5,6 +5,7 @@ use crate::bus::Bus;
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
+pub const CYCLES_PER_SCANLINE: u32 = CYCLES_PER_FRAME / 240; // 3,333 cycles/scanline
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AddrMode {
