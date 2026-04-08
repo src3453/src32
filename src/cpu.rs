@@ -124,12 +124,10 @@ impl Cpu {
     }
 
     fn fetch_u40(&self) -> u64 {
-        let b0 = self.bus.read_u8(self.pc) as u64;
-        let b1 = self.bus.read_u8(self.pc.wrapping_add(1)) as u64;
-        let b2 = self.bus.read_u8(self.pc.wrapping_add(2)) as u64;
-        let b3 = self.bus.read_u8(self.pc.wrapping_add(3)) as u64;
-        let b4 = self.bus.read_u8(self.pc.wrapping_add(4)) as u64;
-        (b0 << 32) | (b1 << 24) | (b2 << 16) | (b3 << 8) | b4
+        // use 32-bit read to fetch in 2 cycles instead of 5 separate 8-bit reads
+        let w0 = self.bus.read_u32_be(self.pc) as u64;
+        let b4 = self.bus.read_u8(self.pc + 4) as u64;
+        (w0 << 8) | b4
     }
 
     fn decode(raw: u64) -> Instruction {
@@ -382,6 +380,6 @@ impl Cpu {
             self.step();
             self.cycles += 1;
         }
-        println!("CPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X})", max_cycles, self.cycles, self.pc, self.fetch_u40());
+        //println!("CPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X})", max_cycles, self.cycles, self.pc, self.fetch_u40());
     }
 }

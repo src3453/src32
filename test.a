@@ -9,7 +9,7 @@ loop:
     STB R4, [R1] ; New instruction: STB (store byte, SRC32-L Extension) - Store the least significant byte of R4 into memory at address R1
     ADD R4, R5, R4
     ADD R5, R4, R5
-    SRL R4, R4, R3
+    ;SRL R4, R4, R3
     ADD R1, R1, R3
     BNE R1, R2, loop
     

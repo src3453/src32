@@ -147,10 +147,23 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 ### PCM / Noise
 - チャンネル数: 4ch
 - データソース: PCMRAM
-- データ形式: 8bit/16bitリニアPCM 1ch
+- データ形式: 8bit/16bitリニアPCM / SqueezVOX 4 1ch
 - ループ制御: 可能 (ループ開始アドレス、ループ終了アドレス指定)
 - サンプリングレート: 可変
 - ノイズ: LSFR生成
+
+### SqueezVOX 4
+- ADPCM方式の音声コーデック
+- SQV4形式のデータをPCMRAMに配置し、SGUで再生可能
+- バリアント:
+  - SQV4H: 4bit ADPCM
+  - SQV4L: 3bit ADPCM
+  - SQV4L+: 3bit ADPCM + 非線形量子化
+- データフォーマット:
+各サンプルは64サンプルの「フラグメント」に分割され、各フラグメントはヘッダとデータで構成される。
+  - ヘッダ: 1バイト (音量情報)
+  - データ: 3/4ビットのADPCMコードが64サンプル分 (24/32バイト)
+  - 出力: 16bitリニアPCMにデコードされて再生される
 ---
 
 ## 2.8 VPU (Vector Processing Unit)

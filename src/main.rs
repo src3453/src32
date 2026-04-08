@@ -31,7 +31,7 @@ fn main() {
     let video = sdl.video().unwrap();
 
     let window = video
-        .window("CPT32", WIDTH, HEIGHT)
+        .window("CPT32", WIDTH*2, HEIGHT*2)
         .position_centered()
         .build()
         .unwrap();
@@ -68,7 +68,7 @@ fn main() {
     // メインループ
     // =========================
     'running: loop {
-        cpu.run(cpt32::cpu::CYCLES_PER_SCANLINE as usize);
+        cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
         //cpu.run(1); // step実行
         // --- イベント ---
         for event in event_pump.poll_iter() {

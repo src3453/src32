@@ -2,6 +2,8 @@
 // This module defines the Bus struct, which manages memory-mapped devices and 
 // routes read/write operations to the correct device based on address ranges.
 
+// Bus width: 32-bit address space (4GB), 32-bit data bus (8/16/32-bit access)
+
 use std::cell::RefCell;
 use std::rc::Rc;
 
