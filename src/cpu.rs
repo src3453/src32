@@ -367,18 +367,21 @@ impl Cpu {
             return;
         }
         let raw = self.fetch_u40();
+        self.cycles += 2; // 2 cycles per instruction fetch (32-bit read + 8-bit read)
         let insn = Self::decode(raw);
+        self.cycles += 1; // +1 cycle for decode
         self.execute(insn);
+        self.cycles += 1; // +1 cycle for execute (simplified, real implementation may vary)
         //println!("\x1b[1;1H{}", self.return_state_text());
     }
 
     pub fn run(&mut self, max_cycles: usize) {
-        for _ in 0..max_cycles {
+        let start_cycles = self.cycles;
+        while self.cycles < start_cycles + max_cycles as u128 {
             if !self.running {
                 return;
             }
             self.step();
-            self.cycles += 1;
         }
         //println!("CPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X})", max_cycles, self.cycles, self.pc, self.fetch_u40());
     }
