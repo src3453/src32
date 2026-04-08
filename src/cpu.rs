@@ -351,6 +351,19 @@ impl Cpu {
         }
     }
 
+    pub fn return_state_text(&self) -> String {
+        let mut txt = format!(
+            "PC=0x{:08X} LR=0x{:08X} OP=0x{:010X}",
+            self.pc,
+            self.read_reg(REG_LR),
+            self.fetch_u40()
+        );
+        for i in 0..32 {
+            txt.push_str(&format!(" R{}=0x{:08X}", i, self.read_reg(i)));
+        }
+        txt
+    }
+
     fn step(&mut self) {
         if !self.running {
             return;
@@ -358,6 +371,7 @@ impl Cpu {
         let raw = self.fetch_u40();
         let insn = Self::decode(raw);
         self.execute(insn);
+        //println!("\x1b[1;1H{}", self.return_state_text());
     }
 
     pub fn run(&mut self, max_cycles: usize) {

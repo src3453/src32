@@ -31,7 +31,7 @@ fn main() {
     let video = sdl.video().unwrap();
 
     let window = video
-        .window("CPT32", WIDTH * 2, HEIGHT * 2)
+        .window("CPT32", WIDTH, HEIGHT)
         .position_centered()
         .build()
         .unwrap();
