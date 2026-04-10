@@ -69,7 +69,7 @@ fn main() {
     // メインループ
     // =========================
     'running: loop {
-        cpu.run(cpt32::cpu::CYCLES_PER_SCANLINE as usize);
+        cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
         //cpu.run(1); // step実行
         // --- イベント ---
         for event in event_pump.poll_iter() {
