@@ -16,8 +16,9 @@ use cpt32::cpu::Cpu;
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 
-fn load_program(path: &str, bus: &mut Bus) {
-    let data = std::fs::read(path).expect("Failed to read program file");
+fn load_binary_data(path: &str, bus: &mut Bus) {
+    // Utility used to load programs and datas into the bus memory
+    let data = std::fs::read(path).expect("Failed to read binary file");
     for (i, byte) in data.iter().enumerate() {
         bus.write_u8(i as u32, *byte);
     }
@@ -51,7 +52,7 @@ fn main() {
     connect_ram(&mut bus); // RAMを接続
 
     let program_path = env::args().nth(1).expect("Usage: cargo run <program.bin>");
-    load_program(&program_path, &mut bus); // プログラムをロード
+    load_binary_data(&program_path, &mut bus); // バイナリデータをロード
     // =========================
     // VDP
     // =========================
