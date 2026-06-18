@@ -1,5 +1,6 @@
 /target
 .env
+.venv
 *.log
 /work
 Cargo.lock
@@ -8,3 +9,4 @@ __MACOSX
 *.bin
 *dis.a
 *.vsix
+__pycache__
