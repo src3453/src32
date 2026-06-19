@@ -1,5 +1,5 @@
-LDI R1, 0x10000000
-LDI R2, 0x10012C00
+LDI R1, 0x10000000 ; VDP VRAM start address
+LDI R2, 0x10012C00 ; VDP VRAM end address
 LDI R3, 1
 LDI R4, 1
 LDI R5, 1
@@ -9,7 +9,7 @@ loop:
     STB R4, [R1] ; New instruction: STB (store byte, SRC32-L Extension) - Store the least significant byte of R4 into memory at address R1
     ADD R4, R5, R4
     ADD R5, R4, R5
-    ;SRA R4, R4, R3
+    ;SRL R4, R4, R3
     ADD R1, R1, R3
     BNE R1, R2, loop
     

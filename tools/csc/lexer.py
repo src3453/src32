@@ -22,11 +22,14 @@ SINGLE_TOKENS = {
     "*": "ASTERISK",
     "/": "SLASH",
     "=": "ASSIGN",
+    ",": "COMMA",
     ";": "SEMICOLON",
     "(": "LPAREN",
     ")": "RPAREN",
     "{": "LBRACE",
     "}": "RBRACE",
+    "<": "LESS",
+    ">": "GREATER",
 }
 
 # Two-character tokens
@@ -35,6 +38,8 @@ TWO_CHAR_TOKENS = {
     "!=": "NOT_EQUAL",
     "<=": "LESS_EQUAL",
     ">=": "GREATER_EQUAL",
+    "&&": "AND",
+    "||": "OR",
 }
 
 class Token:

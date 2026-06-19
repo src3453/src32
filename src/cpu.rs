@@ -379,13 +379,10 @@ impl Cpu {
     pub fn run(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
         let start_time = Instant::now();
-        while self.cycles < start_cycles + max_cycles as u128 {
-            if !self.running {
-                return;
-            }
+        while (self.cycles < start_cycles + max_cycles as u128) && self.running {
             self.step();
         }
         let elapsed = start_time.elapsed();
-        println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X},Time: {:>8.2?}, Kc/s: {:>10.2})", max_cycles, self.cycles, self.pc, self.fetch_u40(), elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
+        println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, self.fetch_u40(), elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
     }
 }

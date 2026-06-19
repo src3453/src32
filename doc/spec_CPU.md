@@ -49,8 +49,7 @@ Bit positions:
 
 `LDI` uses opcodes `0xE0..0xFF` and bypasses the `mode` field:
 
-- `[op_with_rd:8][imm32:32]`
-- `rd = op_with_rd & 0x1F`
+- `111[rd:5][imm32:32]`
 - `imm32 = low 32 bits`
 
 ## 4. ISA

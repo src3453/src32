@@ -46,3 +46,30 @@ class While:
     def __init__(self, condition, body):
         self.condition = condition # condition expression for the while loop
         self.body = body # AST node representing the body of the while loop
+
+class Assignment:
+    # node for assignment expressions (e.g., x = expr)
+    def __init__(self, target, value):
+        self.target = target
+        self.value = value
+
+class VarDecl:
+    # node for variable declarations (e.g., int x = expr;)
+    def __init__(self, name, initializer=None):
+        self.name = name
+        self.initializer = initializer
+
+
+class FunctionDef:
+    # node for function definitions: int name(params) { body }
+    def __init__(self, name, params, body):
+        self.name = name
+        self.params = params  # list of parameter names
+        self.body = body
+
+
+class FunctionCall:
+    # node for function calls: name(args)
+    def __init__(self, callee, args):
+        self.callee = callee  # Identifier node
+        self.args = args  # list of expression nodes
