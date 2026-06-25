@@ -96,8 +96,8 @@ class CodeGenerator:
 
 	def gen_FunctionDef(self, node: ast.FunctionDef):
 		# Bind parameters from the call stack into local variable slots.
-		for p in node.params:
-			self.ensure_var(p)
+		# The caller pushes arguments left-to-right before JAL, so the last
+		# argument is at the top of the stack. Pop them in reverse order.
 		for p in reversed(node.params):
 			idx = self.ensure_var(p)
 			self.emitter.emit('STORE_VAR', idx)
@@ -109,9 +109,10 @@ class CodeGenerator:
 	def gen_Return(self, node: ast.Return):
 		if node.value is not None:
 			self.gen(node.value)
-			self.emitter.emit('RETURN')
+			# Result is on the stack; RETURN will pop it into R1 and JR R31.
 		else:
-			self.emitter.emit('RETURN')
+			self.emitter.emit('PUSH_CONST', 0)
+		self.emitter.emit('RETURN')
 
 	def gen_ExpressionStatement(self, node: ast.ExpressionStatement):
 		self.gen(node.expression)
@@ -161,11 +162,6 @@ def compile_source(source: str):
 	# separate functions and top-level statements
 	functions = [u for u in units if isinstance(u, ast.FunctionDef)]
 	statements = [u for u in units if not isinstance(u, ast.FunctionDef)]
-	# If there is no explicit main(), treat top-level statements as the main body.
-	if not any(f.name == 'main' for f in functions):
-		functions = [ast.FunctionDef('main', [], ast.Block(statements))] + functions
-		statements = []
-	block = ast.Block(statements)
 
 	# semantic analysis
 	sem = SemanticAnalyzer()
@@ -175,6 +171,7 @@ def compile_source(source: str):
 		sem.global_scope.define(f.name, {'type': 'func', 'params': len(f.params)})
 
 	# analyze top-level and function bodies
+	block = ast.Block(statements)
 	sem.analyze(block)
 	for f in functions:
 		sem.analyze(f)
@@ -183,15 +180,23 @@ def compile_source(source: str):
 	emitter = CodeEmitter()
 	gen = CodeGenerator(emitter)
 
-	# emit a call to main and return
-	emitter.emit('CALL', 'main')
-	emitter.emit('HALT')
-
-	# emit function bodies; record their start indices in emitter.func_labels
+	# Pre-register function labels so that CALL instructions can resolve
+	# targets during codegen of other functions.
 	emitter.func_labels = {}
+	for f in functions:
+		emitter.func_labels[f.name] = -1  # placeholder
 	for f in functions:
 		emitter.func_labels[f.name] = len(emitter.code)
 		gen.gen(f)
+
+	# emit top-level statements if no main() exists
+	if not any(f.name == 'main' for f in functions):
+		gen.gen(block)
+
+	# emit a call to main and return (only if main exists)
+	if any(f.name == 'main' for f in functions):
+		emitter.emit('CALL', 'main')
+		emitter.emit('HALT')
 
 	return emitter
 

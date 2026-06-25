@@ -194,9 +194,8 @@ def _get_var_count(emitter) -> int:
 
 def format_imm(val: int) -> str:
     if isinstance(val, int):
+        # Always use hex for SRC32 assembler compatibility
         if val < 0:
             return str(val)
-        if val > 9:
-            return hex(val)
-        return str(val)
+        return hex(val)
     return str(val)
