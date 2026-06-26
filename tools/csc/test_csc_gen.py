@@ -3,14 +3,14 @@ from csc_gen import compile_source
 import csc_ast as ast
 
 
-# ── helpers ──────────────────────────────────────────────────────────
+# == helpers ==========================================================
 
 def opcodes(code):
     """Return list of just the opcode names for easier assertions."""
     return [c[0] for c in code]
 
 
-# ── variable declarations ───────────────────────────────────────────
+# == variable declarations ===========================================
 
 def test_simple_assignment():
     emitter = compile_source("int x = 5;")
@@ -34,7 +34,7 @@ def test_var_reassignment():
     assert code[3] == ('STORE_VAR', 0)
 
 
-# ── binary operations ───────────────────────────────────────────────
+# == binary operations ===============================================
 
 def test_binary_op():
     emitter = compile_source("int x = 1 + 2;")
@@ -68,7 +68,7 @@ def test_comparison_ops():
         assert ('CMP', op_sym) in code, f"Expected CMP {op_sym} for '{op_sym}'"
 
 
-# ── function definitions ────────────────────────────────────────────
+# == function definitions ============================================
 
 def test_function_def_structure():
     src = "int add(int a, int b) { return a + b; }"
@@ -118,7 +118,7 @@ def test_function_labels_correct():
     assert labels['add'] < labels['main']
 
 
-# ── function calls ──────────────────────────────────────────────────
+# == function calls ==================================================
 
 def test_function_call_pushes_args_right_to_left():
     """Arguments must be pushed right-to-left so the first arg is on
@@ -173,7 +173,7 @@ def test_function_call_zero_args():
     assert immediately_before[0] == 'CALL' or immediately_before[0] != 'PUSH_CONST'
 
 
-# ── var_index isolation between functions ────────────────────────────
+# == var_index isolation between functions ============================
 
 def test_var_index_not_shared_between_functions():
     """Each function must have its own local var slots starting from 0.
@@ -207,7 +207,7 @@ def test_emitter_has_var_index():
     assert len(emitter.var_index) > 0
 
 
-# ── control flow ────────────────────────────────────────────────────
+# == control flow ====================================================
 
 def test_if_statement():
     emitter = compile_source("int x = 1; if (x == 1) { x = 2; } else { x = 3; }")
@@ -247,7 +247,7 @@ def test_while_jump_back():
             assert c[1] < i, "While loop JUMP should target an earlier instruction"
 
 
-# ── top-level statements ────────────────────────────────────────────
+# == top-level statements ============================================
 
 def test_top_level_statements_without_main():
     """Top-level statements should be code-generated when no main() exists."""
@@ -273,7 +273,7 @@ def test_top_level_statements_with_main():
     assert ('HALT',) in code
 
 
-# ── regression: incomplete test_function_def now verified ────────────
+# == regression: incomplete test_function_def now verified ============
 
 def test_function_def_detailed():
     """Detailed test for function definition bytecode (replaces the old FIXME test)."""
@@ -304,7 +304,7 @@ def test_function_def_detailed():
     assert s0 < l0 < add
 
 
-# ── RETURN semantics ────────────────────────────────────────────────
+# == RETURN semantics ================================================
 
 def test_return_with_value():
     emitter = compile_source("int main() { return 42; }")
