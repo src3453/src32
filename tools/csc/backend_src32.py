@@ -67,6 +67,9 @@ def emit_src32(emitter) -> str:
         elif op == "POP":
             emit_pop_reg("R1")
 
+        elif op == "SAVE_RET":
+            emit_pop_reg("R31")
+
         elif op == "LOAD_VAR":
             idx = instr[1]
             offset = idx * 4

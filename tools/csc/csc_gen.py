@@ -30,8 +30,9 @@ class CodeEmitter:
 class CodeGenerator:
 	def __init__(self, emitter: CodeEmitter):
 		self.emitter = emitter
-		self.var_index = {}  # mapping name -> index
+		self.var_index = {}  # mapping name -> index (per-function local slots)
 		self.next_var = 0
+		self.global_next_var = 0  # tracks the next free global slot
 
 	def ensure_var(self, name):
 		if name not in self.var_index:
@@ -47,8 +48,9 @@ class CodeGenerator:
 		return fn(node)
 
 	def gen_FunctionCall(self, node: ast.FunctionCall):
-		# push args left-to-right
-		for arg in node.args:
+		# push args right-to-left so that after JAL+SAVE_RET,
+		# the first argument is at the top of the stack.
+		for arg in reversed(node.args):
 			self.gen(arg)
 		# emit call; backend will handle JAL and pushing return value
 		self.emitter.emit('CALL', node.callee.name)
@@ -95,16 +97,33 @@ class CodeGenerator:
 			self.emitter.emit('STORE_VAR', idx)
 
 	def gen_FunctionDef(self, node: ast.FunctionDef):
+		# Reset local variable namespace for this function.
+		# Save the current global_next_var so we can update it after.
+		saved_var_index = self.var_index
+		saved_next_var = self.next_var
+		self.var_index = {}
+		self.next_var = 0
+
+		# Save the return address from the stack into R31 before
+		# popping parameters (JAL pushes return address on top of args).
+		self.emitter.emit('SAVE_RET')
+
 		# Bind parameters from the call stack into local variable slots.
-		# The caller pushes arguments left-to-right before JAL, so the last
-		# argument is at the top of the stack. Pop them in reverse order.
-		for p in reversed(node.params):
+		# Args were pushed right-to-left, so first arg is at the top.
+		for p in node.params:
 			idx = self.ensure_var(p)
 			self.emitter.emit('STORE_VAR', idx)
 		self.gen(node.body)
 		# Implicit return if control reaches the end of the function.
 		self.emitter.emit('PUSH_CONST', 0)
 		self.emitter.emit('RETURN')
+
+		# Update global_next_var: function locals used slots 0..next_var-1,
+		# so the next function must start after that to avoid overlap.
+		self.global_next_var = max(self.global_next_var, self.next_var)
+		# Restore the outer scope's var_index
+		self.var_index = saved_var_index
+		self.next_var = saved_next_var
 
 	def gen_Return(self, node: ast.Return):
 		if node.value is not None:
@@ -189,9 +208,14 @@ def compile_source(source: str):
 		emitter.func_labels[f.name] = len(emitter.code)
 		gen.gen(f)
 
-	# emit top-level statements if no main() exists
+	# If top-level statements exist and no main() exists, generate code for them.
+	# If main() exists, top-level statements are still semantically analyzed
+	# (which may catch errors) but not code-generated.
 	if not any(f.name == 'main' for f in functions):
 		gen.gen(block)
+
+	# Attach var_index to emitter so backend can determine variable count
+	emitter.var_index = gen.var_index
 
 	# emit a call to main and return (only if main exists)
 	if any(f.name == 'main' for f in functions):
