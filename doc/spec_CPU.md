@@ -1,4 +1,9 @@
 # SRC32 Specification
+Revision 1.1 (2026-07-02)
+
+# Changelog
+- 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
+- 1.0 (2026-06-15): Initial release of the specification.
 
 ## 1. Overview
 
@@ -86,12 +91,20 @@ Bit positions:
 - `0x10 (reg)`: `SRL rd, rs1, rs2` (logical right): Shift `rs1` right by `rs2` bits, store result in `rd`
 - `0x11 (reg)`: `SLA rd, rs1, rs2` (arithmetic left): Shift `rs1` left by `rs2` bits, store result in `rd`
 - `0x12 (reg)`: `SRA rd, rs1, rs2` (arithmetic right): Shift `rs1` right by `rs2` bits, preserving sign, store result in `rd`
+- `0x17 (reg)`: `SLTU rd, rs1, rs2` (unsigned): Set `rd = 1` if `rs1 < rs2` (unsigned), else `rd = 0` (Note: Added in revision 1.1)
 
 ### 4.3 Extension L (Extended Load/Store)
 - `0x13 (mem)`: `LDB rd, [base + off16]` (load byte): Load the least significant byte from memory at `base + off16` into `rd`, zero-extended.
 - `0x14 (mem)`: `LDH rd, [base + off16]` (load halfword): Load the least significant halfword from memory at `base + off16` into `rd`, zero-extended.
 - `0x15 (mem)`: `STB rd, [base + off16]` (store byte): Store the least significant byte of `rd` into memory at `base + off16`.
 - `0x16 (mem)`: `STH rd, [base + off16]` (store halfword): Store the least significant halfword of `rd` into memory at `base + off16`.
+
+### 4.4 Extension M (Multiplication and Division) (Note: Added in revision 1.1)
+- `0x18 (reg)`: `MUL rd, rs1, rs2`: Multiply `rs1` and `rs2`, store lower 32 bits in `rd`
+- `0x19 (reg)`: `DIV rd, rs1, rs2`: Divide `rs1` by `rs2`, store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic). TODO: define behavior for division by zero. (Hardware exception or trap may be implemented in future.)
+- `0x1A (reg)`: `MOD rd, rs1, rs2`: Divide `rs1` by `rs2`, store remainder in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
+- `0x1B (reg)`: `MULH rd, rs1, rs2`: Multiply `rs1` and `rs2`, store upper 32 bits in `rd`
+- `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
 
 ## 5. Execution Semantics
 

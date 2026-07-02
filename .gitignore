@@ -10,3 +10,4 @@ __MACOSX
 *dis.a
 *.vsix
 __pycache__
+tools/csc/test.a

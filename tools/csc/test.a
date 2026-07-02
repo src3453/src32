@@ -2,23 +2,56 @@
 start:
     LDI R28, 0x0000FFFC    ; init SP
     LDI R30, vars          ; GP -> vars base
-    JAL bc_2
+    JAL bc_0
     HALT
-bc_0: ; CALL main
-    JAL bc_2
+bc_0: ; SAVE_RET
+    LD R31, [R28 + 0]
+    ADDI R28, R28, 4
+bc_1: ; PUSH_CONST 0
+    LDI R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_1: ; HALT
-    HALT
-bc_2: ; PUSH_CONST 1
-    LDI R1, 1
+bc_2: ; STORE_VAR 0
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+    ST R1, [R30 + 0]    ; store var 0
+bc_3: ; PUSH_CONST 0
+    LDI R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_3: ; PUSH_CONST 2
-    LDI R1, 2
+bc_4: ; STORE_VAR 1
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+    ST R1, [R30 + 4]    ; store var 1
+bc_5: ; LOAD_VAR 0
+    LD R1, [R30 + 0]    ; load var 0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_4: ; ADD
+bc_6: ; PUSH_CONST 10
+    LDI R1, 0xa
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_7: ; CMP <
+    LD R2, [R28 + 0]
+    ADDI R28, R28, 4
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+    SLT R1, R1, R2
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_8: ; JUMP_IF_FALSE 20
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+    BEQ R1, R0, bc_20
+bc_9: ; LOAD_VAR 1
+    LD R1, [R30 + 4]    ; load var 1
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_10: ; LOAD_VAR 0
+    LD R1, [R30 + 0]    ; load var 0
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_11: ; ADD
     LD R2, [R28 + 0]
     ADDI R28, R28, 4
     LD R1, [R28 + 0]
@@ -26,53 +59,60 @@ bc_4: ; ADD
     ADD R1, R1, R2
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_5: ; PUSH_CONST 3
-    LDI R1, 3
+bc_12: ; STORE_VAR 1
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+    ST R1, [R30 + 4]    ; store var 1
+bc_13: ; POP
+    LD R1, [R28 + 0]
+    ADDI R28, R28, 4
+bc_14: ; LOAD_VAR 0
+    LD R1, [R30 + 0]    ; load var 0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_6: ; CMP ==
+bc_15: ; PUSH_CONST 1
+    LDI R1, 0x1
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_16: ; ADD
     LD R2, [R28 + 0]
     ADDI R28, R28, 4
     LD R1, [R28 + 0]
     ADDI R28, R28, 4
-    BEQ R1, R2, cmp_true_6
-    LDI R1, 0
-    JMP cmp_end_6
-cmp_true_6:
-    LDI R1, 1
-cmp_end_6:
+    ADD R1, R1, R2
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_7: ; JUMP_IF_FALSE 11
+bc_17: ; STORE_VAR 0
     LD R1, [R28 + 0]
     ADDI R28, R28, 4
-    BEQ R1, R0, bc_11
-bc_8: ; PUSH_CONST 0
-    LDI R1, 0
-    ADDI R28, R28, -4
-    ST R1, [R28 + 0]
-bc_9: ; RETURN
+    ST R1, [R30 + 0]    ; store var 0
+bc_18: ; POP
     LD R1, [R28 + 0]
     ADDI R28, R28, 4
-    JR R31
-bc_10: ; JUMP 13
-    JMP bc_13
-bc_11: ; PUSH_CONST 1
-    LDI R1, 1
+bc_19: ; JUMP 5
+    JMP bc_5
+bc_20: ; LOAD_VAR 1
+    LD R1, [R30 + 4]    ; load var 1
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_12: ; RETURN
+bc_21: ; RETURN
     LD R1, [R28 + 0]
     ADDI R28, R28, 4
     JR R31
-bc_13: ; PUSH_CONST 0
-    LDI R1, 0
+bc_22: ; PUSH_CONST 0
+    LDI R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
-bc_14: ; RETURN
+bc_23: ; RETURN
     LD R1, [R28 + 0]
     ADDI R28, R28, 4
     JR R31
+bc_24: ; CALL main
+    JAL bc_0
+    ADDI R28, R28, -4
+    ST R1, [R28 + 0]
+bc_25: ; HALT
+    HALT
 
 ; data section
 .ORG 0x00008000
