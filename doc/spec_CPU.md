@@ -3,7 +3,7 @@ Revision 1.1 (2026-07-02)
 
 # Changelog
 - 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
-- 1.0 (2026-06-15): Initial release of the specification.
+- 1.0 (2026-06-20): Initial release of the specification.
 
 ## 1. Overview
 
