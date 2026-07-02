@@ -82,6 +82,15 @@ Bit positions:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
 
+`CPUID` note:
+- `CPU_ID` is a fixed 32-bit value identifying the CPU model.
+  - `CPU_ID = 0x53524332` ("SRC2" in ASCII)
+- `CPU_FEATURES` is a fixed 32-bit bitmask indicating supported extensions:
+  - Bit 0: Base ISA
+  - Bit 1: Extension A (ALU)
+  - Bit 2: Extension L (Load/Store)
+  - Bit 3: Extension M (Multiplication/Division)
+
 ### 4.2 Extension A (ALU)
 
 - `0x0C (reg)`: `AND rd, rs1, rs2`: Bitwise AND of `rs1` and `rs2`, store result in `rd`
