@@ -62,12 +62,23 @@ fn step_cpu(cpu: &mut Cpu, count: usize) {
 fn print_memory(cpu: &Cpu, mut addr: u32, count: usize) {
     for i in 0..count {
         if i % 16 == 0 {
-            if i != 0 {
-                println!();
-            }
             print!("0x{:08X}: ", addr);
         }
         print!("{:02X} ", cpu.read_mem_u8(addr));
+        if i % 16 == 15 {
+            if i != 0 {
+                print!(" | ");
+                for j in 0..16 {
+                    let byte = cpu.read_mem_u8(addr.wrapping_sub(15).wrapping_add(j));
+                    if byte.is_ascii_graphic() || byte == b' ' {
+                        print!("{}", byte as char);
+                    } else {
+                        print!(".");
+                    }
+                }
+                println!();
+            }
+        }
         addr = addr.wrapping_add(1);
     }
     println!();
