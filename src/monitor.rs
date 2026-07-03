@@ -23,18 +23,18 @@ fn parse_u32(token: &str) -> Result<u32, String> {
 fn print_help() {
     println!("Commands:");
     println!("  COMMAND(ALIAS) [ARGS...]  DESCRIPTION\n");
-    println!("  help(h|?)            show this help");
+    println!("  help(h|?)               show this help");
     println!("  load(l) <path> [addr]   load a binary image into memory");
-    println!("  step(s) [n]          execute n instructions (default 1)");
+    println!("  step(s) [n]             execute n instructions (default 1)");
     println!("  run(r) [n]              same as step, but intended for longer runs");
-    println!("  regs(state)(rs)          print CPU state");
-    println!("  setr(sr) <reg> <value>   set register to value");
-    println!("  goto(setpc|g) <addr> set PC to addr");
-    println!("  disasm(u) [addr] [n] show n decoded instructions");
-    println!("  mem(x) <addr> [n]    dump n bytes from memory");
+    println!("  regs(state)(rs)         print CPU state");
+    println!("  setr(sr) <reg> <value>  set register to value");
+    println!("  goto(setpc|g) <addr>    set PC to addr");
+    println!("  disasm(u) [addr] [n]    show n decoded instructions");
+    println!("  mem(x) <addr> [n]       dump n bytes from memory");
     println!("  poke(p) <addr> <value>  write one byte to memory");
-    println!("  reset(rst) [pc]           reset CPU and set PC");
-    println!("  quit(exit|q)         exit the monitor");
+    println!("  reset(rst) [pc]         reset CPU and set PC");
+    println!("  quit(exit|q)            exit the monitor");
 }
 
 fn print_state(cpu: &Cpu) {
