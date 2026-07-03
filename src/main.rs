@@ -13,6 +13,8 @@ use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
 use cpt32::devices::ram::connect_ram;
 use cpt32::cpu::Cpu;
 
+mod monitor;
+
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
 
@@ -24,7 +26,7 @@ fn load_binary_data(path: &str, bus: &mut Bus) {
     }
 }
 
-fn main() {
+fn run_gui(program_path: &str) {
     // =========================
     // SDL初期化
     // =========================
@@ -51,8 +53,7 @@ fn main() {
     let mut bus = Bus::new();
     connect_ram(&mut bus); // RAMを接続
 
-    let program_path = env::args().nth(1).expect("Usage: cargo run <program.bin>");
-    load_binary_data(&program_path, &mut bus); // バイナリデータをロード
+    load_binary_data(program_path, &mut bus); // バイナリデータをロード
     // =========================
     // VDP
     // =========================
@@ -107,5 +108,20 @@ fn main() {
         canvas.clear();
         canvas.copy(&texture, None, None).unwrap();
         canvas.present();
+    }
+}
+
+fn main() {
+    let mut args = env::args().skip(1);
+    let first = args.next();
+
+    match first.as_deref() {
+        Some("monitor") | Some("-m") | Some("--monitor") => {
+            monitor::run(args.next().as_deref());
+        }
+        Some(program_path) => run_gui(program_path),
+        None => {
+            eprintln!("Usage: cargo run -- <program.bin> | cargo run -- [-m|--monitor] [program.bin]");
+        }
     }
 }

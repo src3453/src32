@@ -2,7 +2,7 @@
 // This module defines the SRC32 CPU struct, instruction set, and execution logic for the CPT32 emulator.
 
 use crate::bus::Bus;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
@@ -52,6 +52,12 @@ enum Instruction {
     Srl { rd: u8, rs1: u8, rs2: u8 },
     Sla { rd: u8, rs1: u8, rs2: u8 },
     Sra { rd: u8, rs1: u8, rs2: u8 },
+    Sltu { rd: u8, rs1: u8, rs2: u8 },
+    Mul { rd: u8, rs1: u8, rs2: u8 },
+    Div { rd: u8, rs1: u8, rs2: u8 },
+    Mod { rd: u8, rs1: u8, rs2: u8 },
+    Mulh { rd: u8, rs1: u8, rs2: u8 },
+    Divu { rd: u8, rs1: u8, rs2: u8 },
     Ldb { rd: u8, base: u8, offset: i16 },
     Ldh { rd: u8, base: u8, offset: i16 },
     Stb { rd: u8, base: u8, offset: i16 },
@@ -67,7 +73,8 @@ const REG_LR: usize = 31;
 const EXT_BASE: u32 = 0x01; // Base extension: includes basic arithmetic and logic instructions (ADD, SUB, AND, OR, etc.)
 const EXT_A: u32 = 0x02; // Extension A (Arithmetic): adds more arithmetic and logic instructions
 const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/store instructions
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L; // CPUID features bitfield
+const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and division instructions
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 
 const INSN_SIZE: u32 = 5;
@@ -103,6 +110,34 @@ impl Cpu {
         }
     }
 
+    pub fn pc(&self) -> u32 {
+        self.pc
+    }
+
+    pub fn set_pc(&mut self, pc: u32) {
+        self.pc = pc;
+    }
+
+    pub fn is_running(&self) -> bool {
+        self.running
+    }
+
+    pub fn read_mem_u8(&self, addr: u32) -> u8 {
+        self.bus.read_u8(addr)
+    }
+
+    pub fn read_mem_u32_be(&self, addr: u32) -> u32 {
+        self.bus.read_u32_be(addr)
+    }
+
+    pub fn write_mem_u8(&mut self, addr: u32, value: u8) {
+        self.bus.write_u8(addr, value);
+    }
+
+    pub fn write_mem_u32_be(&mut self, addr: u32, value: u32) {
+        self.bus.write_u32_be(addr, value);
+    }
+
     pub fn read_reg(&self, reg: usize) -> u32 {
         if reg >= self.reg.len() {
             panic!("Invalid register index: {reg}");
@@ -114,20 +149,27 @@ impl Cpu {
         }
     }
 
-    fn write_reg(&mut self, reg: usize, value: u32) {
+    pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
         if reg >= self.reg.len() {
-            panic!("Invalid register index: {reg}");
+            return Err(format!("Invalid register index: {reg}"));
         }
         if reg == REG_ZERO {
-            return;
+            return Ok("Warning: Writing to R0 has no effect".into());
         }
         self.reg[reg] = value;
+        Ok("".into())
     }
 
     fn fetch_u40(&self) -> u64 {
         // use 32-bit read to fetch in 2 cycles instead of 5 separate 8-bit reads
         let w0 = self.bus.read_u32_be(self.pc) as u64;
-        let b4 = self.bus.read_u8(self.pc + 4) as u64;
+        let b4 = self.bus.read_u8(self.pc.wrapping_add(4)) as u64;
+        (w0 << 8) | b4
+    }
+
+    fn fetch_u40_at(&self, addr: u32) -> u64 {
+        let w0 = self.bus.read_u32_be(addr) as u64;
+        let b4 = self.bus.read_u8(addr.wrapping_add(4)) as u64;
         (w0 << 8) | b4
     }
 
@@ -186,6 +228,12 @@ impl Cpu {
             (0x10, AddrMode::Register) => Instruction::Srl { rd, rs1, rs2 },
             (0x11, AddrMode::Register) => Instruction::Sla { rd, rs1, rs2 },
             (0x12, AddrMode::Register) => Instruction::Sra { rd, rs1, rs2 },
+            (0x17, AddrMode::Register) => Instruction::Sltu { rd, rs1, rs2 },
+            (0x18, AddrMode::Register) => Instruction::Mul { rd, rs1, rs2 },
+            (0x19, AddrMode::Register) => Instruction::Div { rd, rs1, rs2 },
+            (0x1A, AddrMode::Register) => Instruction::Mod { rd, rs1, rs2 },
+            (0x1B, AddrMode::Register) => Instruction::Mulh { rd, rs1, rs2 },
+            (0x1C, AddrMode::Register) => Instruction::Divu { rd, rs1, rs2 },
             (0x13, AddrMode::Memory) => Instruction::Ldb {
                 rd,
                 base: rs1,
@@ -210,6 +258,66 @@ impl Cpu {
             (0xDF, AddrMode::Register) => Instruction::Halt,
             _ => Instruction::Unknown(raw),
         }
+    }
+
+    fn format_instruction(insn: Instruction) -> String {
+        match insn {
+            Instruction::Nop => "NOP".to_string(),
+            Instruction::Ld { rd, base, offset } => {
+                format!("LD R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::St { rd, base, offset } => {
+                format!("ST R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::Ldi { rd, imm } => format!("LDI R{}, 0x{:08X}", rd, imm),
+            Instruction::Add { rd, rs1, rs2 } => format!("ADD R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Addi { rd, rs1, imm } => format!("ADDI R{}, R{}, {}", rd, rs1, imm),
+            Instruction::Sub { rd, rs1, rs2 } => format!("SUB R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Slt { rd, rs1, rs2 } => format!("SLT R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Beq { rs1, rs2, offset } => {
+                format!("BEQ R{}, R{}, {}", rs1, rs2, offset)
+            }
+            Instruction::Bne { rs1, rs2, offset } => {
+                format!("BNE R{}, R{}, {}", rs1, rs2, offset)
+            }
+            Instruction::Jmp { offset } => format!("JMP {}", offset),
+            Instruction::Jal { offset } => format!("JAL {}", offset),
+            Instruction::Jr { rd } => format!("JR R{}", rd),
+            Instruction::Cpuid => "CPUID".to_string(),
+            Instruction::Halt => "HALT".to_string(),
+            Instruction::And { rd, rs1, rs2 } => format!("AND R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Or { rd, rs1, rs2 } => format!("OR R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Xor { rd, rs1, rs2 } => format!("XOR R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Sll { rd, rs1, rs2 } => format!("SLL R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Srl { rd, rs1, rs2 } => format!("SRL R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Sla { rd, rs1, rs2 } => format!("SLA R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Sra { rd, rs1, rs2 } => format!("SRA R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Sltu { rd, rs1, rs2 } => format!("SLTU R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Mul { rd, rs1, rs2 } => format!("MUL R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Div { rd, rs1, rs2 } => format!("DIV R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Mod { rd, rs1, rs2 } => format!("MOD R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Mulh { rd, rs1, rs2 } => format!("MULH R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Divu { rd, rs1, rs2 } => format!("DIVU R{}, R{}, R{}", rd, rs1, rs2),
+            Instruction::Ldb { rd, base, offset } => {
+                format!("LDB R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::Ldh { rd, base, offset } => {
+                format!("LDH R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::Stb { rd, base, offset } => {
+                format!("STB R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::Sth { rd, base, offset } => {
+                format!("STH R{}, [R{} + {}]", rd, base, offset)
+            }
+            Instruction::Unknown(raw) => format!(".word 0x{:010X}", raw),
+        }
+    }
+
+    pub fn disassemble_at(&self, addr: u32) -> String {
+        let raw = self.fetch_u40_at(addr);
+        let insn = Self::decode(raw);
+        Self::format_instruction(insn)
     }
 
     fn add_signed(base: u32, offset: i16) -> u32 {
@@ -321,6 +429,36 @@ impl Cpu {
                 let value = self.read_reg(rs1 as usize) as i32;
                 self.write_reg(rd as usize, (value >> sh) as u32);
             }
+            Instruction::Sltu { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize);
+                let rhs = self.read_reg(rs2 as usize);
+                self.write_reg(rd as usize, u32::from(lhs < rhs));
+            }
+            Instruction::Mul { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize) as u64;
+                let rhs = self.read_reg(rs2 as usize) as u64;
+                self.write_reg(rd as usize, lhs.wrapping_mul(rhs) as u32);
+            }
+            Instruction::Div { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize) as i32;
+                let rhs = self.read_reg(rs2 as usize) as i32;
+                self.write_reg(rd as usize, (lhs / rhs) as u32);
+            }
+            Instruction::Mod { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize) as i32;
+                let rhs = self.read_reg(rs2 as usize) as i32;
+                self.write_reg(rd as usize, (lhs % rhs) as u32);
+            }
+            Instruction::Mulh { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize) as i32 as i64;
+                let rhs = self.read_reg(rs2 as usize) as i32 as i64;
+                self.write_reg(rd as usize, ((lhs.wrapping_mul(rhs)) >> 32) as u32);
+            }
+            Instruction::Divu { rd, rs1, rs2 } => {
+                let lhs = self.read_reg(rs1 as usize);
+                let rhs = self.read_reg(rs2 as usize);
+                self.write_reg(rd as usize, lhs / rhs);
+            }
             Instruction::Ldb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.bus.read_u8(addr) as u32;
@@ -352,13 +490,15 @@ impl Cpu {
 
     pub fn return_state_text(&self) -> String {
         let mut txt = format!(
-            "PC=0x{:08X} LR=0x{:08X} OP=0x{:010X}",
+            "PC=0x{:08X} OP=0x{:010X}\n",
             self.pc,
-            self.read_reg(REG_LR),
             self.fetch_u40()
         );
         for i in 0..32 {
-            txt.push_str(&format!(" R{}=0x{:08X}", i, self.read_reg(i)));
+            txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));
+            if i%4 == 3 {
+                txt.push('\n');
+            }
         }
         txt
     }
@@ -374,6 +514,14 @@ impl Cpu {
         self.execute(insn);
         self.cycles += 1; // +1 cycle for execute (simplified, real implementation may vary)
         //println!("\x1b[1;1H{}", self.return_state_text());
+    }
+
+    pub fn step_once(&mut self) -> bool {
+        if !self.running {
+            return false;
+        }
+        self.step();
+        true
     }
 
     pub fn run(&mut self, max_cycles: usize) {
