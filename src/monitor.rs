@@ -22,17 +22,18 @@ fn parse_u32(token: &str) -> Result<u32, String> {
 
 fn print_help() {
     println!("Commands:");
+    println!("  COMMAND(ALIAS) [ARGS...]  DESCRIPTION\n");
     println!("  help(h|?)            show this help");
-    println!("  load <path> [addr]   load a binary image into memory");
-    println!("  step [n]             execute n instructions (default 1)");
-    println!("  run [n]              same as step, but intended for longer runs");
-    println!("  regs(state)          print CPU state");
-    println!("  setr <reg> <value>   set register to value");
+    println!("  load(l) <path> [addr]   load a binary image into memory");
+    println!("  step(s) [n]          execute n instructions (default 1)");
+    println!("  run(r) [n]              same as step, but intended for longer runs");
+    println!("  regs(state)(rs)          print CPU state");
+    println!("  setr(sr) <reg> <value>   set register to value");
     println!("  goto(setpc|g) <addr> set PC to addr");
     println!("  disasm(u) [addr] [n] show n decoded instructions");
     println!("  mem(x) <addr> [n]    dump n bytes from memory");
-    println!("  poke <addr> <value>  write one byte to memory");
-    println!("  reset [pc]           reset CPU and set PC");
+    println!("  poke(p) <addr> <value>  write one byte to memory");
+    println!("  reset(rst) [pc]           reset CPU and set PC");
     println!("  quit(exit|q)         exit the monitor");
 }
 
@@ -117,7 +118,7 @@ pub fn run(program_path: Option<&str>) {
 
         match command {
             "help" | "h" | "?" => print_help(),
-            "load" => {
+            "load" | "l" => {
                 let Some(path) = parts.next() else {
                     println!("Usage: load <path> [addr]");
                     continue;
@@ -140,7 +141,7 @@ pub fn run(program_path: Option<&str>) {
                     Err(err) => println!("Failed to read {}: {}", path, err),
                 }
             }
-            "step" => {
+            "step" | "s" => {
                 let count = match parts.next() {
                     Some(token) => match token.parse::<usize>() {
                         Ok(value) => value,
@@ -153,7 +154,7 @@ pub fn run(program_path: Option<&str>) {
                 };
                 step_cpu(&mut cpu, count);
             }
-            "run" => {
+            "run" | "r" => {
                 let count = match parts.next() {
                     Some(token) => match token.parse::<usize>() {
                         Ok(value) => value,
@@ -166,7 +167,7 @@ pub fn run(program_path: Option<&str>) {
                 };
                 step_cpu(&mut cpu, count);
             }
-            "regs" | "state" => print_state(&cpu),
+            "regs" | "state" | "rs" => print_state(&cpu),
             "disasm" | "u" => {
                 let addr = match parts.next() {
                     Some(token) => match parse_u32(token) {
@@ -213,7 +214,7 @@ pub fn run(program_path: Option<&str>) {
                 };
                 print_memory(&cpu, addr, count);
             }
-            "poke" => {
+            "poke" | "p" => {
                 let Some(addr_token) = parts.next() else {
                     println!("Usage: poke <addr> <value>");
                     continue;
@@ -239,7 +240,7 @@ pub fn run(program_path: Option<&str>) {
                 cpu.write_mem_u8(addr, value);
                 println!("Wrote 0x{:02X} to 0x{:08X}", value, addr);
             }
-            "reset" => {
+            "reset" | "rst" => {
                 let pc = match parts.next() {
                     Some(token) => match parse_u32(token) {
                         Ok(value) => value,
@@ -253,7 +254,7 @@ pub fn run(program_path: Option<&str>) {
                 cpu.reset(pc);
                 print_state(&cpu);
             }
-            "setr" => {
+            "setr" | "sr" => {
                 let Some(reg_token) = parts.next() else {
                     println!("Usage: setr <reg> <value>");
                     continue;
