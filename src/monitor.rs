@@ -45,7 +45,8 @@ fn print_state(cpu: &Cpu) {
 fn print_disassembly(cpu: &Cpu, mut addr: u32, count: usize) {
     for _ in 0..count {
         let marker = if addr == cpu.pc() { "=>" } else { "  " };
-        println!("{} 0x{:08X}: {}", marker, addr, cpu.disassemble_at(addr));
+        let insn = cpu.read_u40(addr);
+        println!("{} 0x{:08X}: {:010X}  {}", marker, addr, insn, cpu.disassemble_at(addr));
         addr = addr.wrapping_add(INSN_BYTES);
     }
 }

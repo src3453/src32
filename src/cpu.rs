@@ -320,6 +320,10 @@ impl Cpu {
         Self::format_instruction(insn)
     }
 
+    pub fn read_u40(&self, addr: u32) -> u64 {
+        self.fetch_u40_at(addr)
+    }
+
     fn add_signed(base: u32, offset: i16) -> u32 {
         base.wrapping_add((offset as i32) as u32)
     }

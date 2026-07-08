@@ -143,7 +143,7 @@ Rules:
 ## 6. Memory Model (Current Emulator)
 
 - Address space: 32-bit
-- Implemented RAM: `0x00000000..0x0000FFFF` (64 KiB)
+- Implemented RAM: `0x00000000..0x00FFFFFF` (16 MiB) (Can be extended)
 - Bus performs bounds/device checks and panics on unmapped access.
 
 Endianness:
@@ -205,8 +205,8 @@ python asm.py input.s -o output.bin
 Implemented in this repository:
 
 - Core CPU fetch/decode/execute loop
-- Base ISA + Extension A instructions
-- 64 KiB RAM-backed bus
+- Base ISA + Extension ALM instructions
+- 16 MiB RAM-backed bus
 - Two-pass assembler with labels/directives
 
 Planned (future):
