@@ -2,6 +2,7 @@
 
 use std::env;
 
+use cpt32::devices::pec::serial::connect_uart;
 use sdl2::{
     event::Event,
     keyboard::Keycode,
@@ -52,6 +53,7 @@ fn run_gui(program_path: &str) {
     // =========================
     let mut bus = Bus::new();
     connect_ram(&mut bus); // RAMを接続
+    connect_uart(&mut bus); // UARTを接続
 
     load_binary_data(program_path, &mut bus); // バイナリデータをロード
     // =========================

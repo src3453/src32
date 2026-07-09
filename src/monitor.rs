@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use cpt32::bus::Bus;
 use cpt32::cpu::Cpu;
 use cpt32::devices::ram::connect_ram;
-use sdl2::keyboard::Scancode::O;
+use cpt32::devices::pec::serial::connect_uart;
 
 const INSN_BYTES: u32 = 5;
 
@@ -37,12 +37,14 @@ fn print_help() {
     println!("  quit(exit|q)            exit the monitor");
 }
 
-fn print_state(cpu: &Cpu) {
-    println!("{}", cpu.return_state_text());
-    println!("next: {}", cpu.disassemble_at(cpu.pc()));
+fn print_state(cpu: &mut Cpu) {
+    let state = cpu.return_state_text();
+    println!("{}", state);
+    let disasm = cpu.disassemble_at(cpu.pc());
+    println!("next: {}", disasm);
 }
 
-fn print_disassembly(cpu: &Cpu, mut addr: u32, count: usize) {
+fn print_disassembly(cpu: &mut Cpu, mut addr: u32, count: usize) {
     for _ in 0..count {
         let marker = if addr == cpu.pc() { "=>" } else { "  " };
         let insn = cpu.read_u40(addr);
@@ -61,7 +63,7 @@ fn step_cpu(cpu: &mut Cpu, count: usize) {
     print_state(cpu);
 }
 
-fn print_memory(cpu: &Cpu, mut addr: u32, count: usize) {
+fn print_memory(cpu: &mut Cpu, mut addr: u32, count: usize) {
     for i in 0..count {
         if i % 16 == 0 {
             print!("0x{:08X}: ", addr);
@@ -89,6 +91,7 @@ fn print_memory(cpu: &Cpu, mut addr: u32, count: usize) {
 pub fn run(program_path: Option<&str>) {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
+    connect_uart(&mut bus);
     let mut cpu = Cpu::new(bus);
 
     if let Some(path) = program_path {
@@ -98,7 +101,7 @@ pub fn run(program_path: Option<&str>) {
     println!("-------------------------");
     println!("CPT32 Debug Monitor");
     print_help();
-    print_state(&cpu);
+    print_state(&mut cpu);
 
     let stdin = io::stdin();
     let mut line = String::new();
@@ -168,7 +171,7 @@ pub fn run(program_path: Option<&str>) {
                 };
                 step_cpu(&mut cpu, count);
             }
-            "regs" | "state" | "rs" => print_state(&cpu),
+            "regs" | "state" | "rs" => print_state(&mut cpu),
             "disasm" | "u" => {
                 let addr = match parts.next() {
                     Some(token) => match parse_u32(token) {
@@ -190,7 +193,7 @@ pub fn run(program_path: Option<&str>) {
                     },
                     None => 8,
                 };
-                print_disassembly(&cpu, addr, count);
+                print_disassembly(&mut cpu, addr, count);
             }
             "mem" | "x" => {
                 let addr = match parts.next() {
@@ -213,7 +216,7 @@ pub fn run(program_path: Option<&str>) {
                     },
                     None => 64,
                 };
-                print_memory(&cpu, addr, count);
+                print_memory(&mut cpu, addr, count);
             }
             "poke" | "p" => {
                 let Some(addr_token) = parts.next() else {
@@ -253,7 +256,7 @@ pub fn run(program_path: Option<&str>) {
                     None => 0,
                 };
                 cpu.reset(pc);
-                print_state(&cpu);
+                print_state(&mut cpu);
             }
             "setr" | "sr" => {
                 let Some(reg_token) = parts.next() else {
@@ -284,15 +287,10 @@ pub fn run(program_path: Option<&str>) {
                 };
                 let message = cpu.write_reg(reg, value);
                 println!("Set R{} to 0x{:08X}", reg, value);
-                if message.is_ok() {
-                    let msg = message.unwrap();
-                    if !msg.is_empty() {
-                        println!("{}", msg);
-                    }
-                } else {
-                    if let Err(err) = message {
-                        println!("Error: {}", err);
-                    }
+                match message {
+                    Ok(msg) if !msg.is_empty() => println!("{}", msg),
+                    Err(err) => println!("Error: {}", err),
+                    _ => {}
                 }
             }
             "goto" | "setpc" | "g" => {

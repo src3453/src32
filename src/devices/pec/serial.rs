@@ -1,5 +1,6 @@
 // Serial port emulation for the PeC (Peripheral Controller)
-
+use crate::bus::Device;
+use std::io::Write;
 pub struct UART {
     pub tx_buffer: Vec<u8>, // Transmit buffer for outgoing data
     pub rx_buffer: Vec<u8>, // Receive buffer for incoming data
@@ -26,6 +27,8 @@ impl UART {
     pub fn write(&mut self, data: u8) {
         self.tx_buffer.push(data);
         self.tx_ready = false; // Not ready to transmit until the buffer is processed
+        print!("{}", data as char); // Output the character to the console
+        std::io::stdout().flush().unwrap();
     }
 
     pub fn read(&mut self) -> Option<u8> {
@@ -59,20 +62,19 @@ impl UART {
 
 const UART_BASE_ADDR: u32 = 0x80040000; // Base address for the UART device
 
-pub struct UART_Device {
+pub struct UARTDevice {
     uart: UART,
 }
 
-impl UART_Device {
+impl UARTDevice {
     pub fn new() -> Self {
         Self { uart: UART::new() }
     }
 }
 
-impl Device for UART_Device {
-    fn read(&self, addr: u32) -> u8 {
-        let reg_addr: u32 = addr - UART_BASE_ADDR;
-        match reg_addr {
+impl Device for UARTDevice {
+    fn read(&mut self, addr: u32) -> u8 {
+        match addr {
             0x0 => { // DATA_RW (RW)
                 self.uart.read().unwrap_or(0)
             } 
@@ -113,6 +115,28 @@ impl Device for UART_Device {
     }
 
     fn write(&mut self, addr: u32, data: u8) {
+        match addr {
+            0x0 => { // DATA_RW (RW)
+                self.uart.write(data);
+            }
+            0x2 => { // BAUD_RATE (RW)
+                self.uart.baud_rate = data as u32; // Set baud rate (assuming 8-bit value for simplicity)
+            }
+            0x3 => { // CONTROL (RW)
+                self.uart.enable = (data & 0x01) == 0; // Reversed logic: 0 means enabled
+                self.uart.int_enable = (data & 0x02) != 0; // Set interrupt enable
+            }
+            _ => {
+                // Ignore writes to unimplemented registers
+            }
+        }
         // Implementation for writing to UART device
     }
+    fn size(&self) -> u32 {
+        0x10 // Size of the UART device's register space (16 bytes)
+    }
+}
+
+pub fn connect_uart(bus: &mut crate::bus::Bus) {
+    bus.add_device(UART_BASE_ADDR, Box::new(UARTDevice::new()));
 }

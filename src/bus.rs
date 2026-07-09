@@ -17,7 +17,7 @@ struct DeviceMap {
 }
 
 pub trait Device {
-    fn read(&self, addr: u32) -> u8;
+    fn read(&mut self, addr: u32) -> u8;
     fn write(&mut self, addr: u32, value: u8);
     fn size(&self) -> u32;
 }
@@ -64,14 +64,14 @@ impl Bus {
         self.devices.push(DeviceMap { addr, size, device });
     }
 
-    pub fn find_device(&self, addr: u32) -> Option<(&dyn Device, u32)> {
-        for mapped in &self.devices {
+    pub fn find_device(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
+        for mapped in &mut self.devices {
             let end = mapped
                 .addr
                 .checked_add(mapped.size)
                 .expect("Existing device range overflow");
             if addr >= mapped.addr && addr < end {
-                return Some((&*mapped.device, addr - mapped.addr));
+                return Some((&mut *mapped.device, addr - mapped.addr));
             }
         }
         None
@@ -90,7 +90,7 @@ impl Bus {
         None
     }
 
-    pub fn read_u8(&self, addr: u32) -> u8 {
+    pub fn read_u8(&mut self, addr: u32) -> u8 {
         if let Some((device, offset)) = self.find_device(addr) {
             return device.read(offset);
         }
@@ -105,7 +105,7 @@ impl Bus {
         panic!("Invalid I/O write: 0x{:08X}", addr);
     }
 
-    pub fn read_u32_be(&self, addr: u32) -> u32 {
+    pub fn read_u32_be(&mut self, addr: u32) -> u32 {
         let b0 = self.read_u8(addr) as u32;
         let b1 = self.read_u8(addr.wrapping_add(1)) as u32;
         let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
