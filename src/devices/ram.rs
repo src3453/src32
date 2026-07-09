@@ -16,7 +16,7 @@ impl Ram {
 }
 
 impl Device for Ram {
-    fn read(&self, addr: u32) -> u8 {
+    fn read(&mut self, addr: u32) -> u8 {
         self.data[addr as usize]
     }
 

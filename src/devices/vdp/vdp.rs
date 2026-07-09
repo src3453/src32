@@ -23,8 +23,6 @@ pub const PIXEL_CLOCK: u32 = crate::sys::MASTER_CLOCK / PIXEL_CLOCK_DIVIDER; // 
 
 pub struct VdpState {
     tick_count: u64,
-    rendered_frames: u64,
-    scanline: u16,
 }
 
 pub struct Vdp {
@@ -38,7 +36,7 @@ impl Vdp {
         Self {
             gp0: Gp0::new(VDP_VRAM_SIZE as usize),
             regs: VdpRegs::new(),
-            state: VdpState { tick_count: 0, rendered_frames: 0, scanline: 0 },
+            state: VdpState { tick_count: 0 },
         }   
     }
 
@@ -74,7 +72,7 @@ impl VdpDevice {
 }
 
 impl Device for VdpDevice {
-    fn read(&self, addr: u32) -> u8 {
+    fn read(&mut self, addr: u32) -> u8 {
         match self.port {
             VdpPort::Vram => self.vdp.borrow().gp0.vram[addr as usize],
             VdpPort::Regs => {

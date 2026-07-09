@@ -122,11 +122,11 @@ impl Cpu {
         self.running
     }
 
-    pub fn read_mem_u8(&self, addr: u32) -> u8 {
+    pub fn read_mem_u8(&mut self, addr: u32) -> u8 {
         self.bus.read_u8(addr)
     }
 
-    pub fn read_mem_u32_be(&self, addr: u32) -> u32 {
+    pub fn read_mem_u32_be(&mut self, addr: u32) -> u32 {
         self.bus.read_u32_be(addr)
     }
 
@@ -160,14 +160,14 @@ impl Cpu {
         Ok("".into())
     }
 
-    fn fetch_u40(&self) -> u64 {
+    fn fetch_u40(&mut self) -> u64 {
         // use 32-bit read to fetch in 2 cycles instead of 5 separate 8-bit reads
         let w0 = self.bus.read_u32_be(self.pc) as u64;
         let b4 = self.bus.read_u8(self.pc.wrapping_add(4)) as u64;
         (w0 << 8) | b4
     }
 
-    fn fetch_u40_at(&self, addr: u32) -> u64 {
+    fn fetch_u40_at(&mut self, addr: u32) -> u64 {
         let w0 = self.bus.read_u32_be(addr) as u64;
         let b4 = self.bus.read_u8(addr.wrapping_add(4)) as u64;
         (w0 << 8) | b4
@@ -314,13 +314,13 @@ impl Cpu {
         }
     }
 
-    pub fn disassemble_at(&self, addr: u32) -> String {
+    pub fn disassemble_at(&mut self, addr: u32) -> String {
         let raw = self.fetch_u40_at(addr);
         let insn = Self::decode(raw);
         Self::format_instruction(insn)
     }
 
-    pub fn read_u40(&self, addr: u32) -> u64 {
+    pub fn read_u40(&mut self, addr: u32) -> u64 {
         self.fetch_u40_at(addr)
     }
 
@@ -341,7 +341,7 @@ impl Cpu {
             Instruction::Ld { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.bus.read_u32_be(addr);
-                self.write_reg(rd as usize, value);
+                let _ = self.write_reg(rd as usize, value);
             }
             Instruction::St { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
@@ -349,27 +349,27 @@ impl Cpu {
                 self.bus.write_u32_be(addr, value);
             }
             Instruction::Ldi { rd, imm } => {
-                self.write_reg(rd as usize, imm);
+                let _ = self.write_reg(rd as usize, imm);
             }
             Instruction::Add { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                self.write_reg(rd as usize, lhs.wrapping_add(rhs));
+                let _ = self.write_reg(rd as usize, lhs.wrapping_add(rhs));
             }
             Instruction::Addi { rd, rs1, imm } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = (imm as i32) as u32;
-                self.write_reg(rd as usize, lhs.wrapping_add(rhs));
+                let _ = self.write_reg(rd as usize, lhs.wrapping_add(rhs));
             }
             Instruction::Sub { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                self.write_reg(rd as usize, lhs.wrapping_sub(rhs));
+                let _ = self.write_reg(rd as usize, lhs.wrapping_sub(rhs));
             }
             Instruction::Slt { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                self.write_reg(rd as usize, u32::from(lhs < rhs));
+                let _ = self.write_reg(rd as usize, u32::from(lhs < rhs));
             }
             Instruction::Beq { rs1, rs2, offset } => {
                 if self.read_reg(rs1 as usize) == self.read_reg(rs2 as usize) {
@@ -385,95 +385,95 @@ impl Cpu {
                 self.pc = Self::branch_target(next_pc, offset);
             }
             Instruction::Jal { offset } => {
-                self.write_reg(REG_LR, next_pc);
+                let _ = self.write_reg(REG_LR, next_pc);
                 self.pc = Self::branch_target(next_pc, offset);
             }
             Instruction::Jr { rd } => {
                 self.pc = self.read_reg(rd as usize);
             }
             Instruction::Cpuid => {
-                self.write_reg(REG_CPUID, CPU_ID);
-                self.write_reg(REG_FEATURES, CPU_FEATURES);
+                let _ = self.write_reg(REG_CPUID, CPU_ID);
+                let _ = self.write_reg(REG_FEATURES, CPU_FEATURES);
             }
             Instruction::Halt => {
                 self.running = false;
             }
             Instruction::And { rd, rs1, rs2 } => {
-                self.write_reg(
+                let _ = self.write_reg(
                     rd as usize,
                     self.read_reg(rs1 as usize) & self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Or { rd, rs1, rs2 } => {
-                self.write_reg(
+                let _ = self.write_reg(
                     rd as usize,
                     self.read_reg(rs1 as usize) | self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Xor { rd, rs1, rs2 } => {
-                self.write_reg(
+                let _ = self.write_reg(
                     rd as usize,
                     self.read_reg(rs1 as usize) ^ self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Sll { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
+                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
             }
             Instruction::Srl { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shr(sh));
+                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shr(sh));
             }
             Instruction::Sla { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
+                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
             }
             Instruction::Sra { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
                 let value = self.read_reg(rs1 as usize) as i32;
-                self.write_reg(rd as usize, (value >> sh) as u32);
+                let _ = self.write_reg(rd as usize, (value >> sh) as u32);
             }
             Instruction::Sltu { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                self.write_reg(rd as usize, u32::from(lhs < rhs));
+                let _ = self.write_reg(rd as usize, u32::from(lhs < rhs));
             }
             Instruction::Mul { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as u64;
                 let rhs = self.read_reg(rs2 as usize) as u64;
-                self.write_reg(rd as usize, lhs.wrapping_mul(rhs) as u32);
+                let _ = self.write_reg(rd as usize, lhs.wrapping_mul(rhs) as u32);
             }
             Instruction::Div { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                self.write_reg(rd as usize, (lhs / rhs) as u32);
+                let _ = self.write_reg(rd as usize, (lhs / rhs) as u32);
             }
             Instruction::Mod { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                self.write_reg(rd as usize, (lhs % rhs) as u32);
+                let _ = self.write_reg(rd as usize, (lhs % rhs) as u32);
             }
             Instruction::Mulh { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32 as i64;
                 let rhs = self.read_reg(rs2 as usize) as i32 as i64;
-                self.write_reg(rd as usize, ((lhs.wrapping_mul(rhs)) >> 32) as u32);
+                let _ = self.write_reg(rd as usize, ((lhs.wrapping_mul(rhs)) >> 32) as u32);
             }
             Instruction::Divu { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                self.write_reg(rd as usize, lhs / rhs);
+                let _ = self.write_reg(rd as usize, lhs / rhs);
             }
             Instruction::Ldb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.bus.read_u8(addr) as u32;
-                self.write_reg(rd as usize, value);
+                let _ = self.write_reg(rd as usize, value);
             }
             Instruction::Ldh { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let b0 = self.bus.read_u8(addr) as u32;
                 let b1 = self.bus.read_u8(addr.wrapping_add(1)) as u32;
                 let value = (b0 << 8) | b1;
-                self.write_reg(rd as usize, value);
+                let _ = self.write_reg(rd as usize, value);
             }
             Instruction::Stb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
@@ -492,11 +492,13 @@ impl Cpu {
         }
     }
 
-    pub fn return_state_text(&self) -> String {
+    pub fn return_state_text(&mut self) -> String {
+        let pc = self.pc;
+        let op = self.fetch_u40();
         let mut txt = format!(
             "PC=0x{:08X} OP=0x{:010X}\n",
-            self.pc,
-            self.fetch_u40()
+            pc,
+            op
         );
         for i in 0..32 {
             txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));
@@ -530,11 +532,12 @@ impl Cpu {
 
     pub fn run(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
-        let start_time = Instant::now();
+        //let start_time = Instant::now();
         while (self.cycles < start_cycles + max_cycles as u128) && self.running {
             self.step();
         }
-        let elapsed = start_time.elapsed();
-        println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, self.fetch_u40(), elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
+        //let elapsed = start_time.elapsed();
+        //let op = self.fetch_u40();
+        //println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, op, elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
     }
 }

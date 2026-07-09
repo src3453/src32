@@ -1,31 +1,10 @@
-LDI R1, 0x10000000 ; VDP VRAM start address
-LDI R2, 0x10012C00 ; VDP VRAM end address
-LDI R3, 1
-LDI R4, 0
-LDI R5, 1
-LDI R6, 0
-LDI R7, 14
-
+ldi r4, 0x80040000
+ldi r1, 1
 loop:
-    LDB R5, [R4 + 0x100]
-    STB [R1], R5
-    ADD R4, R4, R3
-    ;ADD R5, R4, R5
-    ;SRL R4, R4, R3
-    ADD R1, R1, R3
-    BEQ R4, R7, loop_data
-ret_loop_data:
-    BNE R1, R2, loop
-
-HALT  
-LDI R1, 0x10000000
-ADD R6, R6, R5
-ADD R4, R6, R0
-JMP loop
-
-loop_data:
-    LDI R4, 0
-    JMP ret_loop_data
-
-.ORG 0x100
-.STRING "This is a test."
+ldb r3, [r2 + 0x100]
+stb [r4], r3
+add r2, r2, r1
+bne r3, r0, loop
+halt
+.org 0x100
+.STRING "This is a test of UART device."

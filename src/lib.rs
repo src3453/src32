@@ -11,4 +11,7 @@ pub mod devices {
         pub mod gp;
         pub mod reg;
     }
+    pub mod pec {
+        pub mod serial;
+    }
 }
