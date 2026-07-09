@@ -8,7 +8,7 @@ LDI R7, 14
 
 loop:
     LDB R5, [R4 + 0x100]
-    STB R5, [R1]
+    STB [R1], R5
     ADD R4, R4, R3
     ;ADD R5, R4, R5
     ;SRL R4, R4, R3

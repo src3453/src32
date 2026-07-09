@@ -63,7 +63,7 @@ Bit positions:
 
 - `0x00 (reg)`: `NOP`: No operation
 - `0x01 (mem)`: `LD rd, [base + off16]`: Load 32-bit word from memory at `base + off16` into `rd`
-- `0x02 (mem)`: `ST rd, [base + off16]`: Store 32-bit word from `rd` into memory at `base + off16`
+- `0x02 (mem)`: `ST [base + off16], rd`: Store 32-bit word from `rd` into memory at `base + off16`
 - `0x03 (reg)`: `ADD rd, rs1, rs2`: Add `rs1` and `rs2`, store result in `rd`
 - `0x04 (imm)`: `ADDI rd, rs1, imm16`: Add `rs1` and sign-extended `imm16`, store result in `rd`
 - `0x05 (reg)`: `SUB rd, rs1, rs2`: Subtract `rs2` from `rs1`, store result in `rd`
@@ -105,8 +105,8 @@ Bit positions:
 ### 4.3 Extension L (Extended Load/Store)
 - `0x13 (mem)`: `LDB rd, [base + off16]` (load byte): Load the least significant byte from memory at `base + off16` into `rd`, zero-extended.
 - `0x14 (mem)`: `LDH rd, [base + off16]` (load halfword): Load the least significant halfword from memory at `base + off16` into `rd`, zero-extended.
-- `0x15 (mem)`: `STB rd, [base + off16]` (store byte): Store the least significant byte of `rd` into memory at `base + off16`.
-- `0x16 (mem)`: `STH rd, [base + off16]` (store halfword): Store the least significant halfword of `rd` into memory at `base + off16`.
+- `0x15 (mem)`: `STB [base + off16], rd` (store byte): Store the least significant byte of `rd` into memory at `base + off16`.
+- `0x16 (mem)`: `STH [base + off16], rd` (store halfword): Store the least significant halfword of `rd` into memory at `base + off16`.
 
 ### 4.4 Extension M (Multiplication and Division) (Note: Added in revision 1.1)
 - `0x18 (reg)`: `MUL rd, rs1, rs2`: Multiply `rs1` and `rs2`, store lower 32 bits in `rd`

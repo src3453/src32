@@ -267,7 +267,7 @@ impl Cpu {
                 format!("LD R{}, [R{} + {}]", rd, base, offset)
             }
             Instruction::St { rd, base, offset } => {
-                format!("ST R{}, [R{} + {}]", rd, base, offset)
+                format!("ST [R{} + {}], R{}", base, offset, rd)
             }
             Instruction::Ldi { rd, imm } => format!("LDI R{}, 0x{:08X}", rd, imm),
             Instruction::Add { rd, rs1, rs2 } => format!("ADD R{}, R{}, R{}", rd, rs1, rs2),
@@ -305,10 +305,10 @@ impl Cpu {
                 format!("LDH R{}, [R{} + {}]", rd, base, offset)
             }
             Instruction::Stb { rd, base, offset } => {
-                format!("STB R{}, [R{} + {}]", rd, base, offset)
+                format!("STB [R{} + {}], R{}", base, offset, rd)
             }
             Instruction::Sth { rd, base, offset } => {
-                format!("STH R{}, [R{} + {}]", rd, base, offset)
+                format!("STH [R{} + {}], R{}", base, offset, rd)
             }
             Instruction::Unknown(raw) => format!(".word 0x{:010X}", raw),
         }

@@ -78,7 +78,7 @@ def decode_one(pc: int, raw: int) -> DecodedInsn:
     if op == 0x01 and mode == 2:
         return DecodedInsn(pc=pc, raw=raw, asm=f"LD {reg_name(rd)}, {mem_operand(rs1, imm16)}")
     if op == 0x02 and mode == 2:
-        return DecodedInsn(pc=pc, raw=raw, asm=f"ST {reg_name(rd)}, {mem_operand(rs1, imm16)}")
+        return DecodedInsn(pc=pc, raw=raw, asm=f"ST {mem_operand(rs1, imm16)}, {reg_name(rd)}")
     if op == 0x03 and mode == 0:
         return DecodedInsn(
             pc=pc,
@@ -165,6 +165,42 @@ def decode_one(pc: int, raw: int) -> DecodedInsn:
             raw=raw,
             asm=f"SRA {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
         )
+    if op == 0x17 and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"SLTU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
+    if op == 0x18 and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"MUL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
+    if op == 0x19 and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"DIV {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
+    if op == 0x1A and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"MOD {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
+    if op == 0x1B and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"MULH {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
+    if op == 0x1C and mode == 0:
+        return DecodedInsn(
+            pc=pc,
+            raw=raw,
+            asm=f"DIVU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
+        )
     if op == 0x13 and mode == 2:
         return DecodedInsn(
             pc=pc,
@@ -181,13 +217,13 @@ def decode_one(pc: int, raw: int) -> DecodedInsn:
         return DecodedInsn(
             pc=pc,
             raw=raw,
-            asm=f"STB {reg_name(rd)}, {mem_operand(rs1, imm16)}",
+            asm=f"STB {mem_operand(rs1, imm16)}, {reg_name(rd)}",
         )
     if op == 0x16 and mode == 2:
         return DecodedInsn(
             pc=pc,
             raw=raw,
-            asm=f"STH {reg_name(rd)}, {mem_operand(rs1, imm16)}",
+            asm=f"STH {mem_operand(rs1, imm16)}, {reg_name(rd)}",
         )
     if op == 0xDE and mode == 0:
         return DecodedInsn(pc=pc, raw=raw, asm="CPUID")

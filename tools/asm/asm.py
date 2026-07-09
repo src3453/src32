@@ -34,6 +34,12 @@ OP_INFO = {
     "SRL": (0x10, "R"),
     "SLA": (0x11, "R"),
     "SRA": (0x12, "R"),
+    "SLTU": (0x17, "R"),
+    "MUL": (0x18, "R"),
+    "DIV": (0x19, "R"),
+    "MOD": (0x1A, "R"),
+    "MULH": (0x1B, "R"),
+    "DIVU": (0x1C, "R"),
     "LDB": (0x13, "M"),
     "LDH": (0x14, "M"),
     "STB": (0x15, "M"),
@@ -503,8 +509,18 @@ class Assembler:
             if kind == "M":
                 if len(tokens) != 3:
                     raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
-                rd = parse_reg(tokens[1], entry.lineno)
-                base_token, off_token = parse_mem(tokens[2], entry.lineno)
+                if op in {"ST", "STB", "STH"} and tokens[1].startswith("["):
+                    mem_token = tokens[1]
+                    rd_token = tokens[2]
+                elif op in {"ST", "STB", "STH"}:
+                    rd_token = tokens[1]
+                    mem_token = tokens[2]
+                else:
+                    rd_token = tokens[1]
+                    mem_token = tokens[2]
+
+                rd = parse_reg(rd_token, entry.lineno)
+                base_token, off_token = parse_mem(mem_token, entry.lineno)
                 base = parse_reg(base_token, entry.lineno)
                 off = self.parse_imm_or_label(off_token, entry.lineno)
                 off = check_i16(off, entry.lineno, "offset")
