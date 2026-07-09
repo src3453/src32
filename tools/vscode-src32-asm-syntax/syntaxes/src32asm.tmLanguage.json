@@ -59,7 +59,7 @@
       "patterns": [
         {
           "name": "keyword.instruction.src16asm",
-          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDI)\\b"
+          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDI|SLTU|MUL|DIV|MULH|DIVU)\\b"
         }
       ]
     },
