@@ -7,4 +7,4 @@ edition = "2024"
 wgpu = "29.0.3"
 winit = "0.30.13"
 cpal = "0.18.1"
-sdl2 = {version = "0.38.0", features = ["bundled"]}
+tokio = { version = "1.48.0", features = ["rt"] }

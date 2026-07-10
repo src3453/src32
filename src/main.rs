@@ -1,20 +1,23 @@
 // Main entry point for the CPT32 emulator
 
 use std::env;
-
-use cpt32::devices::pec::serial::connect_uart;
-use sdl2::{
-    event::Event,
-    keyboard::Keycode,
-    pixels::PixelFormatEnum,
-};
+use std::cell::RefCell;
+use std::rc::Rc;
 
 use cpt32::bus::Bus;
+use cpt32::cpu::Cpu;
+use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
 use cpt32::devices::ram::connect_ram;
-use cpt32::cpu::Cpu;
+use winit::application::ApplicationHandler;
+use winit::dpi::LogicalSize;
+use winit::event::WindowEvent;
+use winit::event_loop::{ActiveEventLoop, EventLoop};
+use winit::keyboard::{Key, NamedKey};
+use winit::window::{Window, WindowAttributes};
 
 mod monitor;
+mod render;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
@@ -27,90 +30,107 @@ fn load_binary_data(path: &str, bus: &mut Bus) {
     }
 }
 
-fn run_gui(program_path: &str) {
-    // =========================
-    // SDL初期化
-    // =========================
-    let sdl = sdl2::init().unwrap();
-    let video = sdl.video().unwrap();
+struct GuiApp {
+    cpu: Cpu,
+    vdp: Rc<RefCell<cpt32::devices::vdp::vdp::Vdp>>,
+    window: Option<Window>,
+    presenter: Option<render::WgpuPresenter>,
+}
 
-    let window = video
-        .window("CPT32", WIDTH*2, HEIGHT*2)
-        .position_centered()
-        .build()
-        .unwrap();
+impl GuiApp {
+    fn new(program_path: &str) -> Self {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        connect_uart(&mut bus);
 
-    let mut canvas = window.into_canvas().accelerated().build().unwrap();
+        load_binary_data(program_path, &mut bus);
 
-    let texture_creator = canvas.texture_creator();
-    let mut texture = texture_creator
-        .create_texture_streaming(PixelFormatEnum::RGB24, WIDTH, HEIGHT)
-        .unwrap();
+        let vdp = connect_vdp(&mut bus);
 
-
-    // =========================
-    // バスとデバイスの初期化
-    // =========================
-    let mut bus = Bus::new();
-    connect_ram(&mut bus); // RAMを接続
-    connect_uart(&mut bus); // UARTを接続
-
-    load_binary_data(program_path, &mut bus); // バイナリデータをロード
-    // =========================
-    // VDP
-    // =========================
-    let vdp = connect_vdp(&mut bus);
-
-    // テストパターン
-    for i in 0..(WIDTH * HEIGHT) as usize {
-        bus.write_u8(VDP_VRAM_BASE.wrapping_add(i as u32), (i % 256) as u8);
-    }
-
-    let mut event_pump = sdl.event_pump().unwrap();
-    let mut cpu = Cpu::new(bus);
-    // =========================
-    // メインループ
-    // =========================
-    'running: loop {
-        cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
-        //cpu.run(1); // step実行
-        // --- イベント ---
-        for event in event_pump.poll_iter() {
-            match event {
-                Event::Quit { .. }
-                | Event::KeyDown {
-                    keycode: Some(Keycode::Escape),
-                    ..
-                } => break 'running,
-                _ => {}
-            }
+        for i in 0..(WIDTH * HEIGHT) as usize {
+            bus.write_u8(VDP_VRAM_BASE.wrapping_add(i as u32), (i % 256) as u8);
         }
 
-        // --- 描画 ---
-        let vdp_ref = vdp.borrow();
-        let fb = vdp_ref.framebuffer();
+        let cpu = Cpu::new(bus);
+        Self {
+            cpu,
+            vdp,
+            window: None,
+            presenter: None,
+        }
+    }
+}
 
-        texture
-            .with_lock(None, |buf: &mut [u8], pitch: usize| {
-                for y in 0..HEIGHT as usize {
-                    for x in 0..WIDTH as usize {
-                        let (r, g, b) = fb.get_pixel(x, y);
-                        
-                        let offset = y * pitch + x * 3;
+impl ApplicationHandler for GuiApp {
+    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
+        if self.window.is_some() {
+            return;
+        }
 
-                        // RGB24フォーマットでバッファに書き込む
-                        buf[offset] = r;
-                        buf[offset + 1] = g;
-                        buf[offset + 2] = b;
+        let attributes: WindowAttributes = Window::default_attributes()
+            .with_title("CPT32")
+            .with_inner_size(LogicalSize::new((WIDTH * 2) as f64, (HEIGHT * 2) as f64));
+
+        let window = event_loop
+            .create_window(attributes)
+            .expect("Failed to create window");
+        let presenter = render::WgpuPresenter::new(&window);
+
+        self.presenter = Some(presenter);
+        self.window = Some(window);
+    }
+
+    fn window_event(
+        &mut self,
+        event_loop: &ActiveEventLoop,
+        _window_id: winit::window::WindowId,
+        event: WindowEvent,
+    ) {
+        match event {
+            WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::KeyboardInput { event, .. } => {
+                if matches!(event.logical_key, Key::Named(NamedKey::Escape)) {
+                    event_loop.exit();
+                }
+            }
+            WindowEvent::Resized(size) => {
+                if let Some(presenter) = self.presenter.as_mut() {
+                    presenter.resize(size);
+                }
+            }
+            WindowEvent::RedrawRequested => {
+                self.cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
+
+                if let (Some(window), Some(presenter)) = (self.window.as_ref(), self.presenter.as_mut()) {
+                    match presenter.render(&self.vdp) {
+                        Ok(()) => {}
+                        Err(render::FrameError::Lost) | Err(render::FrameError::Outdated) => {
+                            presenter.resize(window.inner_size())
+                        }
+                        Err(render::FrameError::Timeout) | Err(render::FrameError::Occluded) => {}
+                        Err(render::FrameError::Validation) => {
+                            eprintln!("Render validation error")
+                        }
                     }
                 }
-            })
-            .unwrap();
-
-        canvas.clear();
-        canvas.copy(&texture, None, None).unwrap();
-        canvas.present();
+            }
+            _ => {}
+        }
     }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        if let Some(window) = self.window.as_ref() {
+            window.request_redraw();
+        }
+    }
+}
+
+fn run_gui(program_path: &str) {
+    let event_loop = EventLoop::new().expect("Failed to create event loop");
+    let mut app = GuiApp::new(program_path);
+    event_loop
+        .run_app(&mut app)
+        .expect("Failed to run application");
 }
 
 fn main() {
