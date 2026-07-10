@@ -83,9 +83,14 @@ impl fmt::Display for FrameError {
 }
 
 impl WgpuPresenter {
-    pub fn new(window: &Window) -> Self {
+    pub fn new(
+        window: &Window,
+        display_handle: impl winit::raw_window_handle::HasDisplayHandle + fmt::Debug + Send + Sync + 'static,
+    ) -> Self {
         let size = window.inner_size();
-        let instance = Instance::new(InstanceDescriptor::new_without_display_handle());
+        let instance = Instance::new(InstanceDescriptor::new_with_display_handle(Box::new(
+            display_handle,
+        )));
         let surface = unsafe {
             instance
                 .create_surface_unsafe(
