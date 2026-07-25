@@ -3,7 +3,7 @@ use std::io::{self, Write};
 use cpt32::bus::Bus;
 use cpt32::cpu::Cpu;
 use cpt32::devices::ram::connect_ram;
-use cpt32::devices::pec::serial::connect_uart;
+use cpt32::devices::pec::serial::connect_uart_with_stdin;
 
 const INSN_BYTES: u32 = 5;
 
@@ -91,7 +91,7 @@ fn print_memory(cpu: &mut Cpu, mut addr: u32, count: usize) {
 pub fn run(program_path: Option<&str>) {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
-    connect_uart(&mut bus);
+    connect_uart_with_stdin(&mut bus, false);
     let mut cpu = Cpu::new(bus);
 
     if let Some(path) = program_path {

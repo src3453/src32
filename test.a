@@ -1,10 +1,10 @@
-ldi r4, 0x80040000
-ldi r1, 1
-loop:
-ldb r3, [r2 + 0x100]
-stb [r4], r3
-add r2, r2, r1
-bne r3, r0, loop
-halt
+ldi r4, 0x80040000 ; UART Address
+ldi r1, 1 ; increment value for pointer
+loop: ;
+ldb r3, [r2 + 0x100] ; Point to the string in memory
+stb [r4], r3 ; Send the character to UART
+add r2, r2, r1 ; Increment the pointer to the next character
+bne r3, r0, loop ; If the character is not null, continue the loop
+halt ; Stop the program
 .org 0x100
-.STRING "This is a test of UART device."
+.STRING "Hello, World!" ; String to be sent to UART
