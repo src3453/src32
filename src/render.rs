@@ -19,6 +19,8 @@ use winit::window::Window;
 
 const WIDTH: u32 = 320;
 const HEIGHT: u32 = 240;
+const PRESENT_WIDTH: u32 = 640;
+const PRESENT_HEIGHT: u32 = 480;
 
 const SHADER: &str = r#"
 struct VsOut {
@@ -61,10 +63,14 @@ pub struct WgpuPresenter {
     config: SurfaceConfiguration,
     texture: Texture,
     texture_view: TextureView,
-    sampler: Sampler,
+    _present_texture: Texture,
+    present_texture_view: TextureView,
+    nearest_sampler: Sampler,
+    linear_sampler: Sampler,
     bind_group_layout: wgpu::BindGroupLayout,
     pipeline: RenderPipeline,
-    bind_group: wgpu::BindGroup,
+    nearest_bind_group: wgpu::BindGroup,
+    linear_bind_group: wgpu::BindGroup,
     size: PhysicalSize<u32>,
     frame_width: u32,
     frame_height: u32,
@@ -163,7 +169,9 @@ impl WgpuPresenter {
         let frame_height = HEIGHT;
         let texture = Self::create_frame_texture(&device, frame_width, frame_height);
         let texture_view = texture.create_view(&TextureViewDescriptor::default());
-        let sampler = device.create_sampler(&SamplerDescriptor {
+        let present_texture = Self::create_present_texture(&device, config.format);
+        let present_texture_view = present_texture.create_view(&TextureViewDescriptor::default());
+        let nearest_sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("CPT32 Frame Sampler"),
             address_mode_u: wgpu::AddressMode::ClampToEdge,
             address_mode_v: wgpu::AddressMode::ClampToEdge,
@@ -171,6 +179,16 @@ impl WgpuPresenter {
             mag_filter: FilterMode::Nearest,
             min_filter: FilterMode::Nearest,
             mipmap_filter: wgpu::MipmapFilterMode::Nearest,
+            ..SamplerDescriptor::default()
+        });
+        let linear_sampler = device.create_sampler(&SamplerDescriptor {
+            label: Some("CPT32 Frame Linear Sampler"),
+            address_mode_u: wgpu::AddressMode::ClampToEdge,
+            address_mode_v: wgpu::AddressMode::ClampToEdge,
+            address_mode_w: wgpu::AddressMode::ClampToEdge,
+            mag_filter: FilterMode::Linear,
+            min_filter: FilterMode::Linear,
+            mipmap_filter: wgpu::MipmapFilterMode::Linear,
             ..SamplerDescriptor::default()
         });
 
@@ -201,7 +219,7 @@ impl WgpuPresenter {
             ],
         });
 
-        let bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+        let nearest_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("CPT32 Frame Bind Group"),
             layout: &bind_group_layout,
             entries: &[
@@ -211,7 +229,22 @@ impl WgpuPresenter {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&sampler),
+                    resource: wgpu::BindingResource::Sampler(&nearest_sampler),
+                },
+            ],
+        });
+
+        let linear_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("CPT32 Frame Linear Bind Group"),
+            layout: &bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&present_texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&linear_sampler),
                 },
             ],
         });
@@ -255,10 +288,14 @@ impl WgpuPresenter {
             config,
             texture,
             texture_view,
-            sampler,
+            _present_texture: present_texture,
+            present_texture_view,
+            nearest_sampler,
+            linear_sampler,
             bind_group_layout,
             pipeline,
-            bind_group,
+            nearest_bind_group,
+            linear_bind_group,
             size,
             frame_width,
             frame_height,
@@ -282,6 +319,23 @@ impl WgpuPresenter {
         })
     }
 
+    fn create_present_texture(device: &wgpu::Device, format: TextureFormat) -> Texture {
+        device.create_texture(&TextureDescriptor {
+            label: Some("CPT32 Present Texture"),
+            size: Extent3d {
+                width: PRESENT_WIDTH,
+                height: PRESENT_HEIGHT,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format,
+            usage: TextureUsages::RENDER_ATTACHMENT | TextureUsages::TEXTURE_BINDING,
+            view_formats: &[],
+        })
+    }
+
     fn ensure_frame_texture(&mut self, width: u32, height: u32) {
         if self.frame_width == width && self.frame_height == height {
             return;
@@ -291,7 +345,7 @@ impl WgpuPresenter {
         self.frame_height = height;
         self.texture = Self::create_frame_texture(&self.device, width, height);
         self.texture_view = self.texture.create_view(&TextureViewDescriptor::default());
-        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+        self.nearest_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("CPT32 Frame Bind Group"),
             layout: &self.bind_group_layout,
             entries: &[
@@ -301,7 +355,22 @@ impl WgpuPresenter {
                 },
                 wgpu::BindGroupEntry {
                     binding: 1,
-                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                    resource: wgpu::BindingResource::Sampler(&self.nearest_sampler),
+                },
+            ],
+        });
+
+        self.linear_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("CPT32 Frame Linear Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.linear_sampler),
                 },
             ],
         });
@@ -365,16 +434,48 @@ impl WgpuPresenter {
             wgpu::CurrentSurfaceTexture::Lost => return Err(FrameError::Lost),
             wgpu::CurrentSurfaceTexture::Validation => return Err(FrameError::Validation),
         };
-        let view = output.texture.create_view(&TextureViewDescriptor::default());
+        let surface_view = output.texture.create_view(&TextureViewDescriptor::default());
         let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
             label: Some("CPT32 Render Encoder"),
         });
 
         {
-            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
-                label: Some("CPT32 Render Pass"),
+            let mut present_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("CPT32 Present Pass"),
                 color_attachments: &[Some(RenderPassColorAttachment {
-                    view: &view,
+                    view: &self.present_texture_view,
+                    depth_slice: None,
+                    resolve_target: None,
+                    ops: Operations {
+                        load: LoadOp::Clear(Color::BLACK),
+                        store: wgpu::StoreOp::Store,
+                    },
+                })],
+                depth_stencil_attachment: None,
+                occlusion_query_set: None,
+                timestamp_writes: None,
+                multiview_mask: None,
+            });
+
+            present_pass.set_pipeline(&self.pipeline);
+            present_pass.set_viewport(0.0, 0.0, PRESENT_WIDTH as f32, PRESENT_HEIGHT as f32, 0.0, 1.0);
+            present_pass.set_bind_group(0, &self.nearest_bind_group, &[]);
+            present_pass.draw(0..3, 0..1);
+        }
+
+        let scale_x = self.size.width as f32 / PRESENT_WIDTH as f32;
+        let scale_y = self.size.height as f32 / PRESENT_HEIGHT as f32;
+        let scale = scale_x.min(scale_y);
+        let viewport_width = PRESENT_WIDTH as f32 * scale;
+        let viewport_height = PRESENT_HEIGHT as f32 * scale;
+        let viewport_x = (self.size.width as f32 - viewport_width) * 0.5;
+        let viewport_y = (self.size.height as f32 - viewport_height) * 0.5;
+
+        {
+            let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
+                label: Some("CPT32 Surface Render Pass"),
+                color_attachments: &[Some(RenderPassColorAttachment {
+                    view: &surface_view,
                     depth_slice: None,
                     resolve_target: None,
                     ops: Operations {
@@ -389,7 +490,8 @@ impl WgpuPresenter {
             });
 
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_bind_group(0, &self.bind_group, &[]);
+            render_pass.set_viewport(viewport_x, viewport_y, viewport_width, viewport_height, 0.0, 1.0);
+            render_pass.set_bind_group(0, &self.linear_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
 
