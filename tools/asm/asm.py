@@ -184,8 +184,15 @@ class Assembler:
 
     def _preprocess_text(self, text: str, source: str, base_dir: str) -> list[SourceLine]:
         macros: dict[str, tuple[list[str], list[str]]] = {}
+        consts: dict[str, str] = {}
         include_stack: list[str] = []
         macro_stack: list[str] = []
+
+        def apply_consts(line: str) -> str:
+            out = line
+            for name, value in consts.items():
+                out = re.sub(rf"\b{re.escape(name)}\b", value, out)
+            return out
 
         def preprocess_source(src_text: str, src_name: str, src_dir: str) -> list[SourceLine]:
             out: list[SourceLine] = []
@@ -283,6 +290,28 @@ class Assembler:
                     macros[name] = (params, body)
                     continue
 
+                if op == ".CONST":
+                    mconst = re.fullmatch(
+                        r"\.CONST\s+([A-Za-z_][A-Za-z0-9_]*)\s+(.+)",
+                        stripped,
+                    )
+                    if not mconst:
+                        raise ValueError(
+                            f"line {lineno}: .CONST expects '<name> <replacement>'"
+                        )
+
+                    name = mconst.group(1)
+                    replacement = mconst.group(2).strip()
+                    if name in consts:
+                        raise ValueError(f"line {lineno}: duplicate constant '{name}'")
+                    consts[name] = replacement
+                    continue
+
+                replaced = apply_consts(stripped)
+                tokens = tokenize(replaced)
+                if not tokens:
+                    continue
+
                 first = tokens[0]
                 if first in macros:
                     params, body = macros[first]
@@ -320,7 +349,7 @@ class Assembler:
                 if op == ".ENDDEF":
                     raise ValueError(f"line {lineno}: stray .ENDDEF")
 
-                out.append(SourceLine(lineno, raw, src_name))
+                out.append(SourceLine(lineno, replaced, src_name))
 
             return out
 

@@ -62,9 +62,12 @@ pub struct WgpuPresenter {
     texture: Texture,
     texture_view: TextureView,
     sampler: Sampler,
+    bind_group_layout: wgpu::BindGroupLayout,
     pipeline: RenderPipeline,
     bind_group: wgpu::BindGroup,
     size: PhysicalSize<u32>,
+    frame_width: u32,
+    frame_height: u32,
 }
 
 #[derive(Debug)]
@@ -156,20 +159,9 @@ impl WgpuPresenter {
         };
         surface.configure(&device, &config);
 
-        let texture = device.create_texture(&TextureDescriptor {
-            label: Some("CPT32 Frame Texture"),
-            size: Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
-                depth_or_array_layers: 1,
-            },
-            mip_level_count: 1,
-            sample_count: 1,
-            dimension: TextureDimension::D2,
-            format: TextureFormat::Rgba8UnormSrgb,
-            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
-            view_formats: &[],
-        });
+        let frame_width = WIDTH;
+        let frame_height = HEIGHT;
+        let texture = Self::create_frame_texture(&device, frame_width, frame_height);
         let texture_view = texture.create_view(&TextureViewDescriptor::default());
         let sampler = device.create_sampler(&SamplerDescriptor {
             label: Some("CPT32 Frame Sampler"),
@@ -264,10 +256,55 @@ impl WgpuPresenter {
             texture,
             texture_view,
             sampler,
+            bind_group_layout,
             pipeline,
             bind_group,
             size,
+            frame_width,
+            frame_height,
         }
+    }
+
+    fn create_frame_texture(device: &wgpu::Device, width: u32, height: u32) -> Texture {
+        device.create_texture(&TextureDescriptor {
+            label: Some("CPT32 Frame Texture"),
+            size: Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: TextureDimension::D2,
+            format: TextureFormat::Rgba8UnormSrgb,
+            usage: TextureUsages::TEXTURE_BINDING | TextureUsages::COPY_DST,
+            view_formats: &[],
+        })
+    }
+
+    fn ensure_frame_texture(&mut self, width: u32, height: u32) {
+        if self.frame_width == width && self.frame_height == height {
+            return;
+        }
+
+        self.frame_width = width;
+        self.frame_height = height;
+        self.texture = Self::create_frame_texture(&self.device, width, height);
+        self.texture_view = self.texture.create_view(&TextureViewDescriptor::default());
+        self.bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("CPT32 Frame Bind Group"),
+            layout: &self.bind_group_layout,
+            entries: &[
+                wgpu::BindGroupEntry {
+                    binding: 0,
+                    resource: wgpu::BindingResource::TextureView(&self.texture_view),
+                },
+                wgpu::BindGroupEntry {
+                    binding: 1,
+                    resource: wgpu::BindingResource::Sampler(&self.sampler),
+                },
+            ],
+        });
     }
 
     pub fn resize(&mut self, size: PhysicalSize<u32>) {
@@ -284,12 +321,14 @@ impl WgpuPresenter {
     pub fn render(&mut self, vdp: &Rc<RefCell<Vdp>>) -> Result<(), FrameError> {
         let framebuffer = vdp.borrow();
         let fb = framebuffer.framebuffer();
-        let mut pixels = vec![0u8; (WIDTH * HEIGHT * 4) as usize];
+        let (frame_width, frame_height) = fb.dimensions();
+        self.ensure_frame_texture(frame_width as u32, frame_height as u32);
+        let mut pixels = vec![0u8; frame_width * frame_height * 4];
 
-        for y in 0..HEIGHT as usize {
-            for x in 0..WIDTH as usize {
+        for y in 0..frame_height {
+            for x in 0..frame_width {
                 let (r, g, b) = fb.get_pixel(x, y);
-                let offset = (y * WIDTH as usize + x) * 4;
+                let offset = (y * frame_width + x) * 4;
                 pixels[offset] = r;
                 pixels[offset + 1] = g;
                 pixels[offset + 2] = b;
@@ -307,12 +346,12 @@ impl WgpuPresenter {
             &pixels,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(WIDTH * 4),
-                rows_per_image: Some(HEIGHT),
+                bytes_per_row: Some((frame_width as u32) * 4),
+                rows_per_image: Some(frame_height as u32),
             },
             Extent3d {
-                width: WIDTH,
-                height: HEIGHT,
+                width: frame_width as u32,
+                height: frame_height as u32,
                 depth_or_array_layers: 1,
             },
         );

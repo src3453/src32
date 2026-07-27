@@ -9,6 +9,7 @@ pub mod devices {
         pub mod clut;
         pub mod vdp;
         pub mod gp;
+        pub mod pcg;
         pub mod reg;
     }
     pub mod pec {

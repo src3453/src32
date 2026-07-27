@@ -1,10 +1,53 @@
-ldi r4, 0x80040000 ; UART Address
-ldi r1, 1 ; increment value for pointer
-loop: ;
-ldb r3, [r2 + 0x100] ; Point to the string in memory
-stb [r4], r3 ; Send the character to UART
-add r2, r2, r1 ; Increment the pointer to the next character
-bne r3, r0, loop ; If the character is not null, continue the loop
-halt ; Stop the program
-.org 0x100
+; ASM format guidelines (just for myself, not for the assembler):
+; - Use uppercase for instructions, registers, and directives.
+; - Use UPPER_SNAKE_CASE for constants.
+; - Use snake_case or camelCase for labels and variable names.
+; - Prefer using "" for string literals, not ''.
+; - Prefer using uppercase hexadecimal notation for addresses.
+
+.CONST UART_ADDR 0x80040000 ; UART Address
+.CONST PCG_VRAM_BASE 0x10000000 ; Base address of PCG VRAM
+.CONST PCG_VRAM_ATTR_BASE 0x10001000 ; Base address of PCG VRAM attributes
+.CONST STRING_ADDR 0x100 ; Address of the string in memory
+.CONST VDP_MODE_REG_ADDR 0x80030001 ; VDP Mode Register Address
+.CONST VDP_PCG_SCREEN_MODE_REG_ADDR 0x8003F003 ; VDP PCG Screen Mode Register Address
+.CONST VDP_PCG_CURSOR_ENABLE_REG_ADDR 0x8003F007 ; VDP PCG Cursor Enable Register Address
+.CONST VDP_PCG_CURSOR_LINE_REG_ADDR 0x8003F008 ; VDP PCG Cursor Line Register Address
+.CONST VDP_PCG_CURSOR_BLINK_PERIOD_ADDR 0x8003F009 ; VDP PCG Cursor Blink Period Register Address
+.CONST TEXT_COLOR 0x3F ; Text color attribute (white on black)
+
+LDI R1, VDP_MODE_REG_ADDR ; Load VDP Mode Register Address
+LDI R2, 0x01 ; Load value to set VDP to text mode
+STB [R1], R2 ; Set VDP to text mode
+LDI R1, VDP_PCG_SCREEN_MODE_REG_ADDR ; Load VDP PCG Screen Mode Register Address
+LDI R2, 0x01 ; Load value to set PCG screen mode to 80x30
+STB [R1], R2 ; Set PCG screen mode to 80x30
+LDI R1, VDP_PCG_CURSOR_ENABLE_REG_ADDR ; Load VDP PCG Cursor Enable Register Address
+LDI R2, 0x01 ; Load value to enable PCG cursor
+STB [R1], R2 ; Enable PCG cursor
+LDI R1, VDP_PCG_CURSOR_LINE_REG_ADDR ; Load VDP PCG Cursor Line Register Address
+LDI R2, 0x00 ; Load value to set cursor lines (all visible)
+STB [R1], R2 ; Set cursor lines
+LDI R1, VDP_PCG_CURSOR_BLINK_PERIOD_ADDR ; Load VDP PCG Cursor Blink Period Register Address
+LDI R2, 0x10 ; Load value for cursor blink period (10 frames)
+STB [R1], R2 ; Set cursor blink period
+LDI R2, 0 ; Initialize pointer to the start of the string
+LDI R4, UART_ADDR ; UART Address
+LDI R1, 1 ; increment value for pointer
+LDI R5, PCG_VRAM_BASE ; Base address of PCG VRAM
+LDI R6, PCG_VRAM_ATTR_BASE ; Base address of PCG VRAM attributes
+LDI R7, TEXT_COLOR ; Text color attribute
+loop:
+    LDB R3, [R2 + STRING_ADDR] ; Point to the string in memory
+    STB [R4], R3 ; Send the character to UART
+    STB [R5], R3 ; Store the character in PCG VRAM
+    STB [R6], R7 ; Store the text color attribute 1 in PCG VRAM attributes
+    ;STB [R6 + 0x1000], R2 ; set the attribute 2 (BG color) to pointer to the string
+    ADD R2, R2, R1 ; Increment the pointer to the next character
+    ADD R5, R5, R1 ; Increment the PCG VRAM pointer
+    ADD R6, R6, R1 ; Increment the PCG VRAM attributes pointer
+    BNE R3, R0, loop ; If the character is not null, continue the loop
+HALT ; Stop the program
+
+.ORG STRING_ADDR
 .STRING "Hello, World!" ; String to be sent to UART

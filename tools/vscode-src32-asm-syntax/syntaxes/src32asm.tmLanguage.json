@@ -51,7 +51,7 @@
       "patterns": [
         {
           "name": "keyword.control.directive.src16asm",
-          "match": "(?i)\\.(ORG|WORD|BYTE|DB|STRING|DEFINE|ENDDEF|INCLUDE)\\b"
+          "match": "(?i)\\.(ORG|WORD|BYTE|DB|STRING|DEFINE|ENDDEF|INCLUDE|CONST)\\b"
         }
       ]
     },

@@ -2,12 +2,13 @@
 
 use std::env;
 use std::cell::RefCell;
+use std::path::Path;
 use std::rc::Rc;
 
 use cpt32::bus::Bus;
 use cpt32::cpu::Cpu;
 use cpt32::devices::pec::serial::connect_uart;
-use cpt32::devices::vdp::vdp::{connect_vdp, VDP_VRAM_BASE};
+use cpt32::devices::vdp::vdp::connect_vdp_with_font;
 use cpt32::devices::ram::connect_ram;
 use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
@@ -39,18 +40,14 @@ struct GuiApp {
 }
 
 impl GuiApp {
-    fn new(program_path: &str, display_handle: OwnedDisplayHandle) -> Self {
+    fn new(program_path: &str, font_path: Option<&str>, display_handle: OwnedDisplayHandle) -> Self {
         let mut bus = Bus::new();
         connect_ram(&mut bus);
         connect_uart(&mut bus);
 
         load_binary_data(program_path, &mut bus);
 
-        let vdp = connect_vdp(&mut bus);
-
-        for i in 0..(WIDTH * HEIGHT) as usize {
-            bus.write_u8(VDP_VRAM_BASE.wrapping_add(i as u32), (i % 256) as u8);
-        }
+        let vdp = connect_vdp_with_font(&mut bus, font_path.map(Path::new));
 
         let cpu = Cpu::new(bus);
         Self {
@@ -105,6 +102,7 @@ impl ApplicationHandler for GuiApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                self.vdp.borrow_mut().tick();
                 self.cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
 
                 if let (Some(window), Some(presenter)) = (self.window.as_ref(), self.presenter.as_mut()) {
@@ -131,10 +129,10 @@ impl ApplicationHandler for GuiApp {
     }
 }
 
-fn run_gui(program_path: &str) {
+fn run_gui(program_path: &str, font_path: Option<&str>) {
     let event_loop = EventLoop::new().expect("Failed to create event loop");
     let display_handle = event_loop.owned_display_handle();
-    let mut app = GuiApp::new(program_path, display_handle);
+    let mut app = GuiApp::new(program_path, font_path, display_handle);
     event_loop
         .run_app(&mut app)
         .expect("Failed to run application");
@@ -148,9 +146,9 @@ fn main() {
         Some("monitor") | Some("-m") | Some("--monitor") => {
             monitor::run(args.next().as_deref());
         }
-        Some(program_path) => run_gui(program_path),
+        Some(program_path) => run_gui(program_path, args.next().as_deref()),
         None => {
-            eprintln!("Usage: cargo run -- <program.bin> | cargo run -- [-m|--monitor] [program.bin]");
+            eprintln!("Usage: cargo run -- <program.bin> [font.bin] | cargo run -- [-m|--monitor] [program.bin]");
         }
     }
 }
