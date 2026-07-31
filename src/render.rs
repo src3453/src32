@@ -17,10 +17,11 @@ use wgpu::{
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
 
-const WIDTH: u32 = 320;
-const HEIGHT: u32 = 240;
-const PRESENT_WIDTH: u32 = 640;
-const PRESENT_HEIGHT: u32 = 480;
+pub const FRAME_WIDTH: u32 = 640;
+pub const FRAME_HEIGHT: u32 = 480;
+pub const PRESENT_WIDTH: u32 = FRAME_WIDTH + BORDER_SIZE * 2;
+pub const PRESENT_HEIGHT: u32 = FRAME_HEIGHT + BORDER_SIZE * 2;
+pub const BORDER_SIZE: u32 = 8;
 
 const SHADER: &str = r#"
 struct VsOut {
@@ -165,8 +166,8 @@ impl WgpuPresenter {
         };
         surface.configure(&device, &config);
 
-        let frame_width = WIDTH;
-        let frame_height = HEIGHT;
+        let frame_width = FRAME_WIDTH;
+        let frame_height = FRAME_HEIGHT;
         let texture = Self::create_frame_texture(&device, frame_width, frame_height);
         let texture_view = texture.create_view(&TextureViewDescriptor::default());
         let present_texture = Self::create_present_texture(&device, config.format);
@@ -343,7 +344,7 @@ impl WgpuPresenter {
 
         self.frame_width = width;
         self.frame_height = height;
-        self.texture = Self::create_frame_texture(&self.device, width, height);
+        self.texture = Self::create_frame_texture(&self.device, PRESENT_WIDTH, PRESENT_HEIGHT);
         self.texture_view = self.texture.create_view(&TextureViewDescriptor::default());
         self.nearest_bind_group = self.device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("CPT32 Frame Bind Group"),
@@ -392,12 +393,34 @@ impl WgpuPresenter {
         let fb = framebuffer.framebuffer();
         let (frame_width, frame_height) = fb.dimensions();
         self.ensure_frame_texture(frame_width as u32, frame_height as u32);
-        let mut pixels = vec![0u8; frame_width * frame_height * 4];
+        let mut pixels = vec![0u8; (PRESENT_WIDTH * PRESENT_HEIGHT * 4) as usize];
 
-        for y in 0..frame_height {
-            for x in 0..frame_width {
-                let (r, g, b) = fb.get_pixel(x, y);
-                let offset = (y * frame_width + x) * 4;
+        let border_rgb = fb.border_pixel();
+        let inner_width = PRESENT_WIDTH.saturating_sub(BORDER_SIZE * 2);
+        let inner_height = PRESENT_HEIGHT.saturating_sub(BORDER_SIZE * 2);
+        //let scale = (inner_width as f32 / frame_width as f32).min(inner_height as f32 / frame_height as f32);
+        let scale_x = inner_width as f32 / frame_width as f32;
+        let scale_y = inner_height as f32 / frame_height as f32;
+        let scaled_width = ((frame_width as f32) * scale_x).floor() as u32;
+        let scaled_height = ((frame_height as f32) * scale_y).floor() as u32;
+        let offset_x = BORDER_SIZE + (inner_width - scaled_width) / 2;
+        let offset_y = BORDER_SIZE + (inner_height - scaled_height) / 2;
+
+        for y in 0..PRESENT_HEIGHT {
+            for x in 0..PRESENT_WIDTH {
+                let (r, g, b) = if x < offset_x
+                    || x >= offset_x + scaled_width
+                    || y < offset_y
+                    || y >= offset_y + scaled_height
+                {
+                    border_rgb
+                } else {
+                    let src_x = ((x - offset_x) * frame_width as u32) / scaled_width;
+                    let src_y = ((y - offset_y) * frame_height as u32) / scaled_height;
+                    fb.get_pixel(src_x as usize, src_y as usize)
+                };
+
+                let offset = (y * PRESENT_WIDTH + x) as usize * 4;
                 pixels[offset] = r;
                 pixels[offset + 1] = g;
                 pixels[offset + 2] = b;
@@ -415,12 +438,12 @@ impl WgpuPresenter {
             &pixels,
             TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some((frame_width as u32) * 4),
-                rows_per_image: Some(frame_height as u32),
+                bytes_per_row: Some(PRESENT_WIDTH * 4),
+                rows_per_image: Some(PRESENT_HEIGHT),
             },
             Extent3d {
-                width: frame_width as u32,
-                height: frame_height as u32,
+                width: PRESENT_WIDTH,
+                height: PRESENT_HEIGHT,
                 depth_or_array_layers: 1,
             },
         );
@@ -462,7 +485,6 @@ impl WgpuPresenter {
             present_pass.set_bind_group(0, &self.nearest_bind_group, &[]);
             present_pass.draw(0..3, 0..1);
         }
-
         let scale_x = self.size.width as f32 / PRESENT_WIDTH as f32;
         let scale_y = self.size.height as f32 / PRESENT_HEIGHT as f32;
         let scale = scale_x.min(scale_y);

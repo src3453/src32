@@ -9,6 +9,7 @@ pub enum DisplayMode {
 pub struct VdpRegs {
     pub display_enable: bool,
     pub display_mode: DisplayMode,
+    pub border_color: u8,
     pub pcg_screen_mode: PcgScreenMode,
     pub pcg_font_bank: u8,
     pub pcg_swap_fg_bg: bool,
@@ -25,6 +26,7 @@ impl VdpRegs {
         Self {
             display_enable: true,
             display_mode: DisplayMode::Graphics,
+            border_color: 0,
             pcg_screen_mode: PcgScreenMode::Columns40,
             pcg_font_bank: 0,
             pcg_swap_fg_bg: false,

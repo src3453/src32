@@ -20,7 +20,7 @@ LDI R1, VDP_MODE_REG_ADDR ; Load VDP Mode Register Address
 LDI R2, 0x01 ; Load value to set VDP to text mode
 STB [R1], R2 ; Set VDP to text mode
 LDI R1, VDP_PCG_SCREEN_MODE_REG_ADDR ; Load VDP PCG Screen Mode Register Address
-LDI R2, 0x01 ; Load value to set PCG screen mode to 80x30
+LDI R2, 0x00 ; Load value to set PCG screen mode to 80x30
 STB [R1], R2 ; Set PCG screen mode to 80x30
 LDI R1, VDP_PCG_CURSOR_ENABLE_REG_ADDR ; Load VDP PCG Cursor Enable Register Address
 LDI R2, 0x01 ; Load value to enable PCG cursor

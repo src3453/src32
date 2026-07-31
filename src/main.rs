@@ -20,8 +20,8 @@ use winit::window::{Window, WindowAttributes};
 mod monitor;
 mod render;
 
-const WIDTH: u32 = 320;
-const HEIGHT: u32 = 240;
+const WIDTH: u32 = render::PRESENT_WIDTH;
+const HEIGHT: u32 = render::PRESENT_HEIGHT;
 
 fn load_binary_data(path: &str, bus: &mut Bus) {
     // Utility used to load programs and datas into the bus memory
@@ -68,7 +68,8 @@ impl ApplicationHandler for GuiApp {
 
         let attributes: WindowAttributes = Window::default_attributes()
             .with_title("CPT32")
-            .with_inner_size(LogicalSize::new((WIDTH * 2) as f64, (HEIGHT * 2) as f64));
+            .with_inner_size(LogicalSize::new((WIDTH) as f64, (HEIGHT) as f64))
+            .with_min_inner_size(LogicalSize::new(WIDTH as f64, HEIGHT as f64));
 
         let window = event_loop
             .create_window(attributes)

@@ -8,6 +8,7 @@
 // 0x0000: /ENABLE:RW (Display enable) (0 = enable, 1 = disable)
 // 0x0001: VDP_MODE:RW (Display mode) (0 = Graphics, 1 = PCG)
 // 0x0002: STATUS:R- (Status register) (0 = OK, 1 = Error)
+// 0x0003: BORDER_COLOR:RW (Overscan border color index, 0-63)
 // 0xF000-FFFF: Mode-specific registers (Graphics or PCG mode)
 
 use std::cell::RefCell;
@@ -16,7 +17,7 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
-use crate::devices::vdp::gp::Gp0;
+use crate::devices::vdp::gp::{Gp0, CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
 use crate::devices::vdp::reg::DisplayMode;
 use crate::devices::vdp::reg::VdpRegs;
@@ -26,6 +27,14 @@ pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
 pub const VDP_REG_BASE: u32 = 0x80030000;
 pub const VDP_REG_SIZE: u32 = 0x00010000;
 
+pub const VDP_ACTIVE_WIDTH: usize = GP_WIDTH;
+pub const VDP_ACTIVE_HEIGHT: usize = GP_HEIGHT;
+pub const VDP_BORDER_SIZE: usize = 8;
+pub const VDP_FRAMEBUFFER_WIDTH: usize = VDP_ACTIVE_WIDTH;
+pub const VDP_FRAMEBUFFER_HEIGHT: usize = VDP_ACTIVE_HEIGHT;
+pub const VDP_VIRTUAL_CLOCK: u32 = (VDP_FRAMEBUFFER_WIDTH as u32)
+    * (VDP_FRAMEBUFFER_HEIGHT as u32)
+    * crate::sys::FRAME_RATE;
 pub const VDP_CLOCK_DIVIDER: u32 = 4; // VDP runs at 1/4 of master clock
 pub const PIXEL_CLOCK_DIVIDER: u32 = 8; // Pixel clock is 1/8 of master clock
 pub const VDP_CLOCK: u32 = crate::sys::MASTER_CLOCK / VDP_CLOCK_DIVIDER; // 12MHz
@@ -45,8 +54,13 @@ pub struct Vdp {
 }
 
 pub enum VdpFramebuffer<'a> {
-    Graphics(&'a Gp0),
+    Graphics {
+        vram: &'a RefCell<Vec<u8>>,
+        renderer: &'a Gp0,
+        border_color: u8,
+    },
     Pcg {
+        vram: &'a RefCell<Vec<u8>>,
         renderer: &'a PcgRenderer,
         screen_mode: PcgScreenMode,
         font_bank: u8,
@@ -57,6 +71,7 @@ pub enum VdpFramebuffer<'a> {
         cursor_lines: u8,
         cursor_blink_period: u8,
         cursor_blink_tick: u64,
+        border_color: u8,
     },
     Blank,
 }
@@ -64,15 +79,23 @@ pub enum VdpFramebuffer<'a> {
 impl<'a> VdpFramebuffer<'a> {
     pub fn dimensions(&self) -> (usize, usize) {
         match self {
-            VdpFramebuffer::Graphics(_) => (320, 240),
+            VdpFramebuffer::Graphics { .. } => (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT),
             VdpFramebuffer::Pcg { screen_mode, .. } => (screen_mode.width(), screen_mode.height()),
-            VdpFramebuffer::Blank => (320, 240),
+            VdpFramebuffer::Blank => (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT),
+        }
+    }
+
+    pub fn border_pixel(&self) -> (u8, u8, u8) {
+        match self {
+            VdpFramebuffer::Graphics { vram, border_color, .. } => Self::read_border_pixel(vram, *border_color),
+            VdpFramebuffer::Pcg { vram, border_color, .. } => Self::read_border_pixel(vram, *border_color),
+            VdpFramebuffer::Blank => (0, 0, 0),
         }
     }
 
     pub fn get_pixel(&self, x: usize, y: usize) -> (u8, u8, u8) {
         match self {
-            VdpFramebuffer::Graphics(gp0) => gp0.get_pixel(x, y),
+            VdpFramebuffer::Graphics { renderer, .. } => renderer.get_pixel(x, y),
             VdpFramebuffer::Pcg {
                 renderer,
                 screen_mode,
@@ -84,6 +107,7 @@ impl<'a> VdpFramebuffer<'a> {
                 cursor_lines,
                 cursor_blink_period,
                 cursor_blink_tick,
+                ..
             } => renderer.get_pixel(
                 x,
                 y,
@@ -99,6 +123,12 @@ impl<'a> VdpFramebuffer<'a> {
             ),
             VdpFramebuffer::Blank => (0, 0, 0),
         }
+    }
+
+    fn read_border_pixel(vram: &RefCell<Vec<u8>>, border_color: u8) -> (u8, u8, u8) {
+        let vram = vram.borrow();
+        let clut_index = CLUT_START_ADDR + ((border_color as usize) & 0x3F) * CLUT_ENTRY_SIZE;
+        (vram[clut_index], vram[clut_index + 1], vram[clut_index + 2])
     }
 }
 
@@ -133,8 +163,13 @@ impl Vdp {
         }
 
         match self.regs.display_mode {
-            DisplayMode::Graphics => VdpFramebuffer::Graphics(&self.gp0),
+            DisplayMode::Graphics => VdpFramebuffer::Graphics {
+                vram: self.vram.as_ref(),
+                renderer: &self.gp0,
+                border_color: self.regs.border_color,
+            },
             DisplayMode::PCG => VdpFramebuffer::Pcg {
+                vram: self.vram.as_ref(),
                 renderer: &self.pcg,
                 screen_mode: self.regs.pcg_screen_mode,
                 font_bank: self.regs.pcg_font_bank,
@@ -145,6 +180,7 @@ impl Vdp {
                 cursor_lines: self.regs.pcg_cursor_lines,
                 cursor_blink_period: self.regs.pcg_cursor_blink_period,
                 cursor_blink_tick: self.state.pcg_cursor_blink_tick,
+                border_color: self.regs.border_color,
             },
         }
     }
@@ -173,6 +209,7 @@ impl Vdp {
             0x00 => self.regs.display_enable as u8,
             0x01 => self.regs.display_mode as u8,
             0x02 => self.regs.status,
+            0x03 => self.regs.border_color,
             _ => 0,
         }
     }
@@ -203,6 +240,7 @@ impl Vdp {
             0x00 => self.regs.display_enable = (value & 1) != 0,
             0x01 => self.regs.set_display_mode(value),
             0x02 => self.regs.status = value & 1,
+            0x03 => self.regs.border_color = value & 0x3F,
             _ => {}
         }
     }
@@ -293,6 +331,31 @@ impl Device for VdpDevice {
             VdpPort::Vram => VDP_VRAM_SIZE,
             VdpPort::Regs => VDP_REG_SIZE,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn framebuffer_dimensions_match_active_area() {
+        let vdp = Vdp::new();
+        let fb = vdp.framebuffer();
+
+        assert_eq!(fb.dimensions(), (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT));
+        assert_eq!(fb.get_pixel(0, 0), (0, 0, 0));
+    }
+
+    #[test]
+    fn border_color_register_changes_overscan_color() {
+        let mut vdp = Vdp::new();
+        vdp.write_common_register(0x03, 0x0F);
+
+        let fb = vdp.framebuffer();
+
+        assert_eq!(fb.border_pixel(), (0x00, 0xFF, 0xFF));
+        assert_eq!(fb.get_pixel(0, 0), (0, 0, 0));
     }
 }
 
