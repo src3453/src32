@@ -6,8 +6,8 @@
 ; - Prefer using uppercase hexadecimal notation for addresses.
 
 .CONST PCG_VRAM_BASE 0x10000000 ; Base address of PCG VRAM
-;.CONST PCG_VRAM_END 0x100004AF ; End address of PCG VRAM
-.CONST PCG_VRAM_END 0x1000095F ; End address of PCG VRAM (80 columns)
+;.CONST PCG_VRAM_END 0x100004B0 ; End address of PCG VRAM
+.CONST PCG_VRAM_END 0x10000960 ; End address of PCG VRAM (80 columns)
 .CONST PCG_VRAM_ATTR_BASE 0x10001000 ; Base address of PCG VRAM attributes
 .CONST VDP_MODE_REG_ADDR 0x80030001 ; VDP Mode Register Address
 .CONST VDP_BORDER_COLOR_REG_ADDR 0x80030003 ; VDP Border Color Register Address
@@ -21,7 +21,7 @@ LDI R1, VDP_MODE_REG_ADDR ; Load VDP Mode Register Address
 LDI R2, 0x01 ; Load value to set VDP to text mode
 STB [R1], R2 ; Set VDP to text mode
 LDI R1, VDP_PCG_SCREEN_MODE_REG_ADDR ; Load VDP PCG Screen Mode Register Address
-LDI R2, 0x01 ; Load value to set PCG screen mode to 80x30
+LDI R2, 0x00 ; Load value to set PCG screen mode to 80x30
 STB [R1], R2 ; Set PCG screen mode to 80x30
 LDI R1, VDP_PCG_CURSOR_ENABLE_REG_ADDR ; Load VDP PCG Cursor Enable Register Address
 LDI R2, 0x01 ; Load value to enable PCG cursor
@@ -43,6 +43,7 @@ LDI R7, TEXT_COLOR ; Text color attribute
 LDI R8, PCG_VRAM_END ; End address of PCG VRAM
 loop:
     STB [R5], R2 ; Store the character in PCG VRAM
+    ;MUL R2, R2, R5
     STB [R6], R7 ; Store the text color attribute 1 in PCG VRAM attributes
     ;STB [R6 + 0x1000], R2 ; set the attribute 2 (BG color) to pointer to the string
     ADD R2, R2, R1 ; Increment the pointer to the next character

@@ -1,0 +1,1 @@
+1 1 add 2 3 add add 3 mul str print end;
