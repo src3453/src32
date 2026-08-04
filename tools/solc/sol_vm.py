@@ -1,0 +1,265 @@
+"""sol VM (HLE) for development-time validation."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import re
+from typing import Optional
+
+
+LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$")
+INT32_MIN = -(2**31)
+INT32_MAX = 2**31 - 1
+UINT32_MAX = 2**32 - 1
+
+
+class SolVMError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class Instruction:
+    op: str
+    arg: Optional[int | str] = None
+
+
+@dataclass(frozen=True)
+class Program:
+    instructions: list[Instruction]
+    labels: dict[str, int]
+
+
+def to_i32(value: int) -> int:
+    value &= UINT32_MAX
+    if value > INT32_MAX:
+        return value - (2**32)
+    return value
+
+
+def _strip_comment(line: str) -> str:
+    comment_start = line.find("#")
+    if comment_start >= 0:
+        return line[:comment_start]
+    return line
+
+
+def tokenize(source: str) -> list[str]:
+    tokens: list[str] = []
+    for line in source.splitlines():
+        clean = _strip_comment(line).replace(";", " ")
+        pieces = clean.split()
+        tokens.extend(pieces)
+    return tokens
+
+
+def parse_number(token: str) -> int:
+    is_unsigned = token.endswith("u")
+    core = token[:-1] if is_unsigned else token
+    if core == "":
+        raise SolVMError("invalid numeric literal: empty")
+
+    try:
+        is_hex = core.startswith(("0x", "0X"))
+        if is_hex:
+            value = int(core, 16)
+        else:
+            value = int(core, 10)
+    except ValueError as exc:
+        raise SolVMError(f"invalid numeric literal: {token}") from exc
+
+    if is_hex:
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"hex literal out of range: {token}")
+    elif is_unsigned:
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"unsigned literal out of range: {token}")
+    elif value < INT32_MIN or value > INT32_MAX:
+        raise SolVMError(f"signed literal out of range: {token}")
+    return to_i32(value)
+
+
+def compile_program(source: str) -> Program:
+    tokens = tokenize(source)
+    instructions: list[Instruction] = []
+    labels: dict[str, int] = {}
+
+    simple_ops = {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "dup",
+        "drop",
+        "swap",
+        "halt",
+    }
+
+    i = 0
+    while i < len(tokens):
+        tok = tokens[i]
+
+        if tok.startswith("@"):
+            label_name = tok[1:]
+            if not LABEL_RE.match(label_name):
+                raise SolVMError(f"invalid label name: {tok}")
+            if label_name in labels:
+                raise SolVMError(f"duplicate label: {label_name}")
+            labels[label_name] = len(instructions)
+            i += 1
+            continue
+
+        if tok in {"jmp", "jz", "jnz"}:
+            if i + 1 >= len(tokens):
+                raise SolVMError(f"missing label operand for {tok}")
+            label_token = tokens[i + 1]
+            if not label_token.startswith("@"):
+                raise SolVMError(f"label operand must start with @: {label_token}")
+            label_name = label_token[1:]
+            if not LABEL_RE.match(label_name):
+                raise SolVMError(f"invalid label name: {label_token}")
+            instructions.append(Instruction(tok, label_name))
+            i += 2
+            continue
+
+        if tok in simple_ops:
+            instructions.append(Instruction(tok))
+            i += 1
+            continue
+
+        if not NUMBER_RE.match(tok):
+            raise SolVMError(f"unknown word: {tok}")
+        value = parse_number(tok)
+        instructions.append(Instruction("push", value))
+        i += 1
+
+    for inst in instructions:
+        if inst.op in {"jmp", "jz", "jnz"} and isinstance(inst.arg, str):
+            if inst.arg not in labels:
+                raise SolVMError(f"undefined label: {inst.arg}")
+
+    return Program(instructions=instructions, labels=labels)
+
+
+class SolVM:
+    def __init__(self, *, max_steps: int = 1_000_000):
+        self.max_steps = max_steps
+        self.stack: list[int] = []
+        self.pc = 0
+        self.halted = False
+        self.program: Optional[Program] = None
+
+    def reset(self) -> None:
+        self.stack = []
+        self.pc = 0
+        self.halted = False
+        self.program = None
+
+    def load(self, source: str) -> None:
+        self.program = compile_program(source)
+        self.pc = 0
+        self.halted = False
+
+    def _pop(self) -> int:
+        if not self.stack:
+            raise SolVMError("stack underflow")
+        return self.stack.pop()
+
+    def run(self) -> list[int]:
+        if self.program is None:
+            raise SolVMError("no program loaded")
+        program = self.program
+        steps = 0
+        while self.pc < len(program.instructions) and not self.halted:
+            steps += 1
+            if steps > self.max_steps:
+                raise SolVMError("execution exceeded step limit")
+            inst = program.instructions[self.pc]
+            self.execute_instruction(inst, program.labels)
+        return self.stack
+
+    def run_source(self, source: str) -> list[int]:
+        self.load(source)
+        return self.run()
+
+    def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:
+        op = inst.op
+
+        if op == "push":
+            assert isinstance(inst.arg, int)
+            self.stack.append(inst.arg)
+            self.pc += 1
+            return
+
+        if op == "add":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a + b))
+            self.pc += 1
+            return
+
+        if op == "sub":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a - b))
+            self.pc += 1
+            return
+
+        if op == "mul":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a * b))
+            self.pc += 1
+            return
+
+        if op == "div":
+            b = self._pop()
+            a = self._pop()
+            if b == 0:
+                raise SolVMError("division by zero")
+            self.stack.append(to_i32(int(a / b)))
+            self.pc += 1
+            return
+
+        if op == "dup":
+            if not self.stack:
+                raise SolVMError("stack underflow")
+            self.stack.append(self.stack[-1])
+            self.pc += 1
+            return
+
+        if op == "drop":
+            self._pop()
+            self.pc += 1
+            return
+
+        if op == "swap":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+            self.pc += 1
+            return
+
+        if op == "jmp":
+            assert isinstance(inst.arg, str)
+            self.pc = labels[inst.arg]
+            return
+
+        if op == "jz":
+            assert isinstance(inst.arg, str)
+            cond = self._pop()
+            self.pc = labels[inst.arg] if cond == 0 else self.pc + 1
+            return
+
+        if op == "jnz":
+            assert isinstance(inst.arg, str)
+            cond = self._pop()
+            self.pc = labels[inst.arg] if cond != 0 else self.pc + 1
+            return
+
+        if op == "halt":
+            self.halted = True
+            self.pc += 1
+            return
+
+        raise SolVMError(f"unknown opcode: {op}")
