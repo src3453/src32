@@ -1,1 +1,1 @@
-1 1 add 2 3 add add 3 mul
+0x30 0x80040000 stb

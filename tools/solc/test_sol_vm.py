@@ -33,6 +33,22 @@ def test_unsigned_and_hex():
     assert stack == [0]
 
 
+def test_load_store():
+    vm = SolVM()
+    stack = vm.run_source("1 0 st 0 ld")
+    assert stack == [1]
+
+
+def test_byte_and_halfword_load_store():
+    vm = SolVM()
+    stack = vm.run_source("0x1234 0 sth 0 ldh")
+    assert stack == [0x1234]
+
+    vm = SolVM()
+    stack = vm.run_source("0xFF 0 stb 0 ldb")
+    assert stack == [0xFF]
+
+
 def test_unknown_word_error():
     vm = SolVM()
     with pytest.raises(SolVMError, match="unknown word"):

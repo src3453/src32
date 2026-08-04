@@ -10,5 +10,6 @@ __MACOSX
 *dis.a
 *sol.a
 *.vsix
+*.ignore
 __pycache__
 tools/csc/test.a

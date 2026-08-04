@@ -15,9 +15,10 @@ class SolCompileError(RuntimeError):
 
 
 def _format_imm(value: int) -> str:
-    if value < 0:
-        return str(value)
-    return hex(value)
+    masked = value & 0xFFFFFFFF
+    if masked >= 0x80000000:
+        return f"0x{masked:08X}"
+    return hex(masked)
 
 
 def _emit_push(lines: list[str], reg: str) -> None:
@@ -44,6 +45,42 @@ def _emit_instruction(lines: list[str], inst: Instruction) -> None:
         _emit_pop(lines, "R1")
         lines.append(f"    {op.upper()} R1, R1, R2")
         _emit_push(lines, "R1")
+        return
+
+    if op == "ld":
+        _emit_pop(lines, "R1")
+        lines.append("    LD R1, [R1 + 0]")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "st":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        lines.append("    ST R1, [R2 + 0]")
+        return
+
+    if op == "ldb":
+        _emit_pop(lines, "R1")
+        lines.append("    LDB R1, [R1 + 0]")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "ldh":
+        _emit_pop(lines, "R1")
+        lines.append("    LDH R1, [R1 + 0]")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "stb":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        lines.append("    STB [R2 + 0], R1")
+        return
+
+    if op == "sth":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        lines.append("    STH [R2 + 0], R1")
         return
 
     if op == "dup":

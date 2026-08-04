@@ -113,9 +113,9 @@ def check_i16(value: int, lineno: int, what: str = "immediate") -> int:
 
 
 def check_u32(value: int, lineno: int, what: str = "immediate") -> int:
-    if not 0 <= value <= 0xFFFF_FFFF:
-        raise ValueError(f"line {lineno}: {what} out of u32 range: {value}")
-    return value
+    if not -0x8000_0000 <= value <= 0xFFFF_FFFF:
+        raise ValueError(f"line {lineno}: {what} out of signed/u32 range: {value}")
+    return value & 0xFFFF_FFFF
 
 
 def be40(raw: int) -> bytes:

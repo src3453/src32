@@ -92,6 +92,12 @@ def compile_program(source: str) -> Program:
         "dup",
         "drop",
         "swap",
+        "ld",
+        "st",
+        "ldb",
+        "ldh",
+        "stb",
+        "sth",
         "halt",
     }
 
@@ -145,12 +151,14 @@ class SolVM:
     def __init__(self, *, max_steps: int = 1_000_000):
         self.max_steps = max_steps
         self.stack: list[int] = []
+        self.memory: dict[int, int] = {}
         self.pc = 0
         self.halted = False
         self.program: Optional[Program] = None
 
     def reset(self) -> None:
         self.stack = []
+        self.memory = {}
         self.pc = 0
         self.halted = False
         self.program = None
@@ -164,6 +172,20 @@ class SolVM:
         if not self.stack:
             raise SolVMError("stack underflow")
         return self.stack.pop()
+
+    def _read_mem(self, address: int, size: int) -> int:
+        value = 0
+        for shift in range(0, size * 8, 8):
+            byte = self.memory.get(address + (shift // 8), 0)
+            value = (value << 8) | byte
+        return to_i32(value)
+
+    def _write_mem(self, address: int, value: int, size: int) -> None:
+        value &= 0xFFFFFFFF
+        for offset in range(size):
+            byte_shift = 8 * (size - 1 - offset)
+            byte = (value >> byte_shift) & 0xFF
+            self.memory[address + offset] = byte
 
     def run(self) -> list[int]:
         if self.program is None:
@@ -237,6 +259,45 @@ class SolVM:
             if len(self.stack) < 2:
                 raise SolVMError("stack underflow")
             self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+            self.pc += 1
+            return
+
+        if op == "ld":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 4))
+            self.pc += 1
+            return
+
+        if op == "st":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 4)
+            self.pc += 1
+            return
+
+        if op == "ldb":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 1))
+            self.pc += 1
+            return
+
+        if op == "ldh":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 2))
+            self.pc += 1
+            return
+
+        if op == "stb":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 1)
+            self.pc += 1
+            return
+
+        if op == "sth":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 2)
             self.pc += 1
             return
 
