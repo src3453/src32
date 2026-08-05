@@ -10,14 +10,19 @@ from sol_repl import run_repl
 from sol_vm import SolVM, SolVMError
 
 
-def run_file(input_path: str) -> int:
+def run_file(input_path: str, trace: bool = False) -> int:
     src = open(input_path, "r", encoding="utf-8").read()
     vm = SolVM()
+    vm.set_trace(trace)
     try:
         stack = vm.run_source(src, source_path=input_path)
     except SolVMError as exc:
         print(f"sol runtime error: {exc}", file=sys.stderr)
         return 1
+    if trace and vm.trace:
+        print("trace:")
+        for entry in vm.trace:
+            print(f"  {entry}")
     print(f"stack: {stack}")
     return 0
 
@@ -52,6 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     run_parser = subparsers.add_parser("run", help="run sol source on Python VM")
     run_parser.add_argument("input", help="sol source file")
+    run_parser.add_argument("--trace", action="store_true", help="print step-by-step VM trace output")
 
     subparsers.add_parser("repl", help="start sol REPL")
 
@@ -70,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     if args.command == "run":
-        return run_file(args.input)
+        return run_file(args.input, trace=args.trace)
     if args.command == "repl":
         return run_repl()
     if args.command == "compile":

@@ -30,11 +30,27 @@ def run_repl(
             return 0
         if src == ".help":
             output_fn(".stack  show current stack")
+            output_fn(".trace  show or toggle instruction trace")
             output_fn(".reset  reset VM state")
             output_fn(".quit   exit repl")
             continue
         if src == ".stack":
             output_fn(f"stack: {runtime.stack}")
+            continue
+        if src.startswith(".trace"):
+            parts = src.split()
+            if len(parts) == 1:
+                status = "on" if runtime.trace_enabled else "off"
+                output_fn(f"trace: {status}")
+                if runtime.trace:
+                    output_fn("trace entries:")
+                    for entry in runtime.trace:
+                        output_fn(f"  {entry}")
+            elif len(parts) == 2 and parts[1] in {"on", "off"}:
+                runtime.set_trace(parts[1] == "on")
+                output_fn(f"trace {'enabled' if runtime.trace_enabled else 'disabled'}")
+            else:
+                output_fn("usage: .trace [on|off]")
             continue
         if src == ".reset":
             runtime.reset()
@@ -43,6 +59,10 @@ def run_repl(
 
         try:
             runtime.run_source(src)
+            if runtime.trace_enabled and runtime.trace:
+                output_fn("trace:")
+                for entry in runtime.trace:
+                    output_fn(f"  {entry}")
         except SolVMError as exc:
             output_fn(f"error: {exc}")
 

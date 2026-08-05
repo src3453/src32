@@ -9,6 +9,18 @@ def test_arithmetic_basic():
     assert stack == [6]
 
 
+def test_trace_records_step_by_step_execution():
+    vm = SolVM()
+    vm.set_trace(True)
+
+    stack = vm.run_source("1 2 add")
+
+    assert stack == [3]
+    assert vm.trace
+    assert any("push" in entry for entry in vm.trace)
+    assert any("add" in entry for entry in vm.trace)
+
+
 def test_stack_ops():
     vm = SolVM()
     stack = vm.run_source("1 2 swap dup add")

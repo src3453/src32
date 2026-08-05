@@ -43,7 +43,7 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         return
 
     if op == "arg":
-        # push argument by index from caller's stack (caller pushed args left-to-right)
+        # push argument by index from the current function frame
         assert isinstance(inst.arg, int)
         if current_func is None or functions_map is None:
             raise SolCompileError("'arg' emitted outside of function or missing functions_map")
@@ -51,12 +51,13 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         if meta is None:
             raise SolCompileError(f"unknown function in emitter: {current_func}")
         argcount = meta["argcount"]
+        n_locals = meta["n_locals"]
         idx = inst.arg
         if idx < 0 or idx >= argcount:
             raise SolCompileError(f"argument index out of range for {current_func}: {idx}")
-        # caller's stack layout: top is last argument. address for arg idx:
-        offset = 4 * (argcount - 1 - idx)
-        lines.append(f"    LD R1, [R28 + {offset}]")
+        # frame layout: saved frame base, saved return address, locals, then arguments in source order
+        offset = 4 * (2 + n_locals + idx)
+        lines.append(f"    LD R1, [R26 + {offset}]")
         _emit_push(lines, "R1")
         return
 
@@ -67,7 +68,7 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
             raise SolCompileError(f"call to unknown function in emitter: {func_name}")
         argcount = functions_map[func_name]["argcount"]
         n_locals = functions_map[func_name]["n_locals"]
-        frame_size = 4 * (n_locals + argcount)
+        frame_size = 4 * (2 + n_locals + argcount)
         # allocate frame and copy caller's args into frame slots
         # LDI R1, frame_size
         lines.append(f"    LDI R1, {_format_imm(frame_size)}")
@@ -78,7 +79,7 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         # copy args from old stack (R2) to frame slots (R28)
         for j in range(argcount):
             old_off = 4 * (argcount - 1 - j)
-            new_off = 4 * (n_locals + j)
+            new_off = 4 * (2 + n_locals + j)
             lines.append(f"    LD R3, [R2 + {old_off}]")
             lines.append(f"    ST R3, [R28 + {new_off}]")
         # jump-and-link
@@ -92,11 +93,14 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         meta = functions_map.get(current_func)
         if meta is None:
             raise SolCompileError(f"unknown function metadata for {current_func}")
-        frame_size = 4 * (meta["n_locals"] + meta["argcount"])
+        frame_size = 4 * (2 + meta["n_locals"] + meta["argcount"])
         restore_size = frame_size + 4 * meta["argcount"]
         lines.append("    LD R1, [R28 + 0]")
+        lines.append("    LD R31, [R26 + 4]")
+        lines.append("    LD R3, [R26 + 0]")
         if restore_size != 0:
             lines.append(f"    ADDI R28, R28, {restore_size}")
+        lines.append("    ADDI R26, R3, 0")
         lines.append("    ADDI R28, R28, -4")
         lines.append("    ST R1, [R28 + 0]")
         lines.append("    JR R31")
@@ -109,18 +113,21 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         meta = functions_map.get(current_func)
         if meta is None:
             raise SolCompileError(f"unknown function metadata for {current_func}")
-        frame_size = 4 * (meta["n_locals"] + meta["argcount"])
+        frame_size = 4 * (2 + meta["n_locals"] + meta["argcount"])
         restore_size = frame_size + 4 * meta["argcount"]
+        lines.append("    LD R31, [R26 + 4]")
+        lines.append("    LD R3, [R26 + 0]")
         if restore_size != 0:
             lines.append(f"    ADDI R28, R28, {restore_size}")
+        lines.append("    ADDI R26, R3, 0")
         lines.append("    JR R31")
         return
 
     if op == "local_addr":
-        # push address of local var: ADDI R1, R28, offset ; push R1
+        # push address of local var from the stable frame base
         assert isinstance(inst.arg, int)
-        offset = 4 * inst.arg
-        lines.append(f"    ADDI R1, R28, {offset}")
+        offset = 4 * (2 + inst.arg)
+        lines.append(f"    ADDI R1, R26, {offset}")
         _emit_push(lines, "R1")
         return
 
@@ -299,6 +306,11 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
             # if this label is a function, switch current_func
             if label_name in program.functions:
                 current_func = label_name
+                lines.append("    ADDI R3, R26, 0")
+                lines.append("    ST R3, [R28 + 0]")
+                lines.append("    ADDI R3, R31, 0")
+                lines.append("    ST R3, [R28 + 4]")
+                lines.append("    ADDI R26, R28, 0")
         _emit_instruction(lines, inst, pc=pc, debug=debug, current_func=current_func, functions_map=program.functions)
 
     if not program.instructions or program.instructions[-1].op != "halt":

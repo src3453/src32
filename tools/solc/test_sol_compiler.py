@@ -142,8 +142,25 @@ fn add_two (a b) :
     asm = compile_to_src32_asm(src)
     assert "JAL add_two" in asm
     assert "JR R31" in asm
-    # arg0 for two-arg function should be loaded from R28 + 4
-    assert "LD R1, [R28 + 4]" in asm
+    assert "ADDI R26, R28, 0" in asm
+    assert "LD R1, [R26 + 8]" in asm
+
+
+def test_compile_local_variable_argument_offsets():
+    src = """
+fn use_local (a) :
+    local t 0
+    a >t
+    t 2 mul
+    ret
+;
+
+1 2 use_local
+"""
+    asm = compile_to_src32_asm(src)
+    assert "ADDI R26, R28, 0" in asm
+    assert "ADDI R1, R26, 8" in asm
+    assert "LD R1, [R26 + 12]" in asm
 
 
 def test_compile_function_can_use_constant():
@@ -170,4 +187,4 @@ fn putc (char) :
 0x30 putc
 """
     asm = compile_to_src32_asm(src)
-    assert "ADDI R28, R28, 8" in asm
+    assert "ADDI R28, R28, 16" in asm

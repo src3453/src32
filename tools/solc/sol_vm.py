@@ -688,6 +688,8 @@ class SolVM:
         self.program: Optional[Program] = None
         # call stack for function frames. Each frame is dict with 'ret_pc' and 'args' list
         self.call_stack: list[dict] = []
+        self.trace_enabled = False
+        self.trace: list[str] = []
 
     def reset(self) -> None:
         self.stack = []
@@ -698,6 +700,23 @@ class SolVM:
         # runtime stack pointer (R28) initial default; matches compiler/emitter default
         self.r28 = 0x000FFFFC
         self.call_stack = []
+        self.trace = []
+
+    def set_trace(self, enabled: bool) -> None:
+        self.trace_enabled = enabled
+        self.trace = []
+
+    def clear_trace(self) -> None:
+        self.trace = []
+
+    def _record_trace(self, inst: Instruction) -> None:
+        if not self.trace_enabled:
+            return
+        stack_snapshot = list(self.stack)
+        arg_text = "" if inst.arg is None else f" arg={inst.arg}"
+        self.trace.append(
+            f"pc={self.pc} op={inst.op}{arg_text} stack={stack_snapshot} frames={len(self.call_stack)} r28=0x{self.r28:08X}"
+        )
 
     def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE) -> None:
         self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path)
@@ -707,6 +726,7 @@ class SolVM:
         self.r28 = 0x000FFFFC
         self.call_stack = []
         self.memory = {}
+        self.trace = []
         for addr, data in self.program.read_only_data:
             for offset, byte in enumerate(data):
                 self.memory[addr + offset] = byte
@@ -748,6 +768,7 @@ class SolVM:
         return self.run()
 
     def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:
+        self._record_trace(inst)
         op = inst.op
 
         if op == "push":
