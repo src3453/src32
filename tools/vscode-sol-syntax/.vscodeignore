@@ -1,0 +1,6 @@
+node_modules
+.vscode
+README.md
+**/.git
+**/.DS_Store
+**/*.vsix

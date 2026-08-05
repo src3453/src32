@@ -1,0 +1,56 @@
+{
+  "scopeName": "source.sol",
+  "name": "Sol",
+  "patterns": [
+    { "include": "#comments" },
+    { "include": "#strings" },
+    { "include": "#numbers" },
+    { "include": "#keywords" },
+    { "include": "#types" },
+    { "include": "#constants" },
+    { "include": "#functions" }
+  ],
+  "repository": {
+    "comments": {
+      "patterns": [
+        { "name": "comment.line.double-slash.sol", "match": "//.*$" },
+        { "name": "comment.block.sol", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "strings": {
+      "patterns": [
+        { "name": "string.quoted.double.sol", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sol" }] },
+        { "name": "string.quoted.single.sol", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sol" }] }
+      ]
+    },
+    "numbers": {
+      "patterns": [
+        { "name": "constant.numeric.float.sol", "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b" },
+        { "name": "constant.numeric.integer.sol", "match": "\\b0x[0-9A-Fa-f]+\\b|\\b\\d+\\b" }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        { "name": "keyword.control.sol", "match": "\\b(?:if|else|for|while|return|break|continue|try|catch|throw)\\b" },
+        { "name": "keyword.declaration.sol", "match": "\\b(?:function|contract|struct|enum|modifier|event|import|pragma|using)\\b" },
+        { "name": "storage.qualifier.sol", "match": "\\b(?:public|private|internal|external|view|pure|payable|constant|immutable|virtual|override)\\b" }
+      ]
+    },
+    "types": {
+      "patterns": [
+        { "name": "storage.type.sol", "match": "\\b(?:uint(?:8|16|32|64|128|256)?|int(?:8|16|32|64|128|256)?|bool|address|string|bytes(?:[0-9]+)?)\\b" }
+      ]
+    },
+    "constants": {
+      "patterns": [
+        { "name": "constant.language.sol", "match": "\\b(?:true|false|null|undefined)\\b" }
+      ]
+    },
+    "functions": {
+      "patterns": [
+        { "name": "entity.name.function.sol", "match": "\\b([A-Za-z_][A-Za-z0-9_]*)\\s*(?=\()" }
+      ]
+    }
+  },
+  "scope": "source.sol"
+}

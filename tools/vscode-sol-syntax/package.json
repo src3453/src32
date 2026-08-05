@@ -1,0 +1,32 @@
+{
+  "name": "vscode-sol-syntax",
+  "displayName": "Sol Syntax Highlighting",
+  "publisher": "src3453",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.50.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [
+      {
+        "id": "sol",
+        "aliases": ["Sol", "sol"],
+        "extensions": [".sol"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      {
+        "language": "sol",
+        "scopeName": "source.sol",
+        "path": "./syntaxes/sol.tmLanguage.json"
+      }
+    ]
+  },
+  "scripts": {
+    "package": "vsce package"
+  }
+}
