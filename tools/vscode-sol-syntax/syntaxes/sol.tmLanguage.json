@@ -3,9 +3,12 @@
   "name": "Sol",
   "patterns": [
     { "include": "#comments" },
+    { "include": "#directives" },
+    { "include": "#labels" },
     { "include": "#strings" },
     { "include": "#numbers" },
     { "include": "#keywords" },
+    { "include": "#operators" },
     { "include": "#types" },
     { "include": "#constants" },
     { "include": "#functions" }
@@ -13,27 +16,56 @@
   "repository": {
     "comments": {
       "patterns": [
-        { "name": "comment.line.double-slash.sol", "match": "//.*$" },
+        { "name": "comment.line.hash.sol", "match": "#.*$" },
         { "name": "comment.block.sol", "begin": "/\\*", "end": "\\*/" }
+      ]
+    },
+    "directives": {
+      "patterns": [
+        {
+          "name": "meta.directive.sol",
+          "begin": "^\\s*!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm|required_stack_size|required_return_stack_size)\\b",
+          "beginCaptures": { "0": { "name": "keyword.directive.sol" } },
+          "end": "$",
+          "patterns": [
+            { "match": '".*?"', "name": "string.quoted.double.sol" },
+            { "match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b", "name": "variable.parameter.directive.sol" }
+          ]
+        }
+      ]
+    },
+    "labels": {
+      "patterns": [
+        { "name": "entity.name.label.sol", "match": "^\\s*@[A-Za-z_][A-Za-z0-9_]*\b" }
       ]
     },
     "strings": {
       "patterns": [
-        { "name": "string.quoted.double.sol", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sol" }] },
-        { "name": "string.quoted.single.sol", "begin": "'", "end": "'", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sol" }] }
+        { "name": "string.quoted.double.sol", "begin": "\"", "end": "\"", "patterns": [{ "match": "\\\\.", "name": "constant.character.escape.sol" }] }
       ]
     },
     "numbers": {
       "patterns": [
         { "name": "constant.numeric.float.sol", "match": "\\b\\d+\\.\\d+([eE][+-]?\\d+)?\\b" },
-        { "name": "constant.numeric.integer.sol", "match": "\\b0x[0-9A-Fa-f]+\\b|\\b\\d+\\b" }
+        { "name": "constant.numeric.hex.sol", "match": "\\b0x[0-9A-Fa-f]+u?\\b" },
+        { "name": "constant.numeric.unsigned.sol", "match": "\\b\\d+u\\b" },
+        { "name": "constant.numeric.integer.sol", "match": "-?\\b\\d+\\b" }
       ]
     },
     "keywords": {
       "patterns": [
-        { "name": "keyword.control.sol", "match": "\\b(?:if|else|for|while|return|break|continue|try|catch|throw)\\b" },
-        { "name": "keyword.declaration.sol", "match": "\\b(?:function|contract|struct|enum|modifier|event|import|pragma|using)\\b" },
-        { "name": "storage.qualifier.sol", "match": "\\b(?:public|private|internal|external|view|pure|payable|constant|immutable|virtual|override)\\b" }
+        { "name": "keyword.declaration.sol", "match": "\\b(?:fn|local|ret|var|const)\\b" },
+        { "name": "keyword.control.sol", "match": "\\b(?:jmp|jz|jnz)\\b" }
+      ]
+    },
+    "operators": {
+      "patterns": [
+        { "name": "keyword.operator.arithmetic.sol", "match": "\\b(?:add|sub|mul|div|mod|neg)\\b" },
+        { "name": "keyword.operator.bitwise.sol", "match": "\\b(?:and|or|xor|not|shl|shr)\\b" },
+        { "name": "keyword.operator.stack.sol", "match": "\\b(?:dup|drop|swap|over|rot|nip|tuck|rpush|rpop|rpeek)\\b" },
+        { "name": "keyword.operator.comparison.sol", "match": "\\b(?:eq|neq|lt|gt|le|ge|sgn)\\b" },
+        { "name": "keyword.operator.memory.sol", "match": "\\b(?:ld|st|ldb|stb|ldh|sth)\\b" },
+        { "name": "keyword.operator.special.sol", "match": "\\b(?:stacksize|retsize|halt|prn|prnln|strlen|tostr|tohex|tobin|putc)\\b" }
       ]
     },
     "types": {
@@ -43,7 +75,7 @@
     },
     "constants": {
       "patterns": [
-        { "name": "constant.language.sol", "match": "\\b(?:true|false|null|undefined)\\b" }
+        { "name": "constant.language.boolean.sol", "match": "\\b(?:true|false)\\b" }
       ]
     },
     "functions": {
