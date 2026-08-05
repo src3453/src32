@@ -1,7 +1,7 @@
 {
   "name": "src32-asm-syntax",
-  "displayName": "SRC32 Assembly Syntax",
-  "description": "Syntax highlighting for SRC32 CPU assembly language",
+  "displayName": "SRC32 Assembly & sol Syntax",
+  "description": "Syntax highlighting for SRC32 CPU assembly language and sol (Stack Oriented Language)",
   "version": "0.0.1",
   "publisher": "src3453",
   "license": "MIT",
@@ -25,6 +25,12 @@
           ".s32a"
         ],
         "configuration": "./language-configuration.json"
+      },
+      {
+        "id": "sol",
+        "aliases": ["sol" , "Sol" , "Stack Oriented Language"],
+        "extensions": [".sol"],
+        "configuration": "./language-configuration-sol.json"
       }
     ],
     "grammars": [
@@ -32,6 +38,11 @@
         "language": "src32asm",
         "scopeName": "source.src32asm",
         "path": "./syntaxes/src32asm.tmLanguage.json"
+      },
+      {
+        "language": "sol",
+        "scopeName": "source.sol",
+        "path": "./syntaxes/sol.tmLanguage.json"
       }
     ]
   }

@@ -1,0 +1,25 @@
+{
+  "name": "vscode-sol-syntax",
+  "displayName": "vscode-sol-syntax",
+  "description": "Syntax highlighter for sol (Stack Oriented Language) language.",
+  "version": "0.0.1",
+  "engines": {
+    "vscode": "^1.131.0"
+  },
+  "categories": [
+    "Programming Languages"
+  ],
+  "contributes": {
+    "languages": [{
+      "id": "sol",
+      "aliases": ["sol", "sol"],
+      "extensions": [".sol"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "sol",
+      "scopeName": "source.sol",
+      "path": "./syntaxes/sol.tmLanguage.json"
+    }]
+  }
+}
