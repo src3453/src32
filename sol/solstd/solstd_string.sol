@@ -1,4 +1,7 @@
-!const UART_ADDR 0x80040000
+# solstd_string.sol - sol Standard Library (solstd): String operations
+
+
+!var UART_ADDR 0x80040000
 
 fn std_putc (char) :
     char UART_ADDR stb
