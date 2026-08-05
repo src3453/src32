@@ -271,3 +271,22 @@ fn use_local (a) :
     stack = vm.run_source(src)
     # call preserves preexisting stack values below the consumed argument
     assert stack == [1, 4]
+
+
+def test_local_shadows_global_for_store():
+    vm = SolVM()
+    src = """
+!var x 1
+
+fn update (v) :
+    local x 0
+    v >x
+    x
+    ret
+;
+
+2 update
+x
+"""
+    stack = vm.run_source(src)
+    assert stack == [2, 1]

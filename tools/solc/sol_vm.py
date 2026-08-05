@@ -623,13 +623,6 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 name = bt[1:]
                 if not LABEL_RE.match(name):
                     raise SolVMError(f"invalid variable name for store: {name}")
-                # store to global variable
-                if name in variables:
-                    addr = variables[name]
-                    instructions.append(Instruction("push", addr))
-                    instructions.append(Instruction("st"))
-                    j += 1
-                    continue
                 # store to local variable
                 found_local = False
                 for lidx, (lname, _) in enumerate(locals_list):
@@ -639,6 +632,13 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                         found_local = True
                         break
                 if found_local:
+                    j += 1
+                    continue
+                # store to global variable
+                if name in variables:
+                    addr = variables[name]
+                    instructions.append(Instruction("push", addr))
+                    instructions.append(Instruction("st"))
                     j += 1
                     continue
                 raise SolVMError(f"undefined variable: {name}")
