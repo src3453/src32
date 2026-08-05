@@ -31,7 +31,7 @@ def _emit_pop(lines: list[str], reg: str) -> None:
     lines.append("    ADDI R28, R28, 4")
 
 
-def _emit_instruction(lines: list[str], inst: Instruction, debug: bool=False) -> None:
+def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: bool = False) -> None:
     op = inst.op
     if debug:
         lines.append(f"    ; {op} {inst.arg if inst.arg is not None else ''}".rstrip())
@@ -83,6 +83,78 @@ def _emit_instruction(lines: list[str], inst: Instruction, debug: bool=False) ->
         _emit_pop(lines, "R2")
         _emit_pop(lines, "R1")
         lines.append("    STH [R2 + 0], R1")
+        return
+
+    if op == "eq":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        true_label = f"__eq_true_{pc}"
+        end_label = f"__eq_end_{pc}"
+        lines.append(f"    BEQ R1, R2, {true_label}")
+        lines.append("    LDI R1, 0")
+        lines.append(f"    JMP {end_label}")
+        lines.append(f"{true_label}:")
+        lines.append("    LDI R1, 1")
+        lines.append(f"{end_label}:")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "neq":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        true_label = f"__neq_true_{pc}"
+        end_label = f"__neq_end_{pc}"
+        lines.append(f"    BNE R1, R2, {true_label}")
+        lines.append("    LDI R1, 0")
+        lines.append(f"    JMP {end_label}")
+        lines.append(f"{true_label}:")
+        lines.append("    LDI R1, 1")
+        lines.append(f"{end_label}:")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "lt":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        lines.append("    SLT R1, R1, R2")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "gt":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        lines.append("    SLT R1, R2, R1")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "le":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        false_label = f"__le_false_{pc}"
+        end_label = f"__le_end_{pc}"
+        lines.append("    SLT R1, R2, R1")
+        lines.append(f"    BNE R1, R0, {false_label}")
+        lines.append("    LDI R1, 1")
+        lines.append(f"    JMP {end_label}")
+        lines.append(f"{false_label}:")
+        lines.append("    LDI R1, 0")
+        lines.append(f"{end_label}:")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "ge":
+        _emit_pop(lines, "R2")
+        _emit_pop(lines, "R1")
+        false_label = f"__ge_false_{pc}"
+        end_label = f"__ge_end_{pc}"
+        lines.append("    SLT R1, R1, R2")
+        lines.append(f"    BNE R1, R0, {false_label}")
+        lines.append("    LDI R1, 1")
+        lines.append(f"    JMP {end_label}")
+        lines.append(f"{false_label}:")
+        lines.append("    LDI R1, 0")
+        lines.append(f"{end_label}:")
+        _emit_push(lines, "R1")
         return
 
     if op == "dup":
@@ -145,7 +217,7 @@ def emit_src32_from_program(program: Program, debug: bool=False) -> str:
     for pc, inst in enumerate(program.instructions):
         for label_name in labels_by_pc.get(pc, []):
             lines.append(f"{label_name}:")
-        _emit_instruction(lines, inst, debug=debug)
+        _emit_instruction(lines, inst, pc=pc, debug=debug)
 
     if program.instructions[-1].op != "halt":
         lines.append("    HALT")

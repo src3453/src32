@@ -98,6 +98,12 @@ def compile_program(source: str) -> Program:
         "ldh",
         "stb",
         "sth",
+        "eq",
+        "neq",
+        "lt",
+        "gt",
+        "le",
+        "ge",
         "halt",
     }
 
@@ -298,6 +304,48 @@ class SolVM:
             address = self._pop()
             value = self._pop()
             self._write_mem(address, value, 2)
+            self.pc += 1
+            return
+
+        if op == "eq":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a == b else 0)
+            self.pc += 1
+            return
+
+        if op == "neq":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a != b else 0)
+            self.pc += 1
+            return
+
+        if op == "lt":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a < b else 0)
+            self.pc += 1
+            return
+
+        if op == "gt":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a > b else 0)
+            self.pc += 1
+            return
+
+        if op == "le":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a <= b else 0)
+            self.pc += 1
+            return
+
+        if op == "ge":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(1 if a >= b else 0)
             self.pc += 1
             return
 

@@ -72,3 +72,46 @@ def test_compile_missing_branch_operand_error():
 def test_compile_does_not_append_redundant_halt():
     asm = compile_to_src32_asm("halt")
     assert asm.count("HALT") == 1
+
+
+def test_compile_comparison_eq_true():
+    asm = compile_to_src32_asm("5 5 eq")
+    assert "BEQ R1, R2" in asm
+    assert "__eq_true_" in asm
+    assert "__eq_end_" in asm
+
+
+def test_compile_comparison_eq_false():
+    asm = compile_to_src32_asm("5 3 eq")
+    assert "BEQ R1, R2" in asm
+
+
+def test_compile_comparison_neq():
+    asm = compile_to_src32_asm("5 3 neq")
+    assert "BNE R1, R2" in asm
+    assert "__neq_true_" in asm
+    assert "__neq_end_" in asm
+
+
+def test_compile_comparison_lt():
+    asm = compile_to_src32_asm("3 5 lt")
+    assert "SLT R1, R1, R2" in asm
+
+
+def test_compile_comparison_gt():
+    asm = compile_to_src32_asm("5 3 gt")
+    assert "SLT R1, R2, R1" in asm
+
+
+def test_compile_comparison_le():
+    asm = compile_to_src32_asm("5 3 le")
+    assert "SLT R1, R2, R1" in asm
+    assert "__le_false_" in asm
+    assert "__le_end_" in asm
+
+
+def test_compile_comparison_ge():
+    asm = compile_to_src32_asm("3 5 ge")
+    assert "SLT R1, R1, R2" in asm
+    assert "__ge_false_" in asm
+    assert "__ge_end_" in asm

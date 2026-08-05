@@ -71,3 +71,81 @@ def test_division_by_zero_error():
     vm = SolVM()
     with pytest.raises(SolVMError, match="division by zero"):
         vm.run_source("1 0 div")
+
+
+def test_comparison_eq():
+    vm = SolVM()
+    stack = vm.run_source("5 5 eq")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 3 eq")
+    assert stack == [0]
+
+
+def test_comparison_neq():
+    vm = SolVM()
+    stack = vm.run_source("5 3 neq")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 5 neq")
+    assert stack == [0]
+
+
+def test_comparison_lt():
+    vm = SolVM()
+    stack = vm.run_source("3 5 lt")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 3 lt")
+    assert stack == [0]
+
+
+def test_comparison_gt():
+    vm = SolVM()
+    stack = vm.run_source("5 3 gt")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("3 5 gt")
+    assert stack == [0]
+
+
+def test_comparison_le():
+    vm = SolVM()
+    stack = vm.run_source("3 5 le")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 5 le")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 3 le")
+    assert stack == [0]
+
+
+def test_comparison_ge():
+    vm = SolVM()
+    stack = vm.run_source("5 3 ge")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("5 5 ge")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("3 5 ge")
+    assert stack == [0]
+
+
+def test_comparison_with_negative_numbers():
+    vm = SolVM()
+    stack = vm.run_source("-5 -3 lt")
+    assert stack == [1]
+
+    vm = SolVM()
+    stack = vm.run_source("-3 -5 lt")
+    assert stack == [0]
