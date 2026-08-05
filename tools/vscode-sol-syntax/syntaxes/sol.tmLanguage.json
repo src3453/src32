@@ -1,32 +1,187 @@
 {
 	"$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
 	"name": "sol",
+	"scopeName": "source.sol",
 	"patterns": [
 		{
-			"include": "#keywords"
+			"include": "#comments"
+		},
+		{
+			"include": "#asm"
+		},
+		{
+			"include": "#directives"
+		},
+		{
+			"include": "#declarations"
+		},
+		{
+			"include": "#labels"
+		},
+		{
+			"include": "#operators"
+		},
+		{
+			"include": "#numbers"
 		},
 		{
 			"include": "#strings"
+		},
+		{
+			"include": "#variables"
+		},
+		{
+			"include": "#identifiers"
 		}
 	],
 	"repository": {
-		"keywords": {
+		"comments": {
 			"patterns": [{
-				"name": "keyword.control.sol",
-				"match": "\\b(if|while|for|return)\\b"
+				"name": "comment.line.number-sign.sol",
+				"match": "#.*$"
+			}]
+		},
+		"asm": {
+			"patterns": [{
+				"name": "meta.embedded.block.asm.sol",
+				"begin": "^\\s*!asm\\b",
+				"beginCaptures": {
+					"0": {
+						"name": "keyword.directive.sol"
+					}
+				},
+				"end": "^\\s*!end\\b",
+				"endCaptures": {
+					"0": {
+						"name": "keyword.directive.sol"
+					}
+				},
+				"patterns": [{
+					"name": "comment.line.semicolon.asm",
+					"match": ";.*$"
+				}, {
+					"name": "string.quoted.double.asm",
+					"begin": "\"",
+					"end": "\"",
+					"patterns": [{
+						"name": "constant.character.escape.asm",
+						"match": "\\\\."
+					}]
+				}, {
+					"name": "constant.numeric.hex.asm",
+					"match": "\\b0x[0-9A-Fa-f]+\\b"
+				}, {
+					"name": "constant.numeric.integer.asm",
+					"match": "\\b-?\\d+\\b"
+				}, {
+					"name": "entity.name.label.asm",
+					"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+				}]
+			}]
+		},
+		"directives": {
+			"patterns": [{
+				"name": "meta.directive.sol",
+				"match": "^(\\s*)(!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm)\\b)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+				"captures": {
+					"2": {
+						"name": "keyword.control.directive.c"
+					},
+					"3": {
+						"name": "entity.name.variable.sol"
+					}
+				}
+			}]
+		},
+		"declarations": {
+			"patterns": [{
+				"name": "meta.function.declaration.sol",
+				"match": "\\bfn\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*\\(([^)]*)\\)\\s*:?",
+				"captures": {
+					"0": {
+						"name": "storage.type.function.sol"
+					},
+					"1": {
+						"name": "entity.name.function.sol"
+					},
+					"2": {
+						"name": "variable.parameter.sol"
+					}
+				}
+			}, {
+				"name": "meta.variable.declaration.sol",
+				"match": "(?:^|\\s)(?:!var|!const|local)\\s+([A-Za-z_][A-Za-z0-9_]*)",
+				"captures": {
+					"0": {
+						"name": "storage.type.variable.sol"
+					},
+					"1": {
+						"name": "entity.name.variable.sol"
+					}
+				}
+			}, {
+				"name": "meta.constant.declaration.sol",
+				"match": "(?:^|\\s)!define\\s+([A-Za-z_][A-Za-z0-9_]*)",
+				"captures": {
+					"0": {
+						"name": "storage.type.constant.sol"
+					},
+					"1": {
+						"name": "entity.name.constant.sol"
+					}
+				}
+			}]
+		},
+		"labels": {
+			"patterns": [{
+				"name": "entity.name.function.c",
+				"match": "@[A-Za-z_][A-Za-z0-9_]*"
+			}]
+		},
+		"operators": {
+			"patterns": [{
+				"name": "variable.other.readwrite.c",
+				"match": "\\b(add|sub|mul|div|mod|neg|and|or|xor|not|shl|shr|dup|drop|swap|over|rot|nip|tuck|eq|neq|lt|gt|le|ge|sgn|ld|st|ldb|stb|ldh|sth|rpush|rpop|rpeek|jmp|jz|jnz|stacksize|retsize|halt|prn|prnln|strlen|tostr|tohex|tobin|putc|ret|if|while|for|return)\\b"
+			}]
+		},
+		"numbers": {
+			"patterns": [{
+				"name": "constant.numeric.hex.sol",
+				"match": "\\b0x[0-9A-Fa-f]+\\b"
+			}, {
+				"name": "constant.numeric.integer.sol",
+				"match": "\\b-?\\d+u?\\b"
 			}]
 		},
 		"strings": {
-			"name": "string.quoted.double.sol",
-			"begin": "\"",
-			"end": "\"",
-			"patterns": [
-				{
-					"name": "constant.character.escape.sol",
-					"match": "\\\\."
-				}
-			]
+			"patterns": [{
+				"name": "string.quoted.double.sol",
+				"begin": "\"",
+				"end": "\"",
+				"patterns": [
+					{
+						"name": "constant.character.escape.sol",
+						"match": "\\\\."
+					}
+				]
+			}]
+		},
+		"variables": {
+			"patterns": [{
+				"name": "variable.other.assignment.sol",
+				"match": ">[A-Za-z_][A-Za-z0-9_]*"
+			}, {
+				"name": "variable.other.readwrite.sol",
+				"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+			}]
+		},
+		"identifiers": {
+			"patterns": [{
+				"name": "variable.other.sol",
+				"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
+			}]
 		}
 	},
-	"scopeName": "source.sol"
+	"foldingStartMarker": "^\\s*!(?:asm|if|while|for|fn)\\b",
+	"foldingStopMarker": "^\\s*!end\\b|^\\s*;\\s*$"
 }
