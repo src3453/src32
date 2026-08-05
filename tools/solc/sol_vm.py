@@ -129,6 +129,8 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     # directive-managed symbols
     constants: dict[str, int] = {}
     variables: dict[str, int] = {}
+    # macros: simple textual substitution of single tokens -> list of tokens
+    macros: dict[str, list[str]] = {}
     # next variable address (4-byte aligned) - configurable base
     next_var_addr = var_base
 
@@ -156,8 +158,32 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     }
 
     i = 0
+    # helper to recursively expand macros for a single token
+    def expand_token_recursive(tok: str, seen: set[str]) -> list[str]:
+        if tok not in macros:
+            return [tok]
+        if tok in seen:
+            raise SolVMError(f"circular macro detected: {tok}")
+        seen.add(tok)
+        out: list[str] = []
+        for part in macros[tok]:
+            if part in macros:
+                out.extend(expand_token_recursive(part, seen))
+            else:
+                out.append(part)
+        seen.remove(tok)
+        return out
+
     while i < len(tokens):
         tok = tokens[i]
+
+        # expand macros on-the-fly
+        if tok in macros:
+            expanded = expand_token_recursive(tok, set())
+            # replace current token with expanded tokens
+            tokens[i:i+1] = expanded
+            # do not advance i; process the newly inserted tokens
+            continue
 
         # labels
         if tok.startswith("@"):
@@ -227,6 +253,21 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                 instructions.append(Instruction("push", addr))
                 instructions.append(Instruction("st"))
                 i += consumed
+                continue
+
+            if tok == "!define":
+                # !define NAME VALUE
+                if i + 2 >= len(tokens):
+                    raise SolVMError("!define requires a name and a value")
+                name = tokens[i + 1]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid macro name: {name}")
+                value_tok = tokens[i + 2]
+                if name in macros:
+                    raise SolVMError(f"duplicate macro: {name}")
+                # store replacement as list of tokens (single-token macro for now)
+                macros[name] = [value_tok]
+                i += 3
                 continue
 
             # other directives not yet supported
