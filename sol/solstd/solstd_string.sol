@@ -19,6 +19,6 @@ fn prn (ptr) :
 
 fn prnln (ptr) :
     ptr prn # print with no ln
-    0x0d std_putc # put CR
-    0x0a std_putc # put LF
+    0x0d putc # put CR
+    0x0a putc # put LF
 ;
