@@ -68,8 +68,11 @@
 						"match": "\\\\."
 					}]
 				}, {
+					"name": "constant.numeric.binary.asm",
+					"match": "\\b-?0b[01]+\\b"
+				}, {
 					"name": "constant.numeric.hex.asm",
-					"match": "\\b0x[0-9A-Fa-f]+\\b"
+					"match": "\\b-?0x[0-9A-Fa-f]+\\b"
 				}, {
 					"name": "constant.numeric.integer.asm",
 					"match": "\\b-?\\d+\\b"
@@ -82,7 +85,7 @@
 		"directives": {
 			"patterns": [{
 				"name": "meta.directive.sol",
-				"match": "^(\\s*)(!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm)\\b)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+				"match": "^(\\s*)(!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm|data|db)\\b)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
 				"captures": {
 					"2": {
 						"name": "keyword.control.directive.c"
@@ -146,8 +149,11 @@
 		},
 		"numbers": {
 			"patterns": [{
+				"name": "constant.numeric.binary.sol",
+				"match": "\\b-?0b[01]+\\b"
+			}, {
 				"name": "constant.numeric.hex.sol",
-				"match": "\\b0x[0-9A-Fa-f]+\\b"
+				"match": "\\b-?0x[0-9A-Fa-f]+\\b"
 			}, {
 				"name": "constant.numeric.integer.sol",
 				"match": "\\b-?\\d+u?\\b"

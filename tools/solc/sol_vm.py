@@ -10,7 +10,8 @@ from typing import Optional
 
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$")
+# support: decimal (optional leading -), hex (0x...), binary (0b...)
+NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
@@ -126,16 +127,20 @@ def parse_number(token: str) -> int:
 
     try:
         is_hex = core.startswith(("0x", "0X"))
+        is_bin = core.startswith(("0b", "0B"))
         if is_hex:
             value = int(core, 16)
+        elif is_bin:
+            value = int(core, 2)
         else:
+            # decimal (may be negative)
             value = int(core, 10)
     except ValueError as exc:
         raise SolVMError(f"invalid numeric literal: {token}") from exc
 
-    if is_hex:
+    if is_hex or is_bin:
         if value < 0 or value > UINT32_MAX:
-            raise SolVMError(f"hex literal out of range: {token}")
+            raise SolVMError(f"hex/binary literal out of range: {token}")
     elif is_unsigned:
         if value < 0 or value > UINT32_MAX:
             raise SolVMError(f"unsigned literal out of range: {token}")
@@ -251,6 +256,9 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         print('DEBUG: entering first-pass function collection; tokens length=', len(tokens))
     while i < len(tokens):
         tok = tokens[i]
+        # normalize escaped bang tokens (shells may escape '!' into '\!')
+        if isinstance(tok, str) and tok.startswith("\\!"):
+            tok = tok[1:]
         if SOLC_DEBUG and i % 50 == 0:
             print(f'DEBUG first-pass i={i} tok={tok}')
         if tok == "fn":
@@ -456,6 +464,36 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 # store replacement as list of tokens (single-token macro for now)
                 macros[name] = [value_tok]
                 i += 3
+                continue
+
+            if tok in {"!data", "!db"}:
+                # collect tokens until !end
+                is_db = (tok == "!db")
+                j = i + 1
+                data_tokens: list[str] = []
+                while j < len(tokens) and tokens[j] != "!end":
+                    data_tokens.append(tokens[j])
+                    j += 1
+                if j >= len(tokens) or tokens[j] != "!end":
+                    raise SolVMError(f"{tok} requires terminating !end")
+                # Build bytes
+                arr = bytearray()
+                # align for word data
+                if not is_db:
+                    # align to 4 bytes for word-aligned data
+                    next_string_addr = (next_string_addr + 3) & ~3
+                for dt in data_tokens:
+                    if not NUMBER_RE.match(dt):
+                        raise SolVMError(f"invalid data token for {tok}: {dt}")
+                    val = parse_number(dt)
+                    if is_db:
+                        arr.append(val & 0xFF)
+                    else:
+                        u32 = val & 0xFFFFFFFF
+                        arr.extend([(u32 >> 24) & 0xFF, (u32 >> 16) & 0xFF, (u32 >> 8) & 0xFF, u32 & 0xFF])
+                read_only_data.append((next_string_addr, bytes(arr)))
+                next_string_addr += len(arr)
+                i = j + 1
                 continue
 
             # other directives not yet supported
