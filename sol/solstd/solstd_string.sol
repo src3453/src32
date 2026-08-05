@@ -4,15 +4,21 @@
 !var UART_ADDR 0x80040000
 
 fn std_putc (char) :
-    char UART_ADDR stb
+    char UART_ADDR stb # put char to UART
 ;
 
-fn std_print (ptr) :
-    local i 0
-    local char 0
+fn std_prn (ptr) :
+    local i 0 # offset
+    local char 0 # current char
     @loop
-    ptr i add ldb >char
-    i 1 add >i
-    char std_putc
-    char jnz @loop
+    ptr i add ldb >char # get current char with offset and store to local var
+    i 1 add >i # increment ptr
+    char std_putc # put char
+    char jnz @loop # if not null then loop
+;
+
+fn std_prnln (ptr) :
+    ptr std_prn # print with no ln
+    0x0d std_putc # put CR
+    0x0a std_putc # put LF
 ;
