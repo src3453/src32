@@ -81,14 +81,58 @@ def parse_number(token: str) -> int:
     return to_i32(value)
 
 
-def compile_program(source: str, var_base: int = 0x00100000) -> Program:
+import os
+
+def compile_program(source: str, var_base: int = 0x00100000, source_path: str | None = None, included_paths: set | None = None) -> Program:
+    # prepare include tracking and base directory
+    included_paths = set() if included_paths is None else set(included_paths)
+    base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
+
+    def expand_includes(tokens: list[str], current_base: str | None, seen: set) -> list[str]:
+        out: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "!include":
+                if i + 1 >= len(tokens):
+                    raise SolVMError("!include requires a filename")
+                fname_tok = tokens[i + 1]
+                # strip optional surrounding quotes
+                if fname_tok.startswith('"') and fname_tok.endswith('"') and len(fname_tok) >= 2:
+                    fname = fname_tok[1:-1]
+                else:
+                    fname = fname_tok
+                if current_base:
+                    include_path = os.path.abspath(os.path.join(current_base, fname))
+                else:
+                    include_path = os.path.abspath(fname)
+                if include_path in seen:
+                    raise SolVMError(f"circular include detected: {include_path}")
+                if not os.path.exists(include_path):
+                    raise SolVMError(f"include file not found: {include_path}")
+                seen.add(include_path)
+                included_text = open(include_path, "r", encoding="utf-8").read()
+                included_tokens = tokenize(included_text)
+                included_dir = os.path.dirname(include_path)
+                expanded = expand_includes(included_tokens, included_dir, seen)
+                out.extend(expanded)
+                i += 2
+                continue
+            out.append(tok)
+            i += 1
+        return out
+
     tokens = tokenize(source)
+    tokens = expand_includes(tokens, base_dir, included_paths)
+
     instructions: list[Instruction] = []
     labels: dict[str, int] = {}
 
     # directive-managed symbols
     constants: dict[str, int] = {}
     variables: dict[str, int] = {}
+    # macros: simple textual substitution of single tokens -> list of tokens
+    macros: dict[str, list[str]] = {}
     # next variable address (4-byte aligned) - configurable base
     next_var_addr = var_base
 
@@ -203,8 +247,32 @@ def compile_program(source: str, var_base: int = 0x00100000) -> Program:
 
     # now parse main tokens into instructions
     i = 0
+    # helper to recursively expand macros for a single token
+    def expand_token_recursive(tok: str, seen: set[str]) -> list[str]:
+        if tok not in macros:
+            return [tok]
+        if tok in seen:
+            raise SolVMError(f"circular macro detected: {tok}")
+        seen.add(tok)
+        out: list[str] = []
+        for part in macros[tok]:
+            if part in macros:
+                out.extend(expand_token_recursive(part, seen))
+            else:
+                out.append(part)
+        seen.remove(tok)
+        return out
+
     while i < len(tokens):
         tok = tokens[i]
+
+        # expand macros on-the-fly
+        if tok in macros:
+            expanded = expand_token_recursive(tok, set())
+            # replace current token with expanded tokens
+            tokens[i:i+1] = expanded
+            # do not advance i; process the newly inserted tokens
+            continue
 
         # labels
         if tok.startswith("@"):
@@ -274,6 +342,21 @@ def compile_program(source: str, var_base: int = 0x00100000) -> Program:
                 instructions.append(Instruction("push", addr))
                 instructions.append(Instruction("st"))
                 i += consumed
+                continue
+
+            if tok == "!define":
+                # !define NAME VALUE
+                if i + 2 >= len(tokens):
+                    raise SolVMError("!define requires a name and a value")
+                name = tokens[i + 1]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid macro name: {name}")
+                value_tok = tokens[i + 2]
+                if name in macros:
+                    raise SolVMError(f"duplicate macro: {name}")
+                # store replacement as list of tokens (single-token macro for now)
+                macros[name] = [value_tok]
+                i += 3
                 continue
 
             # other directives not yet supported
@@ -456,8 +539,8 @@ class SolVM:
         self.r28 = 0x000FFFFC
         self.call_stack = []
 
-    def load(self, source: str) -> None:
-        self.program = compile_program(source)
+    def load(self, source: str, source_path: str | None = None) -> None:
+        self.program = compile_program(source, source_path=source_path)
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)
@@ -496,8 +579,8 @@ class SolVM:
             self.execute_instruction(inst, program.labels)
         return self.stack
 
-    def run_source(self, source: str) -> list[int]:
-        self.load(source)
+    def run_source(self, source: str, source_path: str | None = None) -> list[int]:
+        self.load(source, source_path=source_path)
         return self.run()
 
     def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:
