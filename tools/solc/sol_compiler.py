@@ -98,6 +98,19 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         lines.append("    JR R31")
         return
 
+    if op == "retn":
+        # retn: same as ret at assembly level (caller expects no return value)
+        if current_func is None or functions_map is None:
+            raise SolCompileError("retn emitted outside of function or missing functions_map")
+        meta = functions_map.get(current_func)
+        if meta is None:
+            raise SolCompileError(f"unknown function metadata for {current_func}")
+        frame_size = 4 * (meta["n_locals"] + meta["argcount"]) 
+        if frame_size != 0:
+            lines.append(f"    ADDI R28, R28, {frame_size}")
+        lines.append("    JR R31")
+        return
+
     if op == "local_addr":
         # push address of local var: ADDI R1, R28, offset ; push R1
         assert isinstance(inst.arg, int)
@@ -274,10 +287,6 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     lines.append(f"{ENTRY_LABEL}:")
     lines.append(f"    LDI R28, {_format_imm(stack_top)}")
 
-    if not program.instructions:
-        lines.append("    HALT")
-        return "\n".join(lines)
-
     current_func: str | None = None
     for pc, inst in enumerate(program.instructions):
         for label_name in labels_by_pc.get(pc, []):
@@ -287,8 +296,17 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
                 current_func = label_name
         _emit_instruction(lines, inst, pc=pc, debug=debug, current_func=current_func, functions_map=program.functions)
 
-    if program.instructions[-1].op != "halt":
+    if not program.instructions or program.instructions[-1].op != "halt":
         lines.append("    HALT")
+
+    if program.read_only_data:
+        emitted_orgs: set[int] = set()
+        for addr, data in program.read_only_data:
+            if addr not in emitted_orgs:
+                lines.append(f".ORG {_format_imm(addr)}")
+                emitted_orgs.add(addr)
+            db_bytes = ", ".join(f"0x{byte:02X}" for byte in data)
+            lines.append(f".DB {db_bytes}")
     return "\n".join(lines)
 
 

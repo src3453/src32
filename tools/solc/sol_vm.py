@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import ast
 from dataclasses import dataclass
+import os
 import re
 from typing import Optional
 
@@ -12,6 +14,7 @@ NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$")
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
+STRING_POOL_BASE = 0x02000000
 
 
 class SolVMError(RuntimeError):
@@ -29,6 +32,7 @@ class Program:
     instructions: list[Instruction]
     labels: dict[str, int]
     functions: dict[str, int]  # function name -> arg count
+    read_only_data: list[tuple[int, bytes]]
 
 
 def to_i32(value: int) -> int:
@@ -38,25 +42,80 @@ def to_i32(value: int) -> int:
     return value
 
 
-def _strip_comment(line: str) -> str:
-    comment_start = line.find("#")
-    if comment_start >= 0:
-        return line[:comment_start]
-    return line
-
-
 def tokenize(source: str) -> list[str]:
     tokens: list[str] = []
-    for line in source.splitlines():
-        # keep semicolon and parentheses as their own tokens so constructs like function bodies
-        # and argument lists can be delimited and parsed reliably.
-        clean = _strip_comment(line)
-        clean = clean.replace(";", " ; ")
-        clean = clean.replace("(", " ( ")
-        clean = clean.replace(")", " ) ")
-        pieces = clean.split()
-        tokens.extend(pieces)
+    current: list[str] = []
+    in_string = False
+    escaped = False
+    i = 0
+    while i < len(source):
+        ch = source[i]
+        if in_string:
+            current.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                tokens.append("".join(current))
+                current = []
+                in_string = False
+            elif ch == "\n":
+                raise SolVMError("unterminated string literal")
+            i += 1
+            continue
+
+        if ch == "#":
+            if current:
+                tokens.append("".join(current))
+                current = []
+            while i < len(source) and source[i] != "\n":
+                i += 1
+            continue
+
+        if ch.isspace():
+            if current:
+                tokens.append("".join(current))
+                current = []
+            i += 1
+            continue
+
+        if ch in {";", "(", ")"}:
+            if current:
+                tokens.append("".join(current))
+                current = []
+            tokens.append(ch)
+            i += 1
+            continue
+
+        if ch == '"':
+            if current:
+                tokens.append("".join(current))
+                current = []
+            current.append(ch)
+            in_string = True
+            escaped = False
+            i += 1
+            continue
+
+        current.append(ch)
+        i += 1
+
+    if in_string:
+        raise SolVMError("unterminated string literal")
+    if current:
+        tokens.append("".join(current))
     return tokens
+
+
+def _decode_string_literal(token: str) -> str:
+    try:
+        value = ast.literal_eval(token)
+    except (SyntaxError, ValueError) as exc:
+        raise SolVMError(f"invalid string literal: {token}") from exc
+    if not isinstance(value, str):
+        raise SolVMError(f"invalid string literal: {token}")
+    return value
 
 
 def parse_number(token: str) -> int:
@@ -85,8 +144,6 @@ def parse_number(token: str) -> int:
     return to_i32(value)
 
 
-import os
-
 def compile_program(source: str, var_base: int = 0x00100000, source_path: str | None = None, included_paths: set | None = None) -> Program:
     # prepare include tracking and base directory
     included_paths = set() if included_paths is None else set(included_paths)
@@ -103,7 +160,7 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                 fname_tok = tokens[i + 1]
                 # strip optional surrounding quotes
                 if fname_tok.startswith('"') and fname_tok.endswith('"') and len(fname_tok) >= 2:
-                    fname = fname_tok[1:-1]
+                    fname = _decode_string_literal(fname_tok)
                 else:
                     fname = fname_tok
                 if current_base:
@@ -128,9 +185,14 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
 
     tokens = tokenize(source)
     tokens = expand_includes(tokens, base_dir, included_paths)
+    # debug hook: if SOLC_DEBUG env var set, print tokens and enable verbose tracing
+    SOLC_DEBUG = os.getenv('SOLC_DEBUG') == '1'
+    if SOLC_DEBUG:
+        print('DEBUG: tokens after include expansion ->', tokens)
 
     instructions: list[Instruction] = []
     labels: dict[str, int] = {}
+    read_only_data: list[tuple[int, bytes]] = []
 
     # directive-managed symbols
     constants: dict[str, int] = {}
@@ -143,6 +205,20 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     # function definitions collected for inlining
     functions: dict[str, dict] = {}
     _local_counter = 0
+    string_literals: dict[str, int] = {}
+    next_string_addr = STRING_POOL_BASE
+
+    def intern_string_literal(token: str) -> int:
+        nonlocal next_string_addr
+        text = _decode_string_literal(token)
+        if text in string_literals:
+            return string_literals[text]
+        data = text.encode("utf-8") + b"\x00"
+        addr = next_string_addr
+        next_string_addr += len(data)
+        string_literals[text] = addr
+        read_only_data.append((addr, data))
+        return addr
 
     simple_ops = {
         "add",
@@ -171,8 +247,12 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     # First pass: collect function definitions and remove them from token stream
     i = 0
     cleaned_tokens: list[str] = []
+    if SOLC_DEBUG:
+        print('DEBUG: entering first-pass function collection; tokens length=', len(tokens))
     while i < len(tokens):
         tok = tokens[i]
+        if SOLC_DEBUG and i % 50 == 0:
+            print(f'DEBUG first-pass i={i} tok={tok}')
         if tok == "fn":
             # parse: fn name (arg1 arg2 ...) : <body tokens...> ;
             if i + 1 >= len(tokens):
@@ -395,6 +475,12 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
             i += 1
             continue
 
+        if tok.startswith('"') and tok.endswith('"'):
+            addr = intern_string_literal(tok)
+            instructions.append(Instruction("push", addr))
+            i += 1
+            continue
+
         # simple operations
         if tok in simple_ops:
             instructions.append(Instruction(tok))
@@ -432,6 +518,10 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
         instructions.append(Instruction("push", value))
         i += 1
 
+    # terminate the main program so execution does not fall through into function bodies
+    if functions:
+        instructions.append(Instruction("halt"))
+
     # append function bodies after main program so they are not executed unless called
     for fname, fdata in functions.items():
         # mark label for function entry
@@ -442,6 +532,8 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
         locals_list = fdata.get("locals", [])
         argcount = len(fdata["args"])
         n_locals = len(locals_list)
+        # record function code start index so we can append an implicit retn if needed
+        func_code_start = len(instructions)
         # At function entry, optional local initializers must run (frame is allocated by caller)
         # Emit initialization sequences for locals with initial values: push init; push local_addr; st
         for local_index, (_, init_value) in enumerate(locals_list):
@@ -506,8 +598,9 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                     lidx = int(idx_str)
                 except ValueError:
                     raise SolVMError(f"invalid LOCAL marker in function {fname}: {bt}")
-                # push address of local var
+                # load local variable value from its frame-relative address
                 instructions.append(Instruction("local_addr", lidx))
+                instructions.append(Instruction("ld"))
                 j += 1
                 continue
 
@@ -519,6 +612,12 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
 
             if bt.startswith("!"):
                 raise SolVMError(f"directives inside function not supported: {bt}")
+
+            if isinstance(bt, str) and bt.startswith('"') and bt.endswith('"'):
+                addr = intern_string_literal(bt)
+                instructions.append(Instruction("push", addr))
+                j += 1
+                continue
 
             if bt.startswith(">"):
                 name = bt[1:]
@@ -544,6 +643,11 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                     continue
                 raise SolVMError(f"undefined variable: {name}")
 
+            if LABEL_RE.match(bt) and bt in constants:
+                instructions.append(Instruction("push", constants[bt]))
+                j += 1
+                continue
+
             if LABEL_RE.match(bt) and bt in variables:
                 addr = variables[bt]
                 instructions.append(Instruction("push", addr))
@@ -556,6 +660,11 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
             value = parse_number(bt)
             instructions.append(Instruction("push", value))
             j += 1
+            continue
+
+        # if function body did not contain an explicit ret or retn, append an implicit retn
+        if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
+            instructions.append(Instruction("retn"))
 
     # validate jump targets
     for inst in instructions:
@@ -566,7 +675,7 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     # build functions mapping name -> metadata for VM/emitter
     functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
 
-    return Program(instructions=instructions, labels=labels, functions=functions_map)
+    return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
 
 
 class SolVM:
@@ -597,6 +706,10 @@ class SolVM:
         # reset runtime stack pointer per program (keep same default)
         self.r28 = 0x000FFFFC
         self.call_stack = []
+        self.memory = {}
+        for addr, data in self.program.read_only_data:
+            for offset, byte in enumerate(data):
+                self.memory[addr + offset] = byte
 
     def _pop(self) -> int:
         if not self.stack:
@@ -698,8 +811,8 @@ class SolVM:
             for j in range(argcount):
                 addr = new_r28 + 4 * (n_locals + j)
                 self._write_mem(addr, args[j], 4)
-            # create frame record
-            frame = {"ret_pc": self.pc + 1, "frame_base": new_r28, "func_name": func_name}
+            # create frame record (record current data stack height so retn can restore it)
+            frame = {"ret_pc": self.pc + 1, "frame_base": new_r28, "func_name": func_name, "stack_height": len(self.stack)}
             # update R28
             self.r28 = new_r28
             self.call_stack.append(frame)
@@ -710,7 +823,7 @@ class SolVM:
             return
 
         if op == "ret":
-            # return from function: pop frame and restore R28 and pc
+            # return from function: pop frame and restore R28 and pc (preserve data stack as-is)
             if not self.call_stack:
                 raise SolVMError("ret without call frame")
             frame = self.call_stack.pop()
@@ -724,6 +837,26 @@ class SolVM:
                 argcount = func_meta["argcount"]
                 frame_size = 4 * (n_locals + argcount)
                 self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
+            if self.stack:
+                self.stack = [self.stack[-1]]
+            self.pc = frame["ret_pc"]
+            return
+
+        if op == "retn":
+            # return (no return value): pop frame, restore R28 and pc, and trim any data pushed by callee
+            if not self.call_stack:
+                raise SolVMError("retn without call frame")
+            frame = self.call_stack.pop()
+            func_meta = self.program.functions.get(frame.get("func_name") if frame.get("func_name") else "")
+            if func_meta is None:
+                pass
+            else:
+                n_locals = func_meta["n_locals"]
+                argcount = func_meta["argcount"]
+                frame_size = 4 * (n_locals + argcount)
+                self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
+            if self.stack:
+                self.stack = [self.stack[-1]]
             self.pc = frame["ret_pc"]
             return
 

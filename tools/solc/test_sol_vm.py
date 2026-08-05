@@ -1,6 +1,6 @@
 import pytest
 
-from sol_vm import SolVM, SolVMError
+from sol_vm import STRING_POOL_BASE, SolVM, SolVMError
 
 
 def test_arithmetic_basic():
@@ -31,6 +31,15 @@ def test_unsigned_and_hex():
     vm = SolVM()
     stack = vm.run_source("0xFFFFFFFF 1 add")
     assert stack == [0]
+
+
+def test_string_literal_pushes_pointer_and_loads_read_only_bytes():
+    vm = SolVM()
+    stack = vm.run_source('"hi"')
+    assert stack == [STRING_POOL_BASE]
+    assert vm.memory[STRING_POOL_BASE] == ord("h")
+    assert vm.memory[STRING_POOL_BASE + 1] == ord("i")
+    assert vm.memory[STRING_POOL_BASE + 2] == 0
 
 
 def test_load_store():

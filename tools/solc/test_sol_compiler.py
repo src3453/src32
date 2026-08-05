@@ -53,6 +53,13 @@ def test_compile_negative_literal_uses_two_complement_hex():
     assert "LDI R1, 0xFFFFFFFF" in asm
 
 
+def test_compile_string_literal_emits_read_only_data():
+    asm = compile_to_src32_asm('"hi"')
+    assert "LDI R1, 0x2000000" in asm
+    assert ".ORG 0x2000000" in asm
+    assert ".DB 0x68, 0x69, 0x00" in asm
+
+
 def test_assembler_accepts_signed_ldi():
     assembler = Assembler()
     binary = assembler.assemble("LDI R1, -1")
@@ -131,3 +138,18 @@ fn add_two (a b) :
     assert "JR R31" in asm
     # arg0 for two-arg function should be loaded from R28 + 4
     assert "LD R1, [R28 + 4]" in asm
+
+
+def test_compile_function_can_use_constant():
+    src = """
+!const UART_ADDR 0x80040000
+
+fn putc (char) :
+    char UART_ADDR stb
+;
+
+0x30 putc
+"""
+    asm = compile_to_src32_asm(src)
+    assert "LDI R1, 0x80040000" in asm
+    assert "STB [R2 + 0], R1" in asm

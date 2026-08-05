@@ -1,11 +1,11 @@
-!var char 0 # define var
+!const UART_ADDR 0x80040000
 
-fn write ( c ) :
-    c 0x80040000 stb # write to uart
+fn putc (char) :
+    char UART_ADDR stb
 ;
 
-@loop # loop label
-    char write
-    char 1 add >char # increment counter and store to var
-    char 256 sub
-    jnz @loop # infinite loop
+!var i 0
+@loop
+i putc
+i 1 add >i
+jmp @loop
