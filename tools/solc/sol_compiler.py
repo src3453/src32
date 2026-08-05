@@ -31,7 +31,7 @@ def _emit_pop(lines: list[str], reg: str) -> None:
     lines.append("    ADDI R28, R28, 4")
 
 
-def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: bool = False) -> None:
+def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None) -> None:
     op = inst.op
     if debug:
         lines.append(f"    ; {op} {inst.arg if inst.arg is not None else ''}".rstrip())
@@ -39,6 +39,69 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
     if op == "push":
         assert isinstance(inst.arg, int)
         lines.append(f"    LDI R1, {_format_imm(inst.arg)}")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "arg":
+        # push argument by index from caller's stack (caller pushed args left-to-right)
+        assert isinstance(inst.arg, int)
+        if current_func is None or functions_map is None:
+            raise SolCompileError("'arg' emitted outside of function or missing functions_map")
+        argcount = functions_map.get(current_func)
+        if argcount is None:
+            raise SolCompileError(f"unknown function in emitter: {current_func}")
+        idx = inst.arg
+        if idx < 0 or idx >= argcount:
+            raise SolCompileError(f"argument index out of range for {current_func}: {idx}")
+        # caller's stack layout: top is last argument. address for arg idx:
+        offset = 4 * (argcount - 1 - idx)
+        lines.append(f"    LD R1, [R28 + {offset}]")
+        _emit_push(lines, "R1")
+        return
+
+    if op == "call":
+        assert isinstance(inst.arg, str)
+        func_name = inst.arg
+        if functions_map is None or func_name not in functions_map:
+            raise SolCompileError(f"call to unknown function in emitter: {func_name}")
+        argcount = functions_map[func_name]["argcount"]
+        n_locals = functions_map[func_name]["n_locals"]
+        frame_size = 4 * (n_locals + argcount)
+        # allocate frame and copy caller's args into frame slots
+        # LDI R1, frame_size
+        lines.append(f"    LDI R1, {_format_imm(frame_size)}")
+        # ADDI R2, R28, 0  ; save old R28
+        lines.append("    ADDI R2, R28, 0")
+        # ADDI R28, R28, -frame_size ; allocate
+        lines.append(f"    ADDI R28, R28, -{frame_size}")
+        # copy args from old stack (R2) to frame slots (R28)
+        for j in range(argcount):
+            old_off = 4 * (argcount - 1 - j)
+            new_off = 4 * (n_locals + j)
+            lines.append(f"    LD R3, [R2 + {old_off}]")
+            lines.append(f"    ST R3, [R28 + {new_off}]")
+        # jump-and-link
+        lines.append(f"    JAL {func_name}")
+        return
+
+    if op == "ret":
+        # Return: restore R28 by adding frame size then jump to LR
+        if current_func is None or functions_map is None:
+            raise SolCompileError("ret emitted outside of function or missing functions_map")
+        meta = functions_map.get(current_func)
+        if meta is None:
+            raise SolCompileError(f"unknown function metadata for {current_func}")
+        frame_size = 4 * (meta["n_locals"] + meta["argcount"]) 
+        if frame_size != 0:
+            lines.append(f"    ADDI R28, R28, {frame_size}")
+        lines.append("    JR R31")
+        return
+
+    if op == "local_addr":
+        # push address of local var: ADDI R1, R28, offset ; push R1
+        assert isinstance(inst.arg, int)
+        offset = 4 * inst.arg
+        lines.append(f"    ADDI R1, R28, {offset}")
         _emit_push(lines, "R1")
         return
 
@@ -197,7 +260,7 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x0000FFFC) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC) -> str:
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
 
@@ -214,17 +277,21 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
         lines.append("    HALT")
         return "\n".join(lines)
 
+    current_func: str | None = None
     for pc, inst in enumerate(program.instructions):
         for label_name in labels_by_pc.get(pc, []):
             lines.append(f"{label_name}:")
-        _emit_instruction(lines, inst, pc=pc, debug=debug)
+            # if this label is a function, switch current_func
+            if label_name in program.functions:
+                current_func = label_name
+        _emit_instruction(lines, inst, pc=pc, debug=debug, current_func=current_func, functions_map=program.functions)
 
     if program.instructions[-1].op != "halt":
         lines.append("    HALT")
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC) -> str:
     try:
         program = compile_program(source, var_base=var_base)
     except SolVMError as exc:

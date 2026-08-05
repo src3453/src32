@@ -115,3 +115,19 @@ def test_compile_comparison_ge():
     assert "SLT R1, R1, R2" in asm
     assert "__ge_false_" in asm
     assert "__ge_end_" in asm
+
+
+def test_compile_simple_function():
+    src = """
+fn add_two (a b) :
+    a b add
+    ret
+;
+
+1 2 add_two
+"""
+    asm = compile_to_src32_asm(src)
+    assert "JAL add_two" in asm
+    assert "JR R31" in asm
+    # arg0 for two-arg function should be loaded from R28 + 4
+    assert "LD R1, [R28 + 4]" in asm

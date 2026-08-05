@@ -149,3 +149,75 @@ def test_comparison_with_negative_numbers():
     vm = SolVM()
     stack = vm.run_source("-3 -5 lt")
     assert stack == [0]
+
+
+def test_simple_function_call():
+    vm = SolVM()
+    src = """
+fn add_two (a b) :
+    a b add
+    ret
+;
+
+1 2 add_two
+"""
+    stack = vm.run_source(src)
+    assert stack == [3]
+
+
+def test_nested_function_calls():
+    vm = SolVM()
+    src = """
+fn inc (x) :
+    x 1 add
+    ret
+;
+
+fn add_and_inc (a b) :
+    a b add
+    inc
+    ret
+;
+
+1 2 add_and_inc
+"""
+    stack = vm.run_source(src)
+    assert stack == [4]
+
+
+def test_recursive_factorial():
+    vm = SolVM()
+    src = """
+fn fact (n) :
+    n 1 le        # if n <= 1
+    jz @recurse
+    1             # base case: return 1
+    ret
+@recurse
+    n 1 sub
+    fact
+    n mul
+    ret
+;
+
+5 fact
+"""
+    stack = vm.run_source(src)
+    assert stack == [120]
+
+
+def test_local_lifetime_non_reentrant():
+    vm = SolVM()
+    src = """
+fn use_local (a) :
+    local t 0
+    a >t
+    t 2 mul
+    ret
+;
+
+1 2 use_local  # call use_local with 2
+"""
+    stack = vm.run_source(src)
+    # use_local returns 4
+    assert stack == [4]
