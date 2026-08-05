@@ -47,9 +47,10 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         assert isinstance(inst.arg, int)
         if current_func is None or functions_map is None:
             raise SolCompileError("'arg' emitted outside of function or missing functions_map")
-        argcount = functions_map.get(current_func)
-        if argcount is None:
+        meta = functions_map.get(current_func)
+        if meta is None:
             raise SolCompileError(f"unknown function in emitter: {current_func}")
+        argcount = meta["argcount"]
         idx = inst.arg
         if idx < 0 or idx >= argcount:
             raise SolCompileError(f"argument index out of range for {current_func}: {idx}")

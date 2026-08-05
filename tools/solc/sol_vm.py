@@ -48,8 +48,12 @@ def _strip_comment(line: str) -> str:
 def tokenize(source: str) -> list[str]:
     tokens: list[str] = []
     for line in source.splitlines():
-        # keep semicolon as its own token so constructs like function bodies can be delimited
-        clean = _strip_comment(line).replace(";", " ; ")
+        # keep semicolon and parentheses as their own tokens so constructs like function bodies
+        # and argument lists can be delimited and parsed reliably.
+        clean = _strip_comment(line)
+        clean = clean.replace(";", " ; ")
+        clean = clean.replace("(", " ( ")
+        clean = clean.replace(")", " ) ")
         pieces = clean.split()
         tokens.extend(pieces)
     return tokens
@@ -178,16 +182,26 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                 raise SolVMError(f"invalid function name: {name}")
             # parse args
             j = i + 2
-            if j >= len(tokens) or tokens[j] != "(":
-                raise SolVMError("fn requires argument list in parentheses")
-            j += 1
             args: list[str] = []
-            while j < len(tokens) and tokens[j] != ")":
-                args.append(tokens[j])
+            if j < len(tokens) and tokens[j] == "(":
+                # standard tokenized form: '(' arg1 arg2 ')' 
                 j += 1
-            if j >= len(tokens) or tokens[j] != ")":
-                raise SolVMError("unterminated function argument list")
-            j += 1
+                while j < len(tokens) and tokens[j] != ")":
+                    args.append(tokens[j])
+                    j += 1
+                if j >= len(tokens) or tokens[j] != ")":
+                    raise SolVMError("unterminated function argument list")
+                j += 1
+            elif j < len(tokens) and tokens[j].startswith("(") and tokens[j].endswith(")"):
+                # compact form: '(a b)'
+                inner = tokens[j][1:-1].strip()
+                if inner:
+                    args = inner.split()
+                else:
+                    args = []
+                j += 1
+            else:
+                raise SolVMError("fn requires argument list in parentheses")
             if j >= len(tokens) or tokens[j] != ":":
                 raise SolVMError("fn requires ':' after argument list")
             j += 1
@@ -272,6 +286,11 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
             # replace current token with expanded tokens
             tokens[i:i+1] = expanded
             # do not advance i; process the newly inserted tokens
+            continue
+
+        # semicolon as statement separator -- ignore it in main program
+        if tok == ";":
+            i += 1
             continue
 
         # labels
@@ -435,18 +454,38 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
         j = 0
         while j < len(body_tokens):
             bt = body_tokens[j]
-            # labels inside function are not supported in this simple implementation
+
+            # label definition inside function: '@name'
+            if isinstance(bt, str) and bt.startswith("@"):
+                label_raw = bt[1:]
+                if not LABEL_RE.match(label_raw):
+                    raise SolVMError(f"invalid label name: {bt}")
+                full_label = f"{fname}_{label_raw}"
+                if full_label in labels:
+                    raise SolVMError(f"duplicate label: {full_label}")
+                labels[full_label] = len(instructions)
+                j += 1
+                continue
+
+            # jumps inside function: operands are @label (local to function)
             if bt in {"jmp", "jz", "jnz"}:
                 if j + 1 >= len(body_tokens):
                     raise SolVMError(f"missing label operand for {bt} in function {fname}")
                 label_token = body_tokens[j + 1]
                 if not label_token.startswith("@"):
                     raise SolVMError(f"label operand must start with @: {label_token}")
-                label_name = label_token[1:]
-                if not LABEL_RE.match(label_name):
+                label_name_raw = label_token[1:]
+                if not LABEL_RE.match(label_name_raw):
                     raise SolVMError(f"invalid label name: {label_token}")
-                instructions.append(Instruction(bt, label_name))
+                full_label = f"{fname}_{label_name_raw}"
+                instructions.append(Instruction(bt, full_label))
                 j += 2
+                continue
+
+            # function call within function body
+            if bt in functions:
+                instructions.append(Instruction("call", bt))
+                j += 1
                 continue
 
             # ARG markers
@@ -485,13 +524,25 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
                 name = bt[1:]
                 if not LABEL_RE.match(name):
                     raise SolVMError(f"invalid variable name for store: {name}")
-                if name not in variables:
-                    raise SolVMError(f"undefined variable: {name}")
-                addr = variables[name]
-                instructions.append(Instruction("push", addr))
-                instructions.append(Instruction("st"))
-                j += 1
-                continue
+                # store to global variable
+                if name in variables:
+                    addr = variables[name]
+                    instructions.append(Instruction("push", addr))
+                    instructions.append(Instruction("st"))
+                    j += 1
+                    continue
+                # store to local variable
+                found_local = False
+                for lidx, (lname, _) in enumerate(locals_list):
+                    if lname == name:
+                        instructions.append(Instruction("local_addr", lidx))
+                        instructions.append(Instruction("st"))
+                        found_local = True
+                        break
+                if found_local:
+                    j += 1
+                    continue
+                raise SolVMError(f"undefined variable: {name}")
 
             if LABEL_RE.match(bt) and bt in variables:
                 addr = variables[bt]
