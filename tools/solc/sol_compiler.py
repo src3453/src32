@@ -86,28 +86,33 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
         return
 
     if op == "ret":
-        # Return: restore R28 by adding frame size then jump to LR
+        # Return value is the top of the callee stack; preserve it across frame teardown.
         if current_func is None or functions_map is None:
             raise SolCompileError("ret emitted outside of function or missing functions_map")
         meta = functions_map.get(current_func)
         if meta is None:
             raise SolCompileError(f"unknown function metadata for {current_func}")
-        frame_size = 4 * (meta["n_locals"] + meta["argcount"]) 
-        if frame_size != 0:
-            lines.append(f"    ADDI R28, R28, {frame_size}")
+        frame_size = 4 * (meta["n_locals"] + meta["argcount"])
+        restore_size = frame_size + 4 * meta["argcount"]
+        lines.append("    LD R1, [R28 + 0]")
+        if restore_size != 0:
+            lines.append(f"    ADDI R28, R28, {restore_size}")
+        lines.append("    ADDI R28, R28, -4")
+        lines.append("    ST R1, [R28 + 0]")
         lines.append("    JR R31")
         return
 
     if op == "retn":
-        # retn: same as ret at assembly level (caller expects no return value)
+        # retn discards any callee-produced values and restores the caller stack past args.
         if current_func is None or functions_map is None:
             raise SolCompileError("retn emitted outside of function or missing functions_map")
         meta = functions_map.get(current_func)
         if meta is None:
             raise SolCompileError(f"unknown function metadata for {current_func}")
-        frame_size = 4 * (meta["n_locals"] + meta["argcount"]) 
-        if frame_size != 0:
-            lines.append(f"    ADDI R28, R28, {frame_size}")
+        frame_size = 4 * (meta["n_locals"] + meta["argcount"])
+        restore_size = frame_size + 4 * meta["argcount"]
+        if restore_size != 0:
+            lines.append(f"    ADDI R28, R28, {restore_size}")
         lines.append("    JR R31")
         return
 
@@ -310,9 +315,9 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, source_path: str | None = None) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, source_path: str | None = None) -> str:
     try:
-        program = compile_program(source, var_base=var_base, source_path=source_path)
+        program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
     return emit_src32_from_program(program, debug=debug, stack_top=stack_top)

@@ -14,7 +14,7 @@ NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$")
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
-STRING_POOL_BASE = 0x02000000
+STRING_POOL_BASE = 0x00020000
 
 
 class SolVMError(RuntimeError):
@@ -144,7 +144,7 @@ def parse_number(token: str) -> int:
     return to_i32(value)
 
 
-def compile_program(source: str, var_base: int = 0x00100000, source_path: str | None = None, included_paths: set | None = None) -> Program:
+def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None) -> Program:
     # prepare include tracking and base directory
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
@@ -206,7 +206,7 @@ def compile_program(source: str, var_base: int = 0x00100000, source_path: str | 
     functions: dict[str, dict] = {}
     _local_counter = 0
     string_literals: dict[str, int] = {}
-    next_string_addr = STRING_POOL_BASE
+    next_string_addr = read_only_data_base
 
     def intern_string_literal(token: str) -> int:
         nonlocal next_string_addr
@@ -699,8 +699,8 @@ class SolVM:
         self.r28 = 0x000FFFFC
         self.call_stack = []
 
-    def load(self, source: str, source_path: str | None = None) -> None:
-        self.program = compile_program(source, source_path=source_path)
+    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE) -> None:
+        self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path)
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)
@@ -743,8 +743,8 @@ class SolVM:
             self.execute_instruction(inst, program.labels)
         return self.stack
 
-    def run_source(self, source: str, source_path: str | None = None) -> list[int]:
-        self.load(source, source_path=source_path)
+    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE) -> list[int]:
+        self.load(source, source_path=source_path, read_only_data_base=read_only_data_base)
         return self.run()
 
     def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:
@@ -837,8 +837,11 @@ class SolVM:
                 argcount = func_meta["argcount"]
                 frame_size = 4 * (n_locals + argcount)
                 self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
-            if self.stack:
-                self.stack = [self.stack[-1]]
+            stack_height = frame["stack_height"]
+            if len(self.stack) > stack_height:
+                self.stack = self.stack[:stack_height] + [self.stack[-1]]
+            else:
+                self.stack = self.stack[:stack_height]
             self.pc = frame["ret_pc"]
             return
 
@@ -855,8 +858,11 @@ class SolVM:
                 argcount = func_meta["argcount"]
                 frame_size = 4 * (n_locals + argcount)
                 self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
-            if self.stack:
-                self.stack = [self.stack[-1]]
+            stack_height = frame["stack_height"]
+            if len(self.stack) > stack_height:
+                self.stack = self.stack[:stack_height] + [self.stack[-1]]
+            else:
+                self.stack = self.stack[:stack_height]
             self.pc = frame["ret_pc"]
             return
 

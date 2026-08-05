@@ -55,9 +55,15 @@ def test_compile_negative_literal_uses_two_complement_hex():
 
 def test_compile_string_literal_emits_read_only_data():
     asm = compile_to_src32_asm('"hi"')
-    assert "LDI R1, 0x2000000" in asm
-    assert ".ORG 0x2000000" in asm
+    assert "LDI R1, 0x20000" in asm
+    assert ".ORG 0x20000" in asm
     assert ".DB 0x68, 0x69, 0x00" in asm
+
+
+def test_compile_string_literal_allows_custom_read_only_data_base():
+    asm = compile_to_src32_asm('"hi"', read_only_data_base=0x30000)
+    assert "LDI R1, 0x30000" in asm
+    assert ".ORG 0x30000" in asm
 
 
 def test_assembler_accepts_signed_ldi():
@@ -153,3 +159,15 @@ fn putc (char) :
     asm = compile_to_src32_asm(src)
     assert "LDI R1, 0x80040000" in asm
     assert "STB [R2 + 0], R1" in asm
+
+
+def test_compile_retn_restores_past_arguments():
+    src = """
+fn putc (char) :
+    char
+;
+
+0x30 putc
+"""
+    asm = compile_to_src32_asm(src)
+    assert "ADDI R28, R28, 8" in asm

@@ -42,6 +42,15 @@ def test_string_literal_pushes_pointer_and_loads_read_only_bytes():
     assert vm.memory[STRING_POOL_BASE + 2] == 0
 
 
+def test_string_literal_allows_custom_read_only_data_base():
+    vm = SolVM()
+    stack = vm.run_source('"hi"', read_only_data_base=0x30000)
+    assert stack == [0x30000]
+    assert vm.memory[0x30000] == ord("h")
+    assert vm.memory[0x30001] == ord("i")
+    assert vm.memory[0x30002] == 0
+
+
 def test_load_store():
     vm = SolVM()
     stack = vm.run_source("1 0 st 0 ld")
@@ -194,6 +203,26 @@ fn add_and_inc (a b) :
     assert stack == [4]
 
 
+def test_nested_function_call_preserves_caller_stack_below_args():
+    vm = SolVM()
+    src = """
+fn inc (x) :
+    x 1 add
+    ret
+;
+
+fn outer (x) :
+    1 2 x inc
+    add
+    ret
+;
+
+3 outer
+"""
+    stack = vm.run_source(src)
+    assert stack == [6]
+
+
 def test_recursive_factorial():
     vm = SolVM()
     src = """
@@ -228,5 +257,5 @@ fn use_local (a) :
 1 2 use_local  # call use_local with 2
 """
     stack = vm.run_source(src)
-    # use_local returns 4
-    assert stack == [4]
+    # call preserves preexisting stack values below the consumed argument
+    assert stack == [1, 4]

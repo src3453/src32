@@ -30,10 +30,10 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000) -> int:
     src = open(input_path, "r", encoding="utf-8").read()
     try:
-        asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top, source_path=input_path)
+        asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top, read_only_data_base=read_only_data_base, source_path=input_path)
     except SolCompileError as exc:
         print(f"sol compile error: {exc}", file=sys.stderr)
         return 1
@@ -61,6 +61,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--debug", action="store_true", help="include debug comments in output")
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
     compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
+    compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=0x00020000, help="base address for read-only data (default: 0x20000)")
     return parser
 
 
@@ -73,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "repl":
         return run_repl()
     if args.command == "compile":
-        return compile_stub(args.input, args.out, debug=args.debug, var_base=args.var_base, stack_top=args.stack_top)
+        return compile_stub(args.input, args.out, debug=args.debug, var_base=args.var_base, stack_top=args.stack_top, read_only_data_base=args.read_only_data_base)
     parser.error(f"unsupported command: {args.command}")
     return 2
 

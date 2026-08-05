@@ -4,8 +4,13 @@ fn putc (char) :
     char UART_ADDR stb
 ;
 
-!var i 0
-@loop
-i putc
-i 1 add >i
-jmp @loop
+fn print (ptr) :
+    @loop
+    local i 0
+    ptr i add ldb
+    i 1 add >i
+    dup putc
+    jnz @loop
+;
+
+"Hello, world!" print
