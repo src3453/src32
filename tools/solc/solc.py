@@ -60,7 +60,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("-o", "--out", help="output assembly path")
     compile_parser.add_argument("--debug", action="store_true", help="include debug comments in output")
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
-    compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x0000FFFC, help="initial stack top address for R28 (default: 0x0000FFFC)")
+    compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
     return parser
 
 
