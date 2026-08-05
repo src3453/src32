@@ -31,8 +31,10 @@ def _emit_pop(lines: list[str], reg: str) -> None:
     lines.append("    ADDI R28, R28, 4")
 
 
-def _emit_instruction(lines: list[str], inst: Instruction) -> None:
+def _emit_instruction(lines: list[str], inst: Instruction, debug: bool=False) -> None:
     op = inst.op
+    if debug:
+        lines.append(f"    ; {op} {inst.arg if inst.arg is not None else ''}".rstrip())
 
     if op == "push":
         assert isinstance(inst.arg, int)
@@ -123,7 +125,7 @@ def _emit_instruction(lines: list[str], inst: Instruction) -> None:
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False) -> str:
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
 
@@ -143,16 +145,16 @@ def emit_src32_from_program(program: Program) -> str:
     for pc, inst in enumerate(program.instructions):
         for label_name in labels_by_pc.get(pc, []):
             lines.append(f"{label_name}:")
-        _emit_instruction(lines, inst)
+        _emit_instruction(lines, inst, debug=debug)
 
     if program.instructions[-1].op != "halt":
         lines.append("    HALT")
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False) -> str:
     try:
         program = compile_program(source)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    return emit_src32_from_program(program)
+    return emit_src32_from_program(program, debug=debug)
