@@ -30,7 +30,7 @@ LDI R1, VDP_PCG_CURSOR_LINE_REG_ADDR ; Load VDP PCG Cursor Line Register Address
 LDI R2, 0x00 ; Load value to set cursor lines (all visible)
 STB [R1], R2 ; Set cursor lines
 LDI R1, VDP_PCG_CURSOR_BLINK_PERIOD_REG_ADDR ; Load VDP PCG Cursor Blink Period Register Address
-LDI R2, 0x10 ; Load value for cursor blink period (10 frames)
+LDI R2, 0x10 ; Load value for cursor blink period (16 frames)
 STB [R1], R2 ; Set cursor blink period
 LDI R1, VDP_BORDER_COLOR_REG_ADDR ; Load VDP PCG Cursor Blink Period Register Address
 LDI R2, 0x10 ; Load value for border color 

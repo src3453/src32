@@ -2,4 +2,5 @@
 @loop # loop label
     char 0x80040000 stb # write to uart
     char 1 add >char # increment counter and store to var
-    jmp @loop # infinite loop
+    char 256 sub
+    jnz @loop # infinite loop
