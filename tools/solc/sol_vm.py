@@ -84,6 +84,12 @@ def compile_program(source: str) -> Program:
     instructions: list[Instruction] = []
     labels: dict[str, int] = {}
 
+    # directive-managed symbols
+    constants: dict[str, int] = {}
+    variables: dict[str, int] = {}
+    # next variable address (4-byte aligned). Choose a modest default base.
+    next_var_addr = 0x100
+
     simple_ops = {
         "add",
         "sub",
@@ -111,6 +117,7 @@ def compile_program(source: str) -> Program:
     while i < len(tokens):
         tok = tokens[i]
 
+        # labels
         if tok.startswith("@"):
             label_name = tok[1:]
             if not LABEL_RE.match(label_name):
@@ -121,6 +128,7 @@ def compile_program(source: str) -> Program:
             i += 1
             continue
 
+        # jumps with label operand
         if tok in {"jmp", "jz", "jnz"}:
             if i + 1 >= len(tokens):
                 raise SolVMError(f"missing label operand for {tok}")
@@ -134,17 +142,93 @@ def compile_program(source: str) -> Program:
             i += 2
             continue
 
+        # compiler directives starting with '!'
+        if tok.startswith("!"):
+            if tok == "!const":
+                # !const NAME VALUE
+                if i + 2 >= len(tokens):
+                    raise SolVMError("!const requires a name and a value")
+                name = tokens[i + 1]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid constant name: {name}")
+                val_tok = tokens[i + 2]
+                if not NUMBER_RE.match(val_tok):
+                    raise SolVMError(f"invalid constant value: {val_tok}")
+                value = parse_number(val_tok)
+                if name in constants:
+                    raise SolVMError(f"duplicate constant: {name}")
+                constants[name] = value
+                i += 3
+                continue
+
+            if tok == "!var":
+                # !var NAME VALUE
+                if i + 2 >= len(tokens):
+                    raise SolVMError("!var requires a name and an initial value")
+                name = tokens[i + 1]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid variable name: {name}")
+                val_tok = tokens[i + 2]
+                if not NUMBER_RE.match(val_tok):
+                    raise SolVMError(f"invalid variable initial value: {val_tok}")
+                init_value = parse_number(val_tok)
+                if name in variables:
+                    raise SolVMError(f"duplicate variable: {name}")
+                addr = next_var_addr
+                next_var_addr += 4
+                variables[name] = addr
+                # initialize memory: push init_value, push addr, st
+                instructions.append(Instruction("push", init_value))
+                instructions.append(Instruction("push", addr))
+                instructions.append(Instruction("st"))
+                i += 3
+                continue
+
+            # other directives not yet supported
+            raise SolVMError(f"unsupported directive: {tok}")
+
+        # store operator: >name  (store top-of-stack into variable 'name')
+        if tok.startswith(">"):
+            name = tok[1:]
+            if not LABEL_RE.match(name):
+                raise SolVMError(f"invalid variable name for store: {name}")
+            if name not in variables:
+                raise SolVMError(f"undefined variable: {name}")
+            addr = variables[name]
+            # to store: stack has value on top; push address then call st
+            instructions.append(Instruction("push", addr))
+            instructions.append(Instruction("st"))
+            i += 1
+            continue
+
+        # simple operations
         if tok in simple_ops:
             instructions.append(Instruction(tok))
             i += 1
             continue
 
+        # constants
+        if tok in constants:
+            instructions.append(Instruction("push", constants[tok]))
+            i += 1
+            continue
+
+        # variable read: name -> push addr; ld
+        if LABEL_RE.match(tok) and tok in variables:
+            addr = variables[tok]
+            instructions.append(Instruction("push", addr))
+            instructions.append(Instruction("ld"))
+            i += 1
+            continue
+
+        # numbers
         if not NUMBER_RE.match(tok):
             raise SolVMError(f"unknown word: {tok}")
         value = parse_number(tok)
         instructions.append(Instruction("push", value))
         i += 1
 
+    # validate jump targets
     for inst in instructions:
         if inst.op in {"jmp", "jz", "jnz"} and isinstance(inst.arg, str):
             if inst.arg not in labels:
