@@ -197,7 +197,7 @@ def _emit_instruction(lines: list[str], inst: Instruction, pc: int = 0, debug: b
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program, debug: bool=False) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x0000FFFC) -> str:
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
 
@@ -208,7 +208,7 @@ def emit_src32_from_program(program: Program, debug: bool=False) -> str:
     lines: list[str] = []
     lines.append(".ORG 0x00000000")
     lines.append(f"{ENTRY_LABEL}:")
-    lines.append("    LDI R28, 0x0000FFFC")
+    lines.append(f"    LDI R28, {_format_imm(stack_top)}")
 
     if not program.instructions:
         lines.append("    HALT")
@@ -224,9 +224,9 @@ def emit_src32_from_program(program: Program, debug: bool=False) -> str:
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC) -> str:
     try:
-        program = compile_program(source)
+        program = compile_program(source, var_base=var_base)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    return emit_src32_from_program(program, debug=debug)
+    return emit_src32_from_program(program, debug=debug, stack_top=stack_top)

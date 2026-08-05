@@ -79,7 +79,7 @@ def parse_number(token: str) -> int:
     return to_i32(value)
 
 
-def compile_program(source: str) -> Program:
+def compile_program(source: str, var_base: int = 0x00100000) -> Program:
     tokens = tokenize(source)
     instructions: list[Instruction] = []
     labels: dict[str, int] = {}
@@ -87,8 +87,8 @@ def compile_program(source: str) -> Program:
     # directive-managed symbols
     constants: dict[str, int] = {}
     variables: dict[str, int] = {}
-    # next variable address (4-byte aligned). Choose a modest default base.
-    next_var_addr = 0x100
+    # next variable address (4-byte aligned) - configurable base
+    next_var_addr = var_base
 
     simple_ops = {
         "add",
@@ -162,16 +162,19 @@ def compile_program(source: str) -> Program:
                 continue
 
             if tok == "!var":
-                # !var NAME VALUE
-                if i + 2 >= len(tokens):
-                    raise SolVMError("!var requires a name and an initial value")
+                # !var NAME [VALUE]
+                if i + 1 >= len(tokens):
+                    raise SolVMError("!var requires a name and optional initial value")
                 name = tokens[i + 1]
                 if not LABEL_RE.match(name):
                     raise SolVMError(f"invalid variable name: {name}")
-                val_tok = tokens[i + 2]
-                if not NUMBER_RE.match(val_tok):
-                    raise SolVMError(f"invalid variable initial value: {val_tok}")
-                init_value = parse_number(val_tok)
+                # Check for optional initial value
+                init_value = 0
+                consumed = 2
+                if i + 2 < len(tokens) and NUMBER_RE.match(tokens[i + 2]):
+                    val_tok = tokens[i + 2]
+                    init_value = parse_number(val_tok)
+                    consumed = 3
                 if name in variables:
                     raise SolVMError(f"duplicate variable: {name}")
                 addr = next_var_addr
@@ -181,7 +184,7 @@ def compile_program(source: str) -> Program:
                 instructions.append(Instruction("push", init_value))
                 instructions.append(Instruction("push", addr))
                 instructions.append(Instruction("st"))
-                i += 3
+                i += consumed
                 continue
 
             # other directives not yet supported
