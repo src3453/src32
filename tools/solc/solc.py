@@ -14,7 +14,7 @@ def run_file(input_path: str) -> int:
     src = open(input_path, "r", encoding="utf-8").read()
     vm = SolVM()
     try:
-        stack = vm.run_source(src)
+        stack = vm.run_source(src, source_path=input_path)
     except SolVMError as exc:
         print(f"sol runtime error: {exc}", file=sys.stderr)
         return 1
@@ -33,7 +33,7 @@ def _parse_int_option(s: str) -> int:
 def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC) -> int:
     src = open(input_path, "r", encoding="utf-8").read()
     try:
-        asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top)
+        asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top, source_path=input_path)
     except SolCompileError as exc:
         print(f"sol compile error: {exc}", file=sys.stderr)
         return 1

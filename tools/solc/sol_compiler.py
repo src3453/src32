@@ -224,9 +224,9 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, source_path: str | None = None) -> str:
     try:
-        program = compile_program(source, var_base=var_base)
+        program = compile_program(source, var_base=var_base, source_path=source_path)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
     return emit_src32_from_program(program, debug=debug, stack_top=stack_top)
