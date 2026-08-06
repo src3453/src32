@@ -9,6 +9,7 @@ from sol_vm import Instruction, Program, SolVMError, compile_program
 
 ENTRY_LABEL = "__solc_entry"
 STACK_CACHE_REGS = tuple(f"R{i}" for i in range(1, 13))
+STACK_SIZE_BYTES = 0x00100000
 
 
 class SolCompileError(RuntimeError):
@@ -225,15 +226,28 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.push_from("R13")
         return
 
-    if op in {"add", "sub", "mul", "div", "shl", "shr"}:
+    if op in {"add", "sub", "mul", "div", "and", "or", "xor", "shl", "shr"}:
         cache.pop_to("R14")
         cache.pop_to("R13")
         if op == "shl":
             lines.append("    SLL R13, R13, R14")
         elif op == "shr":
             lines.append("    SRA R13, R13, R14")
+        elif op == "and":
+            lines.append("    AND R13, R13, R14")
+        elif op == "or":
+            lines.append("    OR R13, R13, R14")
+        elif op == "xor":
+            lines.append("    XOR R13, R13, R14")
         else:
             lines.append(f"    {op.upper()} R13, R13, R14")
+        cache.push_from("R13")
+        return
+
+    if op == "not":
+        cache.pop_to("R13")
+        lines.append("    LDI R14, 0xFFFFFFFF")
+        lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
 
@@ -276,28 +290,17 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
     if op == "eq":
         cache.pop_to("R14")
         cache.pop_to("R13")
-        true_label = f"__eq_true_{pc}"
-        end_label = f"__eq_end_{pc}"
-        lines.append(f"    BEQ R13, R14, {true_label}")
-        lines.append("    LDI R13, 0")
-        lines.append(f"    JMP {end_label}")
-        lines.append(f"{true_label}:")
-        lines.append("    LDI R13, 1")
-        lines.append(f"{end_label}:")
+        lines.append("    XOR R13, R13, R14")
+        lines.append("    LDI R15, 0x1")
+        lines.append("    SLTU R13, R13, R15")
         cache.push_from("R13")
         return
 
     if op == "neq":
         cache.pop_to("R14")
         cache.pop_to("R13")
-        true_label = f"__neq_true_{pc}"
-        end_label = f"__neq_end_{pc}"
-        lines.append(f"    BNE R13, R14, {true_label}")
-        lines.append("    LDI R13, 0")
-        lines.append(f"    JMP {end_label}")
-        lines.append(f"{true_label}:")
-        lines.append("    LDI R13, 1")
-        lines.append(f"{end_label}:")
+        lines.append("    XOR R13, R13, R14")
+        lines.append("    SLTU R13, R0, R13")
         cache.push_from("R13")
         return
 
@@ -356,6 +359,49 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "swap":
         cache.swap_top_two()
+        return
+
+    if op == "over":
+        cache.peek_to("R13", 1)
+        cache.push_from("R13")
+        return
+
+    if op == "rot":
+        cache.ensure_cached(3)
+        reg_c = cache._slot_reg(0)
+        reg_b = cache._slot_reg(1)
+        reg_a = cache._slot_reg(2)
+        lines.append(f"    ADDI R13, {reg_a}, 0")
+        lines.append(f"    ADDI R14, {reg_b}, 0")
+        lines.append(f"    ADDI R15, {reg_c}, 0")
+        lines.append(f"    ADDI {reg_c}, R13, 0")
+        lines.append(f"    ADDI {reg_b}, R15, 0")
+        lines.append(f"    ADDI {reg_a}, R14, 0")
+        return
+
+    if op == "nip":
+        cache.pop_to("R13")
+        cache.pop_discard()
+        cache.push_from("R13")
+        return
+
+    if op == "tuck":
+        cache.pop_to("R14")
+        cache.pop_to("R13")
+        cache.push_from("R14")
+        cache.push_from("R13")
+        cache.push_from("R14")
+        return
+
+    if op == "sgn":
+        cache.pop_to("R13")
+        lines.append("    SLT R13, R13, R0")
+        cache.push_from("R13")
+        return
+
+    if op == "stacksize":
+        lines.append(f"    LDI R13, {_format_imm(STACK_SIZE_BYTES)}")
+        cache.push_from("R13")
         return
 
     if op == "jmp":

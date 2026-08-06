@@ -41,6 +41,34 @@ def test_stack_ops():
     assert stack == [2, 2]
 
 
+def test_bitwise_ops():
+    vm = SolVM()
+    assert vm.run_source("6 3 and") == [2]
+
+    vm = SolVM()
+    assert vm.run_source("6 3 or") == [7]
+
+    vm = SolVM()
+    assert vm.run_source("6 3 xor") == [5]
+
+    vm = SolVM()
+    assert vm.run_source("0 not") == [-1]
+
+
+def test_extended_stack_ops():
+    vm = SolVM()
+    assert vm.run_source("1 2 over") == [1, 2, 1]
+
+    vm = SolVM()
+    assert vm.run_source("1 2 3 rot") == [2, 3, 1]
+
+    vm = SolVM()
+    assert vm.run_source("1 2 nip") == [2]
+
+    vm = SolVM()
+    assert vm.run_source("1 2 tuck") == [2, 1, 2]
+
+
 def test_label_and_jumps():
     vm = SolVM()
     stack = vm.run_source("3 @loop dup jz @end 1 sub jmp @loop @end drop")
@@ -193,6 +221,22 @@ def test_comparison_with_negative_numbers():
     vm = SolVM()
     stack = vm.run_source("-3 -5 lt")
     assert stack == [0]
+
+
+def test_sgn():
+    vm = SolVM()
+    assert vm.run_source("-5 sgn") == [1]
+
+    vm = SolVM()
+    assert vm.run_source("0 sgn") == [0]
+
+    vm = SolVM()
+    assert vm.run_source("7 sgn") == [0]
+
+
+def test_stacksize():
+    vm = SolVM()
+    assert vm.run_source("stacksize") == [0x00100000]
 
 
 def test_simple_function_call():

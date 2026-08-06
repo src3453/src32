@@ -16,6 +16,7 @@ INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
 STRING_POOL_BASE = 0x00020000
+STACK_SIZE_BYTES = 0x00100000
 
 
 class SolVMError(RuntimeError):
@@ -230,11 +231,19 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "sub",
         "mul",
         "div",
+        "and",
+        "or",
+        "xor",
+        "not",
         "shl",
         "shr",
         "dup",
         "drop",
         "swap",
+        "over",
+        "rot",
+        "nip",
+        "tuck",
         "ld",
         "st",
         "ldb",
@@ -247,7 +256,10 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "gt",
         "le",
         "ge",
+        "sgn",
         "ret",
+        "retn",
+        "stacksize",
         "halt",
     }
 
@@ -948,6 +960,33 @@ class SolVM:
             self.pc += 1
             return
 
+        if op == "and":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a & b))
+            self.pc += 1
+            return
+
+        if op == "or":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a | b))
+            self.pc += 1
+            return
+
+        if op == "xor":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a ^ b))
+            self.pc += 1
+            return
+
+        if op == "not":
+            a = self._pop()
+            self.stack.append(to_i32(~a))
+            self.pc += 1
+            return
+
         if op == "div":
             b = self._pop()
             a = self._pop()
@@ -989,6 +1028,36 @@ class SolVM:
             if len(self.stack) < 2:
                 raise SolVMError("stack underflow")
             self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+            self.pc += 1
+            return
+
+        if op == "over":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            self.stack.append(self.stack[-2])
+            self.pc += 1
+            return
+
+        if op == "rot":
+            if len(self.stack) < 3:
+                raise SolVMError("stack underflow")
+            self.stack[-3], self.stack[-2], self.stack[-1] = self.stack[-2], self.stack[-1], self.stack[-3]
+            self.pc += 1
+            return
+
+        if op == "nip":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            del self.stack[-2]
+            self.pc += 1
+            return
+
+        if op == "tuck":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            b = self._pop()
+            a = self._pop()
+            self.stack.extend([b, a, b])
             self.pc += 1
             return
 
@@ -1073,6 +1142,12 @@ class SolVM:
             self.pc += 1
             return
 
+        if op == "sgn":
+            a = self._pop()
+            self.stack.append(1 if a < 0 else 0)
+            self.pc += 1
+            return
+
         if op == "jmp":
             assert isinstance(inst.arg, str)
             self.pc = labels[inst.arg]
@@ -1092,6 +1167,11 @@ class SolVM:
 
         if op == "halt":
             self.halted = True
+            self.pc += 1
+            return
+
+        if op == "stacksize":
+            self.stack.append(STACK_SIZE_BYTES)
             self.pc += 1
             return
 

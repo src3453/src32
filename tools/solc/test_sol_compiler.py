@@ -24,6 +24,14 @@ def test_compile_shift_ops():
     assert "SRA R13, R13, R14" in asm
 
 
+def test_compile_bitwise_ops():
+    asm = compile_to_src32_asm("6 3 and 5 or 7 xor not")
+    assert "AND R13, R13, R14" in asm
+    assert "OR R13, R13, R14" in asm
+    assert "XOR R13, R13, R14" in asm
+    assert "LDI R14, 0xFFFFFFFF" in asm
+
+
 def test_compile_labels_and_jumps():
     asm = compile_to_src32_asm("@loop 1 jz @end jmp @loop @end halt")
     assert "loop:" in asm
@@ -37,6 +45,28 @@ def test_compile_stack_ops():
     assert "ADDI R13, R2, 0" in asm
     assert "ADDI R2, R1, 0" in asm
     assert "ADDI R1, R13, 0" in asm
+
+
+def test_compile_extended_stack_ops():
+    over_asm = compile_to_src32_asm("1 2 over")
+    assert "ADDI R13, R1, 0" in over_asm
+
+    rot_asm = compile_to_src32_asm("1 2 3 rot")
+    assert "ADDI R15, R3, 0" in rot_asm
+    assert "ADDI R3, R13, 0" in rot_asm
+
+    nip_asm = compile_to_src32_asm("1 2 nip")
+    assert "ADDI R13, R2, 0" in nip_asm
+
+    tuck_asm = compile_to_src32_asm("1 2 tuck")
+    assert "ADDI R14, R2, 0" in tuck_asm
+    assert "ADDI R3, R14, 0" in tuck_asm
+
+
+def test_compile_sgn_and_stacksize():
+    asm = compile_to_src32_asm("-1 sgn stacksize")
+    assert "SLT R13, R13, R0" in asm
+    assert "LDI R13, 0x100000" in asm
 
 
 def test_compile_load_store():
@@ -94,21 +124,24 @@ def test_compile_does_not_append_redundant_halt():
 
 def test_compile_comparison_eq_true():
     asm = compile_to_src32_asm("5 5 eq")
-    assert "BEQ R13, R14" in asm
-    assert "__eq_true_" in asm
-    assert "__eq_end_" in asm
+    assert "XOR R13, R13, R14" in asm
+    assert "SLTU R13, R13, R15" in asm
+    assert "BEQ R13, R14" not in asm
+    assert "BNE R13, R14" not in asm
 
 
 def test_compile_comparison_eq_false():
     asm = compile_to_src32_asm("5 3 eq")
-    assert "BEQ R13, R14" in asm
+    assert "XOR R13, R13, R14" in asm
+    assert "SLTU R13, R13, R15" in asm
 
 
 def test_compile_comparison_neq():
     asm = compile_to_src32_asm("5 3 neq")
-    assert "BNE R13, R14" in asm
-    assert "__neq_true_" in asm
-    assert "__neq_end_" in asm
+    assert "XOR R13, R13, R14" in asm
+    assert "SLTU R13, R0, R13" in asm
+    assert "BEQ R13, R14" not in asm
+    assert "BNE R13, R14" not in asm
 
 
 def test_compile_comparison_lt():
