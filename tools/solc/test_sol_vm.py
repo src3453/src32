@@ -9,6 +9,20 @@ def test_arithmetic_basic():
     assert stack == [6]
 
 
+def test_shift_ops():
+    vm = SolVM()
+    stack = vm.run_source("8 1 shl")
+    assert stack == [16]
+
+    vm = SolVM()
+    stack = vm.run_source("16 2 shr")
+    assert stack == [4]
+
+    vm = SolVM()
+    stack = vm.run_source("-8 1 shr")
+    assert stack == [-4]
+
+
 def test_trace_records_step_by_step_execution():
     vm = SolVM()
     vm.set_trace(True)

@@ -225,10 +225,15 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.push_from("R13")
         return
 
-    if op in {"add", "sub", "mul", "div"}:
+    if op in {"add", "sub", "mul", "div", "shl", "shr"}:
         cache.pop_to("R14")
         cache.pop_to("R13")
-        lines.append(f"    {op.upper()} R13, R13, R14")
+        if op == "shl":
+            lines.append("    SLL R13, R13, R14")
+        elif op == "shr":
+            lines.append("    SRA R13, R13, R14")
+        else:
+            lines.append(f"    {op.upper()} R13, R13, R14")
         cache.push_from("R13")
         return
 

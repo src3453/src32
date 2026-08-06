@@ -230,6 +230,8 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "sub",
         "mul",
         "div",
+        "shl",
+        "shr",
         "dup",
         "drop",
         "swap",
@@ -952,6 +954,22 @@ class SolVM:
             if b == 0:
                 raise SolVMError("division by zero")
             self.stack.append(to_i32(int(a / b)))
+            self.pc += 1
+            return
+
+        if op == "shl":
+            b = self._pop()
+            a = self._pop()
+            sh = b & 0x1F
+            self.stack.append(to_i32((a & UINT32_MAX) << sh))
+            self.pc += 1
+            return
+
+        if op == "shr":
+            b = self._pop()
+            a = self._pop()
+            sh = b & 0x1F
+            self.stack.append(to_i32(a >> sh))
             self.pc += 1
             return
 

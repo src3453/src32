@@ -1,7 +1,3 @@
-!include "sol/solstd/solstd_print.sol"
+!include "sol/solstd/solstd_array.sol"
 
-!var i 0
-@loop
-"Hello, World!" prnln
-i 1 add >i
-100 i sub jnz @loop
+"Hello, World!" 1 aget # return 0x6F2C2057 ("o, W")

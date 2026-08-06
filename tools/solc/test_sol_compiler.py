@@ -18,6 +18,12 @@ def test_compile_arithmetic_sequence():
     assert "ADD R13, R13, R14" in asm
 
 
+def test_compile_shift_ops():
+    asm = compile_to_src32_asm("8 1 shl 2 shr")
+    assert "SLL R13, R13, R14" in asm
+    assert "SRA R13, R13, R14" in asm
+
+
 def test_compile_labels_and_jumps():
     asm = compile_to_src32_asm("@loop 1 jz @end jmp @loop @end halt")
     assert "loop:" in asm

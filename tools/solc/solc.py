@@ -17,7 +17,7 @@ def run_file(input_path: str, trace: bool = False) -> int:
     try:
         stack = vm.run_source(src, source_path=input_path)
     except SolVMError as exc:
-        print(f"sol runtime error: {exc}", file=sys.stderr)
+        print(f"\033[91msol runtime error: {exc}\033[0m", file=sys.stderr)
         return 1
     if trace and vm.trace:
         print("trace:")
@@ -40,12 +40,12 @@ def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_b
     try:
         asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top, read_only_data_base=read_only_data_base, source_path=input_path)
     except SolCompileError as exc:
-        print(f"sol compile error: {exc}", file=sys.stderr)
+        print(f"\033[91msol compile error: {exc}\033[0m", file=sys.stderr)
         return 1
     if out_path:
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(asm)
-        print(f"Wrote output to {out_path}")
+        print(f"\033[92mWrote output to {out_path}\033[0m")
     else:
         print(asm)
     return 0
