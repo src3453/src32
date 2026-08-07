@@ -226,13 +226,15 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.push_from("R13")
         return
 
-    if op in {"add", "sub", "mul", "div", "and", "or", "xor", "shl", "shr"}:
+    if op in {"add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr"}:
         cache.pop_to("R14")
         cache.pop_to("R13")
         if op == "shl":
             lines.append("    SLL R13, R13, R14")
         elif op == "shr":
             lines.append("    SRA R13, R13, R14")
+        elif op == "mod":
+            lines.append("    MOD R13, R13, R14")
         elif op == "and":
             lines.append("    AND R13, R13, R14")
         elif op == "or":
@@ -241,6 +243,12 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
             lines.append("    XOR R13, R13, R14")
         else:
             lines.append(f"    {op.upper()} R13, R13, R14")
+        cache.push_from("R13")
+        return
+
+    if op == "neg":
+        cache.pop_to("R13")
+        lines.append("    SUB R13, R0, R13")
         cache.push_from("R13")
         return
 
@@ -293,6 +301,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         lines.append("    XOR R13, R13, R14")
         lines.append("    LDI R15, 0x1")
         lines.append("    SLTU R13, R13, R15")
+        lines.append("    XOR R13, R13, R15")
         cache.push_from("R13")
         return
 
@@ -301,6 +310,8 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R13")
         lines.append("    XOR R13, R13, R14")
         lines.append("    SLTU R13, R0, R13")
+        lines.append("    LDI R14, 0x1")
+        lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
 
@@ -308,6 +319,8 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R14")
         cache.pop_to("R13")
         lines.append("    SLT R13, R13, R14")
+        lines.append("    LDI R14, 0x1")
+        lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
 
@@ -315,6 +328,8 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R14")
         cache.pop_to("R13")
         lines.append("    SLT R13, R14, R13")
+        lines.append("    LDI R14, 0x1")
+        lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
 
@@ -325,10 +340,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         end_label = f"__le_end_{pc}"
         lines.append("    SLT R13, R14, R13")
         lines.append(f"    BNE R13, R0, {false_label}")
-        lines.append("    LDI R13, 1")
+        lines.append("    LDI R13, 0")
         lines.append(f"    JMP {end_label}")
         lines.append(f"{false_label}:")
-        lines.append("    LDI R13, 0")
+        lines.append("    LDI R13, 1")
         lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
@@ -340,10 +355,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         end_label = f"__ge_end_{pc}"
         lines.append("    SLT R13, R13, R14")
         lines.append(f"    BNE R13, R0, {false_label}")
-        lines.append("    LDI R13, 1")
+        lines.append("    LDI R13, 0")
         lines.append(f"    JMP {end_label}")
         lines.append(f"{false_label}:")
-        lines.append("    LDI R13, 0")
+        lines.append("    LDI R13, 1")
         lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
@@ -395,7 +410,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "sgn":
         cache.pop_to("R13")
-        lines.append("    SLT R13, R13, R0")
+        lines.append("    LDI R14, 31")
+        lines.append("    SRA R13, R13, R14")
+        lines.append("    LDI R14, 0x1")
+        lines.append("    AND R13, R13, R14")
         cache.push_from("R13")
         return
 

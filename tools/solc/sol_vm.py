@@ -231,6 +231,8 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "sub",
         "mul",
         "div",
+        "mod",
+        "neg",
         "and",
         "or",
         "xor",
@@ -996,6 +998,21 @@ class SolVM:
             self.pc += 1
             return
 
+        if op == "mod":
+            b = self._pop()
+            a = self._pop()
+            if b == 0:
+                raise SolVMError("division by zero")
+            self.stack.append(to_i32(a % b))
+            self.pc += 1
+            return
+
+        if op == "neg":
+            a = self._pop()
+            self.stack.append(to_i32(-a))
+            self.pc += 1
+            return
+
         if op == "shl":
             b = self._pop()
             a = self._pop()
@@ -1103,48 +1120,48 @@ class SolVM:
         if op == "eq":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a == b else 0)
+            self.stack.append(0 if a == b else 1)
             self.pc += 1
             return
 
         if op == "neq":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a != b else 0)
+            self.stack.append(0 if a != b else 1)
             self.pc += 1
             return
 
         if op == "lt":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a < b else 0)
+            self.stack.append(0 if a < b else 1)
             self.pc += 1
             return
 
         if op == "gt":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a > b else 0)
+            self.stack.append(0 if a > b else 1)
             self.pc += 1
             return
 
         if op == "le":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a <= b else 0)
+            self.stack.append(0 if a <= b else 1)
             self.pc += 1
             return
 
         if op == "ge":
             b = self._pop()
             a = self._pop()
-            self.stack.append(1 if a >= b else 0)
+            self.stack.append(0 if a >= b else 1)
             self.pc += 1
             return
 
         if op == "sgn":
             a = self._pop()
-            self.stack.append(1 if a < 0 else 0)
+            self.stack.append((to_i32(a) & UINT32_MAX) >> 31)
             self.pc += 1
             return
 

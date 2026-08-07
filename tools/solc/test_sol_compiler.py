@@ -18,6 +18,12 @@ def test_compile_arithmetic_sequence():
     assert "ADD R13, R13, R14" in asm
 
 
+def test_compile_mod_and_neg():
+    asm = compile_to_src32_asm("7 4 mod 7 neg")
+    assert "MOD R13, R13, R14" in asm
+    assert "SUB R13, R0, R13" in asm
+
+
 def test_compile_shift_ops():
     asm = compile_to_src32_asm("8 1 shl 2 shr")
     assert "SLL R13, R13, R14" in asm
@@ -65,7 +71,8 @@ def test_compile_extended_stack_ops():
 
 def test_compile_sgn_and_stacksize():
     asm = compile_to_src32_asm("-1 sgn stacksize")
-    assert "SLT R13, R13, R0" in asm
+    assert "SRA R13, R13, R14" in asm
+    assert "AND R13, R13, R14" in asm
     assert "LDI R13, 0x100000" in asm
 
 

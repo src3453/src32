@@ -9,6 +9,14 @@ def test_arithmetic_basic():
     assert stack == [6]
 
 
+def test_mod_and_neg_ops():
+    vm = SolVM()
+    assert vm.run_source("7 4 mod") == [3]
+
+    vm = SolVM()
+    assert vm.run_source("7 neg") == [-7]
+
+
 def test_shift_ops():
     vm = SolVM()
     stack = vm.run_source("8 1 shl")
@@ -148,79 +156,79 @@ def test_division_by_zero_error():
 def test_comparison_eq():
     vm = SolVM()
     stack = vm.run_source("5 5 eq")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 3 eq")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_neq():
     vm = SolVM()
     stack = vm.run_source("5 3 neq")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 5 neq")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_lt():
     vm = SolVM()
     stack = vm.run_source("3 5 lt")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 3 lt")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_gt():
     vm = SolVM()
     stack = vm.run_source("5 3 gt")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("3 5 gt")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_le():
     vm = SolVM()
     stack = vm.run_source("3 5 le")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 5 le")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 3 le")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_ge():
     vm = SolVM()
     stack = vm.run_source("5 3 ge")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("5 5 ge")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("3 5 ge")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_comparison_with_negative_numbers():
     vm = SolVM()
     stack = vm.run_source("-5 -3 lt")
-    assert stack == [1]
+    assert stack == [0]
 
     vm = SolVM()
     stack = vm.run_source("-3 -5 lt")
-    assert stack == [0]
+    assert stack == [1]
 
 
 def test_sgn():
@@ -298,7 +306,7 @@ def test_recursive_factorial():
     src = """
 fn fact (n) :
     n 1 le        # if n <= 1
-    jz @recurse
+    jnz @recurse
     1             # base case: return 1
     ret
 @recurse
