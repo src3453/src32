@@ -14,12 +14,6 @@ fn prn (ptr) :
     char jnz @loop # if not null then loop
 ;
 
-fn prnln (ptr) :
-    ptr prn # print with no ln
-    0x0d putc # put CR
-    0x0a putc # put LF
-;
-
 fn arevcp (ptr len ptr2) :
     local i 0
     local addr 0
