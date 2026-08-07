@@ -2,7 +2,6 @@
 // This module defines the SRC32 CPU struct, instruction set, and execution logic for the CPT32 emulator.
 
 use crate::bus::Bus;
-use std::time::Instant;
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
@@ -120,6 +119,10 @@ impl Cpu {
 
     pub fn is_running(&self) -> bool {
         self.running
+    }
+
+    pub fn cycles(&self) -> u128 {
+        self.cycles
     }
 
     pub fn read_mem_u8(&mut self, addr: u32) -> u8 {

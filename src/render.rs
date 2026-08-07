@@ -84,6 +84,7 @@ pub enum FrameError {
     Timeout,
     Occluded,
     Validation,
+    Overlay(String),
 }
 
 impl fmt::Display for FrameError {
@@ -389,6 +390,29 @@ impl WgpuPresenter {
     }
 
     pub fn render(&mut self, vdp: &Rc<RefCell<Vdp>>) -> Result<(), FrameError> {
+        self.render_with_overlay(vdp, |_, _, _, _| Ok(()))
+    }
+
+    pub fn device(&self) -> &wgpu::Device {
+        &self.device
+    }
+
+    pub fn queue(&self) -> &wgpu::Queue {
+        &self.queue
+    }
+
+    pub fn surface_format(&self) -> TextureFormat {
+        self.config.format
+    }
+
+    pub fn render_with_overlay<F>(
+        &mut self,
+        vdp: &Rc<RefCell<Vdp>>,
+        mut overlay: F,
+    ) -> Result<(), FrameError>
+    where
+        F: FnMut(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &TextureView) -> Result<(), FrameError>,
+    {
         let framebuffer = vdp.borrow();
         let fb = framebuffer.framebuffer();
         let (frame_width, frame_height) = fb.dimensions();
@@ -516,6 +540,8 @@ impl WgpuPresenter {
             render_pass.set_bind_group(0, &self.linear_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }
+
+        overlay(&self.device, &self.queue, &mut encoder, &surface_view)?;
 
         self.queue.submit(Some(encoder.finish()));
         output.present();
