@@ -22,6 +22,9 @@
 			"include": "#operators"
 		},
 		{
+			"include": "#controlKeywords"
+		},
+		{
 			"include": "#numbers"
 		},
 		{
@@ -141,6 +144,12 @@
 				"match": "@[A-Za-z_][A-Za-z0-9_]*"
 			}]
 		},
+		"controlKeywords": {
+			"patterns": [{
+				"name": "storage.type.function.sol",
+				"match": "\\b(?:if|while|else|end)\\b"
+			}]
+		},
 		"operators": {
 			"patterns": [{
 				"name": "variable.other.readwrite.c",
@@ -176,15 +185,6 @@
 			"patterns": [{
 				"name": "variable.other.assignment.sol",
 				"match": ">[A-Za-z_][A-Za-z0-9_]*"
-			}, {
-				"name": "variable.other.readwrite.sol",
-				"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
-			}]
-		},
-		"identifiers": {
-			"patterns": [{
-				"name": "variable.other.sol",
-				"match": "\\b[A-Za-z_][A-Za-z0-9_]*\\b"
 			}]
 		}
 	},

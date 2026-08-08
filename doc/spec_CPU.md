@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 1.1 (2026-07-02)
+Revision 2.0 (2026-08-08)
 
 # Changelog
+- 2.0 (2026-08-08): Major revision with updated instruction set and encoding.
 - 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
 - 1.0 (2026-06-20): Initial release of the specification.
 
