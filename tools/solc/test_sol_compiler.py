@@ -41,12 +41,14 @@ def test_compile_bitwise_ops():
     assert "LDIL R14, 0xFFFFFFFF" in asm
 
 
-def test_compile_labels_and_jumps():
-    asm = compile_to_src32_asm("@loop 1 jz @end jmp @loop @end halt")
-    assert "loop:" in asm
-    assert "end:" in asm
-    assert "BEQ R13, R0, end" in asm
-    assert "JMP loop" in asm
+def test_compile_structured_if_else_and_while():
+    asm = compile_to_src32_asm("1 2 lt if 3 else 4 end 0 while 1 end")
+    assert "__solc_if_false_" in asm
+    assert "__solc_if_end_" in asm
+    assert "__solc_while_start_" in asm
+    assert "BNE R13, R0" in asm
+    assert "BEQ R13, R0" in asm
+    assert "@loop" not in asm
 
 
 def test_compile_stack_ops():
@@ -128,7 +130,7 @@ def test_compile_unknown_word_error():
 
 
 def test_compile_missing_branch_operand_error():
-    with pytest.raises(SolCompileError, match="missing label operand"):
+    with pytest.raises(SolCompileError, match="hidden"):
         compile_to_src32_asm("jz")
 
 

@@ -77,10 +77,17 @@ def test_extended_stack_ops():
     assert vm.run_source("1 2 tuck") == [2, 1, 2]
 
 
-def test_label_and_jumps():
+def test_structured_if_else():
     vm = SolVM()
-    stack = vm.run_source("3 @loop dup jz @end 1 sub jmp @loop @end drop")
-    assert stack == []
+    assert vm.run_source("0 if 1 else 2 end") == [1]
+
+    vm = SolVM()
+    assert vm.run_source("1 if 1 else 2 end") == [2]
+
+
+def test_structured_while_consumes_condition():
+    vm = SolVM()
+    assert vm.run_source("0 while 1 end") == [0]
 
 
 def test_comments_and_semicolon():
@@ -135,10 +142,10 @@ def test_unknown_word_error():
         vm.run_source("1 nope")
 
 
-def test_undefined_label_error():
+def test_hidden_label_error():
     vm = SolVM()
-    with pytest.raises(SolVMError, match="undefined label"):
-        vm.run_source("jmp @missing")
+    with pytest.raises(SolVMError, match="hidden"):
+        vm.run_source("@missing")
 
 
 def test_stack_underflow_error():
@@ -305,14 +312,13 @@ def test_recursive_factorial():
     vm = SolVM()
     src = """
 fn fact (n) :
-    n 1 le        # if n <= 1
-    jnz @recurse
-    1             # base case: return 1
-    ret
-@recurse
-    n 1 sub
-    fact
-    n mul
+    n 1 le if
+        1
+    else
+        n 1 sub
+        fact
+        n mul
+    end
     ret
 ;
 

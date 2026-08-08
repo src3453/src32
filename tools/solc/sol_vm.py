@@ -6,15 +6,13 @@ import ast
 from dataclasses import dataclass
 import os
 import re
-from typing import Optional
-
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# support: decimal (optional leading -), hex (0x...), binary (0b...)
 NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
+
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
@@ -26,14 +24,14 @@ class SolVMError(RuntimeError):
 @dataclass(frozen=True)
 class Instruction:
     op: str
-    arg: Optional[int | str] = None
+    arg: int | str | None = None
 
 
 @dataclass(frozen=True)
 class Program:
     instructions: list[Instruction]
     labels: dict[str, int]
-    functions: dict[str, int]  # function name -> arg count
+    functions: dict[str, int]
     read_only_data: list[tuple[int, bytes]]
 
 
@@ -134,7 +132,6 @@ def parse_number(token: str) -> int:
         elif is_bin:
             value = int(core, 2)
         else:
-            # decimal (may be negative)
             value = int(core, 10)
     except ValueError as exc:
         raise SolVMError(f"invalid numeric literal: {token}") from exc
@@ -149,13 +146,14 @@ def parse_number(token: str) -> int:
         raise SolVMError(f"signed literal out of range: {token}")
     return to_i32(value)
 
+STRING_POOL_BASE = 0x00020000
+STACK_SIZE_BYTES = 0x00100000
 
 def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None) -> Program:
-    # prepare include tracking and base directory
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
 
-    def expand_includes(tokens: list[str], current_base: str | None, seen: set) -> list[str]:
+    def expand_includes(tokens: list[str], current_base: str | None, seen: set[str]) -> list[str]:
         out: list[str] = []
         i = 0
         while i < len(tokens):
@@ -164,7 +162,6 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 if i + 1 >= len(tokens):
                     raise SolVMError("!include requires a filename")
                 fname_tok = tokens[i + 1]
-                # strip optional surrounding quotes
                 if fname_tok.startswith('"') and fname_tok.endswith('"') and len(fname_tok) >= 2:
                     fname = _decode_string_literal(fname_tok)
                 else:
@@ -179,9 +176,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     raise SolVMError(f"include file not found: {include_path}")
                 seen.add(include_path)
                 included_text = open(include_path, "r", encoding="utf-8").read()
-                included_tokens = tokenize(included_text)
-                included_dir = os.path.dirname(include_path)
-                expanded = expand_includes(included_tokens, included_dir, seen)
+                expanded = expand_includes(tokenize(included_text), os.path.dirname(include_path), seen)
                 out.extend(expanded)
                 i += 2
                 continue
@@ -189,30 +184,24 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             i += 1
         return out
 
-    tokens = tokenize(source)
-    tokens = expand_includes(tokens, base_dir, included_paths)
-    # debug hook: if SOLC_DEBUG env var set, print tokens and enable verbose tracing
-    SOLC_DEBUG = os.getenv('SOLC_DEBUG') == '1'
+    tokens = expand_includes(tokenize(source), base_dir, included_paths)
+    SOLC_DEBUG = os.getenv("SOLC_DEBUG") == "1"
     if SOLC_DEBUG:
-        print('DEBUG: tokens after include expansion ->', tokens)
+        print("DEBUG: tokens after include expansion ->", tokens)
 
     instructions: list[Instruction] = []
     labels: dict[str, int] = {}
     read_only_data: list[tuple[int, bytes]] = []
 
-    # directive-managed symbols
     constants: dict[str, int] = {}
     variables: dict[str, int] = {}
-    # macros: simple textual substitution of single tokens -> list of tokens
     macros: dict[str, list[str]] = {}
-    # next variable address (4-byte aligned) - configurable base
     next_var_addr = var_base
-
-    # function definitions collected for inlining
     functions: dict[str, dict] = {}
-    _local_counter = 0
+
     string_literals: dict[str, int] = {}
     next_string_addr = read_only_data_base
+    control_label_counter = 0
 
     def intern_string_literal(token: str) -> int:
         nonlocal next_string_addr
@@ -225,6 +214,27 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         string_literals[text] = addr
         read_only_data.append((addr, data))
         return addr
+
+    def new_hidden_label(kind: str) -> str:
+        nonlocal control_label_counter
+        label = f"__solc_{kind}_{control_label_counter}"
+        control_label_counter += 1
+        return label
+
+    def expand_token_recursive(tok: str, seen: set[str]) -> list[str]:
+        if tok not in macros:
+            return [tok]
+        if tok in seen:
+            raise SolVMError(f"circular macro detected: {tok}")
+        seen.add(tok)
+        out: list[str] = []
+        for part in macros[tok]:
+            if part in macros:
+                out.extend(expand_token_recursive(part, seen))
+            else:
+                out.append(part)
+        seen.remove(tok)
+        return out
 
     simple_ops = {
         "add",
@@ -264,6 +274,356 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "stacksize",
         "halt",
     }
+
+    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None) -> bool:
+        if locals_list is not None:
+            for local_index, (local_name, _) in enumerate(locals_list):
+                if local_name == name:
+                    instructions.append(Instruction("local_addr", local_index))
+                    instructions.append(Instruction("st"))
+                    return True
+        if name in variables:
+            instructions.append(Instruction("push", variables[name]))
+            instructions.append(Instruction("st"))
+            return True
+        return False
+
+    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
+        nonlocal next_string_addr, next_var_addr
+        terminal_ops = {"ret", "retn", "halt"}
+        i = start_index
+        while i < len(words):
+            tok = words[i]
+
+            if stop_tokens is not None and tok in stop_tokens:
+                return i
+
+            if tok in macros:
+                words[i:i + 1] = expand_token_recursive(tok, set())
+                continue
+
+            if tok == ";":
+                i += 1
+                continue
+
+            if tok == "if":
+                false_label = new_hidden_label("if_false")
+                instructions.append(Instruction("jnz", false_label))
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"else", "end"})
+                if i >= len(words):
+                    raise SolVMError("if requires terminating end")
+                then_terminates = bool(instructions) and instructions[-1].op in terminal_ops
+                if words[i] == "else":
+                    end_label = None
+                    if not then_terminates:
+                        end_label = new_hidden_label("if_end")
+                        instructions.append(Instruction("jmp", end_label))
+                    labels[false_label] = len(instructions)
+                    i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                    if i >= len(words) or words[i] != "end":
+                        raise SolVMError("else requires terminating end")
+                    if end_label is not None:
+                        labels[end_label] = len(instructions)
+                    i += 1
+                    continue
+                if words[i] != "end":
+                    raise SolVMError(f"unexpected token in if block: {words[i]}")
+                labels[false_label] = len(instructions)
+                i += 1
+                continue
+
+            if tok == "while":
+                start_label = new_hidden_label("while_start")
+                labels[start_label] = len(instructions)
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                if i >= len(words) or words[i] != "end":
+                    raise SolVMError("while requires terminating end")
+                instructions.append(Instruction("jz", start_label))
+                i += 1
+                continue
+
+            if tok in {"else", "end"}:
+                if stop_tokens is not None and tok in stop_tokens:
+                    return i
+                raise SolVMError(f"unexpected token: {tok}")
+
+            if tok.startswith("@"): 
+                raise SolVMError("labels are hidden; use if/else/while/end")
+
+            if tok in {"jmp", "jz", "jnz"}:
+                raise SolVMError(f"raw jumps are hidden; use if/else/while/end: {tok}")
+
+            if tok.startswith("\\!"):
+                tok = tok[1:]
+
+            if tok.startswith("!"):
+                if current_func is not None:
+                    raise SolVMError(f"directives inside function not supported: {tok}")
+                if tok == "!const":
+                    if i + 2 >= len(words):
+                        raise SolVMError("!const requires a name and a value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid constant name: {name}")
+                    val_tok = words[i + 2]
+                    if not NUMBER_RE.match(val_tok):
+                        raise SolVMError(f"invalid constant value: {val_tok}")
+                    value = parse_number(val_tok)
+                    if name in constants:
+                        raise SolVMError(f"duplicate constant: {name}")
+                    constants[name] = value
+                    i += 3
+                    continue
+
+                if tok == "!var":
+                    if i + 1 >= len(words):
+                        raise SolVMError("!var requires a name and optional initial value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid variable name: {name}")
+                    init_value = 0
+                    consumed = 2
+                    if i + 2 < len(words) and NUMBER_RE.match(words[i + 2]):
+                        init_value = parse_number(words[i + 2])
+                        consumed = 3
+                    if name in variables:
+                        raise SolVMError(f"duplicate variable: {name}")
+                    addr = next_var_addr
+                    next_var_addr += 4
+                    variables[name] = addr
+                    instructions.append(Instruction("push", init_value))
+                    instructions.append(Instruction("push", addr))
+                    instructions.append(Instruction("st"))
+                    i += consumed
+                    continue
+
+                if tok == "!define":
+                    if i + 2 >= len(words):
+                        raise SolVMError("!define requires a name and a value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid macro name: {name}")
+                    value_tok = words[i + 2]
+                    if name in macros:
+                        raise SolVMError(f"duplicate macro: {name}")
+                    macros[name] = [value_tok]
+                    i += 3
+                    continue
+
+                if tok in {"!data", "!db"}:
+                    is_db = tok == "!db"
+                    j = i + 1
+                    data_tokens: list[str] = []
+                    while j < len(words) and words[j] != "!end":
+                        data_tokens.append(words[j])
+                        j += 1
+                    if j >= len(words) or words[j] != "!end":
+                        raise SolVMError(f"{tok} requires terminating !end")
+                    arr = bytearray()
+                    if not is_db:
+                        next_string_addr = (next_string_addr + 3) & ~3
+                    for dt in data_tokens:
+                        if not NUMBER_RE.match(dt):
+                            raise SolVMError(f"invalid data token for {tok}: {dt}")
+                        val = parse_number(dt)
+                        if is_db:
+                            arr.append(val & 0xFF)
+                        else:
+                            u32 = val & 0xFFFFFFFF
+                            arr.extend([(u32 >> 24) & 0xFF, (u32 >> 16) & 0xFF, (u32 >> 8) & 0xFF, u32 & 0xFF])
+                    read_only_data.append((next_string_addr, bytes(arr)))
+                    next_string_addr += len(arr)
+                    i = j + 1
+                    continue
+
+                raise SolVMError(f"unsupported directive: {tok}")
+
+            if tok.startswith(">"):
+                name = tok[1:]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid variable name for store: {name}")
+                if not store_target(name, locals_list):
+                    raise SolVMError(f"undefined variable: {name}")
+                i += 1
+                continue
+
+            if tok.startswith('"') and tok.endswith('"'):
+                instructions.append(Instruction("push", intern_string_literal(tok)))
+                i += 1
+                continue
+
+            if tok in simple_ops:
+                instructions.append(Instruction(tok))
+                i += 1
+                continue
+
+            if tok in functions:
+                instructions.append(Instruction("call", tok))
+                i += 1
+                continue
+
+            if tok in constants:
+                instructions.append(Instruction("push", constants[tok]))
+                i += 1
+                continue
+
+            if LABEL_RE.match(tok) and tok in variables:
+                instructions.append(Instruction("push", variables[tok]))
+                instructions.append(Instruction("ld"))
+                i += 1
+                continue
+
+            if tok.startswith("__ARG_"):
+                if current_func is None:
+                    raise SolVMError("argument marker found outside function body")
+                idx_str = tok.split("__ARG_")[-1]
+                try:
+                    arg_index = int(idx_str)
+                except ValueError as exc:
+                    raise SolVMError(f"invalid ARG marker in function {current_func}: {tok}") from exc
+                instructions.append(Instruction("arg", arg_index))
+                i += 1
+                continue
+
+            if tok.startswith("__LOCAL_"):
+                if current_func is None:
+                    raise SolVMError("local marker found outside function body")
+                idx_str = tok.split("__LOCAL_")[-1]
+                try:
+                    local_index = int(idx_str)
+                except ValueError as exc:
+                    raise SolVMError(f"invalid LOCAL marker in function {current_func}: {tok}") from exc
+                instructions.append(Instruction("local_addr", local_index))
+                instructions.append(Instruction("ld"))
+                i += 1
+                continue
+
+            if not NUMBER_RE.match(tok):
+                raise SolVMError(f"unknown word: {tok}")
+            instructions.append(Instruction("push", parse_number(tok)))
+            i += 1
+
+        return i
+
+    i = 0
+    cleaned_tokens: list[str] = []
+    if SOLC_DEBUG:
+        print("DEBUG: entering first-pass function collection; tokens length=", len(tokens))
+    while i < len(tokens):
+        tok = tokens[i]
+        if isinstance(tok, str) and tok.startswith("\\!"):
+            tok = tok[1:]
+        if SOLC_DEBUG and i % 50 == 0:
+            print(f"DEBUG first-pass i={i} tok={tok}")
+        if tok == "fn":
+            if i + 1 >= len(tokens):
+                raise SolVMError("fn requires a name")
+            name = tokens[i + 1]
+            if not LABEL_RE.match(name):
+                raise SolVMError(f"invalid function name: {name}")
+            j = i + 2
+            args: list[str] = []
+            if j < len(tokens) and tokens[j] == "(":
+                j += 1
+                while j < len(tokens) and tokens[j] != ")":
+                    args.append(tokens[j])
+                    j += 1
+                if j >= len(tokens) or tokens[j] != ")":
+                    raise SolVMError("unterminated function argument list")
+                j += 1
+            elif j < len(tokens) and tokens[j].startswith("(") and tokens[j].endswith(")"):
+                inner = tokens[j][1:-1].strip()
+                args = inner.split() if inner else []
+                j += 1
+            else:
+                raise SolVMError("fn requires argument list in parentheses")
+            if j >= len(tokens) or tokens[j] != ":":
+                raise SolVMError("fn requires ':' after argument list")
+            j += 1
+            body_tokens: list[str] = []
+            while j < len(tokens) and tokens[j] != ";":
+                body_tokens.append(tokens[j])
+                j += 1
+            if j >= len(tokens) or tokens[j] != ";":
+                raise SolVMError("function body not terminated with ';'")
+
+            locals_list: list[tuple[str, int | None]] = []
+            k = 0
+            while k < len(body_tokens):
+                if body_tokens[k] == "local":
+                    if k + 1 >= len(body_tokens):
+                        raise SolVMError("local requires a name")
+                    local_name = body_tokens[k + 1]
+                    if not LABEL_RE.match(local_name):
+                        raise SolVMError(f"invalid local name: {local_name}")
+                    init_value = None
+                    consumed = 2
+                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                        init_value = parse_number(body_tokens[k + 2])
+                        consumed = 3
+                    local_index = len(locals_list)
+                    locals_list.append((local_name, init_value))
+                    marker = f"__LOCAL_{local_index}"
+                    for idx in range(len(body_tokens)):
+                        if body_tokens[idx] == local_name:
+                            body_tokens[idx] = marker
+                    del body_tokens[k:k + consumed]
+                    continue
+                k += 1
+
+            for idx_arg, arg in enumerate(args):
+                marker = f"__ARG_{idx_arg}"
+                for idx in range(len(body_tokens)):
+                    if body_tokens[idx] == arg:
+                        body_tokens[idx] = marker
+
+            if name in functions:
+                raise SolVMError(f"duplicate function: {name}")
+            functions[name] = {"args": args, "body": body_tokens, "locals": locals_list}
+            i = j + 1
+            continue
+
+        cleaned_tokens.append(tok)
+        i += 1
+
+    compile_word_stream(cleaned_tokens)
+
+    if functions:
+        instructions.append(Instruction("halt"))
+
+    for fname, fdata in functions.items():
+        if fname in labels:
+            raise SolVMError(f"label/function name conflict: {fname}")
+        labels[fname] = len(instructions)
+        body_tokens = fdata["body"]
+        locals_list = fdata.get("locals", [])
+        func_code_start = len(instructions)
+
+        for local_index, (_, init_value) in enumerate(locals_list):
+            if init_value is not None:
+                instructions.append(Instruction("push", init_value))
+                instructions.append(Instruction("local_addr", local_index))
+                instructions.append(Instruction("st"))
+
+        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
+
+        if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
+            instructions.append(Instruction("retn"))
+
+    for inst in instructions:
+        if inst.op in {"jmp", "jz", "jnz"} and isinstance(inst.arg, str):
+            if inst.arg not in labels:
+                raise SolVMError(f"undefined label: {inst.arg}")
+
+    functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
+
+    return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
+
+'''
+            instructions.append(Instruction("push", value))
+            i += 1
+
+        return i
 
     # First pass: collect function definitions and remove them from token stream
     i = 0
@@ -362,215 +722,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
     # No inlining: keep cleaned tokens as main program tokens
     tokens = cleaned_tokens
-
-    # now parse main tokens into instructions
-    i = 0
-    # helper to recursively expand macros for a single token
-    def expand_token_recursive(tok: str, seen: set[str]) -> list[str]:
-        if tok not in macros:
-            return [tok]
-        if tok in seen:
-            raise SolVMError(f"circular macro detected: {tok}")
-        seen.add(tok)
-        out: list[str] = []
-        for part in macros[tok]:
-            if part in macros:
-                out.extend(expand_token_recursive(part, seen))
-            else:
-                out.append(part)
-        seen.remove(tok)
-        return out
-
-    while i < len(tokens):
-        tok = tokens[i]
-
-        # expand macros on-the-fly
-        if tok in macros:
-            expanded = expand_token_recursive(tok, set())
-            # replace current token with expanded tokens
-            tokens[i:i+1] = expanded
-            # do not advance i; process the newly inserted tokens
-            continue
-
-        # semicolon as statement separator -- ignore it in main program
-        if tok == ";":
-            i += 1
-            continue
-
-        # labels
-        if tok.startswith("@"):
-            label_name = tok[1:]
-            if not LABEL_RE.match(label_name):
-                raise SolVMError(f"invalid label name: {tok}")
-            if label_name in labels:
-                raise SolVMError(f"duplicate label: {label_name}")
-            labels[label_name] = len(instructions)
-            i += 1
-            continue
-
-        # jumps with label operand
-        if tok in {"jmp", "jz", "jnz"}:
-            if i + 1 >= len(tokens):
-                raise SolVMError(f"missing label operand for {tok}")
-            label_token = tokens[i + 1]
-            if not label_token.startswith("@"):
-                raise SolVMError(f"label operand must start with @: {label_token}")
-            label_name = label_token[1:]
-            if not LABEL_RE.match(label_name):
-                raise SolVMError(f"invalid label name: {label_token}")
-            instructions.append(Instruction(tok, label_name))
-            i += 2
-            continue
-
-        # compiler directives starting with '!'
-        if tok.startswith("!"):
-            if tok == "!const":
-                # !const NAME VALUE
-                if i + 2 >= len(tokens):
-                    raise SolVMError("!const requires a name and a value")
-                name = tokens[i + 1]
-                if not LABEL_RE.match(name):
-                    raise SolVMError(f"invalid constant name: {name}")
-                val_tok = tokens[i + 2]
-                if not NUMBER_RE.match(val_tok):
-                    raise SolVMError(f"invalid constant value: {val_tok}")
-                value = parse_number(val_tok)
-                if name in constants:
-                    raise SolVMError(f"duplicate constant: {name}")
-                constants[name] = value
-                i += 3
-                continue
-
-            if tok == "!var":
-                # !var NAME [VALUE]
-                if i + 1 >= len(tokens):
-                    raise SolVMError("!var requires a name and optional initial value")
-                name = tokens[i + 1]
-                if not LABEL_RE.match(name):
-                    raise SolVMError(f"invalid variable name: {name}")
-                # Check for optional initial value
-                init_value = 0
-                consumed = 2
-                if i + 2 < len(tokens) and NUMBER_RE.match(tokens[i + 2]):
-                    val_tok = tokens[i + 2]
-                    init_value = parse_number(val_tok)
-                    consumed = 3
-                if name in variables:
-                    raise SolVMError(f"duplicate variable: {name}")
-                addr = next_var_addr
-                next_var_addr += 4
-                variables[name] = addr
-                # initialize memory: push init_value, push addr, st
-                instructions.append(Instruction("push", init_value))
-                instructions.append(Instruction("push", addr))
-                instructions.append(Instruction("st"))
-                i += consumed
-                continue
-
-            if tok == "!define":
-                # !define NAME VALUE
-                if i + 2 >= len(tokens):
-                    raise SolVMError("!define requires a name and a value")
-                name = tokens[i + 1]
-                if not LABEL_RE.match(name):
-                    raise SolVMError(f"invalid macro name: {name}")
-                value_tok = tokens[i + 2]
-                if name in macros:
-                    raise SolVMError(f"duplicate macro: {name}")
-                # store replacement as list of tokens (single-token macro for now)
-                macros[name] = [value_tok]
-                i += 3
-                continue
-
-            if tok in {"!data", "!db"}:
-                # collect tokens until !end
-                is_db = (tok == "!db")
-                j = i + 1
-                data_tokens: list[str] = []
-                while j < len(tokens) and tokens[j] != "!end":
-                    data_tokens.append(tokens[j])
-                    j += 1
-                if j >= len(tokens) or tokens[j] != "!end":
-                    raise SolVMError(f"{tok} requires terminating !end")
-                # Build bytes
-                arr = bytearray()
-                # align for word data
-                if not is_db:
-                    # align to 4 bytes for word-aligned data
-                    next_string_addr = (next_string_addr + 3) & ~3
-                for dt in data_tokens:
-                    if not NUMBER_RE.match(dt):
-                        raise SolVMError(f"invalid data token for {tok}: {dt}")
-                    val = parse_number(dt)
-                    if is_db:
-                        arr.append(val & 0xFF)
-                    else:
-                        u32 = val & 0xFFFFFFFF
-                        arr.extend([(u32 >> 24) & 0xFF, (u32 >> 16) & 0xFF, (u32 >> 8) & 0xFF, u32 & 0xFF])
-                read_only_data.append((next_string_addr, bytes(arr)))
-                next_string_addr += len(arr)
-                i = j + 1
-                continue
-
-            # other directives not yet supported
-            raise SolVMError(f"unsupported directive: {tok}")
-
-        # store operator: >name  (store top-of-stack into variable 'name')
-        if tok.startswith(">"):
-            name = tok[1:]
-            if not LABEL_RE.match(name):
-                raise SolVMError(f"invalid variable name for store: {name}")
-            if name not in variables:
-                raise SolVMError(f"undefined variable: {name}")
-            addr = variables[name]
-            # to store: stack has value on top; push address then call st
-            instructions.append(Instruction("push", addr))
-            instructions.append(Instruction("st"))
-            i += 1
-            continue
-
-        if tok.startswith('"') and tok.endswith('"'):
-            addr = intern_string_literal(tok)
-            instructions.append(Instruction("push", addr))
-            i += 1
-            continue
-
-        # simple operations
-        if tok in simple_ops:
-            instructions.append(Instruction(tok))
-            i += 1
-            continue
-
-        # function call
-        if tok in functions:
-            instructions.append(Instruction("call", tok))
-            i += 1
-            continue
-
-        # constants
-        if tok in constants:
-            instructions.append(Instruction("push", constants[tok]))
-            i += 1
-            continue
-
-        # variable read: name -> push addr; ld
-        if LABEL_RE.match(tok) and tok in variables:
-            addr = variables[tok]
-            instructions.append(Instruction("push", addr))
-            instructions.append(Instruction("ld"))
-            i += 1
-            continue
-
-        # special ARG markers inside main program should be an error
-        if tok.startswith("__ARG_"):
-            raise SolVMError("argument marker found in main program")
-
-        # numbers
-        if not NUMBER_RE.match(tok):
-            raise SolVMError(f"unknown word: {tok}")
-        value = parse_number(tok)
-        instructions.append(Instruction("push", value))
-        i += 1
+    compile_word_stream(tokens)
 
     # terminate the main program so execution does not fall through into function bodies
     if functions:
@@ -593,125 +745,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         for local_index, (_, init_value) in enumerate(locals_list):
             if init_value is not None:
                 # push init_value, push address of local, st
-                instructions.append(Instruction("push", init_value))
-                instructions.append(Instruction("local_addr", local_index))
-                instructions.append(Instruction("st"))
-        # parse body tokens into instructions
-        j = 0
-        while j < len(body_tokens):
-            bt = body_tokens[j]
-
-            # label definition inside function: '@name'
-            if isinstance(bt, str) and bt.startswith("@"):
-                label_raw = bt[1:]
-                if not LABEL_RE.match(label_raw):
-                    raise SolVMError(f"invalid label name: {bt}")
-                full_label = f"{fname}_{label_raw}"
-                if full_label in labels:
-                    raise SolVMError(f"duplicate label: {full_label}")
-                labels[full_label] = len(instructions)
-                j += 1
-                continue
-
-            # jumps inside function: operands are @label (local to function)
-            if bt in {"jmp", "jz", "jnz"}:
-                if j + 1 >= len(body_tokens):
-                    raise SolVMError(f"missing label operand for {bt} in function {fname}")
-                label_token = body_tokens[j + 1]
-                if not label_token.startswith("@"):
-                    raise SolVMError(f"label operand must start with @: {label_token}")
-                label_name_raw = label_token[1:]
-                if not LABEL_RE.match(label_name_raw):
-                    raise SolVMError(f"invalid label name: {label_token}")
-                full_label = f"{fname}_{label_name_raw}"
-                instructions.append(Instruction(bt, full_label))
-                j += 2
-                continue
-
-            # function call within function body
-            if bt in functions:
-                instructions.append(Instruction("call", bt))
-                j += 1
-                continue
-
-            # ARG markers
-            if isinstance(bt, str) and bt.startswith("__ARG_"):
-                idx_str = bt.split("__ARG_")[-1]
-                try:
-                    idx = int(idx_str)
-                except ValueError:
-                    raise SolVMError(f"invalid ARG marker in function {fname}: {bt}")
-                instructions.append(Instruction("arg", idx))
-                j += 1
-                continue
-
-            # LOCAL markers
-            if isinstance(bt, str) and bt.startswith("__LOCAL_"):
-                idx_str = bt.split("__LOCAL_")[-1]
-                try:
-                    lidx = int(idx_str)
-                except ValueError:
-                    raise SolVMError(f"invalid LOCAL marker in function {fname}: {bt}")
-                # load local variable value from its frame-relative address
-                instructions.append(Instruction("local_addr", lidx))
-                instructions.append(Instruction("ld"))
-                j += 1
-                continue
-
-            # simple ops and others reuse some of the above parsing rules
-            if bt in simple_ops:
-                instructions.append(Instruction(bt))
-                j += 1
-                continue
-
-            if bt.startswith("!"):
-                raise SolVMError(f"directives inside function not supported: {bt}")
-
-            if isinstance(bt, str) and bt.startswith('"') and bt.endswith('"'):
-                addr = intern_string_literal(bt)
-                instructions.append(Instruction("push", addr))
-                j += 1
-                continue
-
-            if bt.startswith(">"):
-                name = bt[1:]
-                if not LABEL_RE.match(name):
-                    raise SolVMError(f"invalid variable name for store: {name}")
-                # store to local variable
-                found_local = False
-                for lidx, (lname, _) in enumerate(locals_list):
-                    if lname == name:
-                        instructions.append(Instruction("local_addr", lidx))
-                        instructions.append(Instruction("st"))
-                        found_local = True
-                        break
-                if found_local:
-                    j += 1
-                    continue
-                # store to global variable
-                if name in variables:
-                    addr = variables[name]
-                    instructions.append(Instruction("push", addr))
-                    instructions.append(Instruction("st"))
-                    j += 1
-                    continue
-                raise SolVMError(f"undefined variable: {name}")
-
-            if LABEL_RE.match(bt) and bt in constants:
-                instructions.append(Instruction("push", constants[bt]))
-                j += 1
-                continue
-
-            if LABEL_RE.match(bt) and bt in variables:
-                addr = variables[bt]
-                instructions.append(Instruction("push", addr))
-                instructions.append(Instruction("ld"))
-                j += 1
-                continue
-
-            if not NUMBER_RE.match(bt):
-                raise SolVMError(f"unknown word in function {fname}: {bt}")
-            value = parse_number(bt)
+                compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
             instructions.append(Instruction("push", value))
             j += 1
             continue
@@ -730,6 +764,8 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
 
     return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
+
+'''
 
 
 class SolVM:
