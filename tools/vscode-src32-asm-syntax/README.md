@@ -4,7 +4,7 @@ SRC16 CPUエミュレータ向けアセンブリ言語のシンタックスハ�
 
 ## 対応内容
 
-- 命令: `NOP`, `MOV`, `LD`, `ST`, `LDI`, `ADD`, `SUB`, `JMP`, `JZ`, `JNZ`, `PUSH`, `POP`, `CALL`, `RET`, `INT`, `IRET`, `EI`, `DI`, `AND`, `OR`, `XOR`, `SHL`, `SHR`, `CMP`, `TEST`, `NOT`, `INC`, `DEC`, `NEG`, `PUSHI`, `JR`, `JZR`, `JNZR`, `JC`, `JNC`, `JRI`, `LEA`, `STI`, `LDB`, `STB`, `CPUID`, `RESET`, `HALT`
+- 命令: `NOP`, `MOV`, `LD`, `ST`, `LDIH`, `LDIL`, `ADD`, `SUB`, `JMP`, `JZ`, `JNZ`, `PUSH`, `POP`, `CALL`, `RET`, `INT`, `IRET`, `EI`, `DI`, `AND`, `OR`, `XOR`, `SHL`, `SHR`, `CMP`, `TEST`, `NOT`, `INC`, `DEC`, `NEG`, `PUSHI`, `JR`, `JZR`, `JNZR`, `JC`, `JNC`, `JRI`, `LEA`, `STI`, `LDB`, `STB`, `CPUID`, `RESET`, `HALT`
 - ディレクティブ: `.ORG`, `.WORD`, `.BYTE`, `.DB`, `.STRING`
 - レジスタ: `R0`-`R15`, `SP`, `PC`, `FLAG`
 - 数値リテラル: 10進, `0x`16進, `0b`2進

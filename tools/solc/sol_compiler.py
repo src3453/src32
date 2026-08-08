@@ -23,6 +23,13 @@ def _format_imm(value: int) -> str:
     return hex(masked)
 
 
+def _emit_load_imm32(lines: list[str], reg: str, value: int) -> None:
+    imm = _format_imm(value)
+    lines.append(f"    ADDI {reg}, R0, 0")
+    lines.append(f"    LDIH {reg}, {imm}")
+    lines.append(f"    LDIL {reg}, {imm}")
+
+
 class _StackCacheEmitter:
     def __init__(self, lines: list[str]) -> None:
         self.lines = lines
@@ -133,7 +140,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "push":
         assert isinstance(inst.arg, int)
-        lines.append(f"    LDI R13, {_format_imm(inst.arg)}")
+        _emit_load_imm32(lines, "R13", inst.arg)
         cache.push_from("R13")
         return
 
@@ -254,7 +261,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "not":
         cache.pop_to("R13")
-        lines.append("    LDI R14, 0xFFFFFFFF")
+        _emit_load_imm32(lines, "R14", 0xFFFFFFFF)
         lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
@@ -299,7 +306,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R14")
         cache.pop_to("R13")
         lines.append("    XOR R13, R13, R14")
-        lines.append("    LDI R15, 0x1")
+        _emit_load_imm32(lines, "R15", 0x1)
         lines.append("    SLTU R13, R13, R15")
         lines.append("    XOR R13, R13, R15")
         cache.push_from("R13")
@@ -310,7 +317,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R13")
         lines.append("    XOR R13, R13, R14")
         lines.append("    SLTU R13, R0, R13")
-        lines.append("    LDI R14, 0x1")
+        _emit_load_imm32(lines, "R14", 0x1)
         lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
@@ -319,7 +326,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R14")
         cache.pop_to("R13")
         lines.append("    SLT R13, R13, R14")
-        lines.append("    LDI R14, 0x1")
+        _emit_load_imm32(lines, "R14", 0x1)
         lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
@@ -328,7 +335,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         cache.pop_to("R14")
         cache.pop_to("R13")
         lines.append("    SLT R13, R14, R13")
-        lines.append("    LDI R14, 0x1")
+        _emit_load_imm32(lines, "R14", 0x1)
         lines.append("    XOR R13, R13, R14")
         cache.push_from("R13")
         return
@@ -340,10 +347,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         end_label = f"__le_end_{pc}"
         lines.append("    SLT R13, R14, R13")
         lines.append(f"    BNE R13, R0, {false_label}")
-        lines.append("    LDI R13, 0")
+        _emit_load_imm32(lines, "R13", 0)
         lines.append(f"    JMP {end_label}")
         lines.append(f"{false_label}:")
-        lines.append("    LDI R13, 1")
+        _emit_load_imm32(lines, "R13", 1)
         lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
@@ -355,10 +362,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         end_label = f"__ge_end_{pc}"
         lines.append("    SLT R13, R13, R14")
         lines.append(f"    BNE R13, R0, {false_label}")
-        lines.append("    LDI R13, 0")
+        _emit_load_imm32(lines, "R13", 0)
         lines.append(f"    JMP {end_label}")
         lines.append(f"{false_label}:")
-        lines.append("    LDI R13, 1")
+        _emit_load_imm32(lines, "R13", 1)
         lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
@@ -410,15 +417,15 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "sgn":
         cache.pop_to("R13")
-        lines.append("    LDI R14, 31")
+        _emit_load_imm32(lines, "R14", 31)
         lines.append("    SRA R13, R13, R14")
-        lines.append("    LDI R14, 0x1")
+        _emit_load_imm32(lines, "R14", 0x1)
         lines.append("    AND R13, R13, R14")
         cache.push_from("R13")
         return
 
     if op == "stacksize":
-        lines.append(f"    LDI R13, {_format_imm(STACK_SIZE_BYTES)}")
+        _emit_load_imm32(lines, "R13", STACK_SIZE_BYTES)
         cache.push_from("R13")
         return
 
@@ -465,7 +472,7 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     lines: list[str] = []
     lines.append(".ORG 0x00000000")
     lines.append(f"{ENTRY_LABEL}:")
-    lines.append(f"    LDI R28, {_format_imm(stack_top)}")
+    _emit_load_imm32(lines, "R28", stack_top)
     cache = _StackCacheEmitter(lines)
 
     current_func: str | None = None

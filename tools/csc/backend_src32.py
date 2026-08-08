@@ -24,8 +24,8 @@ def emit_src32(emitter) -> str:
     # Prologue: set SP and GP
     asm_lines.append(".ORG 0x00000000")
     asm_lines.append("start:")
-    asm_lines.append("    LDI R28, 0x0000FFFC    ; init SP")
-    asm_lines.append("    LDI R30, vars          ; GP -> vars base")
+    _emit_load_imm32(asm_lines, "R28", 0x0000FFFC)
+    _emit_load_imm32(asm_lines, "R30", "vars")
 
     # If a main entrypoint exists, call it first.
     main_label = None
@@ -61,7 +61,7 @@ def emit_src32(emitter) -> str:
 
         elif op == "PUSH_CONST":
             val = instr[1]
-            asm_lines.append(f"    LDI R1, {format_imm(val)}")
+            _emit_load_imm32(asm_lines, "R1", val)
             emit_push_reg("R1")
 
         elif op == "POP":
@@ -106,19 +106,19 @@ def emit_src32(emitter) -> str:
 
             if cmpop == "==":
                 asm_lines.append(f"    BEQ R1, R2, cmp_true_{i}")
-                asm_lines.append("    LDI R1, 0")
+                _emit_load_imm32(asm_lines, "R1", 0)
                 asm_lines.append(f"    JMP cmp_end_{i}")
                 asm_lines.append(f"cmp_true_{i}:")
-                asm_lines.append("    LDI R1, 1")
+                _emit_load_imm32(asm_lines, "R1", 1)
                 asm_lines.append(f"cmp_end_{i}:")
                 emit_push_reg("R1")
 
             elif cmpop == "!=":
                 asm_lines.append(f"    BNE R1, R2, cmp_true_{i}")
-                asm_lines.append("    LDI R1, 0")
+                _emit_load_imm32(asm_lines, "R1", 0)
                 asm_lines.append(f"    JMP cmp_end_{i}")
                 asm_lines.append(f"cmp_true_{i}:")
-                asm_lines.append("    LDI R1, 1")
+                _emit_load_imm32(asm_lines, "R1", 1)
                 asm_lines.append(f"cmp_end_{i}:")
                 emit_push_reg("R1")
 
@@ -133,20 +133,20 @@ def emit_src32(emitter) -> str:
             elif cmpop == "<=":
                 asm_lines.append("    SLT R1, R2, R1")
                 asm_lines.append(f"    BEQ R1, R0, le_true_{i}")
-                asm_lines.append("    LDI R1, 0")
+                _emit_load_imm32(asm_lines, "R1", 0)
                 asm_lines.append(f"    JMP le_end_{i}")
                 asm_lines.append(f"le_true_{i}:")
-                asm_lines.append("    LDI R1, 1")
+                _emit_load_imm32(asm_lines, "R1", 1)
                 asm_lines.append(f"le_end_{i}:")
                 emit_push_reg("R1")
 
             elif cmpop == ">=":
                 asm_lines.append("    SLT R1, R1, R2")
                 asm_lines.append(f"    BEQ R1, R0, ge_true_{i}")
-                asm_lines.append("    LDI R1, 0")
+                _emit_load_imm32(asm_lines, "R1", 0)
                 asm_lines.append(f"    JMP ge_end_{i}")
                 asm_lines.append(f"ge_true_{i}:")
-                asm_lines.append("    LDI R1, 1")
+                _emit_load_imm32(asm_lines, "R1", 1)
                 asm_lines.append(f"ge_end_{i}:")
                 emit_push_reg("R1")
 
@@ -202,3 +202,10 @@ def format_imm(val: int) -> str:
             return str(val)
         return hex(val)
     return str(val)
+
+
+def _emit_load_imm32(asm_lines: List[str], reg: str, value) -> None:
+    imm = format_imm(value)
+    asm_lines.append(f"    ADDI {reg}, R0, 0")
+    asm_lines.append(f"    LDIH {reg}, {imm}")
+    asm_lines.append(f"    LDIL {reg}, {imm}")

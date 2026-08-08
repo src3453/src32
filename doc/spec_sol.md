@@ -244,8 +244,10 @@ TODO: 番号を変更する
 ```
 !asm
 ; ここからアセンブリコード
-LDI R1, 0x1234 ; Load VDP Mode Register Address
-LDI R2, 0x01 ; Load value to set VDP to text mode
+LDIH R1, 0x1234 ; Load VDP Mode Register Address
+LDIL R1, 0x1234
+LDIH R2, 0x0000
+LDIL R2, 0x0001 ; Load value to set VDP to text mode
 STB [R1], R2 ; Set VDP to text mode
 !end
 ```

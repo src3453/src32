@@ -210,13 +210,13 @@ impl DebugUiState {
                 let mut addr = base;
                 for _ in 0..count {
                     let marker = if addr == cpu.pc() { "=>" } else { "  " };
-                    let raw = cpu.read_u40(addr);
+                    let raw = cpu.read_u32(addr);
                     let text = cpu.disassemble_at(addr);
                     ui.text(format!(
-                        "{} 0x{:08X}: {:010X}  {}",
+                        "{} 0x{:08X}: {:08X}  {}",
                         marker, addr, raw, text
                     ));
-                    addr = addr.wrapping_add(5);
+                    addr = addr.wrapping_add(4);
                 }
             });
     }

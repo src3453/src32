@@ -432,7 +432,8 @@ define i32 @main() {
 """
         emitter = compile_llvm_ir(src)
         asm = emit_src32(emitter)
-        assert "LDI R1" in asm
+        assert "LDIH R1" in asm
+        assert "LDIL R1" in asm
         assert "HALT" in asm
 
     def test_add_e2e(self):

@@ -71,7 +71,7 @@
 ;         0x01: MOV dst_reg, src1_reg - Move data from src1_reg to dst_reg
 ;         0x02: LD dst_reg, [src1_reg] - Load data from memory address formed by src1_reg into dst_reg
 ;         0x03: ST [dst_reg], src1_reg - Store data from src1_reg into memory address formed by dst_reg
-;         0x04: LDI dst_reg, imm_val - Load immediate value into dst_reg
+;         0x04: LDIH/LDIL dst_reg, imm_val - Load immediate value into dst_reg
 ; 
 ;         ALU Operations:
 ;         0x05: ADD dst_reg, src1_reg, src2_reg - Add src1_reg and src2_reg, store result in dst_reg
@@ -160,10 +160,13 @@
 
 ; Assembler test program 
 
-ldi R1, 0x1234 ; Load immediate value 0x1234 into register R1
-ldi R2, 0x5678 ; Load immediate value 0x5678 into register R2
+ldih R1, 0x1234 ; Load upper half of immediate value into register R1
+ldil R1, 0x1234
+ldih R2, 0x5678 ; Load upper half of immediate value into register R2
+ldil R2, 0x5678
 add R3, R1, R2 ; Add values in R1 and R2, store result in R3 (R3 should now contain 0x68AC)
-ldi R4, 0x0020 ; Load immediate value 0x0020 into register R4 (memory address to store the result)
+ldih R4, 0x0020 ; Load memory address into register R4
+ldil R4, 0x0020
 st R4, R3      ; Store value from R3 into memory address pointed to by R4 (memory[0x0020] should now contain 0x68AC)
 halt           ; Halt the CPU
 

@@ -1,14 +1,17 @@
 .ORG 0x00000000
 start:
-    LDI R28, 0x0000FFFC    ; init SP
-    LDI R30, vars          ; GP -> vars base
+    LDIH R28, 0x0000FFFC   ; init SP
+    LDIL R28, 0x0000FFFC
+    LDIH R30, vars         ; GP -> vars base
+    LDIL R30, vars
     JAL bc_0
     HALT
 bc_0: ; SAVE_RET
     LD R31, [R28 + 0]
     ADDI R28, R28, 4
 bc_1: ; PUSH_CONST 0
-    LDI R1, 0x0
+    LDIH R1, 0x0
+    LDIL R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_2: ; STORE_VAR 0
@@ -16,7 +19,8 @@ bc_2: ; STORE_VAR 0
     ADDI R28, R28, 4
     ST R1, [R30 + 0]    ; store var 0
 bc_3: ; PUSH_CONST 0
-    LDI R1, 0x0
+    LDIH R1, 0x0
+    LDIL R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_4: ; STORE_VAR 1
@@ -28,7 +32,8 @@ bc_5: ; LOAD_VAR 0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_6: ; PUSH_CONST 10
-    LDI R1, 0xa
+    LDIH R1, 0xa
+    LDIL R1, 0xa
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_7: ; CMP <
@@ -71,7 +76,8 @@ bc_14: ; LOAD_VAR 0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_15: ; PUSH_CONST 1
-    LDI R1, 0x1
+    LDIH R1, 0x1
+    LDIL R1, 0x1
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_16: ; ADD
@@ -100,7 +106,8 @@ bc_21: ; RETURN
     ADDI R28, R28, 4
     JR R31
 bc_22: ; PUSH_CONST 0
-    LDI R1, 0x0
+    LDIH R1, 0x0
+    LDIL R1, 0x0
     ADDI R28, R28, -4
     ST R1, [R28 + 0]
 bc_23: ; RETURN

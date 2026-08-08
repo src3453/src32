@@ -7,7 +7,7 @@ Revision 1.1 (2026-07-02)
 
 ## 1. Overview
 
-SRC32 is a 32-bit educational RISC CPU with fixed-length 40-bit instructions.
+SRC32 is a 32-bit educational RISC CPU with fixed-length 32-bit instructions.
 This repository includes:
 
 - CPU emulator in Rust (`src/main.rs`)
@@ -28,34 +28,24 @@ The goal is clarity and experimentation over micro-architectural complexity.
 
 ## 3. Instruction Encoding
 
-All instructions are 5 bytes (40 bits), big-endian bit layout.
+All instructions are 4 bytes (32 bits), big-endian bit layout.
 
 ### 3.1 Standard formats
 
-- Register mode (`mode = 00`):
-  - `[op:8][mode:2][rd:5][rs1:5][rs2:5][unused:15]`
-- Immediate mode (`mode = 01`):
-  - `[op:8][mode:2][rd:5][rs1:5][imm16:16][unused:4]`
-- Memory mode (`mode = 10`):
-  - `[op:8][mode:2][rd:5][base:5][off16:16][unused:4]`
-- Extension mode (`mode = 11`):
-  - reserved
+- Register mode:
+  - `[op:6][rd:5][rs1:5][rs2:5][unused:11]`
+- Immediate mode:
+  - `[op:6][rd:5][rs1:5][imm16:16]`
+- Memory mode:
+  - `[op:6][rd:5][base:5][off16:16]`
 
 Bit positions:
 
-- `op`: bits `39..32`
-- `mode`: bits `31..30`
-- `rd`: bits `29..25`
-- `rs1/base`: bits `24..20`
-- `rs2`: bits `19..15` (register mode only)
-- `imm16/off16`: bits `19..4` (immediate/memory modes)
-
-### 3.2 LDI special encoding
-
-`LDI` uses opcodes `0xE0..0xFF` and bypasses the `mode` field:
-
-- `111[rd:5][imm32:32]`
-- `imm32 = low 32 bits`
+- `op`: bits `31..26`
+- `rd`: bits `25..21`
+- `rs1/base`: bits `20..16`
+- `rs2`: bits `15..11` (register mode only)
+- `imm16/off16`: bits `15..0` (immediate/memory modes)
 
 ## 4. ISA
 
@@ -68,16 +58,17 @@ Bit positions:
 - `0x04 (imm)`: `ADDI rd, rs1, imm16`: Add `rs1` and sign-extended `imm16`, store result in `rd`
 - `0x05 (reg)`: `SUB rd, rs1, rs2`: Subtract `rs2` from `rs1`, store result in `rd`
 - `0x06 (reg)`: `SLT rd, rs1, rs2` (signed): Set `rd = 1` if `rs1 < rs2`, else `rd = 0`
-- `0x07 (imm)`: `BEQ rs1, rs2, off16`: Branch to `PC + 5 + sign_extend(off16)` if `rs1 == rs2`
-- `0x08 (imm)`: `BNE rs1, rs2, off16`: Branch to `PC + 5 + sign_extend(off16)` if `rs1 != rs2`
-- `0x09 (imm)`: `JMP off16`: Jump to `PC + 5 + sign_extend(off16)`
-- `0x0A (imm)`: `JAL off16`: Jump and link: `R31 <- PC + 5`, then `PC <- PC + 5 + sign_extend(off16)`
+- `0x07 (imm)`: `BEQ rs1, rs2, off16`: Branch to `PC + 4 + sign_extend(off16)` if `rs1 == rs2`
+- `0x08 (imm)`: `BNE rs1, rs2, off16`: Branch to `PC + 4 + sign_extend(off16)` if `rs1 != rs2`
+- `0x09 (imm)`: `JMP off16`: Jump to `PC + 4 + sign_extend(off16)`
+- `0x0A (imm)`: `JAL off16`: Jump and link: `R31 <- PC + 4`, then `PC <- PC + 4 + sign_extend(off16)`
 - `0x0B (reg)`: `JR rd`: Jump to address in `rd`: `PC <- R[rd]`
-- `0xDE (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
+- `0x3C (imm)`: `LDIL rd, imm16`: Load the low 16 bits into `rd`, preserving the upper 16 bits
+- `0x3D (imm)`: `LDIH rd, imm16`: Load the high 16 bits into `rd`, preserving the lower 16 bits
+- `0x3E (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
-- `0xDF (reg)`: `HALT`: Stop execution loop
-- `0xE0..0xFF`: `LDI rd, imm32`: Load immediate 32-bit value into `rd`
+- `0x3F (reg)`: `HALT`: Stop execution loop
 `BEQ`/`BNE` note:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
@@ -117,11 +108,11 @@ Bit positions:
 
 ## 5. Execution Semantics
 
-Instruction size is always 5 bytes.
+Instruction size is always 4 bytes.
 
 Default next PC:
 
-- `next_pc = PC + 5`
+- `next_pc = PC + 4`
 
 Branch and jump targets:
 
@@ -164,7 +155,8 @@ Endianness:
   - `ST R3, [R4 - 8]`
   - `BEQ R1, R2, loop`
   - `JAL func`
-  - `LDI R5, 0x12345678`
+  - `LDIH R5, 0x1234`
+  - `LDIL R5, 0x5678`
 - Directives:
   - `.ORG <address>`
   - `.BYTE <value>`
@@ -184,7 +176,7 @@ Endianness:
 
 For label operands of `BEQ`, `BNE`, `JMP`, `JAL`:
 
-- `offset = label_address - (current_pc + 5)`
+- `offset = label_address - (current_pc + 4)`
 
 ## 8. Build and Run
 

@@ -5,7 +5,7 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "asm"))
 
-from asm import Assembler, enc_ldi
+from asm import Assembler
 from sol_compiler import SolCompileError, compile_to_src32_asm
 
 
@@ -13,8 +13,10 @@ def test_compile_arithmetic_sequence():
     asm = compile_to_src32_asm("1 2 add")
     assert ".ORG 0x00000000" in asm
     assert "__solc_entry:" in asm
-    assert "LDI R13, 0x1" in asm
-    assert "LDI R13, 0x2" in asm
+    assert "LDIH R13, 0x1" in asm
+    assert "LDIL R13, 0x1" in asm
+    assert "LDIH R13, 0x2" in asm
+    assert "LDIL R13, 0x2" in asm
     assert "ADD R13, R13, R14" in asm
 
 
@@ -35,7 +37,8 @@ def test_compile_bitwise_ops():
     assert "AND R13, R13, R14" in asm
     assert "OR R13, R13, R14" in asm
     assert "XOR R13, R13, R14" in asm
-    assert "LDI R14, 0xFFFFFFFF" in asm
+    assert "LDIH R14, 0xFFFFFFFF" in asm
+    assert "LDIL R14, 0xFFFFFFFF" in asm
 
 
 def test_compile_labels_and_jumps():
@@ -73,7 +76,8 @@ def test_compile_sgn_and_stacksize():
     asm = compile_to_src32_asm("-1 sgn stacksize")
     assert "SRA R13, R13, R14" in asm
     assert "AND R13, R13, R14" in asm
-    assert "LDI R13, 0x100000" in asm
+    assert "LDIH R13, 0x100000" in asm
+    assert "LDIL R13, 0x100000" in asm
 
 
 def test_compile_load_store():
@@ -92,26 +96,30 @@ def test_compile_byte_and_halfword_load_store():
 
 def test_compile_negative_literal_uses_two_complement_hex():
     asm = compile_to_src32_asm("-1 0 ld")
-    assert "LDI R13, 0xFFFFFFFF" in asm
+    assert "LDIH R13, 0xFFFFFFFF" in asm
+    assert "LDIL R13, 0xFFFFFFFF" in asm
 
 
 def test_compile_string_literal_emits_read_only_data():
     asm = compile_to_src32_asm('"hi"')
-    assert "LDI R13, 0x20000" in asm
+    assert "LDIH R13, 0x20000" in asm
+    assert "LDIL R13, 0x20000" in asm
     assert ".ORG 0x20000" in asm
     assert ".DB 0x68, 0x69, 0x00" in asm
 
 
 def test_compile_string_literal_allows_custom_read_only_data_base():
     asm = compile_to_src32_asm('"hi"', read_only_data_base=0x30000)
-    assert "LDI R13, 0x30000" in asm
+    assert "LDIH R13, 0x30000" in asm
+    assert "LDIL R13, 0x30000" in asm
     assert ".ORG 0x30000" in asm
 
 
 def test_assembler_accepts_signed_ldi():
     assembler = Assembler()
-    binary = assembler.assemble("LDI R1, -1")
-    assert binary == enc_ldi(1, 0xFFFFFFFF)
+    binary = assembler.assemble("LDIH R1, -1\nLDIL R1, -1")
+    assert binary[:4] == assembler.assemble("LDIH R1, -1")
+    assert binary[4:] == assembler.assemble("LDIL R1, -1")
 
 
 def test_compile_unknown_word_error():
@@ -219,7 +227,8 @@ fn putc (char) :
 0x30 putc
 """
     asm = compile_to_src32_asm(src)
-    assert "LDI R13, 0x80040000" in asm
+    assert "LDIH R13, 0x80040000" in asm
+    assert "LDIL R13, 0x80040000" in asm
     assert "STB [R14 + 0], R13" in asm
 
 
@@ -239,7 +248,7 @@ def test_compile_stack_cache_spills_only_after_cache_is_full():
     src = " ".join(str(i) for i in range(1, 14))
     asm = compile_to_src32_asm(src)
     first_spill = asm.find("ADDI R28, R28, -4")
-    push_13 = asm.find("LDI R13, 0xd")
+    push_13 = asm.find("LDIH R13, 0xd")
     assert first_spill > push_13
 
 

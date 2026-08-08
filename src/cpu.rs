@@ -8,31 +8,10 @@ pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE
 pub const CYCLES_PER_SCANLINE: u32 = CYCLES_PER_FRAME / 240; // 3,333 cycles/scanline
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum AddrMode {
-    Register,
-    Immediate,
-    Memory,
-    Extension,
-}
-
-impl AddrMode {
-    fn from_bits(bits: u8) -> Self {
-        match bits {
-            0 => Self::Register,
-            1 => Self::Immediate,
-            2 => Self::Memory,
-            3 => Self::Extension,
-            _ => unreachable!(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Instruction {
     Nop,
     Ld { rd: u8, base: u8, offset: i16 },
     St { rd: u8, base: u8, offset: i16 },
-    Ldi { rd: u8, imm: u32 },
     Add { rd: u8, rs1: u8, rs2: u8 },
     Addi { rd: u8, rs1: u8, imm: i16 },
     Sub { rd: u8, rs1: u8, rs2: u8 },
@@ -61,7 +40,9 @@ enum Instruction {
     Ldh { rd: u8, base: u8, offset: i16 },
     Stb { rd: u8, base: u8, offset: i16 },
     Sth { rd: u8, base: u8, offset: i16 },
-    Unknown(u64),
+    Ldil { rd: u8, imm: u16 },
+    Ldih { rd: u8, imm: u16 },
+    Unknown(u32),
 }
 
 const REG_ZERO: usize = 0;
@@ -76,7 +57,7 @@ const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and divis
 const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 
-const INSN_SIZE: u32 = 5;
+const INSN_SIZE: u32 = 4;
 
 pub struct Cpu {
     reg: [u32; 32],
@@ -163,102 +144,92 @@ impl Cpu {
         Ok("".into())
     }
 
-    fn fetch_u40(&mut self) -> u64 {
-        // use 32-bit read to fetch in 2 cycles instead of 5 separate 8-bit reads
-        let w0 = self.bus.read_u32_be(self.pc) as u64;
-        let b4 = self.bus.read_u8(self.pc.wrapping_add(4)) as u64;
-        (w0 << 8) | b4
+    fn fetch_u32(&mut self) -> u32 {
+        self.bus.read_u32_be(self.pc)
     }
 
-    fn fetch_u40_at(&mut self, addr: u32) -> u64 {
-        let w0 = self.bus.read_u32_be(addr) as u64;
-        let b4 = self.bus.read_u8(addr.wrapping_add(4)) as u64;
-        (w0 << 8) | b4
+    fn fetch_u32_at(&mut self, addr: u32) -> u32 {
+        self.bus.read_u32_be(addr)
     }
 
-    fn decode(raw: u64) -> Instruction {
-        let op = ((raw >> 32) & 0xFF) as u8;
+    fn decode(raw: u32) -> Instruction {
+        let op = ((raw >> 26) & 0x3F) as u8;
+        let rd = ((raw >> 21) & 0x1F) as u8;
+        let rs1 = ((raw >> 16) & 0x1F) as u8;
+        let rs2 = ((raw >> 11) & 0x1F) as u8;
+        let imm16 = (raw & 0xFFFF) as i16;
+        let imm_u16 = (raw & 0xFFFF) as u16;
 
-        if (0xE0..=0xFF).contains(&op) {
-            let rd = op & 0x1F;
-            let imm = (raw & 0xFFFF_FFFF) as u32;
-            return Instruction::Ldi { rd, imm };
-        }
-
-        let mode = AddrMode::from_bits(((raw >> 30) & 0x03) as u8);
-        let rd = ((raw >> 25) & 0x1F) as u8;
-        let rs1 = ((raw >> 20) & 0x1F) as u8;
-        let rs2 = ((raw >> 15) & 0x1F) as u8;
-        let imm16 = ((raw >> 4) & 0xFFFF) as i16;
-
-        match (op, mode) {
-            (0x00, AddrMode::Register) => Instruction::Nop,
-            (0x01, AddrMode::Memory) => Instruction::Ld {
+        match op {
+            0x00 => Instruction::Nop,
+            0x01 => Instruction::Ld {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0x02, AddrMode::Memory) => Instruction::St {
+            0x02 => Instruction::St {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0x03, AddrMode::Register) => Instruction::Add { rd, rs1, rs2 },
-            (0x04, AddrMode::Immediate) => Instruction::Addi {
+            0x03 => Instruction::Add { rd, rs1, rs2 },
+            0x04 => Instruction::Addi {
                 rd,
                 rs1,
                 imm: imm16,
             },
-            (0x05, AddrMode::Register) => Instruction::Sub { rd, rs1, rs2 },
-            (0x06, AddrMode::Register) => Instruction::Slt { rd, rs1, rs2 },
-            (0x07, AddrMode::Immediate) => Instruction::Beq {
+            0x05 => Instruction::Sub { rd, rs1, rs2 },
+            0x06 => Instruction::Slt { rd, rs1, rs2 },
+            0x07 => Instruction::Beq {
                 rs1,
                 rs2: rd,
                 offset: imm16,
             },
-            (0x08, AddrMode::Immediate) => Instruction::Bne {
+            0x08 => Instruction::Bne {
                 rs1,
                 rs2: rd,
                 offset: imm16,
             },
-            (0x09, AddrMode::Immediate) => Instruction::Jmp { offset: imm16 },
-            (0x0A, AddrMode::Immediate) => Instruction::Jal { offset: imm16 },
-            (0x0B, AddrMode::Register) => Instruction::Jr { rd },
-            (0x0C, AddrMode::Register) => Instruction::And { rd, rs1, rs2 },
-            (0x0D, AddrMode::Register) => Instruction::Or { rd, rs1, rs2 },
-            (0x0E, AddrMode::Register) => Instruction::Xor { rd, rs1, rs2 },
-            (0x0F, AddrMode::Register) => Instruction::Sll { rd, rs1, rs2 },
-            (0x10, AddrMode::Register) => Instruction::Srl { rd, rs1, rs2 },
-            (0x11, AddrMode::Register) => Instruction::Sla { rd, rs1, rs2 },
-            (0x12, AddrMode::Register) => Instruction::Sra { rd, rs1, rs2 },
-            (0x17, AddrMode::Register) => Instruction::Sltu { rd, rs1, rs2 },
-            (0x18, AddrMode::Register) => Instruction::Mul { rd, rs1, rs2 },
-            (0x19, AddrMode::Register) => Instruction::Div { rd, rs1, rs2 },
-            (0x1A, AddrMode::Register) => Instruction::Mod { rd, rs1, rs2 },
-            (0x1B, AddrMode::Register) => Instruction::Mulh { rd, rs1, rs2 },
-            (0x1C, AddrMode::Register) => Instruction::Divu { rd, rs1, rs2 },
-            (0x13, AddrMode::Memory) => Instruction::Ldb {
+            0x09 => Instruction::Jmp { offset: imm16 },
+            0x0A => Instruction::Jal { offset: imm16 },
+            0x0B => Instruction::Jr { rd },
+            0x0C => Instruction::And { rd, rs1, rs2 },
+            0x0D => Instruction::Or { rd, rs1, rs2 },
+            0x0E => Instruction::Xor { rd, rs1, rs2 },
+            0x0F => Instruction::Sll { rd, rs1, rs2 },
+            0x10 => Instruction::Srl { rd, rs1, rs2 },
+            0x11 => Instruction::Sla { rd, rs1, rs2 },
+            0x12 => Instruction::Sra { rd, rs1, rs2 },
+            0x13 => Instruction::Ldb {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0x14, AddrMode::Memory) => Instruction::Ldh {
+            0x14 => Instruction::Ldh {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0x15, AddrMode::Memory) => Instruction::Stb {
+            0x15 => Instruction::Stb {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0x16, AddrMode::Memory) => Instruction::Sth {
+            0x16 => Instruction::Sth {
                 rd,
                 base: rs1,
                 offset: imm16,
             },
-            (0xDE, AddrMode::Register) => Instruction::Cpuid,
-            (0xDF, AddrMode::Register) => Instruction::Halt,
+            0x17 => Instruction::Sltu { rd, rs1, rs2 },
+            0x18 => Instruction::Mul { rd, rs1, rs2 },
+            0x19 => Instruction::Div { rd, rs1, rs2 },
+            0x1A => Instruction::Mod { rd, rs1, rs2 },
+            0x1B => Instruction::Mulh { rd, rs1, rs2 },
+            0x1C => Instruction::Divu { rd, rs1, rs2 },
+            0x3C => Instruction::Ldil { rd, imm: imm_u16 },
+            0x3D => Instruction::Ldih { rd, imm: imm_u16 },
+            0x3E => Instruction::Cpuid,
+            0x3F => Instruction::Halt,
             _ => Instruction::Unknown(raw),
         }
     }
@@ -272,7 +243,6 @@ impl Cpu {
             Instruction::St { rd, base, offset } => {
                 format!("ST [R{} + {}], R{}", base, offset, rd)
             }
-            Instruction::Ldi { rd, imm } => format!("LDI R{}, 0x{:08X}", rd, imm),
             Instruction::Add { rd, rs1, rs2 } => format!("ADD R{}, R{}, R{}", rd, rs1, rs2),
             Instruction::Addi { rd, rs1, imm } => format!("ADDI R{}, R{}, {}", rd, rs1, imm),
             Instruction::Sub { rd, rs1, rs2 } => format!("SUB R{}, R{}, R{}", rd, rs1, rs2),
@@ -313,18 +283,24 @@ impl Cpu {
             Instruction::Sth { rd, base, offset } => {
                 format!("STH [R{} + {}], R{}", base, offset, rd)
             }
-            Instruction::Unknown(raw) => format!(".word 0x{:010X}", raw),
+            Instruction::Ldil { rd, imm } => format!("LDIL R{}, 0x{:04X}", rd, imm),
+            Instruction::Ldih { rd, imm } => format!("LDIH R{}, 0x{:04X}", rd, imm),
+            Instruction::Unknown(raw) => format!(".word 0x{:08X}", raw),
         }
     }
 
     pub fn disassemble_at(&mut self, addr: u32) -> String {
-        let raw = self.fetch_u40_at(addr);
+        let raw = self.fetch_u32_at(addr);
         let insn = Self::decode(raw);
         Self::format_instruction(insn)
     }
 
-    pub fn read_u40(&mut self, addr: u32) -> u64 {
-        self.fetch_u40_at(addr)
+    pub fn read_u32(&mut self, addr: u32) -> u32 {
+        self.fetch_u32_at(addr)
+    }
+
+    pub fn read_u40(&mut self, addr: u32) -> u32 {
+        self.fetch_u32_at(addr)
     }
 
     fn add_signed(base: u32, offset: i16) -> u32 {
@@ -351,8 +327,15 @@ impl Cpu {
                 let value = self.read_reg(rd as usize);
                 self.bus.write_u32_be(addr, value);
             }
-            Instruction::Ldi { rd, imm } => {
-                let _ = self.write_reg(rd as usize, imm);
+            Instruction::Ldil { rd, imm } => {
+                let current = self.read_reg(rd as usize);
+                let value = (current & 0xFFFF_0000) | u32::from(imm);
+                let _ = self.write_reg(rd as usize, value);
+            }
+            Instruction::Ldih { rd, imm } => {
+                let current = self.read_reg(rd as usize);
+                let value = (current & 0x0000_FFFF) | (u32::from(imm) << 16);
+                let _ = self.write_reg(rd as usize, value);
             }
             Instruction::Add { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
@@ -490,16 +473,16 @@ impl Cpu {
                 self.bus.write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
             }
             Instruction::Unknown(raw) => {
-                panic!("Illegal instruction at PC=0x{:08X}: 0x{:010X}", next_pc - INSN_SIZE, raw);
+                panic!("Illegal instruction at PC=0x{:08X}: 0x{:08X}", next_pc - INSN_SIZE, raw);
             }
         }
     }
 
     pub fn return_state_text(&mut self) -> String {
         let pc = self.pc;
-        let op = self.fetch_u40();
+        let op = self.fetch_u32();
         let mut txt = format!(
-            "PC=0x{:08X} OP=0x{:010X}\n",
+            "PC=0x{:08X} OP=0x{:08X}\n",
             pc,
             op
         );
@@ -516,8 +499,8 @@ impl Cpu {
         if !self.running {
             return;
         }
-        let raw = self.fetch_u40();
-        self.cycles += 2; // 2 cycles per instruction fetch (32-bit read + 8-bit read)
+        let raw = self.fetch_u32();
+        self.cycles += 1;
         let insn = Self::decode(raw);
         self.cycles += 1; // +1 cycle for decode
         self.execute(insn);
@@ -540,7 +523,7 @@ impl Cpu {
             self.step();
         }
         //let elapsed = start_time.elapsed();
-        //let op = self.fetch_u40();
-        //println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:010X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, op, elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
+        //let op = self.fetch_u32();
+        //println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:08X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, op, elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
     }
 }

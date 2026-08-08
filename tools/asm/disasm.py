@@ -1,7 +1,7 @@
 import argparse
 from dataclasses import dataclass
 
-INSN_SIZE = 5
+INSN_SIZE = 4
 
 
 def parse_number(text: str) -> int:
@@ -36,15 +36,14 @@ def mem_operand(base: int, off: int) -> str:
     return f"[{reg_name(base)} + {off}]"
 
 
-def bytes_to_u40(chunk: bytes) -> int:
+def bytes_to_u32(chunk: bytes) -> int:
     if len(chunk) != INSN_SIZE:
-        raise ValueError("internal error: instruction chunk must be 5 bytes")
+        raise ValueError("internal error: instruction chunk must be 4 bytes")
     return (
-        (chunk[0] << 32)
-        | (chunk[1] << 24)
-        | (chunk[2] << 16)
-        | (chunk[3] << 8)
-        | chunk[4]
+        (chunk[0] << 24)
+        | (chunk[1] << 16)
+        | (chunk[2] << 8)
+        | chunk[3]
     )
 
 
@@ -57,187 +56,82 @@ class DecodedInsn:
 
 
 def decode_one(pc: int, raw: int) -> DecodedInsn:
-    op = (raw >> 32) & 0xFF
-
-    # LDI has a dedicated encoding and does not use mode bits.
-    if 0xE0 <= op <= 0xFF:
-        rd = op & 0x1F
-        imm = raw & 0xFFFF_FFFF
-        return DecodedInsn(pc=pc, raw=raw, asm=f"LDI {reg_name(rd)}, 0x{imm:08X}")
-
-    mode = (raw >> 30) & 0x03
-    rd = (raw >> 25) & 0x1F
-    rs1 = (raw >> 20) & 0x1F
-    rs2 = (raw >> 15) & 0x1F
-    imm16 = sign_i16((raw >> 4) & 0xFFFF)
+    op = (raw >> 26) & 0x3F
+    rd = (raw >> 21) & 0x1F
+    rs1 = (raw >> 16) & 0x1F
+    rs2 = (raw >> 11) & 0x1F
+    imm16 = sign_i16(raw & 0xFFFF)
     next_pc = (pc + INSN_SIZE) & 0xFFFF_FFFF
     target = (next_pc + imm16) & 0xFFFF_FFFF
 
-    if op == 0x00 and mode == 0:
+    if op == 0x00:
         return DecodedInsn(pc=pc, raw=raw, asm="NOP")
-    if op == 0x01 and mode == 2:
+    if op == 0x01:
         return DecodedInsn(pc=pc, raw=raw, asm=f"LD {reg_name(rd)}, {mem_operand(rs1, imm16)}")
-    if op == 0x02 and mode == 2:
+    if op == 0x02:
         return DecodedInsn(pc=pc, raw=raw, asm=f"ST {mem_operand(rs1, imm16)}, {reg_name(rd)}")
-    if op == 0x03 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"ADD {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x04 and mode == 1:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"ADDI {reg_name(rd)}, {reg_name(rs1)}, {imm16}",
-        )
-    if op == 0x05 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SUB {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x06 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SLT {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x07 and mode == 1:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"BEQ {reg_name(rs1)}, {reg_name(rd)}, __TARGET__",
-            target=target,
-        )
-    if op == 0x08 and mode == 1:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"BNE {reg_name(rs1)}, {reg_name(rd)}, __TARGET__",
-            target=target,
-        )
-    if op == 0x09 and mode == 1:
+    if op == 0x03:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"ADD {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x04:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"ADDI {reg_name(rd)}, {reg_name(rs1)}, {imm16}")
+    if op == 0x05:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SUB {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x06:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SLT {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x07:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"BEQ {reg_name(rs1)}, {reg_name(rd)}, __TARGET__", target=target)
+    if op == 0x08:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"BNE {reg_name(rs1)}, {reg_name(rd)}, __TARGET__", target=target)
+    if op == 0x09:
         return DecodedInsn(pc=pc, raw=raw, asm="JMP __TARGET__", target=target)
-    if op == 0x0A and mode == 1:
+    if op == 0x0A:
         return DecodedInsn(pc=pc, raw=raw, asm="JAL __TARGET__", target=target)
-    if op == 0x0B and mode == 0:
+    if op == 0x0B:
         return DecodedInsn(pc=pc, raw=raw, asm=f"JR {reg_name(rd)}")
-    if op == 0x0C and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"AND {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x0D and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"OR {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x0E and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"XOR {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x0F and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SLL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x10 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SRL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x11 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SLA {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x12 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SRA {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x17 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"SLTU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x18 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"MUL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x19 and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"DIV {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x1A and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"MOD {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x1B and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"MULH {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x1C and mode == 0:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"DIVU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}",
-        )
-    if op == 0x13 and mode == 2:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"LDB {reg_name(rd)}, {mem_operand(rs1, imm16)}",
-        )
-    if op == 0x14 and mode == 2:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"LDH {reg_name(rd)}, {mem_operand(rs1, imm16)}",
-        )
-    if op == 0x15 and mode == 2:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"STB {mem_operand(rs1, imm16)}, {reg_name(rd)}",
-        )
-    if op == 0x16 and mode == 2:
-        return DecodedInsn(
-            pc=pc,
-            raw=raw,
-            asm=f"STH {mem_operand(rs1, imm16)}, {reg_name(rd)}",
-        )
-    if op == 0xDE and mode == 0:
+    if op == 0x0C:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"AND {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x0D:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"OR {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x0E:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"XOR {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x0F:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SLL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x10:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SRL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x11:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SLA {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x12:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SRA {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x13:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"LDB {reg_name(rd)}, {mem_operand(rs1, imm16)}")
+    if op == 0x14:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"LDH {reg_name(rd)}, {mem_operand(rs1, imm16)}")
+    if op == 0x15:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"STB {mem_operand(rs1, imm16)}, {reg_name(rd)}")
+    if op == 0x16:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"STH {mem_operand(rs1, imm16)}, {reg_name(rd)}")
+    if op == 0x17:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"SLTU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x18:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"MUL {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x19:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"DIV {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x1A:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"MOD {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x1B:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"MULH {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x1C:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"DIVU {reg_name(rd)}, {reg_name(rs1)}, {reg_name(rs2)}")
+    if op == 0x3C:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"LDIL {reg_name(rd)}, 0x{raw & 0xFFFF:04X}")
+    if op == 0x3D:
+        return DecodedInsn(pc=pc, raw=raw, asm=f"LDIH {reg_name(rd)}, 0x{raw & 0xFFFF:04X}")
+    if op == 0x3E:
         return DecodedInsn(pc=pc, raw=raw, asm="CPUID")
-    if op == 0xDF and mode == 0:
+    if op == 0x3F:
         return DecodedInsn(pc=pc, raw=raw, asm="HALT")
 
-    b = [
-        (raw >> 32) & 0xFF,
-        (raw >> 24) & 0xFF,
-        (raw >> 16) & 0xFF,
-        (raw >> 8) & 0xFF,
-        raw & 0xFF,
-    ]
-    db = ", ".join(f"0x{x:02X}" for x in b)
+    db = ", ".join(f"0x{x:02X}" for x in raw.to_bytes(4, byteorder="big"))
     return DecodedInsn(pc=pc, raw=raw, asm=f".DB {db}")
 
 
@@ -262,7 +156,7 @@ def disassemble(data: bytes, base: int = 0, show_addr: bool = False) -> str:
     for i in range(0, full_size, INSN_SIZE):
         chunk = data[i : i + INSN_SIZE]
         pc = (base + i) & 0xFFFF_FFFF
-        decoded.append(decode_one(pc, bytes_to_u40(chunk)))
+        decoded.append(decode_one(pc, bytes_to_u32(chunk)))
 
     labels = build_labels(decoded)
 
@@ -281,12 +175,11 @@ def disassemble(data: bytes, base: int = 0, show_addr: bool = False) -> str:
             asm = asm.replace("__TARGET__", target_text)
 
         if show_addr:
-            b0 = (insn.raw >> 32) & 0xFF
-            b1 = (insn.raw >> 24) & 0xFF
-            b2 = (insn.raw >> 16) & 0xFF
-            b3 = (insn.raw >> 8) & 0xFF
-            b4 = insn.raw & 0xFF
-            asm = f"{asm:<34} ; {insn.pc:08X}: {b0:02X} {b1:02X} {b2:02X} {b3:02X} {b4:02X}"
+            b0 = (insn.raw >> 24) & 0xFF
+            b1 = (insn.raw >> 16) & 0xFF
+            b2 = (insn.raw >> 8) & 0xFF
+            b3 = insn.raw & 0xFF
+            asm = f"{asm:<34} ; {insn.pc:08X}: {b0:02X} {b1:02X} {b2:02X} {b3:02X}"
 
         lines.append(asm)
 

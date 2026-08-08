@@ -4,7 +4,7 @@ import re
 import struct
 from dataclasses import dataclass
 
-INSN_SIZE = 5
+INSN_SIZE = 4
 
 REG_ALIASES = {
     "SP": 28,
@@ -15,7 +15,7 @@ REG_ALIASES = {
 REGS = {f"R{i}": i for i in range(32)} | REG_ALIASES
 
 OP_INFO = {
-    "NOP": (0x00, "R"),
+    "NOP": (0x00, "R0"),
     "LD": (0x01, "M"),
     "ST": (0x02, "M"),
     "ADD": (0x03, "R"),
@@ -44,9 +44,10 @@ OP_INFO = {
     "LDH": (0x14, "M"),
     "STB": (0x15, "M"),
     "STH": (0x16, "M"),
-    "CPUID": (0xDE, "R0"),
-    "HALT": (0xDF, "R0"),
-    "LDI": (0xE0, "LDI"),
+    "LDIL": (0x3C, "I2"),
+    "LDIH": (0x3D, "I2"),
+    "CPUID": (0x3E, "R0"),
+    "HALT": (0x3F, "R0"),
 }
 
 
@@ -118,9 +119,8 @@ def check_u32(value: int, lineno: int, what: str = "immediate") -> int:
     return value & 0xFFFF_FFFF
 
 
-def be40(raw: int) -> bytes:
+def be32(raw: int) -> bytes:
     return bytes([
-        (raw >> 32) & 0xFF,
         (raw >> 24) & 0xFF,
         (raw >> 16) & 0xFF,
         (raw >> 8) & 0xFF,
@@ -129,36 +129,29 @@ def be40(raw: int) -> bytes:
 
 
 def enc_r(op: int, rd: int, rs1: int, rs2: int) -> bytes:
-    raw = (op << 32) | (0b00 << 30) | (rd << 25) | (rs1 << 20) | (rs2 << 15)
-    return be40(raw)
+    raw = (op << 26) | (rd << 21) | (rs1 << 16) | (rs2 << 11)
+    return be32(raw)
 
 
 def enc_i(op: int, rd: int, rs1: int, imm16: int) -> bytes:
-    raw = (
-        (op << 32)
-        | (0b01 << 30)
-        | (rd << 25)
-        | (rs1 << 20)
-        | ((imm16 & 0xFFFF) << 4)
-    )
-    return be40(raw)
+    raw = (op << 26) | (rd << 21) | (rs1 << 16) | (imm16 & 0xFFFF)
+    return be32(raw)
 
 
 def enc_m(op: int, rd: int, base: int, off16: int) -> bytes:
-    raw = (
-        (op << 32)
-        | (0b10 << 30)
-        | (rd << 25)
-        | (base << 20)
-        | ((off16 & 0xFFFF) << 4)
-    )
-    return be40(raw)
+    raw = (op << 26) | (rd << 21) | (base << 16) | (off16 & 0xFFFF)
+    return be32(raw)
 
 
-def enc_ldi(rd: int, imm32: int) -> bytes:
-    op = 0xE0 | (rd & 0x1F)
-    raw = (op << 32) | (imm32 & 0xFFFF_FFFF)
-    return be40(raw)
+def enc_imm32(op: int, rd: int, imm32: int) -> bytes:
+    if op == 0x3D:
+        imm16 = (imm32 >> 16) & 0xFFFF
+    elif op == 0x3C:
+        imm16 = imm32 & 0xFFFF
+    else:
+        raise ValueError(f"unsupported imm32 opcode: 0x{op:02X}")
+    raw = (op << 26) | (rd << 21) | imm16
+    return be32(raw)
 
 
 @dataclass
@@ -448,7 +441,7 @@ class Assembler:
 
     def emit_insn(self, data: bytes) -> None:
         if len(data) != INSN_SIZE:
-            raise ValueError("internal error: instruction must be 5 bytes")
+            raise ValueError("internal error: instruction must be 4 bytes")
         self.output += data
         self.pc += INSN_SIZE
 
@@ -525,6 +518,15 @@ class Assembler:
                 self.emit_insn(enc_r(opcode, rd, rs1, rs2))
                 continue
 
+            if kind == "I2":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
+                rd = parse_reg(tokens[1], entry.lineno)
+                imm = self.parse_imm_or_label(tokens[2], entry.lineno)
+                imm = check_u32(imm, entry.lineno)
+                self.emit_insn(enc_imm32(opcode, rd, imm))
+                continue
+
             if kind == "I":
                 if len(tokens) != 4:
                     raise ValueError(f"line {entry.lineno}: {op} expects 3 operands")
@@ -573,15 +575,6 @@ class Assembler:
                 off = self.branch_offset(tokens[1], entry.lineno)
                 off = check_i16(off, entry.lineno, "jump offset")
                 self.emit_insn(enc_i(opcode, 0, 0, off))
-                continue
-
-            if kind == "LDI":
-                if len(tokens) != 3:
-                    raise ValueError(f"line {entry.lineno}: LDI expects 2 operands")
-                rd = parse_reg(tokens[1], entry.lineno)
-                imm = self.parse_imm_or_label(tokens[2], entry.lineno)
-                imm = check_u32(imm, entry.lineno)
-                self.emit_insn(enc_ldi(rd, imm))
                 continue
 
             raise ValueError(f"line {entry.lineno}: unsupported instruction form for {op}")
