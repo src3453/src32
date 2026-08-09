@@ -216,9 +216,16 @@ Endianness:
 
 ### 7.3 Branch offsets
 
-For label operands of `BEQ`, `BNE`, `JMP`, `JAL`:
+For label operands or absolute numeric targets of `BEQ`, `BNE`, `JMP`, `JAL`, `JMPS`, `JALS`, `S.JAL`:
 
 - `offset = label_address - (current_pc + 4)`
+
+Numeric targets are treated as absolute byte addresses, so `JMP 0x100` and `JMP target` assemble to the same encoding when `target` is located at address `0x100`.
+
+If a numeric operand is prefixed with `R!`, the assembler treats it as an explicit relative offset instead of an absolute address.
+
+- `JMP R!0` means jump to the next instruction.
+- `JMPS R!0` means enter Short Mode at the next instruction.
 
 ## 8. Build and Run
 

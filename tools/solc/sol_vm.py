@@ -22,9 +22,68 @@ class SolVMError(RuntimeError):
 
 
 @dataclass(frozen=True)
+class OpcodeProfile:
+    shortable: bool = True
+    short_weight: int = 1
+    normal_weight: int = 1
+    barrier: bool = False
+
+
+def _opcode_profile(op: str, arg: int | str | None = None) -> OpcodeProfile:
+    if op == "push":
+        if isinstance(arg, int) and 0 <= arg <= 0xFF:
+            return OpcodeProfile(shortable=True, short_weight=1, normal_weight=3)
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=3)
+
+    if op == "dup":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op == "drop":
+        return OpcodeProfile(shortable=True, short_weight=0, normal_weight=0)
+    if op == "swap":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op == "over":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op == "rot":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=6)
+    if op == "nip":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op == "tuck":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=5)
+
+    if op in {"add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr"}:
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=4)
+    if op == "neg":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op in {"ld", "st", "ldb", "ldh", "stb", "sth"}:
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op in {"eq", "neq", "lt", "gt"}:
+        return OpcodeProfile(shortable=True, short_weight=4, normal_weight=5)
+    if op in {"le", "ge"}:
+        return OpcodeProfile(shortable=True, short_weight=5, normal_weight=6)
+    if op == "sgn":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=4)
+    if op == "not":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=4)
+    if op == "stacksize":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=3)
+    if op in {"arg", "local_addr"}:
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
+
+    if op in {"call", "ret", "retn", "jmp", "jz", "jnz", "halt"}:
+        return OpcodeProfile(shortable=False, short_weight=0, normal_weight=0, barrier=True)
+
+    return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
+
+
+@dataclass(frozen=True)
 class Instruction:
     op: str
     arg: int | str | None = None
+    profile: OpcodeProfile | None = None
+
+    def __post_init__(self) -> None:
+        if self.profile is None:
+            object.__setattr__(self, "profile", _opcode_profile(self.op, self.arg))
 
 
 @dataclass(frozen=True)
@@ -632,7 +691,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         print('DEBUG: entering first-pass function collection; tokens length=', len(tokens))
     while i < len(tokens):
         tok = tokens[i]
-        # normalize escaped bang tokens (shells may escape '!' into '\!')
+        # normalize escaped bang tokens that some shells prefix with a backslash
         if isinstance(tok, str) and tok.startswith("\\!"):
             tok = tok[1:]
         if SOLC_DEBUG and i % 50 == 0:

@@ -25,16 +25,13 @@
     },
     {
       "include": "#memory-brackets"
-    },
-    {
-      "include": "#label-reference"
     }
   ],
   "repository": {
     "comments": {
       "patterns": [
         {
-          "name": "comment.line.semicolon.src16asm",
+          "name": "comment.line.semicolon.src32asm",
           "match": ";.*$"
         }
       ]
@@ -42,7 +39,7 @@
     "label-definition": {
       "patterns": [
         {
-          "name": "entity.name.function.label.src16asm",
+          "name": "entity.name.function.label.src32asm",
           "match": "^\\s*([A-Za-z_.$][\\w.$]*)\\s*:"
         }
       ]
@@ -50,23 +47,31 @@
     "directives": {
       "patterns": [
         {
-          "name": "keyword.control.directive.src16asm",
-          "match": "(?i)\\.(ORG|WORD|BYTE|DB|STRING|DEFINE|ENDDEF|INCLUDE|CONST)\\b"
+          "name": "keyword.control.directive.src32asm",
+          "match": "(?i)\\.(ORG|WORD|BYTE|DB|STRING|DEFINE|ENDDEF|INCLUDE|CONST)"
+        },
+        {
+          "name": "keyword.control.asmprefix.src32asm",
+          "match": "(?i)\\b(R|A)\\!\\b"
         }
       ]
     },
     "opcodes": {
       "patterns": [
         {
-          "name": "keyword.instruction.src16asm",
-          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDIH|LDIL|SLTU|MUL|DIV|MULH|DIVU)\\b"
+          "name": "keyword.instruction.src32asm",
+          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDIH|LDIL|SLTU|MUL|DIV|MOD|MULH|DIVU|JMPS|JALS|JRS)\\b"
+        },
+        {
+          "name": "keyword.instruction_short.src32asm",
+          "match": "(?i)\\bS\\.(MOV|ADD|ADDI|LD|ST|BZ|BNZ|JR|LDI|RET)\\b"
         }
       ]
     },
     "registers": {
       "patterns": [
         {
-          "name": "variable.language.register.src16asm",
+          "name": "variable.language.register.src32asm",
           "match": "(?i)\\b(R(?:3[0-1]|[1-2][0-9]|[0-9]))\\b"
         }
       ]
@@ -74,15 +79,15 @@
     "numbers": {
       "patterns": [
         {
-          "name": "constant.numeric.hex.src16asm",
+          "name": "constant.numeric.hex.src32asm",
           "match": "(?i)\\b-?0x[0-9a-f]+\\b"
         },
         {
-          "name": "constant.numeric.binary.src16asm",
+          "name": "constant.numeric.binary.src32asm",
           "match": "(?i)\\b-?0b[01]+\\b"
         },
         {
-          "name": "constant.numeric.decimal.src16asm",
+          "name": "constant.numeric.decimal.src32asm",
           "match": "\\b-?[0-9]+\\b"
         }
       ]
@@ -90,12 +95,12 @@
     "strings": {
       "patterns": [
         {
-          "name": "string.quoted.double.src16asm",
+          "name": "string.quoted.double.src32asm",
           "begin": "\"",
           "end": "\"",
           "patterns": [
             {
-              "name": "constant.character.escape.src16asm",
+              "name": "constant.character.escape.src32asm",
               "match": "\\\\."
             }
           ]
@@ -105,16 +110,8 @@
     "memory-brackets": {
       "patterns": [
         {
-          "name": "meta.brackets.memory.src16asm",
+          "name": "meta.brackets.memory.src32asm",
           "match": "[\\[\\]]"
-        }
-      ]
-    },
-    "label-reference": {
-      "patterns": [
-        {
-          "name": "entity.name.label.reference.src16asm",
-          "match": "\\b[A-Za-z_.$][\\w.$]*\\b"
         }
       ]
     }

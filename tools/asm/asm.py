@@ -425,6 +425,16 @@ class Assembler:
         except Exception as exc:
             raise ValueError(f"line {lineno}: undefined symbol '{token}'") from exc
 
+    def parse_jump_target(self, token: str, lineno: int) -> tuple[int, bool]:
+        # Jump targets may be labels, absolute numeric addresses, or relative
+        # numeric offsets prefixed with R!.
+        if token.startswith("R!"):
+            try:
+                return parse_number(token[2:]), True
+            except Exception as exc:
+                raise ValueError(f"line {lineno}: invalid relative jump target '{token}'") from exc
+        return self.parse_imm_or_label(token, lineno), False
+
     def set_pc(self, new_pc: int, lineno: int) -> None:
         if new_pc < 0:
             raise ValueError(f"line {lineno}: negative .ORG value")
@@ -519,7 +529,9 @@ class Assembler:
         self.pc += len(data)
 
     def branch_offset(self, target_token: str, lineno: int, insn_size: int) -> int:
-        target = self.parse_imm_or_label(target_token, lineno)
+        target, is_relative = self.parse_jump_target(target_token, lineno)
+        if is_relative:
+            return target
         return target - (self.pc + insn_size)
 
     def pass2(self) -> None:

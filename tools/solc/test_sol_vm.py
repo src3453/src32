@@ -1,6 +1,15 @@
 import pytest
 
-from sol_vm import STRING_POOL_BASE, SolVM, SolVMError
+from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program
+
+
+def test_compiled_instruction_carries_opcode_profile():
+    program = compile_program("1 2 add")
+
+    assert program.instructions[0].profile.shortable is True
+    assert program.instructions[0].profile.short_weight == 1
+    assert program.instructions[2].profile.shortable is True
+    assert program.instructions[2].profile.short_weight > 0
 
 
 def test_arithmetic_basic():

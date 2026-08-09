@@ -13,7 +13,8 @@ def test_compile_arithmetic_sequence():
     asm = compile_to_src32_asm("1 2 add")
     assert ".ORG 0x00000000" in asm
     assert "__solc_entry:" in asm
-    assert "JMPS __solc_short_entry_push_" in asm
+    assert "__solc_short_entry_" not in asm
+    assert "JMPS R!0" in asm
     assert "S.LDI R13, 0x01" in asm
     assert "S.LDI R13, 0x02" in asm
     assert "S.RET" in asm
@@ -26,8 +27,6 @@ def test_compile_arithmetic_sequence_can_disable_short_mode():
     assert "LDIL R13, 0x1" in asm
     assert "LDIH R13, 0x2" in asm
     assert "LDIL R13, 0x2" in asm
-
-
 def test_compile_mod_and_neg():
     asm = compile_to_src32_asm("7 4 mod 7 neg")
     assert "MOD R13, R13, R14" in asm
@@ -61,25 +60,45 @@ def test_compile_structured_if_else_and_while():
 
 def test_compile_stack_ops():
     asm = compile_to_src32_asm("1 2 swap dup drop")
-    assert "ADDI R13, R2, 0" in asm
-    assert "ADDI R2, R1, 0" in asm
-    assert "ADDI R1, R13, 0" in asm
+    assert "S.MOV R13, R2" in asm
+    assert "S.MOV R2, R1" in asm
+    assert "S.MOV R1, R13" in asm
 
 
 def test_compile_extended_stack_ops():
     over_asm = compile_to_src32_asm("1 2 over")
-    assert "ADDI R13, R1, 0" in over_asm
+    assert "S.MOV R13, R1" in over_asm
 
     rot_asm = compile_to_src32_asm("1 2 3 rot")
     assert "ADDI R15, R3, 0" in rot_asm
-    assert "ADDI R3, R13, 0" in rot_asm
+    assert "S.MOV R3, R13" in rot_asm
 
     nip_asm = compile_to_src32_asm("1 2 nip")
-    assert "ADDI R13, R2, 0" in nip_asm
+    assert "S.MOV R13, R2" in nip_asm
 
     tuck_asm = compile_to_src32_asm("1 2 tuck")
-    assert "ADDI R14, R2, 0" in tuck_asm
-    assert "ADDI R3, R14, 0" in tuck_asm
+    assert "S.MOV R14, R2" in tuck_asm
+    assert "S.MOV R3, R14" in tuck_asm
+
+
+def test_compile_coalesces_consecutive_short_mov_trampolines():
+    asm = compile_to_src32_asm("1 2 swap")
+    assert "S.MOV R13, R2" in asm
+    assert "S.MOV R2, R1" in asm
+    assert "S.MOV R1, R13" in asm
+    assert asm.count("S.RET") < asm.count("S.MOV")
+
+
+def test_compile_coalesces_short_mov_trampolines_with_debug_comments_between():
+    asm = compile_to_src32_asm("1 2 mod", debug=True)
+    assert "S.MOV R14, R2\n    S.MOV R13, R1\n    S.RET" in asm
+
+
+def test_compile_coalesces_short_trampolines_with_debug_comments_between():
+    asm = compile_to_src32_asm("1 2 add", debug=True)
+    assert "S.LDI R13, 0x01" in asm
+    assert "S.LDI R13, 0x02" in asm
+    assert asm.count("S.RET") == 2
 
 
 def test_compile_sgn_and_stacksize():
