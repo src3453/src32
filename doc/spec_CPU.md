@@ -108,10 +108,15 @@ Bit positions:
 - `0x1B (reg)`: `MULH rd, rs1, rs2`: Multiply `rs1` and `rs2`, store upper 32 bits in `rd`
 - `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
 
-### 4.5 Extension S (Shortened Instructions Format) (Note: Added in revision 2.1)
-Extension S provides a compact 16-bit instruction encoding for common operations.
-All of the Extension S instructions are prefixed with `S.` in the assembler syntax.
-TODO: Define the exact encoding and supported instructions for Extension S. This extension is intended to reduce code size for frequently used operations, especially in tight loops or embedded applications.
+### 4.5.1 Extension S (Short Mode Instructions Format) (Note: Added in revision 2.1)
+Extension S provides a compact "Short Mode" 16-bit instruction encoding for common operations.
+All of the Short Mode instructions are prefixed with `S.` in the assembler syntax.
+- 0x1D (imm) : JMPS off16: Jump and Enter Short Mode
+- 0x1E (imm) : JALS off16: Jump And Link and Enter Short Mode
+- 0x1F (reg) : JRS rd: Jump Register and Enter Short Mode 
+
+### 4.5.2 Short Mode Instructions
+format: [op:4][rd:4][rs1:4][rs2:4]
 
 ## 5. Execution Semantics
 
