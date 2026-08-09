@@ -35,6 +35,9 @@
 		},
 		{
 			"include": "#identifiers"
+		},
+		{
+			"include": "#type"
 		}
 	],
 	"repository": {
@@ -175,10 +178,10 @@
 				]
 			}]
 		},
-		"variables": {
+		"type": {
 			"patterns": [{
-				"name": "variable.other.assignment.sol",
-				"match": ">"
+				"name": "entity.name.type.sol",
+				"match": "(>|\\$|%|&|~)"
 			}]
 		}
 	},
