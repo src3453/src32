@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from collections import defaultdict
 
-from sol_vm import Instruction, Program, SolVMError, compile_program
+from sol_vm import compile_program, Instruction, Program, SolVMError
 
 
 ENTRY_LABEL = "__solc_entry"
@@ -28,6 +28,26 @@ def _emit_load_imm32(lines: list[str], reg: str, value: int) -> None:
     lines.append(f"    ADDI {reg}, R0, 0")
     lines.append(f"    LDIH {reg}, {imm}")
     lines.append(f"    LDIL {reg}, {imm}")
+
+
+def _emit_short_trampoline(lines: list[str], short_instructions: list[str], label_tag: str) -> None:
+    # Enter short mode at the next instruction, execute a tiny short block,
+    # then return to normal mode immediately.
+    entry_label = f"__solc_short_entry_{label_tag}"
+    lines.append(f"    JMPS {entry_label}")
+    lines.append(f"{entry_label}:")
+    for insn in short_instructions:
+        lines.append(f"    {insn}")
+    lines.append("    S.RET")
+
+
+def _emit_load_small_u8_with_short(lines: list[str], reg: str, value: int, label_tag: str) -> bool:
+    if reg not in {f"R{i}" for i in range(15)} | {"R31"}:
+        return False
+    if not (0 <= value <= 0xFF):
+        return False
+    _emit_short_trampoline(lines, [f"S.LDI {reg}, 0x{value:02X}"], label_tag)
+    return True
 
 
 class _StackCacheEmitter:
@@ -133,14 +153,16 @@ class _StackCacheEmitter:
         self.head = 0
 
 
-def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None) -> None:
+def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None, use_short_mode: bool = True) -> None:
     op = inst.op
     if debug:
         lines.append(f"    ; {op} {inst.arg if inst.arg is not None else ''}".rstrip())
 
     if op == "push":
         assert isinstance(inst.arg, int)
-        if inst.arg == 0:
+        if use_short_mode and _emit_load_small_u8_with_short(lines, "R13", inst.arg, f"push_{pc}"):
+            pass
+        elif inst.arg == 0:
             lines.append("    ADDI R13, R0, 0")
         else:
             _emit_load_imm32(lines, "R13", inst.arg)
@@ -464,7 +486,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True) -> str:
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
 
@@ -494,7 +516,16 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
                 lines.append("    ADDI R3, R31, 0")
                 lines.append("    ST R3, [R28 + 4]")
                 lines.append("    ADDI R26, R28, 0")
-        _emit_instruction(lines, cache, inst, pc=pc, debug=debug, current_func=current_func, functions_map=program.functions)
+        _emit_instruction(
+            lines,
+            cache,
+            inst,
+            pc=pc,
+            debug=debug,
+            current_func=current_func,
+            functions_map=program.functions,
+            use_short_mode=use_short_mode,
+        )
 
     if not program.instructions or program.instructions[-1].op != "halt":
         cache.flush()
@@ -511,9 +542,9 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, source_path: str | None = None) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, source_path: str | None = None, use_short_mode: bool = True) -> str:
     try:
         program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    return emit_src32_from_program(program, debug=debug, stack_top=stack_top)
+    return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)

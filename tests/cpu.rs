@@ -29,6 +29,27 @@ fn encode_cpuid() -> [u8; 4] {
     encode_r(0x3E, 0, 0, 0)
 }
 
+fn encode_short(raw: u16) -> [u8; 2] {
+    raw.to_be_bytes()
+}
+
+fn s_ldi(rd: u8, imm: u8) -> [u8; 2] {
+    encode_short(((0x9u16) << 12) | (((rd & 0x0F) as u16) << 8) | imm as u16)
+}
+
+fn s_add(rd: u8, rs1: u8, rs2: u8) -> [u8; 2] {
+    encode_short(
+        ((0x1u16) << 12)
+            | (((rd & 0x0F) as u16) << 8)
+            | (((rs1 & 0x0F) as u16) << 4)
+            | ((rs2 & 0x0F) as u16),
+    )
+}
+
+fn s_ret() -> [u8; 2] {
+    encode_short(0xF000)
+}
+
 #[test]
 fn arithmetic_and_halt() {
     let mut bus = Bus::new();
@@ -99,7 +120,7 @@ fn cpuid_reports_updated_features() {
     cpu.run(16);
 
     assert_eq!(cpu.read_reg(1), 0x5352_4332);
-    assert_eq!(cpu.read_reg(2), 0x0F);
+    assert_eq!(cpu.read_reg(2), 0x1F);
 }
 
 #[test]
@@ -136,4 +157,43 @@ fn extension_m_and_sltu() {
     assert_eq!(cpu.read_reg(12), 0xFFFF_FFFE);
     assert_eq!(cpu.read_reg(13), 0xFFFF_FFFF);
     assert_eq!(cpu.read_reg(16), 2);
+}
+
+#[test]
+fn short_mode_jmps_executes_and_returns_to_normal() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_i(0x1D, 0, 0, 0)); // JMPS +0 (enter short mode)
+    image.extend_from_slice(&s_ldi(1, 5)); // S.LDI R1, 5
+    image.extend_from_slice(&s_ldi(2, 7)); // S.LDI R2, 7
+    image.extend_from_slice(&s_add(3, 1, 2)); // S.ADD R3, R1, R2
+    image.extend_from_slice(&s_ret()); // S.RET (back to normal)
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+
+    cpu.load_program(0, &image);
+    cpu.run(64);
+
+    assert_eq!(cpu.read_reg(3), 12);
+    assert_eq!(cpu.pc(), 16);
+}
+
+#[test]
+fn short_mode_reg15_maps_to_lr() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_i(0x1D, 0, 0, 0)); // JMPS +0
+    image.extend_from_slice(&s_ldi(15, 0x2A)); // S.LDI R15(short) -> R31
+    image.extend_from_slice(&s_ret());
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+
+    cpu.load_program(0, &image);
+    cpu.run(32);
+
+    assert_eq!(cpu.read_reg(31), 0x2A);
 }

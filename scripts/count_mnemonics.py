@@ -3,7 +3,7 @@ from collections import Counter
 
 path = "test.sol.a"
 
-mn_re = re.compile(r"^\s*([A-Z]{2,6})\b")
+mn_re = re.compile(r"^\s*([A-Z](?:[A-Z.]{1,7}))\b")
 ignore_directives = {'.ORG', '.DB'}
 
 counts = Counter()

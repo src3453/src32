@@ -11,7 +11,8 @@ from sol_vm import SolVM, SolVMError
 
 
 def run_file(input_path: str, trace: bool = False) -> int:
-    src = open(input_path, "r", encoding="utf-8").read()
+    with open(input_path, "r", encoding="utf-8") as f:
+        src = f.read()
     vm = SolVM()
     vm.set_trace(trace)
     try:
@@ -35,10 +36,19 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000) -> int:
-    src = open(input_path, "r", encoding="utf-8").read()
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True) -> int:
+    with open(input_path, "r", encoding="utf-8") as f:
+        src = f.read()
     try:
-        asm = compile_to_src32_asm(src, debug=debug, var_base=var_base, stack_top=stack_top, read_only_data_base=read_only_data_base, source_path=input_path)
+        asm = compile_to_src32_asm(
+            src,
+            debug=debug,
+            var_base=var_base,
+            stack_top=stack_top,
+            read_only_data_base=read_only_data_base,
+            source_path=input_path,
+            use_short_mode=use_short_mode,
+        )
     except SolCompileError as exc:
         print(f"\033[91msol compile error: {exc}\033[0m", file=sys.stderr)
         return 1
@@ -65,6 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("input", help="sol source file")
     compile_parser.add_argument("-o", "--out", help="output assembly path")
     compile_parser.add_argument("--debug", action="store_true", help="include debug comments in output")
+    compile_parser.add_argument("--no-short-mode", action="store_true", help="disable automatic Short Mode instruction selection")
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
     compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
     compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=0x00020000, help="base address for read-only data (default: 0x20000)")
@@ -80,7 +91,15 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "repl":
         return run_repl()
     if args.command == "compile":
-        return compile_stub(args.input, args.out, debug=args.debug, var_base=args.var_base, stack_top=args.stack_top, read_only_data_base=args.read_only_data_base)
+        return compile_stub(
+            args.input,
+            args.out,
+            debug=args.debug,
+            var_base=args.var_base,
+            stack_top=args.stack_top,
+            read_only_data_base=args.read_only_data_base,
+            use_short_mode=not args.no_short_mode,
+        )
     parser.error(f"unsupported command: {args.command}")
     return 2
 

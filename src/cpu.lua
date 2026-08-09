@@ -1,4 +1,4 @@
--- SRC32 CPU (Pure Lua)
+-- SRC32 CPU (SRC32-ALM, Pure Lua)
 -- Rust implementation in src/cpu.rs ported to Lua.
 
 -- bit32 polyfill for baremetal Lua 5.1/5.2 environments

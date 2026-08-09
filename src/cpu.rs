@@ -8,6 +8,20 @@ pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE
 pub const CYCLES_PER_SCANLINE: u32 = CYCLES_PER_FRAME / 240; // 3,333 cycles/scanline
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum InstructionMode {
+    Normal,
+    Short,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DecodedInstruction {
+    pub text: String,
+    pub size: u8,
+    pub mode: InstructionMode,
+    pub next_mode: InstructionMode,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Instruction {
     Nop,
     Ld { rd: u8, base: u8, offset: i16 },
@@ -21,6 +35,9 @@ enum Instruction {
     Jmp { offset: i16 },
     Jal { offset: i16 },
     Jr { rd: u8 },
+    Jmps { offset: i16 },
+    Jals { offset: i16 },
+    Jrs { rd: u8 },
     Cpuid,
     Halt,
     And { rd: u8, rs1: u8, rs2: u8 },
@@ -45,6 +62,22 @@ enum Instruction {
     Unknown(u32),
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ShortInstruction {
+    Mov { rd: u8, rs1: u8 },
+    Add { rd: u8, rs1: u8, rs2: u8 },
+    Addi { rd: u8, imm: i8 },
+    Ld { rd: u8, rs1: u8 },
+    St { rd: u8, rs1: u8 },
+    Bz { rd: u8, offset: i8 },
+    Bnz { rd: u8, offset: i8 },
+    Jr { rd: u8 },
+    Jal { offset: i16 },
+    Ldi { rd: u8, imm: u8 },
+    Ret,
+    Unknown(u16),
+}
+
 const REG_ZERO: usize = 0;
 const REG_CPUID: usize = 1;
 const REG_FEATURES: usize = 2;
@@ -54,10 +87,12 @@ const EXT_BASE: u32 = 0x01; // Base extension: includes basic arithmetic and log
 const EXT_A: u32 = 0x02; // Extension A (Arithmetic): adds more arithmetic and logic instructions
 const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/store instructions
 const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and division instructions
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M; // CPUID features bitfield
+const EXT_S: u32 = 0x10; // Extension S (Short Mode)
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 
 const INSN_SIZE: u32 = 4;
+const SHORT_INSN_SIZE: u32 = 2;
 
 pub struct Cpu {
     reg: [u32; 32],
@@ -65,8 +100,9 @@ pub struct Cpu {
     running: bool,
     bus: Bus,
     cycles: u128,
+    instr_mode: InstructionMode,
 }
-    
+
 impl Cpu {
     pub fn new(bus: Bus) -> Self {
         Self {
@@ -75,6 +111,7 @@ impl Cpu {
             running: true,
             bus,
             cycles: 0,
+            instr_mode: InstructionMode::Normal,
         }
     }
 
@@ -82,6 +119,7 @@ impl Cpu {
         self.reg = [0; 32];
         self.pc = pc;
         self.running = true;
+        self.instr_mode = InstructionMode::Normal;
     }
 
     pub fn load_program(&mut self, base: u32, image: &[u8]) {
@@ -96,6 +134,14 @@ impl Cpu {
 
     pub fn set_pc(&mut self, pc: u32) {
         self.pc = pc;
+    }
+
+    pub fn instruction_mode(&self) -> InstructionMode {
+        self.instr_mode
+    }
+
+    pub fn set_instruction_mode(&mut self, mode: InstructionMode) {
+        self.instr_mode = mode;
     }
 
     pub fn is_running(&self) -> bool {
@@ -150,6 +196,12 @@ impl Cpu {
 
     fn fetch_u32_at(&mut self, addr: u32) -> u32 {
         self.bus.read_u32_be(addr)
+    }
+
+    fn fetch_u16_at(&mut self, addr: u32) -> u16 {
+        let hi = self.bus.read_u8(addr) as u16;
+        let lo = self.bus.read_u8(addr.wrapping_add(1)) as u16;
+        (hi << 8) | lo
     }
 
     fn decode(raw: u32) -> Instruction {
@@ -226,11 +278,47 @@ impl Cpu {
             0x1A => Instruction::Mod { rd, rs1, rs2 },
             0x1B => Instruction::Mulh { rd, rs1, rs2 },
             0x1C => Instruction::Divu { rd, rs1, rs2 },
+            0x1D => Instruction::Jmps { offset: imm16 },
+            0x1E => Instruction::Jals { offset: imm16 },
+            0x1F => Instruction::Jrs { rd },
             0x3C => Instruction::Ldil { rd, imm: imm_u16 },
             0x3D => Instruction::Ldih { rd, imm: imm_u16 },
             0x3E => Instruction::Cpuid,
             0x3F => Instruction::Halt,
             _ => Instruction::Unknown(raw),
+        }
+    }
+
+    fn decode_short(raw: u16) -> ShortInstruction {
+        let op = ((raw >> 12) & 0x0F) as u8;
+        let rd = ((raw >> 8) & 0x0F) as u8;
+        let rs1 = ((raw >> 4) & 0x0F) as u8;
+        let rs2 = (raw & 0x0F) as u8;
+        let imm8 = (raw & 0x00FF) as u8;
+        let imm12 = ((raw & 0x0FFF) as i16) << 4 >> 4;
+
+        match op {
+            0x0 => ShortInstruction::Mov { rd, rs1 },
+            0x1 => ShortInstruction::Add { rd, rs1, rs2 },
+            0x2 => ShortInstruction::Addi {
+                rd,
+                imm: imm8 as i8,
+            },
+            0x3 => ShortInstruction::Ld { rd, rs1 },
+            0x4 => ShortInstruction::St { rd, rs1 },
+            0x5 => ShortInstruction::Bz {
+                rd,
+                offset: imm8 as i8,
+            },
+            0x6 => ShortInstruction::Bnz {
+                rd,
+                offset: imm8 as i8,
+            },
+            0x7 => ShortInstruction::Jr { rd },
+            0x8 => ShortInstruction::Jal { offset: imm12 },
+            0x9 => ShortInstruction::Ldi { rd, imm: imm8 },
+            0xF => ShortInstruction::Ret,
+            _ => ShortInstruction::Unknown(raw),
         }
     }
 
@@ -256,6 +344,9 @@ impl Cpu {
             Instruction::Jmp { offset } => format!("JMP {}", offset),
             Instruction::Jal { offset } => format!("JAL {}", offset),
             Instruction::Jr { rd } => format!("JR R{}", rd),
+            Instruction::Jmps { offset } => format!("JMPS {}", offset),
+            Instruction::Jals { offset } => format!("JALS {}", offset),
+            Instruction::Jrs { rd } => format!("JRS R{}", rd),
             Instruction::Cpuid => "CPUID".to_string(),
             Instruction::Halt => "HALT".to_string(),
             Instruction::And { rd, rs1, rs2 } => format!("AND R{}, R{}, R{}", rd, rs1, rs2),
@@ -285,18 +376,78 @@ impl Cpu {
             }
             Instruction::Ldil { rd, imm } => format!("LDIL R{}, 0x{:04X}", rd, imm),
             Instruction::Ldih { rd, imm } => format!("LDIH R{}, 0x{:04X}", rd, imm),
-            Instruction::Unknown(raw) => format!(".word 0x{:08X}", raw),
+            Instruction::Unknown(raw) => format!(".dword 0x{:08X}", raw),
         }
     }
 
+    fn format_short_instruction(insn: ShortInstruction) -> String {
+        match insn {
+            ShortInstruction::Mov { rd, rs1 } => format!("S.MOV R{}, R{}", rd, rs1),
+            ShortInstruction::Add { rd, rs1, rs2 } => {
+                format!("S.ADD R{}, R{}, R{}", rd, rs1, rs2)
+            }
+            ShortInstruction::Addi { rd, imm } => format!("S.ADDI R{}, {}", rd, imm),
+            ShortInstruction::Ld { rd, rs1 } => format!("S.LD R{}, R{}", rd, rs1),
+            ShortInstruction::St { rd, rs1 } => format!("S.ST R{}, R{}", rd, rs1),
+            ShortInstruction::Bz { rd, offset } => format!("S.BZ R{}, {}", rd, offset),
+            ShortInstruction::Bnz { rd, offset } => format!("S.BNZ R{}, {}", rd, offset),
+            ShortInstruction::Jr { rd } => format!("S.JR R{}", rd),
+            ShortInstruction::Jal { offset } => format!("S.JAL {}", offset),
+            ShortInstruction::Ldi { rd, imm } => format!("S.LDI R{}, 0x{:02X}", rd, imm),
+            ShortInstruction::Ret => "S.RET".to_string(),
+            ShortInstruction::Unknown(raw) => format!(".word 0x{:04X}", raw),
+        }
+    }
+
+    pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
+        match mode {
+            InstructionMode::Normal => {
+                let raw = self.fetch_u32_at(addr);
+                let insn = Self::decode(raw);
+                let next_mode = match insn {
+                    Instruction::Jmps { .. } | Instruction::Jals { .. } | Instruction::Jrs { .. } => {
+                        InstructionMode::Short
+                    }
+                    _ => InstructionMode::Normal,
+                };
+                DecodedInstruction {
+                    text: Self::format_instruction(insn),
+                    size: INSN_SIZE as u8,
+                    mode,
+                    next_mode,
+                }
+            }
+            InstructionMode::Short => {
+                let raw = self.fetch_u16_at(addr);
+                let insn = Self::decode_short(raw);
+                let next_mode = match insn {
+                    ShortInstruction::Ret => InstructionMode::Normal,
+                    _ => InstructionMode::Short,
+                };
+                DecodedInstruction {
+                    text: Self::format_short_instruction(insn),
+                    size: SHORT_INSN_SIZE as u8,
+                    mode,
+                    next_mode,
+                }
+            }
+        }
+    }
+
+    pub fn decode_current(&mut self) -> DecodedInstruction {
+        self.decode_at(self.pc, self.instr_mode)
+    }
+
     pub fn disassemble_at(&mut self, addr: u32) -> String {
-        let raw = self.fetch_u32_at(addr);
-        let insn = Self::decode(raw);
-        Self::format_instruction(insn)
+        self.decode_at(addr, InstructionMode::Normal).text
     }
 
     pub fn read_u32(&mut self, addr: u32) -> u32 {
         self.fetch_u32_at(addr)
+    }
+
+    pub fn read_u16_be(&mut self, addr: u32) -> u16 {
+        self.fetch_u16_at(addr)
     }
 
     pub fn read_u40(&mut self, addr: u32) -> u32 {
@@ -311,7 +462,23 @@ impl Cpu {
         next_pc.wrapping_add((offset as i32) as u32)
     }
 
-    fn execute(&mut self, insn: Instruction) {
+    fn short_reg_to_gpr(sr: u8) -> usize {
+        if sr < 15 {
+            sr as usize
+        } else {
+            REG_LR
+        }
+    }
+
+    fn read_short_reg(&self, sr: u8) -> u32 {
+        self.read_reg(Self::short_reg_to_gpr(sr))
+    }
+
+    fn write_short_reg(&mut self, sr: u8, value: u32) {
+        let _ = self.write_reg(Self::short_reg_to_gpr(sr), value);
+    }
+
+    fn execute_normal(&mut self, insn: Instruction) {
         let next_pc = self.pc.wrapping_add(INSN_SIZE);
         self.pc = next_pc;
 
@@ -376,6 +543,19 @@ impl Cpu {
             }
             Instruction::Jr { rd } => {
                 self.pc = self.read_reg(rd as usize);
+            }
+            Instruction::Jmps { offset } => {
+                self.pc = Self::branch_target(next_pc, offset);
+                self.instr_mode = InstructionMode::Short;
+            }
+            Instruction::Jals { offset } => {
+                let _ = self.write_reg(REG_LR, next_pc);
+                self.pc = Self::branch_target(next_pc, offset);
+                self.instr_mode = InstructionMode::Short;
+            }
+            Instruction::Jrs { rd } => {
+                self.pc = self.read_reg(rd as usize);
+                self.instr_mode = InstructionMode::Short;
             }
             Instruction::Cpuid => {
                 let _ = self.write_reg(REG_CPUID, CPU_ID);
@@ -478,17 +658,79 @@ impl Cpu {
         }
     }
 
+    fn execute_short(&mut self, insn: ShortInstruction) {
+        let next_pc = self.pc.wrapping_add(SHORT_INSN_SIZE);
+        self.pc = next_pc;
+
+        match insn {
+            ShortInstruction::Mov { rd, rs1 } => {
+                self.write_short_reg(rd, self.read_short_reg(rs1));
+            }
+            ShortInstruction::Add { rd, rs1, rs2 } => {
+                let lhs = self.read_short_reg(rs1);
+                let rhs = self.read_short_reg(rs2);
+                self.write_short_reg(rd, lhs.wrapping_add(rhs));
+            }
+            ShortInstruction::Addi { rd, imm } => {
+                let lhs = self.read_short_reg(rd);
+                let rhs = (imm as i32) as u32;
+                self.write_short_reg(rd, lhs.wrapping_add(rhs));
+            }
+            ShortInstruction::Ld { rd, rs1 } => {
+                let addr = self.read_short_reg(rs1);
+                let value = self.bus.read_u32_be(addr);
+                self.write_short_reg(rd, value);
+            }
+            ShortInstruction::St { rd, rs1 } => {
+                let addr = self.read_short_reg(rd);
+                let value = self.read_short_reg(rs1);
+                self.bus.write_u32_be(addr, value);
+            }
+            ShortInstruction::Bz { rd, offset } => {
+                if self.read_short_reg(rd) == 0 {
+                    self.pc = Self::branch_target(next_pc, offset as i16);
+                }
+            }
+            ShortInstruction::Bnz { rd, offset } => {
+                if self.read_short_reg(rd) != 0 {
+                    self.pc = Self::branch_target(next_pc, offset as i16);
+                }
+            }
+            ShortInstruction::Jr { rd } => {
+                self.pc = self.read_short_reg(rd);
+            }
+            ShortInstruction::Jal { offset } => {
+                let _ = self.write_reg(REG_LR, next_pc);
+                self.pc = Self::branch_target(next_pc, offset);
+            }
+            ShortInstruction::Ldi { rd, imm } => {
+                self.write_short_reg(rd, u32::from(imm));
+            }
+            ShortInstruction::Ret => {
+                self.instr_mode = InstructionMode::Normal;
+            }
+            ShortInstruction::Unknown(raw) => {
+                panic!(
+                    "Illegal short instruction at PC=0x{:08X}: 0x{:04X}",
+                    next_pc - SHORT_INSN_SIZE,
+                    raw
+                );
+            }
+        }
+    }
+
     pub fn return_state_text(&mut self) -> String {
         let pc = self.pc;
-        let op = self.fetch_u32();
+        let decoded = self.decode_current();
         let mut txt = format!(
-            "PC=0x{:08X} OP=0x{:08X}\n",
+            "PC=0x{:08X} MODE={:?} OP={}\n",
             pc,
-            op
+            self.instr_mode,
+            decoded.text
         );
         for i in 0..32 {
             txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));
-            if i%4 == 3 {
+            if i % 4 == 3 {
                 txt.push('\n');
             }
         }
@@ -499,13 +741,23 @@ impl Cpu {
         if !self.running {
             return;
         }
-        let raw = self.fetch_u32();
+
         self.cycles += 1;
-        let insn = Self::decode(raw);
-        self.cycles += 1; // +1 cycle for decode
-        self.execute(insn);
-        self.cycles += 1; // +1 cycle for execute (simplified, real implementation may vary)
-        //println!("\x1b[1;1H{}", self.return_state_text());
+        match self.instr_mode {
+            InstructionMode::Normal => {
+                let raw = self.fetch_u32();
+                let insn = Self::decode(raw);
+                self.cycles += 1; // decode
+                self.execute_normal(insn);
+            }
+            InstructionMode::Short => {
+                let raw = self.fetch_u16_at(self.pc);
+                let insn = Self::decode_short(raw);
+                self.cycles += 1; // decode
+                self.execute_short(insn);
+            }
+        }
+        self.cycles += 1; // execute
     }
 
     pub fn step_once(&mut self) -> bool {
@@ -518,12 +770,8 @@ impl Cpu {
 
     pub fn run(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
-        //let start_time = Instant::now();
         while (self.cycles < start_cycles + max_cycles as u128) && self.running {
             self.step();
         }
-        //let elapsed = start_time.elapsed();
-        //let op = self.fetch_u32();
-        //println!("\x1b[1;1HCPU: Ran for {} cycles (total: {}, last PC: 0x{:08X}, op: 0x{:08X},Time: {:>8.2?}, Kc/s: {:>10.2})", self.cycles - start_cycles, self.cycles, self.pc, op, elapsed, (self.cycles - start_cycles) as f64 / elapsed.as_secs_f64() / 1000.0);
     }
 }

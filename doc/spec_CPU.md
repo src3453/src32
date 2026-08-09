@@ -9,7 +9,8 @@ Revision 2.1 (2026-08-09)
 
 ## 1. Overview
 
-SRC32 is a 32-bit educational RISC CPU with fixed-length 32-bit instructions.
+SRC32 is a 32-bit educational RISC CPU.
+Normal Mode uses fixed-length 32-bit instructions, and Extension S adds a Short Mode with 16-bit instructions.
 This repository includes:
 
 - CPU emulator in Rust (`src/main.rs`)
@@ -83,6 +84,7 @@ Bit positions:
   - Bit 1: Extension A (ALU)
   - Bit 2: Extension L (Load/Store)
   - Bit 3: Extension M (Multiplication/Division)
+  - Bit 4: Extension S (Short Mode)
 
 ### 4.2 Extension A (ALU)
 

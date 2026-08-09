@@ -1,11 +1,9 @@
 use std::io::{self, Write};
 
 use cpt32::bus::Bus;
-use cpt32::cpu::Cpu;
+use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
-
-const INSN_BYTES: u32 = 4;
 
 fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
     let data = std::fs::read(path).expect("Failed to read binary file");
@@ -40,16 +38,36 @@ fn print_help() {
 fn print_state(cpu: &mut Cpu) {
     let state = cpu.return_state_text();
     println!("{}", state);
-    let disasm = cpu.disassemble_at(cpu.pc());
-    println!("next: {}", disasm);
+    let mode = cpu.instruction_mode();
+    let disasm = cpu.decode_at(cpu.pc(), mode);
+    println!("next: {}", disasm.text);
 }
 
 fn print_disassembly(cpu: &mut Cpu, mut addr: u32, count: usize) {
+    let mut mode = if addr == cpu.pc() {
+        cpu.instruction_mode()
+    } else {
+        InstructionMode::Normal
+    };
+
     for _ in 0..count {
         let marker = if addr == cpu.pc() { "=>" } else { "  " };
-        let insn = cpu.read_u32(addr);
-        println!("{} 0x{:08X}: {:08X}  {}", marker, addr, insn, cpu.disassemble_at(addr));
-        addr = addr.wrapping_add(INSN_BYTES);
+        let decoded = cpu.decode_at(addr, mode);
+        if decoded.size == 2 {
+            let raw = cpu.read_u16_be(addr);
+            println!(
+                "{} 0x{:08X}: {:04X}      [{:?}] {}",
+                marker, addr, raw, mode, decoded.text
+            );
+        } else {
+            let raw = cpu.read_u32(addr);
+            println!(
+                "{} 0x{:08X}: {:08X}  [{:?}] {}",
+                marker, addr, raw, mode, decoded.text
+            );
+        }
+        addr = addr.wrapping_add(decoded.size as u32);
+        mode = decoded.next_mode;
     }
 }
 

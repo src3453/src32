@@ -5,6 +5,7 @@ import struct
 from dataclasses import dataclass
 
 INSN_SIZE = 4
+SHORT_INSN_SIZE = 2
 
 REG_ALIASES = {
     "SP": 28,
@@ -40,6 +41,9 @@ OP_INFO = {
     "MOD": (0x1A, "R"),
     "MULH": (0x1B, "R"),
     "DIVU": (0x1C, "R"),
+    "JMPS": (0x1D, "J"),
+    "JALS": (0x1E, "J"),
+    "JRS": (0x1F, "R1"),
     "LDB": (0x13, "M"),
     "LDH": (0x14, "M"),
     "STB": (0x15, "M"),
@@ -48,6 +52,17 @@ OP_INFO = {
     "LDIH": (0x3D, "I2"),
     "CPUID": (0x3E, "R0"),
     "HALT": (0x3F, "R0"),
+    "S.MOV": (0x0, "SR2"),
+    "S.ADD": (0x1, "SR3"),
+    "S.ADDI": (0x2, "SI8S"),
+    "S.LD": (0x3, "SR2"),
+    "S.ST": (0x4, "SR2"),
+    "S.BZ": (0x5, "SB8"),
+    "S.BNZ": (0x6, "SB8"),
+    "S.JR": (0x7, "SR1"),
+    "S.JAL": (0x8, "SJ12"),
+    "S.LDI": (0x9, "SI8U"),
+    "S.RET": (0xF, "S0"),
 }
 
 
@@ -81,6 +96,15 @@ def parse_reg(token: str, lineno: int) -> int:
     if key not in REGS:
         raise ValueError(f"line {lineno}: invalid register '{token}'")
     return REGS[key]
+
+
+def parse_short_reg(token: str, lineno: int) -> int:
+    reg = parse_reg(token, lineno)
+    if reg <= 14:
+        return reg
+    if reg == 31:
+        return 15
+    raise ValueError(f"line {lineno}: short mode register must be R0..R14 or R31/LR, got '{token}'")
 
 
 def parse_mem(token: str, lineno: int) -> tuple[str, str]:
@@ -119,10 +143,35 @@ def check_u32(value: int, lineno: int, what: str = "immediate") -> int:
     return value & 0xFFFF_FFFF
 
 
+def check_i8(value: int, lineno: int, what: str = "immediate") -> int:
+    if not -128 <= value <= 127:
+        raise ValueError(f"line {lineno}: {what} out of i8 range: {value}")
+    return value
+
+
+def check_u8(value: int, lineno: int, what: str = "immediate") -> int:
+    if not 0 <= value <= 0xFF:
+        raise ValueError(f"line {lineno}: {what} out of u8 range: {value}")
+    return value
+
+
+def check_i12(value: int, lineno: int, what: str = "immediate") -> int:
+    if not -2048 <= value <= 2047:
+        raise ValueError(f"line {lineno}: {what} out of i12 range: {value}")
+    return value
+
+
 def be32(raw: int) -> bytes:
     return bytes([
         (raw >> 24) & 0xFF,
         (raw >> 16) & 0xFF,
+        (raw >> 8) & 0xFF,
+        raw & 0xFF,
+    ])
+
+
+def be16(raw: int) -> bytes:
+    return bytes([
         (raw >> 8) & 0xFF,
         raw & 0xFF,
     ])
@@ -152,6 +201,26 @@ def enc_imm32(op: int, rd: int, imm32: int) -> bytes:
         raise ValueError(f"unsupported imm32 opcode: 0x{op:02X}")
     raw = (op << 26) | (rd << 21) | imm16
     return be32(raw)
+
+
+def enc_s_r2(op: int, rd: int, rs1: int) -> bytes:
+    raw = ((op & 0x0F) << 12) | ((rd & 0x0F) << 8) | ((rs1 & 0x0F) << 4)
+    return be16(raw)
+
+
+def enc_s_r3(op: int, rd: int, rs1: int, rs2: int) -> bytes:
+    raw = ((op & 0x0F) << 12) | ((rd & 0x0F) << 8) | ((rs1 & 0x0F) << 4) | (rs2 & 0x0F)
+    return be16(raw)
+
+
+def enc_s_i8(op: int, rd: int, imm8: int) -> bytes:
+    raw = ((op & 0x0F) << 12) | ((rd & 0x0F) << 8) | (imm8 & 0xFF)
+    return be16(raw)
+
+
+def enc_s_i12(op: int, imm12: int) -> bytes:
+    raw = ((op & 0x0F) << 12) | (imm12 & 0x0FFF)
+    return be16(raw)
 
 
 @dataclass
@@ -425,7 +494,11 @@ class Assembler:
 
             if op not in OP_INFO:
                 raise ValueError(f"line {entry.lineno}: unknown instruction '{op}'")
-            self.pc += INSN_SIZE
+            _, kind = OP_INFO[op]
+            if kind in {"SR2", "SR3", "SI8S", "SI8U", "SB8", "SJ12", "SR1", "S0"}:
+                self.pc += SHORT_INSN_SIZE
+            else:
+                self.pc += INSN_SIZE
 
     def emit8(self, value: int) -> None:
         self.output.append(value & 0xFF)
@@ -440,14 +513,14 @@ class Assembler:
         self.pc += 4
 
     def emit_insn(self, data: bytes) -> None:
-        if len(data) != INSN_SIZE:
-            raise ValueError("internal error: instruction must be 4 bytes")
+        if len(data) not in {SHORT_INSN_SIZE, INSN_SIZE}:
+            raise ValueError("internal error: instruction must be 2 or 4 bytes")
         self.output += data
-        self.pc += INSN_SIZE
+        self.pc += len(data)
 
-    def branch_offset(self, target_token: str, lineno: int) -> int:
+    def branch_offset(self, target_token: str, lineno: int, insn_size: int) -> int:
         target = self.parse_imm_or_label(target_token, lineno)
-        return target - (self.pc + INSN_SIZE)
+        return target - (self.pc + insn_size)
 
     def pass2(self) -> None:
         self.pc = 0
@@ -563,7 +636,7 @@ class Assembler:
                     raise ValueError(f"line {entry.lineno}: {op} expects 3 operands")
                 rs1 = parse_reg(tokens[1], entry.lineno)
                 rs2 = parse_reg(tokens[2], entry.lineno)
-                off = self.branch_offset(tokens[3], entry.lineno)
+                off = self.branch_offset(tokens[3], entry.lineno, INSN_SIZE)
                 off = check_i16(off, entry.lineno, "branch offset")
                 # Immediate mode reuses rd field as rs2.
                 self.emit_insn(enc_i(opcode, rs2, rs1, off))
@@ -572,9 +645,74 @@ class Assembler:
             if kind == "J":
                 if len(tokens) != 2:
                     raise ValueError(f"line {entry.lineno}: {op} expects 1 operand")
-                off = self.branch_offset(tokens[1], entry.lineno)
+                off = self.branch_offset(tokens[1], entry.lineno, INSN_SIZE)
                 off = check_i16(off, entry.lineno, "jump offset")
                 self.emit_insn(enc_i(opcode, 0, 0, off))
+                continue
+
+            if kind == "SR2":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                rs1 = parse_short_reg(tokens[2], entry.lineno)
+                self.emit_insn(enc_s_r2(opcode, rd, rs1))
+                continue
+
+            if kind == "SR3":
+                if len(tokens) != 4:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 3 operands")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                rs1 = parse_short_reg(tokens[2], entry.lineno)
+                rs2 = parse_short_reg(tokens[3], entry.lineno)
+                self.emit_insn(enc_s_r3(opcode, rd, rs1, rs2))
+                continue
+
+            if kind == "SR1":
+                if len(tokens) != 2:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 1 operand")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                self.emit_insn(enc_s_r2(opcode, rd, 0))
+                continue
+
+            if kind == "SI8S":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                imm = self.parse_imm_or_label(tokens[2], entry.lineno)
+                imm = check_i8(imm, entry.lineno)
+                self.emit_insn(enc_s_i8(opcode, rd, imm))
+                continue
+
+            if kind == "SI8U":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                imm = self.parse_imm_or_label(tokens[2], entry.lineno)
+                imm = check_u8(imm, entry.lineno)
+                self.emit_insn(enc_s_i8(opcode, rd, imm))
+                continue
+
+            if kind == "SB8":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
+                rd = parse_short_reg(tokens[1], entry.lineno)
+                off = self.branch_offset(tokens[2], entry.lineno, SHORT_INSN_SIZE)
+                off = check_i8(off, entry.lineno, "branch offset")
+                self.emit_insn(enc_s_i8(opcode, rd, off))
+                continue
+
+            if kind == "SJ12":
+                if len(tokens) != 2:
+                    raise ValueError(f"line {entry.lineno}: {op} expects 1 operand")
+                off = self.branch_offset(tokens[1], entry.lineno, SHORT_INSN_SIZE)
+                off = check_i12(off, entry.lineno, "jump offset")
+                self.emit_insn(enc_s_i12(opcode, off))
+                continue
+
+            if kind == "S0":
+                if len(tokens) != 1:
+                    raise ValueError(f"line {entry.lineno}: {op} expects no operands")
+                self.emit_insn(enc_s_i8(opcode, 0, 0))
                 continue
 
             raise ValueError(f"line {entry.lineno}: unsupported instruction form for {op}")

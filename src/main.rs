@@ -7,7 +7,7 @@ use std::rc::Rc;
 use std::time::Instant;
 
 use cpt32::bus::Bus;
-use cpt32::cpu::Cpu;
+use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
@@ -173,6 +173,7 @@ impl DebugUiState {
                 ui.separator();
                 ui.text(format!("CPU running: {}", cpu.is_running()));
                 ui.text(format!("PC: 0x{:08X}", cpu.pc()));
+                ui.text(format!("Mode: {:?}", cpu.instruction_mode()));
                 ui.text(format!("Total cycles: {}", cpu.cycles()));
 
                 for base in (0..32).step_by(4) {
@@ -208,15 +209,29 @@ impl DebugUiState {
                 };
                 let count = Self::parse_usize(&self.disasm_count_input, 16, 256);
                 let mut addr = base;
+                let mut mode = if base == cpu.pc() {
+                    cpu.instruction_mode()
+                } else {
+                    InstructionMode::Normal
+                };
                 for _ in 0..count {
                     let marker = if addr == cpu.pc() { "=>" } else { "  " };
-                    let raw = cpu.read_u32(addr);
-                    let text = cpu.disassemble_at(addr);
-                    ui.text(format!(
-                        "{} 0x{:08X}: {:08X}  {}",
-                        marker, addr, raw, text
-                    ));
-                    addr = addr.wrapping_add(4);
+                    let decoded = cpu.decode_at(addr, mode);
+                    if decoded.size == 2 {
+                        let raw = cpu.read_u16_be(addr);
+                        ui.text(format!(
+                            "{} 0x{:08X}: {:04X}      {}",
+                            marker, addr, raw, decoded.text
+                        ));
+                    } else {
+                        let raw = cpu.read_u32(addr);
+                        ui.text(format!(
+                            "{} 0x{:08X}: {:08X}  {}",
+                            marker, addr, raw, decoded.text
+                        ));
+                    }
+                    addr = addr.wrapping_add(decoded.size as u32);
+                    mode = decoded.next_mode;
                 }
             });
     }

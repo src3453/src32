@@ -13,11 +13,19 @@ def test_compile_arithmetic_sequence():
     asm = compile_to_src32_asm("1 2 add")
     assert ".ORG 0x00000000" in asm
     assert "__solc_entry:" in asm
+    assert "JMPS __solc_short_entry_push_" in asm
+    assert "S.LDI R13, 0x01" in asm
+    assert "S.LDI R13, 0x02" in asm
+    assert "S.RET" in asm
+    assert "ADD R13, R13, R14" in asm
+
+
+def test_compile_arithmetic_sequence_can_disable_short_mode():
+    asm = compile_to_src32_asm("1 2 add", use_short_mode=False)
     assert "LDIH R13, 0x1" in asm
     assert "LDIL R13, 0x1" in asm
     assert "LDIH R13, 0x2" in asm
     assert "LDIL R13, 0x2" in asm
-    assert "ADD R13, R13, R14" in asm
 
 
 def test_compile_mod_and_neg():
