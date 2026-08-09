@@ -110,17 +110,45 @@ Bit positions:
 
 ### 4.5.1 Extension S (Short Mode Instructions Format) (Note: Added in revision 2.1)
 Extension S provides a compact "Short Mode" 16-bit instruction encoding for common operations.
+These instructions are mainly intended for compilers to generate smaller code size, especially for tight loops or frequently executed code.
 All of the Short Mode instructions are prefixed with `S.` in the assembler syntax.
+It will add 3 new opcodes to enter Short Mode:
 - 0x1D (imm) : JMPS off16: Jump and Enter Short Mode
 - 0x1E (imm) : JALS off16: Jump And Link and Enter Short Mode
 - 0x1F (reg) : JRS rd: Jump Register and Enter Short Mode 
 
 ### 4.5.2 Short Mode Instructions
-format: [op:4][rd:4][rs1:4][rs2:4]
+It will add 1 read-only register to the CPU, `INSTR_MODE`, which indicates the current instruction mode:
+- `INSTR_MODE = 0`: Normal Mode (32-bit instructions)
+- `INSTR_MODE = 1`: Short Mode (16-bit instructions)
+Short mode has two addressing modes and uses a 16-bit instruction format:
+- Register mode: `[op:4][rd:4][rs1:4][rs2:4]`
+- Immediate mode: `[op:4][rd:4][imm8:8]`
+- Immediate 12-bit mode: `[op:4][imm12:12]`
+- `op`: bits `15..12`
+- `rd`: bits `11..8`
+- `rs1`: bits `7..4`
+- `rs2`: bits `3..0`
+PC is automatically incremented by 2 after each Short Mode instruction, and the next instruction is fetched from the next 16-bit aligned address.
+(`PC = PC + 2`)
+Register 0-14 is mapped to `R0-R14`, and register 15 is mapped to `R31` (LR).
 
-## 5. Execution Semantics
+- Supported Short Mode instructions:
+- `0x0 (reg)`: `S.MOV rd, rs1`: Move `rs1` to `rd`
+- `0x1 (reg)`: `S.ADD rd, rs1, rs2`: Add `rs1` and `rs2`, store result in `rd`
+- `0x2 (imm)`: `S.ADDI rd, imm8`: Add sign-extended `imm8` to `rd`
+- `0x3 (reg)`: `S.LD rd, rs1`: Load 32-bit word from memory at address in `rs1` into `rd`
+- `0x4 (reg)`: `S.ST rd, rs1`: Store 32-bit word from `rs1` into memory at address in `rd`
+- `0x5 (imm)`: `S.BZ rd, off8`: Branch to `PC + 2 + sign_extend(off8)` if `rd == 0`
+- `0x6 (imm)`: `S.BNZ rd, off8`: Branch to `PC + 2 + sign_extend(off8)` if `rd != 0`
+- `0x7 (reg)`: `S.JR rd`: Jump to address in `rd`
+- `0x8 (imm12)`: `S.JAL off12`: Jump and link: `R31 <- PC + 2`, then `PC <- PC + 2 + sign_extend(off12)`
+- `0x9 (imm)`: `S.LDI rd, imm8`: Load unsigned `imm8` into `rd` (other bits of `rd` are cleared)
+- `0xF (imm)`: `S.RET`: Return from Short Mode to Normal Mode (rd and imm8 fields are ignored). `PC <- PC + 2`, then `INSTR_MODE <- 0`.
 
-Instruction size is always 4 bytes.
+## 5. Execution Semantics in Normal Mode
+
+Instruction size is always 4 bytes in Normal Mode.
 
 Default next PC:
 
