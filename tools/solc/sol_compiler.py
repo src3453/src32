@@ -140,7 +140,10 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
     if op == "push":
         assert isinstance(inst.arg, int)
-        _emit_load_imm32(lines, "R13", inst.arg)
+        if inst.arg == 0:
+            lines.append("    ADDI R13, R0, 0")
+        else:
+            _emit_load_imm32(lines, "R13", inst.arg)
         cache.push_from("R13")
         return
 

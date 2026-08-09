@@ -138,12 +138,6 @@
 				}
 			}]
 		},
-		"labels": {
-			"patterns": [{
-				"name": "entity.name.function.c",
-				"match": "@[A-Za-z_][A-Za-z0-9_]*"
-			}]
-		},
 		"controlKeywords": {
 			"patterns": [{
 				"name": "storage.type.function.sol",
@@ -153,7 +147,7 @@
 		"operators": {
 			"patterns": [{
 				"name": "variable.other.readwrite.c",
-				"match": "\\b(add|sub|mul|div|mod|neg|and|or|xor|not|shl|shr|dup|drop|swap|over|rot|nip|tuck|eq|neq|lt|gt|le|ge|sgn|ld|st|ldb|stb|ldh|sth|rpush|rpop|rpeek|jmp|jz|jnz|stacksize|retsize|halt|prn|prnln|strlen|tostr|tohex|tobin|putc|ret)\\b"
+				"match": "\\b(add|sub|mul|div|mod|neg|and|or|xor|not|shl|shr|dup|drop|swap|over|rot|nip|tuck|eq|neq|lt|gt|le|ge|sgn|ld|st|ldb|stb|ldh|sth|stacksize|halt|ret|retn)\\b"
 			}]
 		},
 		"numbers": {
