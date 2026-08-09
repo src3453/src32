@@ -178,7 +178,7 @@
 		"variables": {
 			"patterns": [{
 				"name": "variable.other.assignment.sol",
-				"match": ">[A-Za-z_][A-Za-z0-9_]*"
+				"match": ">"
 			}]
 		}
 	},
