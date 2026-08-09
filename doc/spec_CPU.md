@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 2.0 (2026-08-08)
+Revision 2.1 (2026-08-09)
 
 # Changelog
+- 2.1 (2026-08-09): Added Extension S (Shortened Instructions Format).
 - 2.0 (2026-08-08): Major revision with updated instruction set and encoding.
 - 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
 - 1.0 (2026-06-20): Initial release of the specification.
@@ -107,6 +108,11 @@ Bit positions:
 - `0x1B (reg)`: `MULH rd, rs1, rs2`: Multiply `rs1` and `rs2`, store upper 32 bits in `rd`
 - `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
 
+### 4.5 Extension S (Shortened Instructions Format) (Note: Added in revision 2.1)
+Extension S provides a compact 16-bit instruction encoding for common operations.
+All of the Extension S instructions are prefixed with `S.` in the assembler syntax.
+TODO: Define the exact encoding and supported instructions for Extension S. This extension is intended to reduce code size for frequently used operations, especially in tight loops or embedded applications.
+
 ## 5. Execution Semantics
 
 Instruction size is always 4 bytes.
@@ -199,6 +205,7 @@ Implemented in this repository:
 
 - Core CPU fetch/decode/execute loop
 - Base ISA + Extension ALM instructions
+- Extension S (Shortened Instructions Format)
 - 16 MiB RAM-backed bus
 - Two-pass assembler with labels/directives
 
