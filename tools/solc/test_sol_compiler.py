@@ -23,10 +23,20 @@ def test_compile_arithmetic_sequence():
 
 def test_compile_arithmetic_sequence_can_disable_short_mode():
     asm = compile_to_src32_asm("1 2 add", use_short_mode=False)
-    assert "LDIH R13, 0x1" in asm
-    assert "LDIL R13, 0x1" in asm
-    assert "LDIH R13, 0x2" in asm
-    assert "LDIL R13, 0x2" in asm
+    assert "LDIH R13, 0x0000" in asm
+    assert "LDIL R13, 0x0001" in asm
+    assert "LDIH R13, 0x0000" in asm
+    assert "LDIL R13, 0x0002" in asm
+
+
+def test_compile_load_immediate_splits_high_and_low_words():
+    asm = compile_to_src32_asm("0x80040000", use_short_mode=False)
+    assert "LDIH R13, 0x8004" in asm
+    assert "LDIL R13, 0x0000" in asm
+    assert "LDIH R13, 0x80040000" not in asm
+    assert "LDIL R13, 0x80040000" not in asm
+
+
 def test_compile_mod_and_neg():
     asm = compile_to_src32_asm("7 4 mod 7 neg")
     assert "MOD R13, R13, R14" in asm
@@ -44,8 +54,8 @@ def test_compile_bitwise_ops():
     assert "AND R13, R13, R14" in asm
     assert "OR R13, R13, R14" in asm
     assert "XOR R13, R13, R14" in asm
-    assert "LDIH R14, 0xFFFFFFFF" in asm
-    assert "LDIL R14, 0xFFFFFFFF" in asm
+    assert "LDIH R14, 0xFFFF" in asm
+    assert "LDIL R14, 0xFFFF" in asm
 
 
 def test_compile_structured_if_else_and_while():
@@ -105,8 +115,8 @@ def test_compile_sgn_and_stacksize():
     asm = compile_to_src32_asm("-1 sgn stacksize")
     assert "SRA R13, R13, R14" in asm
     assert "AND R13, R13, R14" in asm
-    assert "LDIH R13, 0x100000" in asm
-    assert "LDIL R13, 0x100000" in asm
+    assert "LDIH R13, 0x0010" in asm
+    assert "LDIL R13, 0x0000" in asm
 
 
 def test_compile_load_store():
@@ -125,22 +135,22 @@ def test_compile_byte_and_halfword_load_store():
 
 def test_compile_negative_literal_uses_two_complement_hex():
     asm = compile_to_src32_asm("-1 0 ld")
-    assert "LDIH R13, 0xFFFFFFFF" in asm
-    assert "LDIL R13, 0xFFFFFFFF" in asm
+    assert "LDIH R13, 0xFFFF" in asm
+    assert "LDIL R13, 0xFFFF" in asm
 
 
 def test_compile_string_literal_emits_read_only_data():
     asm = compile_to_src32_asm('"hi"')
-    assert "LDIH R13, 0x20000" in asm
-    assert "LDIL R13, 0x20000" in asm
+    assert "LDIH R13, 0x0002" in asm
+    assert "LDIL R13, 0x0000" in asm
     assert ".ORG 0x20000" in asm
     assert ".DB 0x68, 0x69, 0x00" in asm
 
 
 def test_compile_string_literal_allows_custom_read_only_data_base():
     asm = compile_to_src32_asm('"hi"', read_only_data_base=0x30000)
-    assert "LDIH R13, 0x30000" in asm
-    assert "LDIL R13, 0x30000" in asm
+    assert "LDIH R13, 0x0003" in asm
+    assert "LDIL R13, 0x0000" in asm
     assert ".ORG 0x30000" in asm
 
 
@@ -154,6 +164,27 @@ def test_assembler_accepts_signed_ldi():
 def test_compile_unknown_word_error():
     with pytest.raises(SolCompileError, match="unknown word"):
         compile_to_src32_asm("1 foo")
+
+
+def test_compile_rejects_stack_underflow():
+    with pytest.raises(SolCompileError, match="stack underflow"):
+        compile_to_src32_asm("drop")
+
+
+def test_compile_rejects_inconsistent_branch_stack_depth():
+    with pytest.raises(SolCompileError, match="inconsistent stack depth"):
+        compile_to_src32_asm("0 if 1 else 2 3 end add")
+
+
+def test_compile_rejects_unbounded_loop_stack_growth():
+    with pytest.raises(SolCompileError, match="stack overflow"):
+        compile_to_src32_asm("while 1 2 end")
+
+
+def test_compile_checks_function_call_arguments():
+    source = "fn add1 (x) : x 1 add ret ; add1"
+    with pytest.raises(SolCompileError, match="stack underflow"):
+        compile_to_src32_asm(source)
 
 
 def test_compile_missing_branch_operand_error():
@@ -256,9 +287,29 @@ fn putc (char) :
 0x30 putc
 """
     asm = compile_to_src32_asm(src)
-    assert "LDIH R13, 0x80040000" in asm
-    assert "LDIL R13, 0x80040000" in asm
+    assert "LDIH R13, 0x8004" in asm
+    assert "LDIL R13, 0x0000" in asm
     assert "STB [R14 + 0], R13" in asm
+
+
+def test_compile_global_variable_initializes_storage_and_loads_on_reference():
+    asm = compile_to_src32_asm("!var value 7 value", use_short_mode=False)
+    initialization = "LDIH R13, 0x0000\n    LDIL R13, 0x0007"
+    variable_address = "LDIH R13, 0x0010\n    LDIL R13, 0x0000"
+
+    assert initialization in asm
+    assert variable_address in asm
+    assert "ST R13, [R14 + 0]" in asm
+    assert "LD R13, [R13 + 0]" in asm
+
+
+def test_compile_constant_embeds_value_without_variable_storage_access():
+    asm = compile_to_src32_asm("!const value 0x10000000 value", use_short_mode=False)
+
+    assert "LDIH R13, 0x1000" in asm
+    assert "LDIL R13, 0x0000" in asm
+    assert "ST R13, [R14 + 0]" not in asm
+    assert "LD R13, [R13 + 0]" not in asm
 
 
 def test_compile_retn_restores_past_arguments():
@@ -277,7 +328,7 @@ def test_compile_stack_cache_spills_only_after_cache_is_full():
     src = " ".join(str(i) for i in range(1, 14))
     asm = compile_to_src32_asm(src)
     first_spill = asm.find("ADDI R28, R28, -4")
-    push_13 = asm.find("LDIH R13, 0xd")
+    push_13 = asm.find("S.LDI R13, 0x0D")
     assert first_spill > push_13
 
 

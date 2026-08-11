@@ -160,6 +160,28 @@ fn extension_m_and_sltu() {
 }
 
 #[test]
+fn division_by_zero_returns_zero_without_panicking() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_ldi32(1, 123));
+    image.extend_from_slice(&encode_ldi32(2, 0));
+    image.extend_from_slice(&encode_r(0x19, 3, 1, 2)); // DIV
+    image.extend_from_slice(&encode_r(0x1A, 4, 1, 2)); // MOD
+    image.extend_from_slice(&encode_r(0x1C, 5, 1, 2)); // DIVU
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+
+    cpu.load_program(0, &image);
+    cpu.run(64);
+
+    assert_eq!(cpu.read_reg(3), 0);
+    assert_eq!(cpu.read_reg(4), 0);
+    assert_eq!(cpu.read_reg(5), 0);
+}
+
+#[test]
 fn short_mode_jmps_executes_and_returns_to_normal() {
     let mut bus = Bus::new();
     connect_ram(&mut bus);

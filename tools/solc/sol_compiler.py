@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from collections import defaultdict
 import re
+from collections import defaultdict
 
 from sol_vm import Instruction, Program, SolVMError, compile_program
 
@@ -18,6 +18,135 @@ class SolCompileError(RuntimeError):
     pass
 
 
+def _check_static_stack_safety(program: Program) -> None:
+    """Verify stack depth on every reachable generated instruction."""
+    instruction_count = len(program.instructions)
+    if instruction_count == 0:
+        return
+
+    function_starts = sorted(program.labels[name] for name in program.functions)
+    segments: dict[str | None, tuple[int, int]] = {
+        None: (0, function_starts[0] if function_starts else instruction_count)
+    }
+    for name in program.functions:
+        start = program.labels[name]
+        following = [pc for pc in function_starts if pc > start]
+        segments[name] = (start, following[0] if following else instruction_count)
+
+    binary_ops = {
+        "add", "sub", "mul", "div", "mod", "and", "or", "xor",
+        "shl", "shr", "eq", "neq", "lt", "gt", "le", "ge",
+    }
+    unary_ops = {"neg", "not", "sgn", "ld", "ldb", "ldh"}
+    store_ops = {"st", "stb", "sth"}
+    return_effect = {
+        name: 1 if any(
+            program.instructions[pc].op == "ret"
+            for pc in range(start, end)
+        ) else 0
+        for name, (start, end) in segments.items()
+        if name is not None
+    }
+
+    def successors(pc: int, end: int) -> list[int]:
+        inst = program.instructions[pc]
+        if inst.op in {"halt", "ret", "retn"}:
+            return []
+        if inst.op == "jmp":
+            assert isinstance(inst.arg, str)
+            return [program.labels[inst.arg]]
+        if inst.op in {"jz", "jnz"}:
+            assert isinstance(inst.arg, str)
+            targets = [program.labels[inst.arg]]
+            if pc + 1 < end:
+                targets.insert(0, pc + 1)
+            return targets
+        return [pc + 1] if pc + 1 < end else []
+
+    def transfer(depth: int, pc: int) -> int:
+        inst = program.instructions[pc]
+        op = inst.op
+        if op in {"push", "arg", "local_addr", "stacksize"}:
+            delta, required = 1, 0
+        elif op in binary_ops:
+            delta, required = -1, 2
+        elif op in unary_ops:
+            delta, required = 0, 1
+        elif op == "dup":
+            delta, required = 1, 1
+        elif op == "drop":
+            delta, required = -1, 1
+        elif op == "swap":
+            delta, required = 0, 2
+        elif op == "rot":
+            delta, required = 0, 3
+        elif op == "over":
+            delta, required = 1, 2
+        elif op == "nip":
+            delta, required = -1, 2
+        elif op == "tuck":
+            delta, required = 1, 2
+        elif op in store_ops:
+            delta, required = -2, 2
+        elif op in {"jz", "jnz"}:
+            delta, required = -1, 1
+        elif op == "call":
+            assert isinstance(inst.arg, str)
+            meta = program.functions.get(inst.arg)
+            if meta is None:
+                raise SolCompileError(f"call to unknown function: {inst.arg}")
+            delta = -meta["argcount"] + return_effect[inst.arg]
+            required = meta["argcount"]
+        elif op == "ret":
+            delta, required = 0, 1
+        elif op == "retn":
+            # retn discards every value produced by the callee.
+            delta, required = -depth, 0
+        elif op in {"jmp", "halt"}:
+            delta, required = 0, 0
+        else:
+            raise SolCompileError(f"cannot analyze stack effect of opcode: {op}")
+        if depth < required:
+            raise SolCompileError(
+                f"stack underflow at {op} (pc {pc}): requires {required}, has {depth}"
+            )
+        result = depth + delta
+        capacity = STACK_SIZE_BYTES // 4
+        if result > capacity:
+            raise SolCompileError(
+                f"stack overflow at {op} (pc {pc}): depth {result} exceeds {capacity}"
+            )
+        return result
+
+    for name, (start, end) in segments.items():
+        depths = {start: 0}
+        pending = [start]
+        while pending:
+            pc = pending.pop()
+            depth = depths[pc]
+            inst = program.instructions[pc]
+            after = transfer(depth, pc)
+            if name is not None and inst.op == "ret" and after != 1:
+                raise SolCompileError(f"function '{name}' returns with invalid stack depth {after}")
+            if name is not None and inst.op == "retn" and after != 0:
+                raise SolCompileError(f"function '{name}' returns with invalid stack depth {after}")
+            for target in successors(pc, end):
+                if target < start or target >= end:
+                    raise SolCompileError(f"invalid control-flow target at pc {pc}")
+                if target in depths:
+                    if depths[target] != after:
+                        if target <= pc and after > depths[target]:
+                            raise SolCompileError(
+                                f"stack overflow: loop increases depth from {depths[target]} to {after}"
+                            )
+                        raise SolCompileError(
+                            f"inconsistent stack depth at pc {target}: {depths[target]} and {after}"
+                        )
+                else:
+                    depths[target] = after
+                    pending.append(target)
+
+
 def _format_imm(value: int) -> str:
     masked = value & 0xFFFFFFFF
     if masked >= 0x80000000:
@@ -25,11 +154,17 @@ def _format_imm(value: int) -> str:
     return hex(masked)
 
 
+def _format_imm16(value: int) -> tuple[str, str]:
+    """Return the high and low 16-bit immediates for a 32-bit value."""
+    masked = value & 0xFFFFFFFF
+    return f"0x{(masked >> 16) & 0xFFFF:04X}", f"0x{masked & 0xFFFF:04X}"
+
+
 def _emit_load_imm32(lines: list[str], reg: str, value: int) -> None:
-    imm = _format_imm(value)
+    high, low = _format_imm16(value)
     lines.append(f"    ADDI {reg}, R0, 0")
-    lines.append(f"    LDIH {reg}, {imm}")
-    lines.append(f"    LDIL {reg}, {imm}")
+    lines.append(f"    LDIH {reg}, {high}")
+    lines.append(f"    LDIL {reg}, {low}")
 
 
 def _emit_short_trampoline(lines: list[str], short_instructions: list[str], label_tag: str) -> None:
@@ -739,4 +874,5 @@ def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100
         program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
+    _check_static_stack_safety(program)
     return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)

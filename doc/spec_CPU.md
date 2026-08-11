@@ -105,10 +105,10 @@ Bit positions:
 
 ### 4.4 Extension M (Multiplication and Division) (Note: Added in revision 1.1)
 - `0x18 (reg)`: `MUL rd, rs1, rs2`: Multiply `rs1` and `rs2`, store lower 32 bits in `rd`
-- `0x19 (reg)`: `DIV rd, rs1, rs2`: Divide `rs1` by `rs2`, store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic). TODO: define behavior for division by zero. (Hardware exception or trap may be implemented in future.)
-- `0x1A (reg)`: `MOD rd, rs1, rs2`: Divide `rs1` by `rs2`, store remainder in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
+- `0x19 (reg)`: `DIV rd, rs1, rs2`: Divide `rs1` by `rs2`, store quotient in `rd`. If `rs2` is zero, store `0` in `rd`.
+- `0x1A (reg)`: `MOD rd, rs1, rs2`: Divide `rs1` by `rs2`, store remainder in `rd`. If `rs2` is zero, store `0` in `rd`.
 - `0x1B (reg)`: `MULH rd, rs1, rs2`: Multiply `rs1` and `rs2`, store upper 32 bits in `rd`
-- `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, behavior is undefined (emulator may panic).
+- `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, store `0` in `rd`.
 
 ### 4.5.1 Extension S (Short Mode Instructions Format) (Note: Added in revision 2.1)
 Extension S provides a compact "Short Mode" 16-bit instruction encoding for common operations.

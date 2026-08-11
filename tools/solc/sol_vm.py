@@ -828,7 +828,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
 
 class SolVM:
-    def __init__(self, *, max_steps: int = 1_000_000):
+    def __init__(self, *, max_steps: int = 1_000_000_000):
         self.max_steps = max_steps
         self.stack: list[int] = []
         self.memory: dict[int, int] = {}

@@ -612,12 +612,26 @@ impl Cpu {
             Instruction::Div { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                let _ = self.write_reg(rd as usize, (lhs / rhs) as u32);
+                let result = if rhs == 0 {
+                    0
+                } else if lhs == i32::MIN && rhs == -1 {
+                    i32::MIN
+                } else {
+                    lhs / rhs
+                };
+                let _ = self.write_reg(rd as usize, result as u32);
             }
             Instruction::Mod { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                let _ = self.write_reg(rd as usize, (lhs % rhs) as u32);
+                let result = if rhs == 0 {
+                    0
+                } else if lhs == i32::MIN && rhs == -1 {
+                    0
+                } else {
+                    lhs % rhs
+                };
+                let _ = self.write_reg(rd as usize, result as u32);
             }
             Instruction::Mulh { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32 as i64;
@@ -627,7 +641,8 @@ impl Cpu {
             Instruction::Divu { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                let _ = self.write_reg(rd as usize, lhs / rhs);
+                let result = if rhs == 0 { 0 } else { lhs / rhs };
+                let _ = self.write_reg(rd as usize, result);
             }
             Instruction::Ldb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);

@@ -608,8 +608,13 @@ class Assembler:
                     raise ValueError(f"line {entry.lineno}: {op} expects 2 operands")
                 rd = parse_reg(tokens[1], entry.lineno)
                 imm = self.parse_imm_or_label(tokens[2], entry.lineno)
-                imm = check_u32(imm, entry.lineno)
-                self.emit_insn(enc_imm32(opcode, rd, imm))
+                if op in {"LDIH", "LDIL"}:
+                    if not -0x8000 <= imm <= 0xFFFF:
+                        raise ValueError(f"line {entry.lineno}: immediate out of 16-bit range: {imm}")
+                    self.emit_insn(enc_i(opcode, rd, 0, imm))
+                else:
+                    imm = check_u32(imm, entry.lineno)
+                    self.emit_insn(enc_imm32(opcode, rd, imm))
                 continue
 
             if kind == "I":

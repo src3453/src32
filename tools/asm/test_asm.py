@@ -24,3 +24,7 @@ def test_jump_family_accepts_relative_numeric_targets_with_prefix():
     assert assemble_hex("JMPS R!0\nafter:\nS.RET") == assemble_hex("JMPS after\nafter:\nS.RET")
     assert assemble_hex("JALS R!0\nafter:\nS.RET") == assemble_hex("JALS after\nafter:\nS.RET")
     assert assemble_hex("S.JAL R!0\nafter:\nS.RET") == assemble_hex("S.JAL after\nafter:\nS.RET")
+
+
+def test_ldih_and_ldil_encode_16_bit_immediates():
+    assert assemble_hex("LDIH R1, 0x000F\nLDIL R1, 0xFFFC") == "f420000ff020fffc"
