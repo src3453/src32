@@ -5,6 +5,9 @@ pub mod bus;
 pub mod sys;
 pub mod devices {
     pub mod ram;
+    pub mod irqc {
+        pub mod irqc;
+    }
     pub mod vdp {
         pub mod clut;
         pub mod vdp;
@@ -13,6 +16,7 @@ pub mod devices {
         pub mod reg;
     }
     pub mod pec {
+        pub mod rng;
         pub mod serial;
     }
 }

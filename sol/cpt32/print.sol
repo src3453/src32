@@ -1,4 +1,4 @@
-# solstd_print.sol - sol Standard Library (solstd): Print operations
+# print.sol - sol Standard Library (solstd): Print operations
 
 !var UART_ADDR 0x80040000
 

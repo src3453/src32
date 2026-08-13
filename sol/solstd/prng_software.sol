@@ -1,4 +1,4 @@
-# solstd_prng.sol
+# prng_software.sol
 # 32-bit Galois LFSR pseudo-random number generator
 
 !var lfsr 0xACE1

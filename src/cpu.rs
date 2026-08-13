@@ -60,6 +60,7 @@ enum Instruction {
     Ldil { rd: u8, imm: u16 },
     Ldih { rd: u8, imm: u16 },
     Unknown(u32),
+    Iret,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,8 +89,10 @@ const EXT_A: u32 = 0x02; // Extension A (Arithmetic): adds more arithmetic and l
 const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/store instructions
 const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and division instructions
 const EXT_S: u32 = 0x10; // Extension S (Short Mode)
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S; // CPUID features bitfield
+const EXT_I: u32 = 0x20; // Extension I (Interrupts)
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
+pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0080;
 
 const INSN_SIZE: u32 = 4;
 const SHORT_INSN_SIZE: u32 = 2;
@@ -101,6 +104,12 @@ pub struct Cpu {
     bus: Bus,
     cycles: u128,
     instr_mode: InstructionMode,
+    epc: u32,
+    cause: u8,
+    irq_enable: bool,
+    irq_pending: bool,
+    irq_pending_number: u8,
+    irq_line: bool,
 }
 
 impl Cpu {
@@ -112,6 +121,12 @@ impl Cpu {
             bus,
             cycles: 0,
             instr_mode: InstructionMode::Normal,
+            epc: 0,
+            cause: 0,
+            irq_enable: true,
+            irq_pending: false,
+            irq_pending_number: 0,
+            irq_line: false,
         }
     }
 
@@ -120,6 +135,12 @@ impl Cpu {
         self.pc = pc;
         self.running = true;
         self.instr_mode = InstructionMode::Normal;
+        self.epc = 0;
+        self.cause = 0;
+        self.irq_enable = true;
+        self.irq_pending = false;
+        self.irq_pending_number = 0;
+        self.irq_line = false;
     }
 
     pub fn load_program(&mut self, base: u32, image: &[u8]) {
@@ -150,6 +171,28 @@ impl Cpu {
 
     pub fn cycles(&self) -> u128 {
         self.cycles
+    }
+
+    pub fn epc(&self) -> u32 {
+        self.epc
+    }
+
+    pub fn irq_cause(&self) -> u8 {
+        self.cause
+    }
+
+    pub fn irq_enabled(&self) -> bool {
+        self.irq_enable
+    }
+
+    /// Drive the CPU's external IRQ input. A rising edge latches one request.
+    /// IRQC owns source arbitration; the CPU only receives the selected number.
+    pub fn set_irq_input(&mut self, level: bool, number: u8) {
+        if level && !self.irq_line {
+            self.irq_pending = true;
+            self.irq_pending_number = number & 0x0F;
+        }
+        self.irq_line = level;
     }
 
     pub fn read_mem_u8(&mut self, addr: u32) -> u8 {
@@ -285,6 +328,7 @@ impl Cpu {
             0x3D => Instruction::Ldih { rd, imm: imm_u16 },
             0x3E => Instruction::Cpuid,
             0x3F => Instruction::Halt,
+            0x20 => Instruction::Iret,
             _ => Instruction::Unknown(raw),
         }
     }
@@ -349,6 +393,7 @@ impl Cpu {
             Instruction::Jrs { rd } => format!("JRS R{}", rd),
             Instruction::Cpuid => "CPUID".to_string(),
             Instruction::Halt => "HALT".to_string(),
+            Instruction::Iret => "IRET".to_string(),
             Instruction::And { rd, rs1, rs2 } => format!("AND R{}, R{}, R{}", rd, rs1, rs2),
             Instruction::Or { rd, rs1, rs2 } => format!("OR R{}, R{}, R{}", rd, rs1, rs2),
             Instruction::Xor { rd, rs1, rs2 } => format!("XOR R{}, R{}, R{}", rd, rs1, rs2),
@@ -564,6 +609,11 @@ impl Cpu {
             Instruction::Halt => {
                 self.running = false;
             }
+            Instruction::Iret => {
+                self.pc = self.epc;
+                self.instr_mode = InstructionMode::Normal;
+                self.irq_enable = true;
+            }
             Instruction::And { rd, rs1, rs2 } => {
                 let _ = self.write_reg(
                     rd as usize,
@@ -773,6 +823,17 @@ impl Cpu {
             }
         }
         self.cycles += 1; // execute
+
+        // Interrupts are sampled only after the complete instruction has
+        // committed. This also makes the saved EPC the next instruction.
+        if self.running && self.irq_enable && self.irq_pending {
+            self.epc = self.pc;
+            self.cause = self.irq_pending_number;
+            self.irq_pending = false;
+            self.irq_enable = false;
+            self.instr_mode = InstructionMode::Normal;
+            self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        }
     }
 
     pub fn step_once(&mut self) -> bool {

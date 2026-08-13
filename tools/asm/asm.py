@@ -44,6 +44,7 @@ OP_INFO = {
     "JMPS": (0x1D, "J"),
     "JALS": (0x1E, "J"),
     "JRS": (0x1F, "R1"),
+    "IRET": (0x20, "R0"),
     "LDB": (0x13, "M"),
     "LDH": (0x14, "M"),
     "STB": (0x15, "M"),

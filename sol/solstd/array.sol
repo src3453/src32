@@ -1,4 +1,4 @@
-# solstd_array.sol - sol Standard Library (solstd): Array operations
+# array.sol - sol Standard Library (solstd): Array operations
 
 fn aget (ptr n) :
     local off

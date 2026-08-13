@@ -72,6 +72,7 @@ Bit positions:
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
 - `0x3F (reg)`: `HALT`: Stop execution loop
+- `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
 `BEQ`/`BNE` note:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
@@ -85,6 +86,30 @@ Bit positions:
   - Bit 2: Extension L (Load/Store)
   - Bit 3: Extension M (Multiplication/Division)
   - Bit 4: Extension S (Short Mode)
+  - Bit 5: Extension I (Interrupts)
+
+### 4.6 Extension I (Interrupts)
+
+The CPU exposes one external interrupt input from the separate `IRQC` device:
+
+- `irq_valid`: interrupt request level
+- `irq_number[3:0]`: selected source number
+
+The CPU input is rising-edge triggered. A low-to-high transition latches one
+request, and the CPU samples it only after an instruction has completed. On
+acceptance:
+
+```
+EPC = PC                 # next instruction after the completed instruction
+CAUSE = irq_number
+IRQ_ENABLE = 0
+PC = 0xFFFF0080 + irq_number * 4
+```
+
+`IRET` restores normal mode, sets `PC = EPC`, and re-enables interrupts.
+Nested interrupts are disabled in this revision. Source arbitration is not a
+CPU function: the external `IRQC` selects the lowest-numbered enabled pending
+IRQ and drives `irq_valid`/`irq_number`.
 
 ### 4.2 Extension A (ALU)
 

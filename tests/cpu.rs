@@ -29,6 +29,10 @@ fn encode_cpuid() -> [u8; 4] {
     encode_r(0x3E, 0, 0, 0)
 }
 
+fn encode_iret() -> [u8; 4] {
+    encode_r(0x20, 0, 0, 0)
+}
+
 fn encode_short(raw: u16) -> [u8; 2] {
     raw.to_be_bytes()
 }
@@ -120,7 +124,27 @@ fn cpuid_reports_updated_features() {
     cpu.run(16);
 
     assert_eq!(cpu.read_reg(1), 0x5352_4332);
-    assert_eq!(cpu.read_reg(2), 0x1F);
+    assert_eq!(cpu.read_reg(2), 0x3F);
+}
+
+#[test]
+fn irq_is_edge_triggered_and_iret_restores_state() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x03, 1, 1, 1));
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+    image.extend_from_slice(&encode_r(0x03, 2, 2, 2));
+    image.extend_from_slice(&encode_iret());
+    cpu.load_program(0, &image);
+
+    cpu.set_irq_input(true, 3);
+    assert!(cpu.step_once());
+    assert_eq!(cpu.epc(), 4);
+    assert_eq!(cpu.irq_cause(), 3);
+    assert_eq!(cpu.pc(), 0xFFFF_008C);
+    assert!(!cpu.irq_enabled());
 }
 
 #[test]

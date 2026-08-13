@@ -9,6 +9,7 @@ use std::time::Instant;
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::pec::serial::connect_uart;
+use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
 use imgui::{Condition, Ui};
@@ -58,6 +59,7 @@ impl GuiApp {
         let mut bus = Bus::new();
         connect_ram(&mut bus);
         connect_uart(&mut bus);
+        connect_rng(&mut bus);
 
         load_binary_data(program_path, &mut bus);
 
