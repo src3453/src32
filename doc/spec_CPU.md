@@ -273,6 +273,7 @@ Implemented in this repository:
 - Core CPU fetch/decode/execute loop
 - Base ISA + Extension ALM instructions
 - Extension S (Shortened Instructions Format)
+- Extension I (Interrupts)
 - 16 MiB RAM-backed bus
 - Two-pass assembler with labels/directives
 
@@ -282,3 +283,12 @@ Planned (future):
 - MMIO devices
 - ROM loader/boot flow
 - Integration tests with assembled programs
+
+Planning extensions:
+V: Virtual Memory, MMU, TLB
+C: L1 Cache
+P: Protection/Privilege Levels (depends on I extension)
+p: Pipelining
+v: Vector instructions, SIMD
+F: Floating-point instructions, FPU
+a: Atomic instructions, memory barriers, SMT

@@ -1,6 +1,8 @@
 // CPU: Central Processing Unit implementation
 // This module defines the SRC32 CPU struct, instruction set, and execution logic for the CPT32 emulator.
 
+// Features: SRC32-ALMSI
+
 use crate::bus::Bus;
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
