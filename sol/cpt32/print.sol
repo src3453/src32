@@ -11,9 +11,13 @@ fn prn (ptr) :
     local char 0 # current char
     while
         ptr i add ldb >char # get current char with offset and store to local var
+        char 0 eq # continue until null terminator
+        if
+            retn
+        end
         i 1 add >i # increment ptr
         char putc # put char
-        char 0 neq # continue until null terminator
+        0
     end
 ;
 
