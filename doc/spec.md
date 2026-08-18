@@ -335,8 +335,20 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 | 0xFFFF0000 | Reset Vector |
 | 0xFFFF0004 | Illegal Instruction |
 | 0xFFFF0008 | Bus Error |
-| 0xFFFF0080~0xFFFF00FF | IRQ Vectors (0-15): 0xFFFF0080 + IRQNum*4 |
-| 0xFFFF0100 | Syscall |
+| 0xFFFF0100 | Interrupt Vector (IRQC take care of IRQs) |
+| 0xFFFF0104 | Syscall |
+
+CPU予約領域のMMIO実装では、ベクターテーブルを `0xFFFF0000` から配置し、
+CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通り（32-bit、ビッグエンディアン）：
+
+| Address | Register |
+|--------|----------|
+| 0xFFFF0200 - 0xFFFF027C | R0-R31 |
+| 0xFFFF0280 | PC |
+| 0xFFFF0284 | EPC |
+| 0xFFFF0288 | CAUSE |
+| 0xFFFF028C | STATUS (bit 0: IRQ enable) |
+| 0xFFFF0290 | INSTR_MODE (0: Normal, 1: Short) |
 
 ---
 

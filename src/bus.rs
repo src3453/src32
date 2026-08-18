@@ -22,15 +22,30 @@ pub trait Device {
     fn size(&self) -> u32;
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum BusAccessSource { Cpu, Debugger }
+
 pub struct Bus {
     devices: Vec<DeviceMap>,
+    access_source: BusAccessSource,
+    bus_error: bool,
 }
 
 impl Bus {
     pub fn new() -> Self {
         Self {
             devices: Vec::new(),
+            access_source: BusAccessSource::Cpu,
+            bus_error: false,
         }
+    }
+
+    pub fn set_access_source(&mut self, source: BusAccessSource) { self.access_source = source; }
+    pub fn access_source(&self) -> BusAccessSource { self.access_source }
+    pub fn take_bus_error(&mut self) -> bool {
+        let error = self.bus_error;
+        self.bus_error = false;
+        error
     }
 
 
@@ -94,7 +109,18 @@ impl Bus {
         if let Some((device, offset)) = self.find_device(addr) {
             return device.read(offset);
         }
+        self.bus_error = true;
+        if self.access_source == BusAccessSource::Debugger { return 0; }
         panic!("Invalid I/O read: 0x{:08X}", addr);
+    }
+
+    /// Read a byte for a debugger view. `None` represents an open bus.
+    pub fn read_debug_u8(&mut self, addr: u32) -> Option<u8> {
+        if let Some((device, offset)) = self.find_device(addr) {
+            return Some(device.read(offset));
+        }
+        self.bus_error = true;
+        Some(0).filter(|_| self.access_source != BusAccessSource::Debugger)
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
@@ -102,6 +128,8 @@ impl Bus {
             device.write(offset, value);
             return;
         }
+        self.bus_error = true;
+        if self.access_source == BusAccessSource::Debugger { return; }
         panic!("Invalid I/O write: 0x{:08X}", addr);
     }
 

@@ -542,7 +542,7 @@ impl S3w2Sound {
         for i in 0..samples {
             for ch in 0..NUM_CHANNELS {
                 for _ in 0..4 {
-                    let sample = self.generate_sample(ch);
+                    let sample = self.generate_sample(ch) / 2; // Reduce volume
                     let pan_l = (self.channels[ch].panpot >> 4) as i32;
                     let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
                     output[ch][0][i] = output[ch][0][i].saturating_add(((sample as i32) * pan_l / 15) as i16);
@@ -562,7 +562,7 @@ impl S3w2Sound {
             let mut mix_r = 0i32;
             for ch in 0..NUM_CHANNELS {
                 for _ in 0..4 {
-                    let sample = self.generate_sample(ch);
+                    let sample = self.generate_sample(ch) / 2; // Reduce volume 
                     let pan_l = (self.channels[ch].panpot >> 4) as i32;
                     let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
                     mix_l += (sample as i32) * pan_l / 15;

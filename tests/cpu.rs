@@ -143,8 +143,40 @@ fn irq_is_edge_triggered_and_iret_restores_state() {
     assert!(cpu.step_once());
     assert_eq!(cpu.epc(), 4);
     assert_eq!(cpu.irq_cause(), 3);
-    assert_eq!(cpu.pc(), 0xFFFF_008C);
+    assert_eq!(cpu.pc(), 0xFFFF_010C);
     assert!(!cpu.irq_enabled());
+}
+
+#[test]
+fn cpu_reserved_vectors_and_registers_are_mmio_mapped() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+
+    cpu.write_mem_u32_be(0xFFFF_0000, 0x0000_1234);
+    cpu.write_mem_u32_be(0xFFFF_0004, 0x0000_5678);
+    cpu.write_mem_u32_be(0xFFFF_0204, 0xCAFE_BABE);
+
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0000), 0x0000_1234);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0004), 0x0000_5678);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0204), 0xCAFE_BABE);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0280), cpu.pc());
+}
+
+#[test]
+fn debugger_bus_error_does_not_panic_or_enter_vector() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let pc = cpu.pc();
+
+    assert_eq!(cpu.read_mem_u8(0x9000_0000), 0);
+    assert_eq!(cpu.read_debug_mem_u8(0x9000_0000), None);
+    cpu.write_mem_u8(0x9000_0000, 0x12);
+
+    assert_eq!(cpu.pc(), pc);
+    assert!(cpu.step_once());
+    assert_eq!(cpu.pc(), pc + 4);
 }
 
 #[test]

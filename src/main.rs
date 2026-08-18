@@ -114,9 +114,9 @@ impl DebugUiState {
             queued_steps: 0,
             disasm_follow_pc: true,
             disasm_base_input: "0x00000000".to_string(),
-            disasm_count_input: "16".to_string(),
+            disasm_count_input: "32".to_string(),
             mem_base_input: "0x00000000".to_string(),
-            mem_count_input: "64".to_string(),
+            mem_count_input: "256".to_string(),
         }
     }
 
@@ -276,12 +276,19 @@ impl DebugUiState {
                             ascii.push(' ');
                             continue;
                         }
-                        let byte = cpu.read_mem_u8(absolute);
-                        hex.push_str(&format!("{:02X} ", byte));
-                        if byte.is_ascii_graphic() || byte == b' ' {
-                            ascii.push(byte as char);
-                        } else {
-                            ascii.push('.');
+                        match cpu.read_debug_mem_u8(absolute) {
+                            Some(byte) => {
+                                hex.push_str(&format!("{:02X} ", byte));
+                                if byte.is_ascii_graphic() || byte == b' ' {
+                                    ascii.push(byte as char);
+                                } else {
+                                    ascii.push('.');
+                                }
+                            }
+                            None => {
+                                hex.push_str("xx ");
+                                ascii.push('.');
+                            }
                         }
                     }
                     ui.text(format!("0x{:08X}: {}|{}|", row_addr, hex, ascii));

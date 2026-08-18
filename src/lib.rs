@@ -5,6 +5,7 @@ pub mod bus;
 pub mod sys;
 pub mod devices {
     pub mod ram;
+    pub mod cpu;
     pub mod irqc {
         pub mod irqc;
     }

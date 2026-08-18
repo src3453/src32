@@ -1,6 +1,6 @@
 // SGU: Sound Generator Unit
 // This module provides the bus device wrapper for the 3WS8PN (S3W2) sound generator.
-// SGU MMIO: 0x80020000 - 0x8002FFFF (64KB)
+// SGU MMIO: 0x80020000 - 0x800208FF (2304 bytes)
 // PCMRAM:   0x18000000 - 0x180FFFFF (1MB)
 
 use std::cell::RefCell;
@@ -10,7 +10,7 @@ use crate::bus::{Bus, Device};
 use crate::devices::sgu::s3w2::{S3w2Sound, PCM_RAM_SIZE};
 
 pub const SGU_REG_BASE: u32 = 0x8002_0000;
-pub const SGU_REG_SIZE: u32 = 0x0001_0000; // 64KB
+pub const SGU_REG_SIZE: u32 = 0x0000_0900; // 0x900 bytes (0x800 wavetable SRAM + 0x100 registers)
 
 pub const PCM_RAM_BASE: u32 = 0x1800_0000;
 pub const PCM_RAM_TOTAL_SIZE: u32 = PCM_RAM_SIZE as u32; // 1MB

@@ -3,7 +3,10 @@
 
 // Features: SRC32-ALMSI
 
-use crate::bus::Bus;
+use crate::bus::{Bus, BusAccessSource};
+use crate::devices::cpu::CpuRegisterBlock;
+use std::cell::RefCell;
+use std::rc::Rc;
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
@@ -94,7 +97,7 @@ const EXT_S: u32 = 0x10; // Extension S (Short Mode)
 const EXT_I: u32 = 0x20; // Extension I (Interrupts)
 const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
-pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0080;
+pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0100;
 
 const INSN_SIZE: u32 = 4;
 const SHORT_INSN_SIZE: u32 = 2;
@@ -112,11 +115,14 @@ pub struct Cpu {
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
+    register_block: Rc<RefCell<CpuRegisterBlock>>,
 }
 
 impl Cpu {
     pub fn new(bus: Bus) -> Self {
-        Self {
+        let mut bus = bus;
+        let register_block = crate::devices::cpu::connect_cpu_registers(&mut bus);
+        let mut cpu = Self {
             reg: [0; 32],
             pc: 0,
             running: true,
@@ -129,7 +135,10 @@ impl Cpu {
             irq_pending: false,
             irq_pending_number: 0,
             irq_line: false,
-        }
+            register_block,
+        };
+        cpu.sync_register_block();
+        cpu
     }
 
     pub fn reset(&mut self, pc: u32) {
@@ -143,6 +152,36 @@ impl Cpu {
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
+        self.sync_register_block();
+    }
+
+    fn sync_register_block(&mut self) {
+        let mut block = self.register_block.borrow_mut();
+        block.regs = self.reg;
+        block.regs[0] = 0;
+        block.pc = self.pc;
+        block.epc = self.epc;
+        block.cause = u32::from(self.cause);
+        block.status = u32::from(self.irq_enable);
+        block.instr_mode = match self.instr_mode {
+            InstructionMode::Normal => 0,
+            InstructionMode::Short => 1,
+        };
+    }
+
+    fn sync_from_register_block(&mut self) {
+        let block = self.register_block.borrow();
+        self.reg = block.regs;
+        self.reg[REG_ZERO] = 0;
+        self.pc = block.pc;
+        self.epc = block.epc;
+        self.cause = block.cause as u8;
+        self.irq_enable = block.status & 1 != 0;
+        self.instr_mode = if block.instr_mode & 1 != 0 {
+            InstructionMode::Short
+        } else {
+            InstructionMode::Normal
+        };
     }
 
     pub fn load_program(&mut self, base: u32, image: &[u8]) {
@@ -198,19 +237,36 @@ impl Cpu {
     }
 
     pub fn read_mem_u8(&mut self, addr: u32) -> u8 {
-        self.bus.read_u8(addr)
+        self.bus.set_access_source(BusAccessSource::Debugger);
+        let value = self.bus.read_u8(addr);
+        self.bus.set_access_source(BusAccessSource::Cpu);
+        value
+    }
+
+    pub fn read_debug_mem_u8(&mut self, addr: u32) -> Option<u8> {
+        self.bus.set_access_source(BusAccessSource::Debugger);
+        let value = self.bus.read_debug_u8(addr);
+        self.bus.set_access_source(BusAccessSource::Cpu);
+        value
     }
 
     pub fn read_mem_u32_be(&mut self, addr: u32) -> u32 {
-        self.bus.read_u32_be(addr)
+        self.bus.set_access_source(BusAccessSource::Debugger);
+        let value = self.bus.read_u32_be(addr);
+        self.bus.set_access_source(BusAccessSource::Cpu);
+        value
     }
 
     pub fn write_mem_u8(&mut self, addr: u32, value: u8) {
+        self.bus.set_access_source(BusAccessSource::Debugger);
         self.bus.write_u8(addr, value);
+        self.bus.set_access_source(BusAccessSource::Cpu);
     }
 
     pub fn write_mem_u32_be(&mut self, addr: u32, value: u32) {
+        self.bus.set_access_source(BusAccessSource::Debugger);
         self.bus.write_u32_be(addr, value);
+        self.bus.set_access_source(BusAccessSource::Cpu);
     }
 
     pub fn read_reg(&self, reg: usize) -> u32 {
@@ -237,10 +293,6 @@ impl Cpu {
 
     fn fetch_u32(&mut self) -> u32 {
         self.bus.read_u32_be(self.pc)
-    }
-
-    fn fetch_u32_at(&mut self, addr: u32) -> u32 {
-        self.bus.read_u32_be(addr)
     }
 
     fn fetch_u16_at(&mut self, addr: u32) -> u16 {
@@ -449,7 +501,7 @@ impl Cpu {
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match mode {
             InstructionMode::Normal => {
-                let raw = self.fetch_u32_at(addr);
+                let raw = self.read_mem_u32_be(addr);
                 let insn = Self::decode(raw);
                 let next_mode = match insn {
                     Instruction::Jmps { .. } | Instruction::Jals { .. } | Instruction::Jrs { .. } => {
@@ -465,7 +517,7 @@ impl Cpu {
                 }
             }
             InstructionMode::Short => {
-                let raw = self.fetch_u16_at(addr);
+                let raw = self.read_debug_u16(addr);
                 let insn = Self::decode_short(raw);
                 let next_mode = match insn {
                     ShortInstruction::Ret => InstructionMode::Normal,
@@ -490,15 +542,23 @@ impl Cpu {
     }
 
     pub fn read_u32(&mut self, addr: u32) -> u32 {
-        self.fetch_u32_at(addr)
+        self.read_mem_u32_be(addr)
     }
 
     pub fn read_u16_be(&mut self, addr: u32) -> u16 {
-        self.fetch_u16_at(addr)
+        self.read_debug_u16(addr)
     }
 
     pub fn read_u40(&mut self, addr: u32) -> u32 {
-        self.fetch_u32_at(addr)
+        self.read_mem_u32_be(addr)
+    }
+
+    fn read_debug_u16(&mut self, addr: u32) -> u16 {
+        self.bus.set_access_source(BusAccessSource::Debugger);
+        let hi = self.bus.read_u8(addr) as u16;
+        let lo = self.bus.read_u8(addr.wrapping_add(1)) as u16;
+        self.bus.set_access_source(BusAccessSource::Cpu);
+        (hi << 8) | lo
     }
 
     fn add_signed(base: u32, offset: i16) -> u32 {
@@ -805,6 +865,9 @@ impl Cpu {
     }
 
     fn step(&mut self) {
+        // MMIO writes made by firmware/debuggers become visible before the
+        // next instruction. CPU-owned state is published again on commit.
+        self.sync_from_register_block();
         if !self.running {
             return;
         }
@@ -836,6 +899,7 @@ impl Cpu {
             self.instr_mode = InstructionMode::Normal;
             self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
         }
+        self.sync_register_block();
     }
 
     pub fn step_once(&mut self) -> bool {
