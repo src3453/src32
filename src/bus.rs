@@ -127,5 +127,6 @@ pub fn connect_devices(bus: &mut Bus) {
 
 pub fn connect_devices_with_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
     crate::devices::ram::connect_ram(bus);
+    let _sgu = crate::devices::sgu::sgu::connect_sgu(bus);
     crate::devices::vdp::vdp::connect_vdp(bus)
 }

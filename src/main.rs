@@ -11,6 +11,8 @@ use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::ram::connect_ram;
+use cpt32::devices::sgu::s3w2::S3w2Sound;
+use cpt32::devices::sgu::sgu::connect_sgu;
 use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
 use imgui::{Condition, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
@@ -25,6 +27,7 @@ use winit::window::{Window, WindowAttributes};
 
 mod monitor;
 mod render;
+mod audio;
 
 const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
@@ -40,6 +43,8 @@ fn load_binary_data(path: &str, bus: &mut Bus) {
 struct GuiApp {
     cpu: Cpu,
     vdp: Rc<RefCell<Vdp>>,
+    sgu: Rc<RefCell<S3w2Sound>>,
+    audio_host: Option<audio::AudioHost>,
     display_handle: Option<OwnedDisplayHandle>,
     window: Option<Window>,
     presenter: Option<render::WgpuPresenter>,
@@ -60,15 +65,26 @@ impl GuiApp {
         connect_ram(&mut bus);
         connect_uart(&mut bus);
         connect_rng(&mut bus);
+        let sgu = connect_sgu(&mut bus);
 
         load_binary_data(program_path, &mut bus);
 
         let vdp = connect_vdp_with_font(&mut bus, font_path.map(Path::new));
 
+        let audio_host = match audio::AudioHost::new() {
+            Ok(host) => Some(host),
+            Err(e) => {
+                eprintln!("Warning: Failed to initialize audio host: {}", e);
+                None
+            }
+        };
+
         let cpu = Cpu::new(bus);
         Self {
             cpu,
             vdp,
+            sgu,
+            audio_host,
             display_handle: Some(display_handle),
             window: None,
             presenter: None,
@@ -428,6 +444,12 @@ impl ApplicationHandler for GuiApp {
                         self.cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
                         presenter.render(&self.vdp)
                     };
+
+                    if let Some(audio_host) = self.audio_host.as_ref() {
+                        let sample_count = (audio_host.sample_rate() / cpt32::sys::FRAME_RATE) as usize;
+                        let (left, right) = self.sgu.borrow_mut().clock_mixed(sample_count);
+                        audio_host.push_samples_i16(&left, &right);
+                    }
 
                     match render_result {
                         Ok(()) => {}

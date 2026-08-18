@@ -5,6 +5,7 @@ use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
 use cpt32::devices::pec::rng::connect_rng;
+use cpt32::devices::sgu::sgu::connect_sgu;
 
 fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
     let data = std::fs::read(path).expect("Failed to read binary file");
@@ -112,6 +113,7 @@ pub fn run(program_path: Option<&str>) {
     connect_ram(&mut bus);
     connect_uart_with_stdin(&mut bus, false);
     connect_rng(&mut bus);
+    let _sgu = connect_sgu(&mut bus);
     let mut cpu = Cpu::new(bus);
 
     if let Some(path) = program_path {

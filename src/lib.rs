@@ -8,6 +8,10 @@ pub mod devices {
     pub mod irqc {
         pub mod irqc;
     }
+    pub mod sgu {
+        pub mod s3w2;
+        pub mod sgu;
+    }
     pub mod vdp {
         pub mod clut;
         pub mod vdp;
