@@ -2,13 +2,12 @@
 //
 // 3WS8PN is a wavetable/PCM/noise sound generator chip with 8 channels.
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
-// Sound clock: 192kHz (9.216MHz / 48)
+// Sound clock: 192kHz (48MHz / 250)
 
 pub const NUM_CHANNELS: usize = 8;
 pub const WAVETABLE_SIZE: usize = 256;
 pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
-pub const MASTER_CLOCK: u32 = 9_216_000;
 pub const SOUND_CLOCK: u32 = 192_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

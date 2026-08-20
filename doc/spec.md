@@ -83,6 +83,8 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - PCM音源データ
   - ストリーミングバッファ
 
+SGUの音源コア、MMIOインターフェース、レジスタマップは [`spec_SGU.md`](spec_SGU.md) を参照。
+
 ---
 
 ## 2.5 VDP (Video Display Processor)
@@ -129,46 +131,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 
 ---
 
-## 2.7 SGU (Sound Generator Unit)
-
-- 型式: 3FS84PN4
-- 音源コアは 3HS88PWN4 のサブセット + 追加機能
-- 機能:
-  - FM音源
-  - PCM / ノイズ生成
-  - 16bit 48KHz リニアPCM 2Chステレオ出力
-  - 音量制御: 256段階
-  - パンポット制御: 16段階 (左、右ともに0-15)
-
-### FM音源
-- 方式: 4オペレータ
-- ハードウェアエンベロープ: アタック、ディケイ、サステイン、リリース (ADSR) 制御可能
-- 波形: 16種類 (正弦波、三角波、矩形波、ノコギリ波、ランダムノイズなど)
-- チャンネル数: 8ch
-
-### PCM / Noise
-- チャンネル数: 4ch
-- データソース: PCMRAM
-- データ形式: 8bit/16bitリニアPCM / SqueezVOX 4 1ch
-- ループ制御: 可能 (ループ開始アドレス、ループ終了アドレス指定)
-- サンプリングレート: 可変
-- ノイズ: LSFR生成
-
-### SqueezVOX 4 (フォーマット名 SQV4)
-- ADPCM方式の音声コーデック
-- SQV4形式のデータをPCMRAMに配置し、SGUで再生可能
-- バリアント:
-  - SQV4H: 4bit ADPCM
-  - SQV4L: 3bit ADPCM
-  - SQV4L+: 3bit ADPCM + 非線形量子化
-- データフォーマット:
-各サンプルは64サンプルの「フラグメント」に分割され、各フラグメントはヘッダとデータで構成される。
-  - ヘッダ: 1バイト (音量情報)
-  - データ: 3/4ビットのADPCMコードが64サンプル分 (24/32バイト)
-  - 出力: 16bitリニアPCMにデコードされて再生される
----
-
-## 2.8 VPU (Vector Processing Unit)
+## 2.7 VPU (Vector Processing Unit)
 
 - 機能:
   - 3Dグラフィックス処理
@@ -182,7 +145,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 
 ---
 
-## 2.9 DMAC (Direct Memory Access Controller)
+## 2.8 DMAC (Direct Memory Access Controller)
 
 - 機能:
   - メモリ間高速転送
@@ -195,7 +158,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 
 ---
 
-## 2.10 PeC (Peripheral Controller)
+## 2.9 PeC (Peripheral Controller)
 
 - 機能:
   - 入力デバイス管理
@@ -214,7 +177,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 
 ---
 
-## 2.11 IRQC (Interrupt Request Controller)
+## 2.10 IRQC (Interrupt Request Controller)
 - 機能:
   - 割り込み管理
   - 優先度制御
