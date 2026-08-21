@@ -146,20 +146,18 @@ def parse_llvm_ir(source: str) -> LLVMModule:
         elif tok == 'declare':
             _skip_declare(tokens, pos)
         else:
-            raise SyntaxError(f"Unexpected top-level token {tok!r}")
+            _skip_top_level_record(tokens, pos)
 
     return module
 
 
 def _skip_declare(tokens, pos):
     """Skip a declare statement. Declare format: declare <ret_type> @name(<params>)"""
-    # consume 'declare'
-    pos[0] += 1
-    # consume everything until we hit 'define', 'declare', or '}'
-    while pos[0] < len(tokens):
-        t = tokens[pos[0]]
-        if t in ('define', 'declare', '}'):
-            return
+    _skip_top_level_record(tokens, pos)
+
+
+def _skip_top_level_record(tokens, pos):
+    while pos[0] < len(tokens) and tokens[pos[0]] not in ('define', 'declare'):
         pos[0] += 1
 
 
@@ -173,30 +171,36 @@ def _parse_define(tokens, pos):
         raise SyntaxError("Unexpected end after 'define'")
     ret_type = tokens[pos[0]]
     pos[0] += 1
-
-    if pos[0] >= len(tokens) or not tokens[pos[0]].startswith('@'):
-        raise SyntaxError(f"Expected function name starting with @, got {tokens[pos[0]]!r}")
-    fname = tokens[pos[0]][1:]  # strip @
+    while pos[0] < len(tokens) and not tokens[pos[0]].startswith('@'):
+        pos[0] += 1
+    if pos[0] >= len(tokens):
+        raise SyntaxError("Expected function name")
+    fname = tokens[pos[0]][1:]
     pos[0] += 1
-
-    if pos[0] >= len(tokens) or tokens[pos[0]] != '(':
-        raise SyntaxError(f"Expected '(', got {tokens[pos[0]]!r}")
+    while pos[0] < len(tokens) and tokens[pos[0]] != '(':
+        pos[0] += 1
+    if pos[0] >= len(tokens):
+        raise SyntaxError("Expected '(' after function name")
     pos[0] += 1  # consume '('
 
     params = []
     while tokens[pos[0]] != ')':
         ptype = tokens[pos[0]]
         pos[0] += 1
-        pname = tokens[pos[0]]
-        pos[0] += 1
-        params.append((ptype, pname))
+        pname = None
+        while pos[0] < len(tokens) and tokens[pos[0]] not in (',', ')'):
+            x = tokens[pos[0]]; pos[0] += 1
+            if x.startswith('%'): pname = x
+        params.append((ptype, pname or f"%arg{len(params)}"))
         if tokens[pos[0]] == ',':
             pos[0] += 1
 
     pos[0] += 1  # consume ')'
 
-    if pos[0] >= len(tokens) or tokens[pos[0]] != '{':
-        raise SyntaxError(f"Expected '{{', got {tokens[pos[0]]!r}")
+    while pos[0] < len(tokens) and tokens[pos[0]] != '{':
+        pos[0] += 1
+    if pos[0] >= len(tokens):
+        raise SyntaxError('Expected function body')
     pos[0] += 1
 
     func = LLVMFunction(fname, params)
@@ -282,11 +286,14 @@ def _parse_ret(tokens, pos):
     ty = tokens[pos[0]]
     pos[0] += 1
     val = _parse_value(tokens, pos)
+    _skip_attrs(tokens, pos)
     return {'op': 'ret', 'type': ty, 'value': val}
 
 
 def _parse_binop(tokens, pos, result, op):
     """Parse: <result> = <op> i32 <a>, <b>"""
+    while pos[0] < len(tokens) and tokens[pos[0]] in ('nsw', 'nuw', 'exact'):
+        pos[0] += 1
     ty = tokens[pos[0]]
     pos[0] += 1
     a = _parse_value(tokens, pos)
@@ -321,6 +328,7 @@ def _parse_load(tokens, pos, result):
     ptr_ty = tokens[pos[0]]
     pos[0] += 1
     ptr = _parse_value(tokens, pos)
+    _skip_attrs(tokens, pos)
     return {'op': 'load', 'result': result, 'type': ty, 'ptr': ptr}
 
 
@@ -347,7 +355,16 @@ def _parse_store(tokens, pos):
     ptr_ty = tokens[pos[0]]
     pos[0] += 1
     ptr = _parse_value(tokens, pos)
+    _skip_attrs(tokens, pos)
     return {'op': 'store', 'type': ty, 'value': val, 'ptr': ptr}
+
+
+def _skip_attrs(tokens, pos):
+    if pos[0] < len(tokens) and tokens[pos[0]] == ',':
+        while pos[0] < len(tokens) and tokens[pos[0]] not in ('ret','store','br','unreachable','}'):
+            if tokens[pos[0]].startswith('%') and pos[0]+1 < len(tokens) and tokens[pos[0]+1] == '=':
+                break
+            pos[0] += 1
 
 
 def _parse_call(tokens, pos, result):
@@ -367,6 +384,8 @@ def _parse_call(tokens, pos, result):
     while tokens[pos[0]] != ')':
         arg_ty = tokens[pos[0]]
         pos[0] += 1
+        while pos[0] < len(tokens) and tokens[pos[0]] == 'noundef':
+            pos[0] += 1
         arg_val = _parse_value(tokens, pos)
         args.append((arg_ty, arg_val))
         if tokens[pos[0]] == ',':
