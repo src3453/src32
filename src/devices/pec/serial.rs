@@ -6,11 +6,11 @@ use std::thread;
 pub struct UART {
     pub tx_buffer: Vec<u8>, // Transmit buffer for outgoing data
     pub rx_buffer: Vec<u8>, // Receive buffer for incoming data
-    pub tx_ready: bool, // Flag indicating if the UART is ready to transmit
-    pub rx_ready: bool, // Flag indicating if the UART has received data
-    pub enable: bool, // Flag indicating if the UART is enabled
-    pub int_enable: bool, // Flag indicating if UART interrupts are enabled
-    pub baud_rate: u32, // Baud rate for UART communication
+    pub tx_ready: bool,     // Flag indicating if the UART is ready to transmit
+    pub rx_ready: bool,     // Flag indicating if the UART has received data
+    pub enable: bool,       // Flag indicating if the UART is enabled
+    pub int_enable: bool,   // Flag indicating if UART interrupts are enabled
+    pub baud_rate: u32,     // Baud rate for UART communication
 }
 
 impl UART {
@@ -104,10 +104,12 @@ impl Device for UARTDevice {
     fn read(&mut self, addr: u32) -> u8 {
         let mut uart = self.uart.lock().unwrap();
         match addr {
-            0x0 => { // DATA_RW (RW)
+            0x0 => {
+                // DATA_RW (RW)
                 uart.read().unwrap_or(0)
-            } 
-            0x1 => { // STATUS (R)
+            }
+            0x1 => {
+                // STATUS (R)
                 let mut status: u8 = 0;
                 if uart.tx_ready {
                     status |= 0x01; // TX_READY
@@ -117,12 +119,15 @@ impl Device for UARTDevice {
                 }
                 status
             }
-            0x2 => { // BAUD_RATE (RW)
+            0x2 => {
+                // BAUD_RATE (RW)
                 uart.baud_rate as u8
             }
-            0x3 => { // CONTROL (RW)
+            0x3 => {
+                // CONTROL (RW)
                 let mut control: u8 = 0;
-                if !uart.enable { // Reversed logic: 0 means enabled
+                if !uart.enable {
+                    // Reversed logic: 0 means enabled
                     control |= 0x01; // /ENABLE
                 }
                 if uart.int_enable {
@@ -130,10 +135,12 @@ impl Device for UARTDevice {
                 }
                 control
             }
-            0x4 => { // RX_BYTES (R)
+            0x4 => {
+                // RX_BYTES (R)
                 uart.rx_buffer.len() as u8
             }
-            0x5 => { // TX_BYTES (R)
+            0x5 => {
+                // TX_BYTES (R)
                 uart.tx_buffer.len() as u8
             }
             _ => {
@@ -146,13 +153,16 @@ impl Device for UARTDevice {
     fn write(&mut self, addr: u32, data: u8) {
         let mut uart = self.uart.lock().unwrap();
         match addr {
-            0x0 => { // DATA_RW (RW)
+            0x0 => {
+                // DATA_RW (RW)
                 uart.write(data);
             }
-            0x2 => { // BAUD_RATE (RW)
+            0x2 => {
+                // BAUD_RATE (RW)
                 uart.baud_rate = data as u32; // Set baud rate (assuming 8-bit value for simplicity)
             }
-            0x3 => { // CONTROL (RW)
+            0x3 => {
+                // CONTROL (RW)
                 uart.enable = (data & 0x01) == 0; // Reversed logic: 0 means enabled
                 uart.int_enable = (data & 0x02) != 0; // Set interrupt enable
             }

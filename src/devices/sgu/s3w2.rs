@@ -432,7 +432,8 @@ impl S3w2Sound {
         let index = match c.modulation_type {
             ModulationType::None => (phase & 0xFF) as usize,
             ModulationType::Phase => {
-                let phase_offset = ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
+                let phase_offset =
+                    ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
                 ((phase.wrapping_add(phase_offset as u64)) & 0xFF) as usize
             }
             _ => (phase & 0xFF) as usize,
@@ -443,7 +444,8 @@ impl S3w2Sound {
         if c.modulation_type == ModulationType::Ring {
             let mod_sample = target_last_sample as i32;
             let org_sample8 = sample8 as i32;
-            let calculated = (((org_sample8 - 128) * mod_sample * (c.modulation_param_1 as i32)) / 65536) + 128;
+            let calculated =
+                (((org_sample8 - 128) * mod_sample * (c.modulation_param_1 as i32)) / 65536) + 128;
             sample8 = calculated.clamp(0, 255) as u8;
         } else if c.modulation_type == ModulationType::HardSync {
             if target_phase < 1.0 {
@@ -472,7 +474,8 @@ impl S3w2Sound {
         let mut phase = (c.phase * 256.0) as u64;
 
         if c.modulation_type == ModulationType::Phase {
-            let phase_offset = ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
+            let phase_offset =
+                ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
             phase = phase.wrapping_add(phase_offset as u64);
         }
 
@@ -507,7 +510,8 @@ impl S3w2Sound {
                 ModulationType::None => ((c.lfsr_state >> 0) ^ (c.lfsr_state >> 1)) & 1,
                 ModulationType::Phase => {
                     // Custom tap mode in C++ (MOD_NOISE_CUSTOM_TAP = MOD_PHASE)
-                    let taps = ((c.modulation_param_1 as u32) << 16) | (c.modulation_param_2 as u32);
+                    let taps =
+                        ((c.modulation_param_1 as u32) << 16) | (c.modulation_param_2 as u32);
                     let mut b = 0u32;
                     for i in 0..23 {
                         if (taps & (1 << i)) != 0 {
@@ -521,11 +525,7 @@ impl S3w2Sound {
             c.lfsr_state = (c.lfsr_state >> 1) | (bit << 22);
         }
 
-        if (c.lfsr_state & 1) != 0 {
-            127
-        } else {
-            -128
-        }
+        if (c.lfsr_state & 1) != 0 { 127 } else { -128 }
     }
 
     fn generate_dma_pcm_sample(&mut self, _ch: usize) -> i16 {
@@ -544,8 +544,10 @@ impl S3w2Sound {
                     let sample = self.generate_sample(ch) / 2; // Reduce volume
                     let pan_l = (self.channels[ch].panpot >> 4) as i32;
                     let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
-                    output[ch][0][i] = output[ch][0][i].saturating_add(((sample as i32) * pan_l / 15) as i16);
-                    output[ch][1][i] = output[ch][1][i].saturating_add(((sample as i32) * pan_r / 15) as i16);
+                    output[ch][0][i] =
+                        output[ch][0][i].saturating_add(((sample as i32) * pan_l / 15) as i16);
+                    output[ch][1][i] =
+                        output[ch][1][i].saturating_add(((sample as i32) * pan_r / 15) as i16);
                 }
             }
         }
@@ -603,8 +605,8 @@ mod tests {
         // Control base for ch 1 is 0x800 + 32 * 1 = 0x820
         sound.write_register(0x820, 0x04); // Frequency high
         sound.write_register(0x821, 0x40); // Frequency low (1088 Hz)
-        sound.write_register(0x822, 1);    // PCM mode
-        sound.write_register(0x823, 200);  // Volume
+        sound.write_register(0x822, 1); // PCM mode
+        sound.write_register(0x823, 200); // Volume
         sound.write_register(0x824, 0x84); // Panpot
         sound.write_register(0x825, (1 << 3) | 3); // Mod type Phase, target ch 3
 

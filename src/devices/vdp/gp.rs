@@ -38,10 +38,6 @@ impl Gp0 {
         let index = y * GP_WIDTH + x;
         let pixel = vram[index] & 0x3F;
         let clut_index = CLUT_START_ADDR + (pixel as usize) * CLUT_ENTRY_SIZE;
-        (
-            vram[clut_index],
-            vram[clut_index + 1],
-            vram[clut_index + 2],
-        )
+        (vram[clut_index], vram[clut_index + 1], vram[clut_index + 2])
     }
 }

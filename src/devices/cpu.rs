@@ -68,7 +68,9 @@ impl CpuRegisterBlock {
         match offset {
             0x200..=0x27F if offset % 4 == 0 => {
                 let index = ((offset - 0x200) / 4) as usize;
-                if index != 0 { self.regs[index] = value; }
+                if index != 0 {
+                    self.regs[index] = value;
+                }
             }
             0x280 => self.pc = value,
             0x284 => self.epc = value,
@@ -81,7 +83,9 @@ impl CpuRegisterBlock {
 }
 
 impl Default for CpuRegisterBlock {
-    fn default() -> Self { Self::new() }
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 impl Device for CpuRegisterBlock {
@@ -99,7 +103,9 @@ impl Device for CpuRegisterBlock {
         self.write_word(aligned, (old & !mask) | (u32::from(value) << shift));
     }
 
-    fn size(&self) -> u32 { 0x300 }
+    fn size(&self) -> u32 {
+        0x300
+    }
 }
 
 pub const CPU_REG_BASE: u32 = 0xFFFF_0200;
@@ -107,20 +113,35 @@ pub const CPU_REG_BASE: u32 = 0xFFFF_0200;
 pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegisterBlock>> {
     let regs = Rc::new(RefCell::new(CpuRegisterBlock::new()));
     bus.add_device(VECTOR_BASE, Box::new(SharedCpuDevice(regs.clone())));
-    bus.add_device(CPU_REG_BASE, Box::new(SharedCpuRegisterDevice(regs.clone())));
+    bus.add_device(
+        CPU_REG_BASE,
+        Box::new(SharedCpuRegisterDevice(regs.clone())),
+    );
     regs
 }
 
 struct SharedCpuDevice(Rc<RefCell<CpuRegisterBlock>>);
 impl Device for SharedCpuDevice {
-    fn read(&mut self, addr: u32) -> u8 { self.0.borrow_mut().read(addr) }
-    fn write(&mut self, addr: u32, value: u8) { self.0.borrow_mut().write(addr, value); }
-    fn size(&self) -> u32 { VECTOR_SIZE }
+    fn read(&mut self, addr: u32) -> u8 {
+        self.0.borrow_mut().read(addr)
+    }
+    fn write(&mut self, addr: u32, value: u8) {
+        self.0.borrow_mut().write(addr, value);
+    }
+    fn size(&self) -> u32 {
+        VECTOR_SIZE
+    }
 }
 
 struct SharedCpuRegisterDevice(Rc<RefCell<CpuRegisterBlock>>);
 impl Device for SharedCpuRegisterDevice {
-    fn read(&mut self, addr: u32) -> u8 { self.0.borrow_mut().read(addr + 0x200) }
-    fn write(&mut self, addr: u32, value: u8) { self.0.borrow_mut().write(addr + 0x200, value); }
-    fn size(&self) -> u32 { 0x94 }
+    fn read(&mut self, addr: u32) -> u8 {
+        self.0.borrow_mut().read(addr + 0x200)
+    }
+    fn write(&mut self, addr: u32, value: u8) {
+        self.0.borrow_mut().write(addr + 0x200, value);
+    }
+    fn size(&self) -> u32 {
+        0x94
+    }
 }

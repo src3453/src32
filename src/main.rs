@@ -8,8 +8,8 @@ use std::time::Instant;
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
-use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::pec::rng::connect_rng;
+use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
 use cpt32::devices::sgu::sgu::connect_sgu;
@@ -25,9 +25,9 @@ use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
+mod audio;
 mod monitor;
 mod render;
-mod audio;
 
 const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
@@ -215,7 +215,8 @@ impl DebugUiState {
             .size([780.0, 420.0], Condition::FirstUseEver)
             .build(|| {
                 ui.checkbox("Follow PC", &mut self.disasm_follow_pc);
-                ui.input_text("Address", &mut self.disasm_base_input).build();
+                ui.input_text("Address", &mut self.disasm_base_input)
+                    .build();
                 ui.input_text("Line count", &mut self.disasm_count_input)
                     .build();
                 ui.separator();
@@ -258,8 +259,10 @@ impl DebugUiState {
         ui.window("Realtime Memory Monitor")
             .size([780.0, 320.0], Condition::FirstUseEver)
             .build(|| {
-                ui.input_text("Base address", &mut self.mem_base_input).build();
-                ui.input_text("Byte count", &mut self.mem_count_input).build();
+                ui.input_text("Base address", &mut self.mem_base_input)
+                    .build();
+                ui.input_text("Byte count", &mut self.mem_count_input)
+                    .build();
                 ui.separator();
 
                 let base = Self::parse_u32(&self.mem_base_input, 0);
@@ -359,7 +362,9 @@ impl DebugGui {
         self.last_frame = now;
         self.platform
             .prepare_frame(self.imgui.io_mut(), window)
-            .map_err(|err| render::FrameError::Overlay(format!("ImGui frame prepare failed: {err}")))?;
+            .map_err(|err| {
+                render::FrameError::Overlay(format!("ImGui frame prepare failed: {err}"))
+            })?;
 
         let ui = self.imgui.frame();
         self.state.draw_windows(ui, cpu);
@@ -444,7 +449,9 @@ impl ApplicationHandler for GuiApp {
             }
             WindowEvent::RedrawRequested => {
                 self.vdp.borrow_mut().tick();
-                if let (Some(window), Some(presenter)) = (self.window.as_ref(), self.presenter.as_mut()) {
+                if let (Some(window), Some(presenter)) =
+                    (self.window.as_ref(), self.presenter.as_mut())
+                {
                     let render_result = if let Some(debug_gui) = self.debug_gui.as_mut() {
                         debug_gui.render_frame(window, &mut self.cpu, &self.vdp, presenter)
                     } else {
@@ -453,7 +460,8 @@ impl ApplicationHandler for GuiApp {
                     };
 
                     if let Some(audio_host) = self.audio_host.as_ref() {
-                        let sample_count = (audio_host.sample_rate() / cpt32::sys::FRAME_RATE) as usize;
+                        let sample_count =
+                            (audio_host.sample_rate() / cpt32::sys::FRAME_RATE) as usize;
                         let (left, right) = self.sgu.borrow_mut().clock_mixed(sample_count);
                         audio_host.push_samples_i16(&left, &right);
                     }

@@ -9,10 +9,10 @@ use wgpu::{
     Operations, PipelineCompilationOptions, PresentMode, PrimitiveState, Queue,
     RenderPassColorAttachment, RenderPassDescriptor, RenderPipeline, RenderPipelineDescriptor,
     RequestAdapterOptions, Sampler, SamplerBindingType, SamplerDescriptor, ShaderModuleDescriptor,
-    ShaderSource, ShaderStages, Surface, SurfaceConfiguration, SurfaceTargetUnsafe,
-    SurfaceTexture, Texture, TextureAspect, TextureDescriptor, TextureDimension, TextureFormat,
-    TextureSampleType, TextureUsages, TextureView, TextureViewDescriptor, TextureViewDimension,
-    TexelCopyBufferLayout, TexelCopyTextureInfo, Trace,
+    ShaderSource, ShaderStages, Surface, SurfaceConfiguration, SurfaceTargetUnsafe, SurfaceTexture,
+    TexelCopyBufferLayout, TexelCopyTextureInfo, Texture, TextureAspect, TextureDescriptor,
+    TextureDimension, TextureFormat, TextureSampleType, TextureUsages, TextureView,
+    TextureViewDescriptor, TextureViewDimension, Trace,
 };
 use winit::dpi::PhysicalSize;
 use winit::window::Window;
@@ -96,7 +96,11 @@ impl fmt::Display for FrameError {
 impl WgpuPresenter {
     pub fn new(
         window: &Window,
-        display_handle: impl winit::raw_window_handle::HasDisplayHandle + fmt::Debug + Send + Sync + 'static,
+        display_handle: impl winit::raw_window_handle::HasDisplayHandle
+        + fmt::Debug
+        + Send
+        + Sync
+        + 'static,
     ) -> Self {
         let size = window.inner_size();
         let instance = Instance::new(InstanceDescriptor::new_with_display_handle(Box::new(
@@ -411,7 +415,12 @@ impl WgpuPresenter {
         mut overlay: F,
     ) -> Result<(), FrameError>
     where
-        F: FnMut(&wgpu::Device, &wgpu::Queue, &mut wgpu::CommandEncoder, &TextureView) -> Result<(), FrameError>,
+        F: FnMut(
+            &wgpu::Device,
+            &wgpu::Queue,
+            &mut wgpu::CommandEncoder,
+            &TextureView,
+        ) -> Result<(), FrameError>,
     {
         let framebuffer = vdp.borrow();
         let fb = framebuffer.framebuffer();
@@ -481,10 +490,14 @@ impl WgpuPresenter {
             wgpu::CurrentSurfaceTexture::Lost => return Err(FrameError::Lost),
             wgpu::CurrentSurfaceTexture::Validation => return Err(FrameError::Validation),
         };
-        let surface_view = output.texture.create_view(&TextureViewDescriptor::default());
-        let mut encoder = self.device.create_command_encoder(&CommandEncoderDescriptor {
-            label: Some("CPT32 Render Encoder"),
-        });
+        let surface_view = output
+            .texture
+            .create_view(&TextureViewDescriptor::default());
+        let mut encoder = self
+            .device
+            .create_command_encoder(&CommandEncoderDescriptor {
+                label: Some("CPT32 Render Encoder"),
+            });
 
         {
             let mut present_pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -505,7 +518,14 @@ impl WgpuPresenter {
             });
 
             present_pass.set_pipeline(&self.pipeline);
-            present_pass.set_viewport(0.0, 0.0, PRESENT_WIDTH as f32, PRESENT_HEIGHT as f32, 0.0, 1.0);
+            present_pass.set_viewport(
+                0.0,
+                0.0,
+                PRESENT_WIDTH as f32,
+                PRESENT_HEIGHT as f32,
+                0.0,
+                1.0,
+            );
             present_pass.set_bind_group(0, &self.nearest_bind_group, &[]);
             present_pass.draw(0..3, 0..1);
         }
@@ -536,7 +556,14 @@ impl WgpuPresenter {
             });
 
             render_pass.set_pipeline(&self.pipeline);
-            render_pass.set_viewport(viewport_x, viewport_y, viewport_width, viewport_height, 0.0, 1.0);
+            render_pass.set_viewport(
+                viewport_x,
+                viewport_y,
+                viewport_width,
+                viewport_height,
+                0.0,
+                1.0,
+            );
             render_pass.set_bind_group(0, &self.linear_bind_group, &[]);
             render_pass.draw(0..3, 0..1);
         }

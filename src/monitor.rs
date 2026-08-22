@@ -2,9 +2,9 @@ use std::io::{self, Write};
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
-use cpt32::devices::ram::connect_ram;
-use cpt32::devices::pec::serial::connect_uart_with_stdin;
 use cpt32::devices::pec::rng::connect_rng;
+use cpt32::devices::pec::serial::connect_uart_with_stdin;
+use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::sgu::connect_sgu;
 
 fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
@@ -13,7 +13,10 @@ fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
 }
 
 fn parse_u32(token: &str) -> Result<u32, String> {
-    if let Some(hex) = token.strip_prefix("0x").or_else(|| token.strip_prefix("0X")) {
+    if let Some(hex) = token
+        .strip_prefix("0x")
+        .or_else(|| token.strip_prefix("0X"))
+    {
         u32::from_str_radix(hex, 16).map_err(|err| err.to_string())
     } else {
         token.parse::<u32>().map_err(|err| err.to_string())

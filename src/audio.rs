@@ -1,9 +1,9 @@
 // Audio playback output using cpal for SGU (3WS8PN / S3W2)
 
-use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, StreamConfig};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 pub struct AudioRingBuffer {
     buffer: Vec<f32>,
@@ -50,7 +50,8 @@ impl AudioRingBuffer {
             None
         } else {
             let sample = self.buffer[read_pos];
-            self.read_pos.store((read_pos + 1) % self.capacity, Ordering::Release);
+            self.read_pos
+                .store((read_pos + 1) % self.capacity, Ordering::Release);
             Some(sample)
         }
     }

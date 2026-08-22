@@ -205,7 +205,14 @@ def format_imm(val: int) -> str:
 
 
 def _emit_load_imm32(asm_lines: List[str], reg: str, value) -> None:
-    imm = format_imm(value)
-    asm_lines.append(f"    ADDI {reg}, R0, 0")
-    asm_lines.append(f"    LDIH {reg}, {imm}")
-    asm_lines.append(f"    LDIL {reg}, {imm}")
+    # LDIH/LDIL each consume one 16-bit half of the value.
+    if isinstance(value, int):
+        hi = (value >> 16) & 0xFFFF
+        lo = value & 0xFFFF
+        asm_lines.append(f"    LDIH {reg}, 0x{hi:04X}")
+        asm_lines.append(f"    LDIL {reg}, 0x{lo:04X}")
+    else:
+        # `vars` is fixed by this backend's data-section layout. A single
+        # symbolic LDIL is sufficient while the assembler has no relocations.
+        asm_lines.append(f"    LDIH {reg}, 0x0000")
+        asm_lines.append(f"    LDIL {reg}, {value}")

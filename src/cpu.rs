@@ -273,11 +273,7 @@ impl Cpu {
         if reg >= self.reg.len() {
             panic!("Invalid register index: {reg}");
         }
-        if reg == REG_ZERO {
-            0
-        } else {
-            self.reg[reg]
-        }
+        if reg == REG_ZERO { 0 } else { self.reg[reg] }
     }
 
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
@@ -504,9 +500,9 @@ impl Cpu {
                 let raw = self.read_mem_u32_be(addr);
                 let insn = Self::decode(raw);
                 let next_mode = match insn {
-                    Instruction::Jmps { .. } | Instruction::Jals { .. } | Instruction::Jrs { .. } => {
-                        InstructionMode::Short
-                    }
+                    Instruction::Jmps { .. }
+                    | Instruction::Jals { .. }
+                    | Instruction::Jrs { .. } => InstructionMode::Short,
                     _ => InstructionMode::Normal,
                 };
                 DecodedInstruction {
@@ -570,11 +566,7 @@ impl Cpu {
     }
 
     fn short_reg_to_gpr(sr: u8) -> usize {
-        if sr < 15 {
-            sr as usize
-        } else {
-            REG_LR
-        }
+        if sr < 15 { sr as usize } else { REG_LR }
     }
 
     fn read_short_reg(&self, sr: u8) -> u32 {
@@ -777,10 +769,15 @@ impl Cpu {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.read_reg(rd as usize);
                 self.bus.write_u8(addr, (value >> 8) as u8);
-                self.bus.write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
+                self.bus
+                    .write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
             }
             Instruction::Unknown(raw) => {
-                panic!("Illegal instruction at PC=0x{:08X}: 0x{:08X}", next_pc - INSN_SIZE, raw);
+                panic!(
+                    "Illegal instruction at PC=0x{:08X}: 0x{:08X}",
+                    next_pc - INSN_SIZE,
+                    raw
+                );
             }
         }
     }
@@ -851,9 +848,7 @@ impl Cpu {
         let decoded = self.decode_current();
         let mut txt = format!(
             "PC=0x{:08X} MODE={:?} OP={}\n",
-            pc,
-            self.instr_mode,
-            decoded.text
+            pc, self.instr_mode, decoded.text
         );
         for i in 0..32 {
             txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));

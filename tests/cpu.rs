@@ -1,20 +1,16 @@
-use cpt32::cpu::Cpu;
 use cpt32::bus::Bus;
+use cpt32::cpu::Cpu;
 use cpt32::devices::ram::connect_ram;
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 4] {
-    let raw = ((op as u32) << 26)
-        | ((rd as u32) << 21)
-        | ((rs1 as u32) << 16)
-        | ((rs2 as u32) << 11);
+    let raw =
+        ((op as u32) << 26) | ((rd as u32) << 21) | ((rs1 as u32) << 16) | ((rs2 as u32) << 11);
     raw.to_be_bytes()
 }
 
 fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 4] {
-    let raw = ((op as u32) << 26)
-        | ((rd as u32) << 21)
-        | ((rs1 as u32) << 16)
-        | (imm as u16 as u32);
+    let raw =
+        ((op as u32) << 26) | ((rd as u32) << 21) | ((rs1 as u32) << 16) | (imm as u16 as u32);
     raw.to_be_bytes()
 }
 

@@ -20,12 +20,22 @@ from backend_src32 import emit_src32
 from llvm_ir_parser import compile_llvm_ir
 
 
+def assemble_src32(assembly):
+    """Assemble generated SRC32 text without requiring a subprocess."""
+    asm_dir = __import__('os').path.join(__import__('os').path.dirname(__file__), '..', 'asm')
+    if asm_dir not in sys.path:
+        sys.path.insert(0, asm_dir)
+    from asm import Assembler
+    return Assembler().assemble(assembly, source='<generated>', base_dir='.')
+
+
 def main(argv=None):
 	p = argparse.ArgumentParser(description='CSC compiler frontend and SRC32 backend (with LLVM IR support)')
 	p.add_argument('input', help='C source file or LLVM IR file (.ll)')
 	p.add_argument('-o', '--out', help='Write assembly output to file (default stdout)')
 	p.add_argument('--dump-bc', action='store_true', help='Dump bytecode emitter instead of assembly')
 	p.add_argument('--from-llvm', action='store_true', help='Treat input as LLVM IR (.ll) instead of C source')
+	p.add_argument('--assemble', action='store_true', help='Assemble generated SRC32 output and write a binary')
 	args = p.parse_args(argv)
 
 	src = open(args.input, 'r', encoding='utf-8').read()
@@ -35,12 +45,21 @@ def main(argv=None):
 	else:
 		emitter = compile_source(src)
 
+	if args.dump_bc and args.assemble:
+		p.error('--dump-bc and --assemble are mutually exclusive')
 	if args.dump_bc:
 		out = emitter.dump()
 	else:
 		out = emit_src32(emitter)
 
-	if args.out:
+	if args.assemble:
+		if not args.out:
+			p.error('--assemble requires -o/--out for the binary output')
+		binary = assemble_src32(out)
+		with open(args.out, 'wb') as f:
+			f.write(binary)
+		print(f'Assembled {len(binary)} bytes -> {args.out}')
+	elif args.out:
 		with open(args.out, 'w', encoding='utf-8') as f:
 			f.write(out)
 		print(f'Wrote output to {args.out}')

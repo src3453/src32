@@ -17,12 +17,12 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
-use crate::devices::vdp::gp::{Gp0, CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH};
+use crate::devices::vdp::gp::{CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH, Gp0};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
 use crate::devices::vdp::reg::DisplayMode;
 use crate::devices::vdp::reg::VdpRegs;
 
-pub const VDP_VRAM_BASE: u32 = 0x10000000; 
+pub const VDP_VRAM_BASE: u32 = 0x10000000;
 pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
 pub const VDP_REG_BASE: u32 = 0x80030000;
 pub const VDP_REG_SIZE: u32 = 0x00010000;
@@ -32,9 +32,8 @@ pub const VDP_ACTIVE_HEIGHT: usize = GP_HEIGHT;
 pub const VDP_BORDER_SIZE: usize = 8;
 pub const VDP_FRAMEBUFFER_WIDTH: usize = VDP_ACTIVE_WIDTH;
 pub const VDP_FRAMEBUFFER_HEIGHT: usize = VDP_ACTIVE_HEIGHT;
-pub const VDP_VIRTUAL_CLOCK: u32 = (VDP_FRAMEBUFFER_WIDTH as u32)
-    * (VDP_FRAMEBUFFER_HEIGHT as u32)
-    * crate::sys::FRAME_RATE;
+pub const VDP_VIRTUAL_CLOCK: u32 =
+    (VDP_FRAMEBUFFER_WIDTH as u32) * (VDP_FRAMEBUFFER_HEIGHT as u32) * crate::sys::FRAME_RATE;
 pub const VDP_CLOCK_DIVIDER: u32 = 4; // VDP runs at 1/4 of master clock
 pub const PIXEL_CLOCK_DIVIDER: u32 = 8; // Pixel clock is 1/8 of master clock
 pub const VDP_CLOCK: u32 = crate::sys::MASTER_CLOCK / VDP_CLOCK_DIVIDER; // 12MHz
@@ -87,8 +86,12 @@ impl<'a> VdpFramebuffer<'a> {
 
     pub fn border_pixel(&self) -> (u8, u8, u8) {
         match self {
-            VdpFramebuffer::Graphics { vram, border_color, .. } => Self::read_border_pixel(vram, *border_color),
-            VdpFramebuffer::Pcg { vram, border_color, .. } => Self::read_border_pixel(vram, *border_color),
+            VdpFramebuffer::Graphics {
+                vram, border_color, ..
+            } => Self::read_border_pixel(vram, *border_color),
+            VdpFramebuffer::Pcg {
+                vram, border_color, ..
+            } => Self::read_border_pixel(vram, *border_color),
             VdpFramebuffer::Blank => (0, 0, 0),
         }
     }
@@ -146,7 +149,10 @@ impl Vdp {
             gp0,
             pcg,
             regs: VdpRegs::new(),
-            state: VdpState { tick_count: 0, pcg_cursor_blink_tick: 0 },
+            state: VdpState {
+                tick_count: 0,
+                pcg_cursor_blink_tick: 0,
+            },
         };
         vdp.gp0.init_clut();
         vdp.pcg.init_clut();
@@ -343,7 +349,10 @@ mod tests {
         let vdp = Vdp::new();
         let fb = vdp.framebuffer();
 
-        assert_eq!(fb.dimensions(), (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT));
+        assert_eq!(
+            fb.dimensions(),
+            (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT)
+        );
         assert_eq!(fb.get_pixel(0, 0), (0, 0, 0));
     }
 
@@ -368,7 +377,13 @@ pub fn connect_vdp_with_font<P: AsRef<Path>>(
     font_path: Option<P>,
 ) -> Rc<RefCell<Vdp>> {
     let vdp = Rc::new(RefCell::new(Vdp::with_font_path(font_path)));
-    bus.add_device(VDP_VRAM_BASE, Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Vram)));
-    bus.add_device(VDP_REG_BASE, Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)));
+    bus.add_device(
+        VDP_VRAM_BASE,
+        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Vram)),
+    );
+    bus.add_device(
+        VDP_REG_BASE,
+        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)),
+    );
     vdp
 }

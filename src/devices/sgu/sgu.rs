@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
-use crate::devices::sgu::s3w2::{S3w2Sound, PCM_RAM_SIZE};
+use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound};
 
 pub const SGU_REG_BASE: u32 = 0x8002_0000;
 pub const SGU_REG_SIZE: u32 = 0x0000_0900; // 0x900 bytes (0x800 wavetable SRAM + 0x100 registers)

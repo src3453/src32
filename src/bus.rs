@@ -1,5 +1,5 @@
 // Bus: Centralized I/O bus for connecting devices in the CPT32 emulator
-// This module defines the Bus struct, which manages memory-mapped devices and 
+// This module defines the Bus struct, which manages memory-mapped devices and
 // routes read/write operations to the correct device based on address ranges.
 
 // Internal Bus width: 32-bit address space (4GB), 32-bit data bus (8/16/32-bit access)
@@ -23,7 +23,10 @@ pub trait Device {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum BusAccessSource { Cpu, Debugger }
+pub enum BusAccessSource {
+    Cpu,
+    Debugger,
+}
 
 pub struct Bus {
     devices: Vec<DeviceMap>,
@@ -40,15 +43,17 @@ impl Bus {
         }
     }
 
-    pub fn set_access_source(&mut self, source: BusAccessSource) { self.access_source = source; }
-    pub fn access_source(&self) -> BusAccessSource { self.access_source }
+    pub fn set_access_source(&mut self, source: BusAccessSource) {
+        self.access_source = source;
+    }
+    pub fn access_source(&self) -> BusAccessSource {
+        self.access_source
+    }
     pub fn take_bus_error(&mut self) -> bool {
         let error = self.bus_error;
         self.bus_error = false;
         error
     }
-
-
 
     pub fn add_device(&mut self, addr: u32, device: Box<dyn Device>) {
         let size = device.size();
@@ -110,7 +115,9 @@ impl Bus {
             return device.read(offset);
         }
         self.bus_error = true;
-        if self.access_source == BusAccessSource::Debugger { return 0; }
+        if self.access_source == BusAccessSource::Debugger {
+            return 0;
+        }
         panic!("Invalid I/O read: 0x{:08X}", addr);
     }
 
@@ -129,7 +136,9 @@ impl Bus {
             return;
         }
         self.bus_error = true;
-        if self.access_source == BusAccessSource::Debugger { return; }
+        if self.access_source == BusAccessSource::Debugger {
+            return;
+        }
         panic!("Invalid I/O write: 0x{:08X}", addr);
     }
 
