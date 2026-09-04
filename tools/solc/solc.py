@@ -3,11 +3,19 @@
 from __future__ import annotations
 
 import argparse
+import logging
 import sys
 
 from sol_compiler import SolCompileError, compile_to_src32_asm
 from sol_repl import run_repl
 from sol_vm import SolVM, SolVMError
+
+
+def configure_logging() -> None:
+    logging.basicConfig(level=logging.ERROR, format="\033[91m%(levelname)s: %(message)s\033[0m")
+    logging.basicConfig(level=logging.WARNING, format="\033[93m%(levelname)s: %(message)s\033[0m")
+    logging.basicConfig(level=logging.INFO, format="\033[37m%(message)s\033[0m")
+    logging.basicConfig(level=logging.DEBUG, format="\033[90m%(message)s\033[0m")
 
 
 def run_file(input_path: str, trace: bool = False) -> int:
@@ -36,7 +44,7 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True, remove_unused_functions: bool = True) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         src = f.read()
     try:
@@ -48,6 +56,7 @@ def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_b
             read_only_data_base=read_only_data_base,
             source_path=input_path,
             use_short_mode=use_short_mode,
+            remove_unused_functions=remove_unused_functions,
         )
     except SolCompileError as exc:
         print(f"\033[91msol compile error: {exc}\033[0m", file=sys.stderr)
@@ -76,6 +85,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("-o", "--out", help="output assembly path")
     compile_parser.add_argument("--debug", action="store_true", help="include debug comments in output")
     compile_parser.add_argument("--no-short-mode", action="store_true", help="disable automatic Short Mode instruction selection")
+    compile_parser.add_argument("--keep-unused-functions", action="store_true", help="keep function definitions that are not reachable from the top-level program")
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
     compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
     compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=0x00020000, help="base address for read-only data (default: 0x20000)")
@@ -83,6 +93,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    configure_logging()
     parser = build_parser()
     args = parser.parse_args(argv)
 
@@ -99,6 +110,7 @@ def main(argv: list[str] | None = None) -> int:
             stack_top=args.stack_top,
             read_only_data_base=args.read_only_data_base,
             use_short_mode=not args.no_short_mode,
+            remove_unused_functions=not args.keep_unused_functions,
         )
     parser.error(f"unsupported command: {args.command}")
     return 2

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ast
 from dataclasses import dataclass
+import logging
 import os
 import re
 
@@ -15,6 +16,8 @@ UINT32_MAX = 2**32 - 1
 
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
+
+logger = logging.getLogger(__name__)
 
 
 class SolVMError(RuntimeError):
@@ -208,7 +211,7 @@ def parse_number(token: str) -> int:
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
-def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None) -> Program:
+def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
 
@@ -257,6 +260,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     macros: dict[str, list[str]] = {}
     next_var_addr = var_base
     functions: dict[str, dict] = {}
+    kept_functions: set[str] = set()
 
     string_literals: dict[str, int] = {}
     next_string_addr = read_only_data_base
@@ -418,6 +422,17 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             if tok.startswith("!"):
                 if current_func is not None:
                     raise SolVMError(f"directives inside function not supported: {tok}")
+                if tok == "!keepfn":
+                    if i + 1 >= len(words):
+                        raise SolVMError("!keepfn requires a function name")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid function name for !keepfn: {name}")
+                    if name not in functions:
+                        raise SolVMError(f"unknown function for !keepfn: {name}")
+                    kept_functions.add(name)
+                    i += 2
+                    continue
                 if tok == "!const":
                     if i + 2 >= len(words):
                         raise SolVMError("!const requires a name and a value")
@@ -645,6 +660,49 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         cleaned_tokens.append(tok)
         i += 1
 
+    # Only emit functions reachable from the top-level program.  Function
+    # bodies are compiled after the main program, so emitting every collected
+    # definition would otherwise put dead code in the binary.  Expand macros
+    # while walking the call graph because a macro may contain a function call.
+    def called_functions(words: list[str]) -> set[str]:
+        called: set[str] = set()
+
+        def visit(word: str, seen_macros: set[str]) -> None:
+            if word.startswith("\\!"):
+                word = word[1:]
+            if word in functions:
+                called.add(word)
+                return
+            if word not in macros:
+                return
+            if word in seen_macros:
+                return
+            for part in macros[word]:
+                visit(part, seen_macros | {word})
+
+        for word in words:
+            visit(word, set())
+        return called
+
+    if remove_unused_functions:
+        reachable_functions: set[str] = set()
+        pending_functions = list(called_functions(cleaned_tokens))
+        pending_functions.extend(kept_functions)
+        while pending_functions:
+            function_name = pending_functions.pop()
+            if function_name in reachable_functions:
+                continue
+            reachable_functions.add(function_name)
+            for called_name in called_functions(functions[function_name]["body"]):
+                if called_name not in reachable_functions:
+                    pending_functions.append(called_name)
+        unused_functions = set(functions) - reachable_functions
+        for function_name in sorted(unused_functions):
+            logger.warning("unused function: %s", function_name)
+        functions = {
+            name: data for name, data in functions.items() if name in reachable_functions
+        }
+
     compile_word_stream(cleaned_tokens)
 
     if functions:
@@ -867,8 +925,8 @@ class SolVM:
             f"pc={self.pc} op={inst.op}{arg_text} stack={stack_snapshot} frames={len(self.call_stack)} r28=0x{self.r28:08X}"
         )
 
-    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE) -> None:
-        self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path)
+    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> None:
+        self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)
@@ -912,8 +970,8 @@ class SolVM:
             self.execute_instruction(inst, program.labels)
         return self.stack
 
-    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE) -> list[int]:
-        self.load(source, source_path=source_path, read_only_data_base=read_only_data_base)
+    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> list[int]:
+        self.load(source, source_path=source_path, read_only_data_base=read_only_data_base, remove_unused_functions=remove_unused_functions)
         return self.run()
 
     def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:

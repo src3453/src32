@@ -259,6 +259,31 @@ fn add_two (a b) :
     assert "LD R13, [R26 + 8]" in asm
 
 
+def test_compile_removes_unused_functions_by_default_and_can_keep_them(caplog):
+    src = """
+fn used () : 7 ret ;
+fn unused () : 99 ret ;
+used
+"""
+    asm = compile_to_src32_asm(src)
+    assert "used:" in asm
+    assert "unused:" not in asm
+    assert "unused function: unused" in caplog.text
+
+    asm = compile_to_src32_asm(src, remove_unused_functions=False)
+    assert "used:" in asm
+    assert "unused:" in asm
+
+
+def test_compile_keepfn_preserves_named_unused_function():
+    src = """
+!keepfn unused
+fn unused () : 99 ret ;
+"""
+    asm = compile_to_src32_asm(src)
+    assert "unused:" in asm
+
+
 def test_compile_local_variable_argument_offsets():
     src = """
 fn use_local (a) :

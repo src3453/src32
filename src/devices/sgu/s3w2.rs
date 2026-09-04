@@ -9,6 +9,7 @@ pub const WAVETABLE_SIZE: usize = 256;
 pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
 pub const SOUND_CLOCK: u32 = 192_000;
+pub const SGU_CLOCK_DIVIDER : u32 = 250; // 48MHz / 250 = 192kHz
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveformType {
