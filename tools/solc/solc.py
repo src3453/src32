@@ -12,10 +12,7 @@ from sol_vm import SolVM, SolVMError
 
 
 def configure_logging() -> None:
-    logging.basicConfig(level=logging.ERROR, format="\033[91m%(levelname)s: %(message)s\033[0m")
     logging.basicConfig(level=logging.WARNING, format="\033[93m%(levelname)s: %(message)s\033[0m")
-    logging.basicConfig(level=logging.INFO, format="\033[37m%(message)s\033[0m")
-    logging.basicConfig(level=logging.DEBUG, format="\033[90m%(message)s\033[0m")
 
 
 def run_file(input_path: str, trace: bool = False) -> int:

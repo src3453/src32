@@ -1,4 +1,5 @@
 !include "sol/cpt32/pcg.sol"
+!include "sol/cpt32/print.sol"
 
 initPCG col40
 0xc colorfg "CPT32 POST v0.1 (C) 2026 src3453" prnlnscr
