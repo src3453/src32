@@ -187,7 +187,7 @@ fn main () :
     yaw pitch project_vertices
     WHITE draw_cube
     while
-        frame_wait
+        #frame_wait
         BLACK draw_cube
         yaw 2 add 360 mod >yaw
         pitch 3 add 360 mod >pitch
