@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 import os
 import re
+from typing import NamedTuple
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
@@ -22,6 +23,31 @@ logger = logging.getLogger(__name__)
 
 class SolVMError(RuntimeError):
     pass
+
+
+def format_error(message: str, location: SourceLocation | None = None) -> str:
+    return f"{location.format()}: {message}" if location else message
+
+
+class SourceLocation(NamedTuple):
+    path: str | None
+    line: int
+    column: int
+
+    def format(self) -> str:
+        filename = self.path or "<source>"
+        return f"{filename}:{self.line}:{self.column}"
+
+
+class SourceToken(str):
+    """A token retaining the location from which the IR opcode was produced."""
+
+    location: SourceLocation
+
+    def __new__(cls, value: str, location: SourceLocation):
+        token = super().__new__(cls, value)
+        token.location = location
+        return token
 
 
 @dataclass(frozen=True)
@@ -83,6 +109,7 @@ class Instruction:
     op: str
     arg: int | str | None = None
     profile: OpcodeProfile | None = None
+    location: SourceLocation | None = None
 
     def __post_init__(self) -> None:
         if self.profile is None:
@@ -104,12 +131,32 @@ def to_i32(value: int) -> int:
     return value
 
 
-def tokenize(source: str) -> list[str]:
-    tokens: list[str] = []
+def tokenize(source: str, source_path: str | None = None) -> list[SourceToken]:
+    tokens: list[SourceToken] = []
     current: list[str] = []
     in_string = False
     escaped = False
     i = 0
+    line = 1
+    column = 1
+    token_line = 1
+    token_column = 1
+
+    def advance(ch: str) -> None:
+        nonlocal line, column
+        if ch == "\n":
+            line += 1
+            column = 1
+        else:
+            column += 1
+
+    def start_token() -> None:
+        nonlocal token_line, token_column
+        token_line, token_column = line, column
+
+    def append_token(value: str) -> None:
+        tokens.append(SourceToken(value, SourceLocation(source_path, token_line, token_column)))
+
     while i < len(source):
         ch = source[i]
         if in_string:
@@ -119,54 +166,62 @@ def tokenize(source: str) -> list[str]:
             elif ch == "\\":
                 escaped = True
             elif ch == '"':
-                tokens.append("".join(current))
+                append_token("".join(current))
                 current = []
                 in_string = False
             elif ch == "\n":
                 raise SolVMError("unterminated string literal")
+            advance(ch)
             i += 1
             continue
 
         if ch == "#":
             if current:
-                tokens.append("".join(current))
+                append_token("".join(current))
                 current = []
             while i < len(source) and source[i] != "\n":
+                advance(source[i])
                 i += 1
             continue
 
         if ch.isspace():
             if current:
-                tokens.append("".join(current))
+                append_token("".join(current))
                 current = []
+            advance(ch)
             i += 1
             continue
 
         if ch in {";", "(", ")"}:
             if current:
-                tokens.append("".join(current))
+                append_token("".join(current))
                 current = []
-            tokens.append(ch)
+            append_token(ch)
+            advance(ch)
             i += 1
             continue
 
         if ch == '"':
             if current:
-                tokens.append("".join(current))
+                append_token("".join(current))
                 current = []
+            start_token()
             current.append(ch)
             in_string = True
             escaped = False
             i += 1
             continue
 
+        if not current:
+            start_token()
         current.append(ch)
+        advance(ch)
         i += 1
 
     if in_string:
         raise SolVMError("unterminated string literal")
     if current:
-        tokens.append("".join(current))
+        append_token("".join(current))
     return tokens
 
 
@@ -238,7 +293,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     raise SolVMError(f"include file not found: {include_path}")
                 seen.add(include_path)
                 included_text = open(include_path, "r", encoding="utf-8").read()
-                expanded = expand_includes(tokenize(included_text), os.path.dirname(include_path), seen)
+                expanded = expand_includes(tokenize(included_text, include_path), os.path.dirname(include_path), seen)
                 out.extend(expanded)
                 i += 2
                 continue
@@ -246,7 +301,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             i += 1
         return out
 
-    tokens = expand_includes(tokenize(source), base_dir, included_paths)
+    tokens = expand_includes(tokenize(source, source_path), base_dir, included_paths)
     SOLC_DEBUG = os.getenv("SOLC_DEBUG") == "1"
     if SOLC_DEBUG:
         print("DEBUG: tokens after include expansion ->", tokens)
@@ -338,16 +393,16 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "halt",
     }
 
-    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None) -> bool:
+    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, location: SourceLocation | None) -> bool:
         if locals_list is not None:
             for local_index, (local_name, _) in enumerate(locals_list):
                 if local_name == name:
-                    instructions.append(Instruction("local_addr", local_index))
-                    instructions.append(Instruction("st"))
+                    instructions.append(Instruction("local_addr", local_index, location=location))
+                    instructions.append(Instruction("st", location=location))
                     return True
         if name in variables:
-            instructions.append(Instruction("push", variables[name]))
-            instructions.append(Instruction("st"))
+            instructions.append(Instruction("push", variables[name], location=location))
+            instructions.append(Instruction("st", location=location))
             return True
         return False
 
@@ -357,6 +412,15 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         i = start_index
         while i < len(words):
             tok = words[i]
+            location = getattr(tok, "location", None)
+
+            def emit(op: str, arg: int | str | None = None) -> None:
+                instructions.append(Instruction(op, arg, location=location))
+
+            def error(message: str) -> SolVMError:
+                if location:
+                    return SolVMError(f"{location.format()}: {message}")
+                return SolVMError(message)
 
             if stop_tokens is not None and tok in stop_tokens:
                 return i
@@ -371,26 +435,26 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
             if tok == "if":
                 false_label = new_hidden_label("if_false")
-                instructions.append(Instruction("jnz", false_label))
+                emit("jnz", false_label)
                 i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"else", "end"})
                 if i >= len(words):
-                    raise SolVMError("if requires terminating end")
+                    raise error("if requires terminating end")
                 then_terminates = bool(instructions) and instructions[-1].op in terminal_ops
                 if words[i] == "else":
                     end_label = None
                     if not then_terminates:
                         end_label = new_hidden_label("if_end")
-                        instructions.append(Instruction("jmp", end_label))
+                        emit("jmp", end_label)
                     labels[false_label] = len(instructions)
                     i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
                     if i >= len(words) or words[i] != "end":
-                        raise SolVMError("else requires terminating end")
+                        raise error("else requires terminating end")
                     if end_label is not None:
                         labels[end_label] = len(instructions)
                     i += 1
                     continue
                 if words[i] != "end":
-                    raise SolVMError(f"unexpected token in if block: {words[i]}")
+                    raise error(f"unexpected token in if block: {words[i]}")
                 labels[false_label] = len(instructions)
                 i += 1
                 continue
@@ -400,28 +464,28 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 labels[start_label] = len(instructions)
                 i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
                 if i >= len(words) or words[i] != "end":
-                    raise SolVMError("while requires terminating end")
-                instructions.append(Instruction("jz", start_label))
+                    raise error("while requires terminating end")
+                emit("jz", start_label)
                 i += 1
                 continue
 
             if tok in {"else", "end"}:
                 if stop_tokens is not None and tok in stop_tokens:
                     return i
-                raise SolVMError(f"unexpected token: {tok}")
+                raise error(f"unexpected token: {tok}")
 
             if tok.startswith("@"): 
-                raise SolVMError("labels are hidden; use if/else/while/end")
+                raise error("labels are hidden; use if/else/while/end")
 
             if tok in {"jmp", "jz", "jnz"}:
-                raise SolVMError(f"raw jumps are hidden; use if/else/while/end: {tok}")
+                raise error(f"raw jumps are hidden; use if/else/while/end: {tok}")
 
             if tok.startswith("\\!"):
                 tok = tok[1:]
 
             if tok.startswith("!"):
                 if current_func is not None:
-                    raise SolVMError(f"directives inside function not supported: {tok}")
+                    raise error(f"directives inside function not supported: {tok}")
                 if tok == "!keepfn":
                     if i + 1 >= len(words):
                         raise SolVMError("!keepfn requires a function name")
@@ -429,7 +493,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     if not LABEL_RE.match(name):
                         raise SolVMError(f"invalid function name for !keepfn: {name}")
                     if name not in functions:
-                        raise SolVMError(f"unknown function for !keepfn: {name}")
+                        raise error(f"unknown function for !keepfn: {name}")
                     kept_functions.add(name)
                     i += 2
                     continue
@@ -465,9 +529,9 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     addr = next_var_addr
                     next_var_addr += 4
                     variables[name] = addr
-                    instructions.append(Instruction("push", init_value))
-                    instructions.append(Instruction("push", addr))
-                    instructions.append(Instruction("st"))
+                    instructions.append(Instruction("push", init_value, location=location))
+                    instructions.append(Instruction("push", addr, location=location))
+                    instructions.append(Instruction("st", location=location))
                     i += consumed
                     continue
 
@@ -510,71 +574,71 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     i = j + 1
                     continue
 
-                raise SolVMError(f"unsupported directive: {tok}")
+                raise error(f"unsupported directive: {tok}")
 
             if tok.startswith(">"):
                 name = tok[1:]
                 if not LABEL_RE.match(name):
                     raise SolVMError(f"invalid variable name for store: {name}")
-                if not store_target(name, locals_list):
-                    raise SolVMError(f"undefined variable: {name}")
+                if not store_target(name, locals_list, location):
+                    raise error(f"undefined variable: {name}")
                 i += 1
                 continue
 
             if tok.startswith('"') and tok.endswith('"'):
-                instructions.append(Instruction("push", intern_string_literal(tok)))
+                emit("push", intern_string_literal(tok))
                 i += 1
                 continue
 
             if tok in simple_ops:
-                instructions.append(Instruction(tok))
+                emit(tok)
                 i += 1
                 continue
 
             if tok in functions:
-                instructions.append(Instruction("call", tok))
+                emit("call", tok)
                 i += 1
                 continue
 
             if tok in constants:
-                instructions.append(Instruction("push", constants[tok]))
+                emit("push", constants[tok])
                 i += 1
                 continue
 
             if LABEL_RE.match(tok) and tok in variables:
-                instructions.append(Instruction("push", variables[tok]))
-                instructions.append(Instruction("ld"))
+                emit("push", variables[tok])
+                emit("ld")
                 i += 1
                 continue
 
             if tok.startswith("__ARG_"):
                 if current_func is None:
-                    raise SolVMError("argument marker found outside function body")
+                    raise error("argument marker found outside function body")
                 idx_str = tok.split("__ARG_")[-1]
                 try:
                     arg_index = int(idx_str)
                 except ValueError as exc:
-                    raise SolVMError(f"invalid ARG marker in function {current_func}: {tok}") from exc
-                instructions.append(Instruction("arg", arg_index))
+                    raise error(f"invalid ARG marker in function {current_func}: {tok}") from exc
+                emit("arg", arg_index)
                 i += 1
                 continue
 
             if tok.startswith("__LOCAL_"):
                 if current_func is None:
-                    raise SolVMError("local marker found outside function body")
+                    raise error("local marker found outside function body")
                 idx_str = tok.split("__LOCAL_")[-1]
                 try:
                     local_index = int(idx_str)
                 except ValueError as exc:
-                    raise SolVMError(f"invalid LOCAL marker in function {current_func}: {tok}") from exc
-                instructions.append(Instruction("local_addr", local_index))
-                instructions.append(Instruction("ld"))
+                    raise error(f"invalid LOCAL marker in function {current_func}: {tok}") from exc
+                emit("local_addr", local_index)
+                emit("ld")
                 i += 1
                 continue
 
             if not NUMBER_RE.match(tok):
-                raise SolVMError(f"unknown word: {tok}")
-            instructions.append(Instruction("push", parse_number(tok)))
+                raise error(f"unknown word: {tok}")
+            emit("push", parse_number(tok))
             i += 1
 
         return i
@@ -718,9 +782,10 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
         for local_index, (_, init_value) in enumerate(locals_list):
             if init_value is not None:
-                instructions.append(Instruction("push", init_value))
-                instructions.append(Instruction("local_addr", local_index))
-                instructions.append(Instruction("st"))
+                init_location = getattr(body_tokens[0], "location", None) if body_tokens else None
+                instructions.append(Instruction("push", init_value, location=init_location))
+                instructions.append(Instruction("local_addr", local_index, location=init_location))
+                instructions.append(Instruction("st", location=init_location))
 
         compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
 
@@ -965,9 +1030,15 @@ class SolVM:
         while self.pc < len(program.instructions) and not self.halted:
             steps += 1
             if steps > self.max_steps:
-                raise SolVMError("execution exceeded step limit")
+                raise SolVMError(format_error("execution exceeded step limit", program.instructions[self.pc].location))
             inst = program.instructions[self.pc]
-            self.execute_instruction(inst, program.labels)
+            try:
+                self.execute_instruction(inst, program.labels)
+            except SolVMError as exc:
+                message = str(exc)
+                if inst.location and not message.startswith(inst.location.format() + ":"):
+                    raise SolVMError(format_error(message, inst.location)) from exc
+                raise
         return self.stack
 
     def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> list[int]:

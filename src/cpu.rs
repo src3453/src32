@@ -43,6 +43,8 @@ enum Instruction {
     Jmps { offset: i16 },
     Jals { offset: i16 },
     Jrs { rd: u8 },
+    Jalr { rd: u8 },
+    Jalrs { rd: u8 },
     Cpuid,
     Halt,
     And { rd: u8, rs1: u8, rs2: u8 },
@@ -374,6 +376,8 @@ impl Cpu {
             0x1D => Instruction::Jmps { offset: imm16 },
             0x1E => Instruction::Jals { offset: imm16 },
             0x1F => Instruction::Jrs { rd },
+            0x21 => Instruction::Jalr { rd },
+            0x22 => Instruction::Jalrs { rd },
             0x3C => Instruction::Ldil { rd, imm: imm_u16 },
             0x3D => Instruction::Ldih { rd, imm: imm_u16 },
             0x3E => Instruction::Cpuid,
@@ -441,6 +445,8 @@ impl Cpu {
             Instruction::Jmps { offset } => format!("JMPS {}", offset),
             Instruction::Jals { offset } => format!("JALS {}", offset),
             Instruction::Jrs { rd } => format!("JRS R{}", rd),
+            Instruction::Jalr { rd } => format!("JALR R{}", rd),
+            Instruction::Jalrs { rd } => format!("JALRS R{}", rd),
             Instruction::Cpuid => "CPUID".to_string(),
             Instruction::Halt => "HALT".to_string(),
             Instruction::Iret => "IRET".to_string(),
@@ -502,7 +508,8 @@ impl Cpu {
                 let next_mode = match insn {
                     Instruction::Jmps { .. }
                     | Instruction::Jals { .. }
-                    | Instruction::Jrs { .. } => InstructionMode::Short,
+                    | Instruction::Jrs { .. }
+                    | Instruction::Jalrs { .. } => InstructionMode::Short,
                     _ => InstructionMode::Normal,
                 };
                 DecodedInstruction {
@@ -654,6 +661,17 @@ impl Cpu {
             }
             Instruction::Jrs { rd } => {
                 self.pc = self.read_reg(rd as usize);
+                self.instr_mode = InstructionMode::Short;
+            }
+            Instruction::Jalr { rd } => {
+                let target = self.read_reg(rd as usize);
+                let _ = self.write_reg(REG_LR, next_pc);
+                self.pc = target;
+            }
+            Instruction::Jalrs { rd } => {
+                let target = self.read_reg(rd as usize);
+                let _ = self.write_reg(REG_LR, next_pc);
+                self.pc = target;
                 self.instr_mode = InstructionMode::Short;
             }
             Instruction::Cpuid => {

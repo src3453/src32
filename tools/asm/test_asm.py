@@ -18,6 +18,11 @@ def test_jump_family_accepts_numeric_absolute_targets():
     assert assemble_hex("S.JAL 4\nS.RET\ntarget:\nS.RET") == assemble_hex("S.JAL target\nS.RET\ntarget:\nS.RET")
 
 
+def test_register_jump_and_link_opcodes():
+    assert assemble_hex("JALR R5") == "84a00000"
+    assert assemble_hex("JALRS R5") == "88a00000"
+
+
 def test_jump_family_accepts_relative_numeric_targets_with_prefix():
     assert assemble_hex("JMP R!0\nafter:\nHALT") == assemble_hex("JMP after\nafter:\nHALT")
     assert assemble_hex("JAL R!0\nafter:\nHALT") == assemble_hex("JAL after\nafter:\nHALT")

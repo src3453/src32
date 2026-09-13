@@ -60,7 +60,7 @@
       "patterns": [
         {
           "name": "keyword.instruction.src32asm",
-          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDIH|LDIL|SLTU|MUL|DIV|MOD|MULH|DIVU|JMPS|JALS|JRS)\\b"
+          "match": "(?i)\\b(NOP|LD|ST|ADD|ADDI|SUB|SLT|BEQ|BNE|JMP|JAL|JR|JALR|JALRS|AND|OR|XOR|SLL|SRL|SLA|SRA|LDB|LDH|STB|STH|CPUID|HALT|LDIH|LDIL|SLTU|MUL|DIV|MOD|MULH|DIVU|JMPS|JALS|JRS)\\b"
         },
         {
           "name": "keyword.instruction_short.src32asm",

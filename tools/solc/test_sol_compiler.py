@@ -171,6 +171,19 @@ def test_compile_rejects_stack_underflow():
         compile_to_src32_asm("drop")
 
 
+def test_compile_stack_error_reports_source_location(tmp_path):
+    source_path = tmp_path / "sample.sol"
+    with pytest.raises(SolCompileError, match=r"sample\.sol:2:6: stack underflow"):
+        compile_to_src32_asm("1\ndrop drop", source_path=str(source_path))
+
+
+def test_store_generated_ir_reports_store_location(tmp_path):
+    source_path = tmp_path / "sample.sol"
+    source = "fn save (x) :\n    x >missing\n;\n\n1 save"
+    with pytest.raises(SolCompileError, match=r"sample\.sol:2:7: undefined variable: missing"):
+        compile_to_src32_asm(source, source_path=str(source_path))
+
+
 def test_compile_rejects_inconsistent_branch_stack_depth():
     with pytest.raises(SolCompileError, match="inconsistent stack depth"):
         compile_to_src32_asm("0 if 1 else 2 3 end add")

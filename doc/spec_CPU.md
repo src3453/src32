@@ -66,13 +66,13 @@ Bit positions:
 - `0x09 (imm)`: `JMP off16`: Jump to `PC + 4 + sign_extend(off16)`
 - `0x0A (imm)`: `JAL off16`: Jump and link: `R31 <- PC + 4`, then `PC <- PC + 4 + sign_extend(off16)`
 - `0x0B (reg)`: `JR rd`: Jump to address in `rd`: `PC <- R[rd]`
+- `0x21 (reg)`: `JALR rd`: Jump and link register: `R31 <- PC + 4`, then `PC <- R[rd]`
 - `0x3C (imm)`: `LDIL rd, imm16`: Load the low 16 bits into `rd`, preserving the upper 16 bits
 - `0x3D (imm)`: `LDIH rd, imm16`: Load the high 16 bits into `rd`, preserving the lower 16 bits
 - `0x3E (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
 - `0x3F (reg)`: `HALT`: Stop execution loop
-- `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
 `BEQ`/`BNE` note:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
@@ -140,9 +140,10 @@ Extension S provides a compact "Short Mode" 16-bit instruction encoding for comm
 These instructions are mainly intended for compilers to generate smaller code size, especially for tight loops or frequently executed code.
 All of the Short Mode instructions are prefixed with `S.` in the assembler syntax.
 It will add 3 new opcodes to enter Short Mode:
-- 0x1D (imm) : JMPS off16: Jump and Enter Short Mode
-- 0x1E (imm) : JALS off16: Jump And Link and Enter Short Mode
-- 0x1F (reg) : JRS rd: Jump Register and Enter Short Mode 
+- `0x1D (imm)` : `JMPS off16`: Jump and Enter Short Mode
+- `0x1E (imm)` : `JALS off16`: Jump And Link and Enter Short Mode
+- `0x1F (reg)` : `JRS rd`: Jump Register and Enter Short Mode 
+- `0x22 (reg)` : `JALRS rd`: Jump And Link Register and Enter Short Mode
 
 ### 4.5.2 Short Mode Instructions
 It will add 1 read-only register to the CPU, `INSTR_MODE`, which indicates the current instruction mode:
@@ -172,6 +173,12 @@ Register 0-14 is mapped to `R0-R14`, and register 15 is mapped to `R31` (LR).
 - `0x8 (imm12)`: `S.JAL off12`: Jump and link: `R31 <- PC + 2`, then `PC <- PC + 2 + sign_extend(off12)`
 - `0x9 (imm)`: `S.LDI rd, imm8`: Load unsigned `imm8` into `rd` (other bits of `rd` are cleared)
 - `0xF (imm)`: `S.RET`: Return from Short Mode to Normal Mode (rd and imm8 fields are ignored). `PC <- PC + 2`, then `INSTR_MODE <- 0`.
+
+## 4.6 Extension I (Interrupts)
+Extension I adds support for external interrupts, additional read-only registers, and the `IRET` instruction to return from interrupt handlers.
+
+- `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
+
 
 ## 5. Execution Semantics in Normal Mode
 

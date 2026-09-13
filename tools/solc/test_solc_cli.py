@@ -34,3 +34,16 @@ def test_compile_command_warns_about_unused_functions(capsys, caplog, tmp_path):
     captured = capsys.readouterr()
     assert exit_code == 0
     assert "unused function: unused" in caplog.text
+    assert "Wrote output" not in captured.out
+
+
+def test_compile_command_reports_source_location(capsys, tmp_path):
+    source_path = tmp_path / "sample.sol"
+    source_path.write_text("1\nunknown_word", encoding="utf-8")
+
+    exit_code = main(["compile", str(source_path)])
+
+    captured = capsys.readouterr()
+    assert exit_code == 1
+    assert "sample.sol:2:1" in captured.err
+    assert "unknown word: unknown_word" in captured.err

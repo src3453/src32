@@ -29,6 +29,10 @@ fn encode_iret() -> [u8; 4] {
     encode_r(0x20, 0, 0, 0)
 }
 
+fn encode_r1(op: u8, rd: u8) -> [u8; 4] {
+    encode_r(op, rd, 0, 0)
+}
+
 fn encode_short(raw: u16) -> [u8; 2] {
     raw.to_be_bytes()
 }
@@ -270,4 +274,44 @@ fn short_mode_reg15_maps_to_lr() {
     cpu.run(32);
 
     assert_eq!(cpu.read_reg(31), 0x2A);
+}
+
+#[test]
+fn jalr_writes_link_and_jumps_to_register() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_ldi32(5, 12));
+    image.extend_from_slice(&encode_r1(0x21, 5)); // JALR R5
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // skipped
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // target
+
+    cpu.load_program(0, &image);
+    cpu.run(32);
+
+    assert_eq!(cpu.pc(), 16);
+    assert_eq!(cpu.read_reg(31), 12);
+}
+
+#[test]
+fn jalrs_writes_link_jumps_and_enters_short_mode() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_ldi32(5, 12));
+    image.extend_from_slice(&encode_r1(0x22, 5)); // JALRS R5
+    image.extend_from_slice(&s_ret()); // target short instruction at 12
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+
+    cpu.load_program(0, &image);
+    assert!(cpu.step_once());
+    assert!(cpu.step_once());
+    assert!(cpu.step_once());
+    assert_eq!(cpu.pc(), 12);
+    assert_eq!(cpu.instruction_mode(), cpt32::cpu::InstructionMode::Short);
+    assert_eq!(cpu.read_reg(31), 12);
 }

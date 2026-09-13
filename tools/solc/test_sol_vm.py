@@ -12,6 +12,23 @@ def test_compiled_instruction_carries_opcode_profile():
     assert program.instructions[2].profile.short_weight > 0
 
 
+def test_compiled_instruction_carries_source_location(tmp_path):
+    source_path = tmp_path / "sample.sol"
+    program = compile_program("1\n2 add", source_path=str(source_path))
+
+    assert program.instructions[0].location.path == str(source_path)
+    assert (program.instructions[0].location.line, program.instructions[0].location.column) == (1, 1)
+    assert (program.instructions[2].location.line, program.instructions[2].location.column) == (2, 3)
+
+
+def test_runtime_error_reports_source_location(tmp_path):
+    source_path = tmp_path / "sample.sol"
+    vm = SolVM()
+
+    with pytest.raises(SolVMError, match=r"sample\.sol:2:3: division by zero"):
+        vm.run_source("1\n0 div", source_path=str(source_path))
+
+
 def test_arithmetic_basic():
     vm = SolVM()
     stack = vm.run_source("1 2 add 4 mul 2 div")

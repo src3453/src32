@@ -200,6 +200,13 @@ def decode_normal(pc: int, raw: int) -> DecodedInsn:
         base.asm = f"JRS {reg_name(rd)}"
         base.next_mode = MODE_SHORT
         return base
+    if op == 0x21:
+        base.asm = f"JALR {reg_name(rd)}"
+        return base
+    if op == 0x22:
+        base.asm = f"JALRS {reg_name(rd)}"
+        base.next_mode = MODE_SHORT
+        return base
     if op == 0x3C:
         base.asm = f"LDIL {reg_name(rd)}, 0x{raw & 0xFFFF:04X}"
         return base

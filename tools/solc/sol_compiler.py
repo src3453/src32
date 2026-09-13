@@ -66,6 +66,11 @@ def _check_static_stack_safety(program: Program) -> None:
     def transfer(depth: int, pc: int) -> int:
         inst = program.instructions[pc]
         op = inst.op
+
+        def fail(message: str) -> None:
+            if inst.location:
+                raise SolCompileError(f"{inst.location.format()}: {message}")
+            raise SolCompileError(message)
         if op in {"push", "arg", "local_addr", "stacksize"}:
             delta, required = 1, 0
         elif op in binary_ops:
@@ -94,7 +99,7 @@ def _check_static_stack_safety(program: Program) -> None:
             assert isinstance(inst.arg, str)
             meta = program.functions.get(inst.arg)
             if meta is None:
-                raise SolCompileError(f"call to unknown function: {inst.arg}")
+                fail(f"call to unknown function: {inst.arg}")
             delta = -meta["argcount"] + return_effect[inst.arg]
             required = meta["argcount"]
         elif op == "ret":
@@ -105,17 +110,13 @@ def _check_static_stack_safety(program: Program) -> None:
         elif op in {"jmp", "halt"}:
             delta, required = 0, 0
         else:
-            raise SolCompileError(f"cannot analyze stack effect of opcode: {op}")
+            fail(f"cannot analyze stack effect of opcode: {op}")
         if depth < required:
-            raise SolCompileError(
-                f"stack underflow at {op} (pc {pc}): requires {required}, has {depth}"
-            )
+            fail(f"stack underflow at {op} (pc {pc}): requires {required}, has {depth}")
         result = depth + delta
         capacity = STACK_SIZE_BYTES // 4
         if result > capacity:
-            raise SolCompileError(
-                f"stack overflow at {op} (pc {pc}): depth {result} exceeds {capacity}"
-            )
+            fail(f"stack overflow at {op} (pc {pc}): depth {result} exceeds {capacity}")
         return result
 
     for name, (start, end) in segments.items():
@@ -127,21 +128,21 @@ def _check_static_stack_safety(program: Program) -> None:
             inst = program.instructions[pc]
             after = transfer(depth, pc)
             if name is not None and inst.op == "ret" and after != 1:
-                raise SolCompileError(f"function '{name}' returns with invalid stack depth {after}")
+                location = inst.location.format() + ": " if inst.location else ""
+                raise SolCompileError(f"{location}function '{name}' returns with invalid stack depth {after}")
             if name is not None and inst.op == "retn" and after != 0:
-                raise SolCompileError(f"function '{name}' returns with invalid stack depth {after}")
+                location = inst.location.format() + ": " if inst.location else ""
+                raise SolCompileError(f"{location}function '{name}' returns with invalid stack depth {after}")
             for target in successors(pc, end):
                 if target < start or target >= end:
                     raise SolCompileError(f"invalid control-flow target at pc {pc}")
                 if target in depths:
                     if depths[target] != after:
                         if target <= pc and after > depths[target]:
-                            raise SolCompileError(
-                                f"stack overflow: loop increases depth from {depths[target]} to {after}"
-                            )
-                        raise SolCompileError(
-                            f"inconsistent stack depth at pc {target}: {depths[target]} and {after}"
-                        )
+                            location = inst.location.format() + ": " if inst.location else ""
+                            raise SolCompileError(f"{location}stack overflow: loop increases depth from {depths[target]} to {after}")
+                        location = inst.location.format() + ": " if inst.location else ""
+                        raise SolCompileError(f"{location}inconsistent stack depth at pc {target}: {depths[target]} and {after}")
                 else:
                     depths[target] = after
                     pending.append(target)
