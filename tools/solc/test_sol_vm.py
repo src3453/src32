@@ -334,6 +334,18 @@ fn outer (x) :
     assert stack == [6]
 
 
+def test_retn_discards_all_callee_values():
+    vm = SolVM()
+    src = """
+fn discard () :
+    1 2 3
+;
+
+9 discard
+"""
+    assert vm.run_source(src) == [9]
+
+
 def test_recursive_factorial():
     vm = SolVM()
     src = """

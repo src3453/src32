@@ -523,20 +523,29 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
             raise SolCompileError(f"unknown function metadata for {current_func}")
         frame_size = 4 * (2 + meta["n_locals"] + meta["argcount"])
         restore_size = frame_size + 4 * meta["argcount"]
+        # cache.flush() leaves R28 below the frame by the number of cached
+        # values.  The return value is therefore at the current R28, not at
+        # the frame base.  Reset R28 from the stable frame pointer before
+        # tearing the frame down; otherwise every return leaks one or more
+        # words from the caller's stack.
         lines.append("    LD R13, [R28 + 0]")
         lines.append("    LD R31, [R26 + 4]")
         lines.append("    LD R15, [R26 + 0]")
+        lines.append("    ADDI R28, R26, 0")
         if restore_size != 0:
             lines.append(f"    ADDI R28, R28, {restore_size}")
-        lines.append("    ADDI R26, R15, 0")
         lines.append("    ADDI R28, R28, -4")
         lines.append("    ST R13, [R28 + 0]")
+        lines.append("    ADDI R26, R15, 0")
         lines.append("    JR R31")
         return
 
     if op == "retn":
-        cache.flush()
-        # retn discards any callee-produced values and restores the caller stack past args.
+        cache.reset_empty()
+        # retn discards any callee-produced values and restores the caller
+        # stack past args.  Do not flush the cache: those values are part of
+        # the callee and must not move R28.  Start from R26 so spilled
+        # callee values cannot affect the caller's stack position.
         if current_func is None or functions_map is None:
             raise SolCompileError("retn emitted outside of function or missing functions_map")
         meta = functions_map.get(current_func)
@@ -546,6 +555,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         restore_size = frame_size + 4 * meta["argcount"]
         lines.append("    LD R31, [R26 + 4]")
         lines.append("    LD R15, [R26 + 0]")
+        lines.append("    ADDI R28, R26, 0")
         if restore_size != 0:
             lines.append(f"    ADDI R28, R28, {restore_size}")
         lines.append("    ADDI R26, R15, 0")

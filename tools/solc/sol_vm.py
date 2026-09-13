@@ -1158,10 +1158,11 @@ class SolVM:
                 frame_size = 4 * (n_locals + argcount)
                 self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
             stack_height = frame["stack_height"]
-            if len(self.stack) > stack_height:
-                self.stack = self.stack[:stack_height] + [self.stack[-1]]
-            else:
-                self.stack = self.stack[:stack_height]
+            # Unlike ret, retn must discard every value produced by the
+            # callee.  Keeping the last value here makes each call leak one
+            # data-stack item and eventually turns a balanced loop into a
+            # runtime stack overflow.
+            self.stack = self.stack[:stack_height]
             self.pc = frame["ret_pc"]
             return
 

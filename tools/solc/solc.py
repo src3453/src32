@@ -41,7 +41,7 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x0000FFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True, remove_unused_functions: bool = True) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True, remove_unused_functions: bool = True) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         src = f.read()
     try:

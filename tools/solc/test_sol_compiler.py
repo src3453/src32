@@ -362,6 +362,20 @@ fn putc (char) :
     assert "ADDI R28, R28, 16" in asm
 
 
+    def test_compile_ret_restores_stack_pointer_after_cached_values():
+        src = """
+    fn identity (value) :
+        value
+        ret
+    ;
+
+    7 identity
+    """
+        asm = compile_to_src32_asm(src)
+        ret_block = asm[asm.rfind("    LD R13, [R28 + 0]"):]
+        assert "ADDI R28, R26, 0" in ret_block
+
+
 def test_compile_stack_cache_spills_only_after_cache_is_full():
     src = " ".join(str(i) for i in range(1, 14))
     asm = compile_to_src32_asm(src)
