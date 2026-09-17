@@ -18,6 +18,10 @@ class SolCompileError(RuntimeError):
     pass
 
 
+def check_static_stack_safety(program: Program) -> None:
+    """Validate all reachable data-stack effects."""
+    _check_static_stack_safety(program)
+
 def _check_static_stack_safety(program: Program) -> None:
     """Verify stack depth on every reachable generated instruction."""
     instruction_count = len(program.instructions)
@@ -885,5 +889,5 @@ def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100
         program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    _check_static_stack_safety(program)
+    check_static_stack_safety(program)
     return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)

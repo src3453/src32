@@ -13,3 +13,6 @@ __MACOSX
 *.ignore
 __pycache__
 tools/csc/test.a
+node_modules/
+tools/vscode-sol-syntax/out/
+.omp/
