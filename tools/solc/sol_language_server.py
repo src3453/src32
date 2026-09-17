@@ -8,10 +8,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from sol_vm import tokenize, compile_program, SolVMError, parse_number
 from sol_compiler import check_static_stack_safety, SolCompileError
 
-TOKEN_TYPES = ["comment", "string", "number", "operator", "keyword", "function", "parameter", "local", "variable", "constant", "assignment", "identifier"]
+TOKEN_TYPES = ["comment", "string", "number", "operator", "directive", "control", "function", "parameter", "local", "variable", "constant", "assignment", "identifier"]
 TOKEN_MODIFIERS = []
 OPS = {"add","sub","mul","div","mod","neg","and","or","xor","shl","shr","eq","neq","lt","gt","le","ge","sgn","not","dup","drop","swap","over","rot","nip","tuck","ld","st","ldb","ldh","stb","sth","stacksize","halt","ret","retn"}
-KEYWORDS = {"if","else","while","end","fn","local"}
+CONTROL = {"fn","if","while","else","end","local"}
 DIRECTIVES = {"!include","!define","!undef","!const","!var","!end","!required_stack_size","!force_stack_size","!asm","!data","!db","!keepfn"}
 
 class Server:
@@ -53,7 +53,8 @@ class Server:
             s=str(t); typ=None
             if s.startswith('"'): typ="string"
             elif s in OPS: typ="operator"
-            elif s in KEYWORDS or s in DIRECTIVES: typ="keyword"
+            elif s in DIRECTIVES: typ="directive"
+            elif s in CONTROL: typ="control"
             else:
                 try: parse_number(s); typ="number"
                 except Exception:
@@ -72,7 +73,10 @@ class Server:
     def handle(self, req):
         method=req.get("method"); p=req.get("params") or {}; ident=req.get("id")
         if method=="initialize":
-            return {"id":ident,"result":{"capabilities":{"textDocumentSync":{"openClose":True,"change":1},"semanticTokensProvider":{"legend":{"tokenTypes":TOKEN_TYPES,"tokenModifiers":TOKEN_MODIFIERS},"full":True},"diagnosticProvider":{"interFileDependencies":False,"workspaceDiagnostics":False}}}}
+            return {"id":ident,"result":{"capabilities":{"textDocumentSync":{"openClose":True,"change":1},"semanticTokensProvider":{"legend":{"tokenTypes":TOKEN_TYPES,"tokenModifiers":TOKEN_MODIFIERS},"full":True},"diagnosticProvider":{"interFileDependencies":False,"workspaceDiagnostics":False,"identifier":"sol"}}}}
+        if method=="textDocument/diagnostic":
+            uri=p["textDocument"]["uri"]
+            return {"id":ident,"result":{"kind":"full","items":self.analyze(uri,self.docs.get(uri,""))}}
         if method=="shutdown": return {"id":ident,"result":None}
         if method=="exit": return None
         if method in ("textDocument/didOpen","textDocument/didChange"):

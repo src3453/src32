@@ -1,0 +1,1420 @@
+"""sol VM (HLE) for development-time validation."""
+
+from __future__ import annotations
+
+import ast
+from dataclasses import dataclass
+import logging
+import os
+import re
+from typing import NamedTuple
+
+LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
+INT32_MIN = -(2**31)
+INT32_MAX = 2**31 - 1
+UINT32_MAX = 2**32 - 1
+
+STRING_POOL_BASE = 0x00020000
+STACK_SIZE_BYTES = 0x00100000
+
+logger = logging.getLogger(__name__)
+
+
+class SolVMError(RuntimeError):
+    pass
+
+
+def format_error(message: str, location: SourceLocation | None = None) -> str:
+    return f"{location.format()}: {message}" if location else message
+
+
+class SourceLocation(NamedTuple):
+    path: str | None
+    line: int
+    column: int
+
+    def format(self) -> str:
+        filename = self.path or "<source>"
+        return f"{filename}:{self.line}:{self.column}"
+
+
+class SourceToken(str):
+    """A token retaining the location from which the IR opcode was produced."""
+
+    location: SourceLocation
+
+    def __new__(cls, value: str, location: SourceLocation):
+        token = super().__new__(cls, value)
+        token.location = location
+        return token
+
+
+@dataclass(frozen=True)
+class OpcodeProfile:
+    shortable: bool = True
+    short_weight: int = 1
+    normal_weight: int = 1
+    barrier: bool = False
+
+
+def _opcode_profile(op: str, arg: int | str | None = None) -> OpcodeProfile:
+    if op == "push":
+        if isinstance(arg, int) and 0 <= arg <= 0xFF:
+            return OpcodeProfile(shortable=True, short_weight=1, normal_weight=3)
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=3)
+
+    if op == "dup":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op == "drop":
+        return OpcodeProfile(shortable=True, short_weight=0, normal_weight=0)
+    if op == "swap":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op == "over":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op == "rot":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=6)
+    if op == "nip":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op == "tuck":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=5)
+
+    if op in {"add", "sub", "mul", "div", "mod", "and", "or", "xor", "shl", "shr"}:
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=4)
+    if op == "neg":
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=2)
+    if op in {"ld", "st", "ldb", "ldh", "stb", "sth"}:
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=3)
+    if op in {"eq", "neq", "lt", "gt"}:
+        return OpcodeProfile(shortable=True, short_weight=4, normal_weight=5)
+    if op in {"le", "ge"}:
+        return OpcodeProfile(shortable=True, short_weight=5, normal_weight=6)
+    if op == "sgn":
+        return OpcodeProfile(shortable=True, short_weight=2, normal_weight=4)
+    if op == "not":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=4)
+    if op == "stacksize":
+        return OpcodeProfile(shortable=True, short_weight=3, normal_weight=3)
+    if op in {"arg", "local_addr"}:
+        return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
+
+    if op in {"call", "ret", "retn", "jmp", "jz", "jnz", "halt"}:
+        return OpcodeProfile(shortable=False, short_weight=0, normal_weight=0, barrier=True)
+
+    return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
+
+
+@dataclass(frozen=True)
+class Instruction:
+    op: str
+    arg: int | str | None = None
+    profile: OpcodeProfile | None = None
+    location: SourceLocation | None = None
+
+    def __post_init__(self) -> None:
+        if self.profile is None:
+            object.__setattr__(self, "profile", _opcode_profile(self.op, self.arg))
+
+
+@dataclass(frozen=True)
+class Program:
+    instructions: list[Instruction]
+    labels: dict[str, int]
+    functions: dict[str, int]
+    read_only_data: list[tuple[int, bytes]]
+
+
+def to_i32(value: int) -> int:
+    value &= UINT32_MAX
+    if value > INT32_MAX:
+        return value - (2**32)
+    return value
+
+
+def tokenize(source: str, source_path: str | None = None) -> list[SourceToken]:
+    tokens: list[SourceToken] = []
+    current: list[str] = []
+    in_string = False
+    escaped = False
+    i = 0
+    line = 1
+    column = 1
+    token_line = 1
+    token_column = 1
+
+    def advance(ch: str) -> None:
+        nonlocal line, column
+        if ch == "\n":
+            line += 1
+            column = 1
+        else:
+            column += 1
+
+    def start_token() -> None:
+        nonlocal token_line, token_column
+        token_line, token_column = line, column
+
+    def append_token(value: str) -> None:
+        tokens.append(SourceToken(value, SourceLocation(source_path, token_line, token_column)))
+
+    while i < len(source):
+        ch = source[i]
+        if in_string:
+            current.append(ch)
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                append_token("".join(current))
+                current = []
+                in_string = False
+            elif ch == "\n":
+                raise SolVMError("unterminated string literal")
+            advance(ch)
+            i += 1
+            continue
+
+        if ch == "#":
+            if current:
+                append_token("".join(current))
+                current = []
+            while i < len(source) and source[i] != "\n":
+                advance(source[i])
+                i += 1
+            continue
+
+        if ch.isspace():
+            if current:
+                append_token("".join(current))
+                current = []
+            advance(ch)
+            i += 1
+            continue
+
+        if ch in {";", "(", ")"}:
+            if current:
+                append_token("".join(current))
+                current = []
+            append_token(ch)
+            advance(ch)
+            i += 1
+            continue
+
+        if ch == '"':
+            if current:
+                append_token("".join(current))
+                current = []
+            start_token()
+            current.append(ch)
+            in_string = True
+            escaped = False
+            i += 1
+            continue
+
+        if not current:
+            start_token()
+        current.append(ch)
+        advance(ch)
+        i += 1
+
+    if in_string:
+        raise SolVMError("unterminated string literal")
+    if current:
+        append_token("".join(current))
+    return tokens
+
+
+def _decode_string_literal(token: str) -> str:
+    try:
+        value = ast.literal_eval(token)
+    except (SyntaxError, ValueError) as exc:
+        raise SolVMError(f"invalid string literal: {token}") from exc
+    if not isinstance(value, str):
+        raise SolVMError(f"invalid string literal: {token}")
+    return value
+
+
+def parse_number(token: str) -> int:
+    is_unsigned = token.endswith("u")
+    core = token[:-1] if is_unsigned else token
+    if core == "":
+        raise SolVMError("invalid numeric literal: empty")
+
+    try:
+        is_hex = core.startswith(("0x", "0X"))
+        is_bin = core.startswith(("0b", "0B"))
+        if is_hex:
+            value = int(core, 16)
+        elif is_bin:
+            value = int(core, 2)
+        else:
+            value = int(core, 10)
+    except ValueError as exc:
+        raise SolVMError(f"invalid numeric literal: {token}") from exc
+
+    if is_hex or is_bin:
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"hex/binary literal out of range: {token}")
+    elif is_unsigned:
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"unsigned literal out of range: {token}")
+    elif value < INT32_MIN or value > INT32_MAX:
+        raise SolVMError(f"signed literal out of range: {token}")
+    return to_i32(value)
+
+STRING_POOL_BASE = 0x00020000
+STACK_SIZE_BYTES = 0x00100000
+
+def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
+    included_paths = set() if included_paths is None else set(included_paths)
+    base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
+
+    def expand_includes(tokens: list[str], current_base: str | None, seen: set[str]) -> list[str]:
+        out: list[str] = []
+        i = 0
+        while i < len(tokens):
+            tok = tokens[i]
+            if tok == "!include":
+                if i + 1 >= len(tokens):
+                    raise SolVMError("!include requires a filename")
+                fname_tok = tokens[i + 1]
+                if fname_tok.startswith('"') and fname_tok.endswith('"') and len(fname_tok) >= 2:
+                    fname = _decode_string_literal(fname_tok)
+                else:
+                    fname = fname_tok
+                if current_base:
+                    include_path = os.path.abspath(os.path.join(current_base, fname))
+                else:
+                    include_path = os.path.abspath(fname)
+                if include_path in seen:
+                    raise SolVMError(f"circular include detected: {include_path}")
+                if not os.path.exists(include_path):
+                    raise SolVMError(f"include file not found: {include_path}")
+                seen.add(include_path)
+                included_text = open(include_path, "r", encoding="utf-8").read()
+                expanded = expand_includes(tokenize(included_text, include_path), os.path.dirname(include_path), seen)
+                out.extend(expanded)
+                i += 2
+                continue
+            out.append(tok)
+            i += 1
+        return out
+
+    tokens = expand_includes(tokenize(source, source_path), base_dir, included_paths)
+    SOLC_DEBUG = os.getenv("SOLC_DEBUG") == "1"
+    if SOLC_DEBUG:
+        print("DEBUG: tokens after include expansion ->", tokens)
+
+    instructions: list[Instruction] = []
+    labels: dict[str, int] = {}
+    read_only_data: list[tuple[int, bytes]] = []
+
+    constants: dict[str, int] = {}
+    variables: dict[str, int] = {}
+    macros: dict[str, list[str]] = {}
+    next_var_addr = var_base
+    functions: dict[str, dict] = {}
+    kept_functions: set[str] = set()
+
+    string_literals: dict[str, int] = {}
+    next_string_addr = read_only_data_base
+    control_label_counter = 0
+
+    def intern_string_literal(token: str) -> int:
+        nonlocal next_string_addr
+        text = _decode_string_literal(token)
+        if text in string_literals:
+            return string_literals[text]
+        data = text.encode("utf-8") + b"\x00"
+        addr = next_string_addr
+        next_string_addr += len(data)
+        string_literals[text] = addr
+        read_only_data.append((addr, data))
+        return addr
+
+    def new_hidden_label(kind: str) -> str:
+        nonlocal control_label_counter
+        label = f"__solc_{kind}_{control_label_counter}"
+        control_label_counter += 1
+        return label
+
+    def expand_token_recursive(tok: str, seen: set[str]) -> list[str]:
+        if tok not in macros:
+            return [tok]
+        if tok in seen:
+            raise SolVMError(f"circular macro detected: {tok}")
+        seen.add(tok)
+        out: list[str] = []
+        for part in macros[tok]:
+            if part in macros:
+                out.extend(expand_token_recursive(part, seen))
+            else:
+                out.append(part)
+        seen.remove(tok)
+        return out
+
+    simple_ops = {
+        "add",
+        "sub",
+        "mul",
+        "div",
+        "mod",
+        "neg",
+        "and",
+        "or",
+        "xor",
+        "not",
+        "shl",
+        "shr",
+        "dup",
+        "drop",
+        "swap",
+        "over",
+        "rot",
+        "nip",
+        "tuck",
+        "ld",
+        "st",
+        "ldb",
+        "ldh",
+        "stb",
+        "sth",
+        "eq",
+        "neq",
+        "lt",
+        "gt",
+        "le",
+        "ge",
+        "sgn",
+        "ret",
+        "retn",
+        "stacksize",
+        "halt",
+    }
+
+    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, location: SourceLocation | None) -> bool:
+        if locals_list is not None:
+            for local_index, (local_name, _) in enumerate(locals_list):
+                if local_name == name:
+                    instructions.append(Instruction("local_addr", local_index, location=location))
+                    instructions.append(Instruction("st", location=location))
+                    return True
+        if name in variables:
+            instructions.append(Instruction("push", variables[name], location=location))
+            instructions.append(Instruction("st", location=location))
+            return True
+        return False
+
+    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
+        nonlocal next_string_addr, next_var_addr
+        terminal_ops = {"ret", "retn", "halt"}
+        i = start_index
+        while i < len(words):
+            tok = words[i]
+            location = getattr(tok, "location", None)
+
+            def emit(op: str, arg: int | str | None = None) -> None:
+                instructions.append(Instruction(op, arg, location=location))
+
+            def error(message: str) -> SolVMError:
+                if location:
+                    return SolVMError(f"{location.format()}: {message}")
+                return SolVMError(message)
+
+            if stop_tokens is not None and tok in stop_tokens:
+                return i
+
+            if tok in macros:
+                words[i:i + 1] = expand_token_recursive(tok, set())
+                continue
+
+            if tok == ";":
+                i += 1
+                continue
+
+            if tok == "if":
+                false_label = new_hidden_label("if_false")
+                emit("jnz", false_label)
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"else", "end"})
+                if i >= len(words):
+                    raise error("if requires terminating end")
+                then_terminates = bool(instructions) and instructions[-1].op in terminal_ops
+                if words[i] == "else":
+                    end_label = None
+                    if not then_terminates:
+                        end_label = new_hidden_label("if_end")
+                        emit("jmp", end_label)
+                    labels[false_label] = len(instructions)
+                    i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                    if i >= len(words) or words[i] != "end":
+                        raise error("else requires terminating end")
+                    if end_label is not None:
+                        labels[end_label] = len(instructions)
+                    i += 1
+                    continue
+                if words[i] != "end":
+                    raise error(f"unexpected token in if block: {words[i]}")
+                labels[false_label] = len(instructions)
+                i += 1
+                continue
+
+            if tok == "while":
+                start_label = new_hidden_label("while_start")
+                labels[start_label] = len(instructions)
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                if i >= len(words) or words[i] != "end":
+                    raise error("while requires terminating end")
+                emit("jz", start_label)
+                i += 1
+                continue
+
+            if tok in {"else", "end"}:
+                if stop_tokens is not None and tok in stop_tokens:
+                    return i
+                raise error(f"unexpected token: {tok}")
+
+            if tok.startswith("@"): 
+                raise error("labels are hidden; use if/else/while/end")
+
+            if tok in {"jmp", "jz", "jnz"}:
+                raise error(f"raw jumps are hidden; use if/else/while/end: {tok}")
+
+            if tok.startswith("\\!"):
+                tok = tok[1:]
+
+            if tok.startswith("!"):
+                if current_func is not None:
+                    raise error(f"directives inside function not supported: {tok}")
+                if tok == "!keepfn":
+                    if i + 1 >= len(words):
+                        raise SolVMError("!keepfn requires a function name")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid function name for !keepfn: {name}")
+                    if name not in functions:
+                        raise error(f"unknown function for !keepfn: {name}")
+                    kept_functions.add(name)
+                    i += 2
+                    continue
+                if tok == "!const":
+                    if i + 2 >= len(words):
+                        raise SolVMError("!const requires a name and a value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid constant name: {name}")
+                    val_tok = words[i + 2]
+                    if not NUMBER_RE.match(val_tok):
+                        raise SolVMError(f"invalid constant value: {val_tok}")
+                    value = parse_number(val_tok)
+                    if name in constants:
+                        raise SolVMError(f"duplicate constant: {name}")
+                    constants[name] = value
+                    i += 3
+                    continue
+
+                if tok == "!var":
+                    if i + 1 >= len(words):
+                        raise SolVMError("!var requires a name and optional initial value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid variable name: {name}")
+                    init_value = 0
+                    consumed = 2
+                    if i + 2 < len(words) and NUMBER_RE.match(words[i + 2]):
+                        init_value = parse_number(words[i + 2])
+                        consumed = 3
+                    if name in variables:
+                        raise SolVMError(f"duplicate variable: {name}")
+                    addr = next_var_addr
+                    next_var_addr += 4
+                    variables[name] = addr
+                    instructions.append(Instruction("push", init_value, location=location))
+                    instructions.append(Instruction("push", addr, location=location))
+                    instructions.append(Instruction("st", location=location))
+                    i += consumed
+                    continue
+
+                if tok == "!define":
+                    if i + 2 >= len(words):
+                        raise SolVMError("!define requires a name and a value")
+                    name = words[i + 1]
+                    if not LABEL_RE.match(name):
+                        raise SolVMError(f"invalid macro name: {name}")
+                    value_tok = words[i + 2]
+                    if name in macros:
+                        raise SolVMError(f"duplicate macro: {name}")
+                    macros[name] = [value_tok]
+                    i += 3
+                    continue
+
+                if tok in {"!data", "!db"}:
+                    is_db = tok == "!db"
+                    j = i + 1
+                    data_tokens: list[str] = []
+                    while j < len(words) and words[j] != "!end":
+                        data_tokens.append(words[j])
+                        j += 1
+                    if j >= len(words) or words[j] != "!end":
+                        raise SolVMError(f"{tok} requires terminating !end")
+                    arr = bytearray()
+                    if not is_db:
+                        next_string_addr = (next_string_addr + 3) & ~3
+                    for dt in data_tokens:
+                        if not NUMBER_RE.match(dt):
+                            raise SolVMError(f"invalid data token for {tok}: {dt}")
+                        val = parse_number(dt)
+                        if is_db:
+                            arr.append(val & 0xFF)
+                        else:
+                            u32 = val & 0xFFFFFFFF
+                            arr.extend([(u32 >> 24) & 0xFF, (u32 >> 16) & 0xFF, (u32 >> 8) & 0xFF, u32 & 0xFF])
+                    read_only_data.append((next_string_addr, bytes(arr)))
+                    next_string_addr += len(arr)
+                    i = j + 1
+                    continue
+
+                raise error(f"unsupported directive: {tok}")
+
+            if tok.startswith(">"):
+                name = tok[1:]
+                if not LABEL_RE.match(name):
+                    raise SolVMError(f"invalid variable name for store: {name}")
+                if not store_target(name, locals_list, location):
+                    raise error(f"undefined variable: {name}")
+                i += 1
+                continue
+
+            if tok.startswith('"') and tok.endswith('"'):
+                emit("push", intern_string_literal(tok))
+                i += 1
+                continue
+
+            if tok in simple_ops:
+                emit(tok)
+                i += 1
+                continue
+
+            if tok in functions:
+                emit("call", tok)
+                i += 1
+                continue
+
+            if tok in constants:
+                emit("push", constants[tok])
+                i += 1
+                continue
+
+            if LABEL_RE.match(tok) and tok in variables:
+                emit("push", variables[tok])
+                emit("ld")
+                i += 1
+                continue
+
+            if tok.startswith("__ARG_"):
+                if current_func is None:
+                    raise error("argument marker found outside function body")
+                idx_str = tok.split("__ARG_")[-1]
+                try:
+                    arg_index = int(idx_str)
+                except ValueError as exc:
+                    raise error(f"invalid ARG marker in function {current_func}: {tok}") from exc
+                emit("arg", arg_index)
+                i += 1
+                continue
+
+            if tok.startswith("__LOCAL_"):
+                if current_func is None:
+                    raise error("local marker found outside function body")
+                idx_str = tok.split("__LOCAL_")[-1]
+                try:
+                    local_index = int(idx_str)
+                except ValueError as exc:
+                    raise error(f"invalid LOCAL marker in function {current_func}: {tok}") from exc
+                emit("local_addr", local_index)
+                emit("ld")
+                i += 1
+                continue
+
+            if not NUMBER_RE.match(tok):
+                raise error(f"unknown word: {tok}")
+            emit("push", parse_number(tok))
+            i += 1
+
+        return i
+
+    i = 0
+    cleaned_tokens: list[str] = []
+    if SOLC_DEBUG:
+        print("DEBUG: entering first-pass function collection; tokens length=", len(tokens))
+    while i < len(tokens):
+        tok = tokens[i]
+        if isinstance(tok, str) and tok.startswith("\\!"):
+            tok = tok[1:]
+        if SOLC_DEBUG and i % 50 == 0:
+            print(f"DEBUG first-pass i={i} tok={tok}")
+        if tok == "fn":
+            if i + 1 >= len(tokens):
+                raise SolVMError("fn requires a name")
+            name = tokens[i + 1]
+            if not LABEL_RE.match(name):
+                raise SolVMError(f"invalid function name: {name}")
+            j = i + 2
+            args: list[str] = []
+            if j < len(tokens) and tokens[j] == "(":
+                j += 1
+                while j < len(tokens) and tokens[j] != ")":
+                    args.append(tokens[j])
+                    j += 1
+                if j >= len(tokens) or tokens[j] != ")":
+                    raise SolVMError("unterminated function argument list")
+                j += 1
+            elif j < len(tokens) and tokens[j].startswith("(") and tokens[j].endswith(")"):
+                inner = tokens[j][1:-1].strip()
+                args = inner.split() if inner else []
+                j += 1
+            else:
+                raise SolVMError("fn requires argument list in parentheses")
+            if j >= len(tokens) or tokens[j] != ":":
+                raise SolVMError("fn requires ':' after argument list")
+            j += 1
+            body_tokens: list[str] = []
+            while j < len(tokens) and tokens[j] != ";":
+                body_tokens.append(tokens[j])
+                j += 1
+            if j >= len(tokens) or tokens[j] != ";":
+                raise SolVMError("function body not terminated with ';'")
+
+            locals_list: list[tuple[str, int | None]] = []
+            k = 0
+            while k < len(body_tokens):
+                if body_tokens[k] == "local":
+                    if k + 1 >= len(body_tokens):
+                        raise SolVMError("local requires a name")
+                    local_name = body_tokens[k + 1]
+                    if not LABEL_RE.match(local_name):
+                        raise SolVMError(f"invalid local name: {local_name}")
+                    init_value = None
+                    consumed = 2
+                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                        init_value = parse_number(body_tokens[k + 2])
+                        consumed = 3
+                    local_index = len(locals_list)
+                    locals_list.append((local_name, init_value))
+                    marker = f"__LOCAL_{local_index}"
+                    for idx in range(len(body_tokens)):
+                        if body_tokens[idx] == local_name:
+                            body_tokens[idx] = marker
+                    del body_tokens[k:k + consumed]
+                    continue
+                k += 1
+
+            for idx_arg, arg in enumerate(args):
+                marker = f"__ARG_{idx_arg}"
+                for idx in range(len(body_tokens)):
+                    if body_tokens[idx] == arg:
+                        body_tokens[idx] = marker
+
+            if name in functions:
+                raise SolVMError(f"duplicate function: {name}")
+            functions[name] = {"args": args, "body": body_tokens, "locals": locals_list}
+            i = j + 1
+            continue
+
+        cleaned_tokens.append(tok)
+        i += 1
+
+    # Only emit functions reachable from the top-level program.  Function
+    # bodies are compiled after the main program, so emitting every collected
+    # definition would otherwise put dead code in the binary.  Expand macros
+    # while walking the call graph because a macro may contain a function call.
+    def called_functions(words: list[str]) -> set[str]:
+        called: set[str] = set()
+
+        def visit(word: str, seen_macros: set[str]) -> None:
+            if word.startswith("\\!"):
+                word = word[1:]
+            if word in functions:
+                called.add(word)
+                return
+            if word not in macros:
+                return
+            if word in seen_macros:
+                return
+            for part in macros[word]:
+                visit(part, seen_macros | {word})
+
+        for word in words:
+            visit(word, set())
+        return called
+
+    if remove_unused_functions:
+        reachable_functions: set[str] = set()
+        pending_functions = list(called_functions(cleaned_tokens))
+        pending_functions.extend(kept_functions)
+        while pending_functions:
+            function_name = pending_functions.pop()
+            if function_name in reachable_functions:
+                continue
+            reachable_functions.add(function_name)
+            for called_name in called_functions(functions[function_name]["body"]):
+                if called_name not in reachable_functions:
+                    pending_functions.append(called_name)
+        unused_functions = set(functions) - reachable_functions
+        for function_name in sorted(unused_functions):
+            logger.warning("unused function: %s", function_name)
+        functions = {
+            name: data for name, data in functions.items() if name in reachable_functions
+        }
+
+    compile_word_stream(cleaned_tokens)
+
+    if functions:
+        instructions.append(Instruction("halt"))
+
+    for fname, fdata in functions.items():
+        if fname in labels:
+            raise SolVMError(f"label/function name conflict: {fname}")
+        labels[fname] = len(instructions)
+        body_tokens = fdata["body"]
+        locals_list = fdata.get("locals", [])
+        func_code_start = len(instructions)
+
+        for local_index, (_, init_value) in enumerate(locals_list):
+            if init_value is not None:
+                init_location = getattr(body_tokens[0], "location", None) if body_tokens else None
+                instructions.append(Instruction("push", init_value, location=init_location))
+                instructions.append(Instruction("local_addr", local_index, location=init_location))
+                instructions.append(Instruction("st", location=init_location))
+
+        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
+
+        if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
+            instructions.append(Instruction("retn"))
+
+    for inst in instructions:
+        if inst.op in {"jmp", "jz", "jnz"} and isinstance(inst.arg, str):
+            if inst.arg not in labels:
+                raise SolVMError(f"undefined label: {inst.arg}")
+
+    functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
+
+    return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
+
+'''
+            instructions.append(Instruction("push", value))
+            i += 1
+
+        return i
+
+    # First pass: collect function definitions and remove them from token stream
+    i = 0
+    cleaned_tokens: list[str] = []
+    if SOLC_DEBUG:
+        print('DEBUG: entering first-pass function collection; tokens length=', len(tokens))
+    while i < len(tokens):
+        tok = tokens[i]
+        # normalize escaped bang tokens that some shells prefix with a backslash
+        if isinstance(tok, str) and tok.startswith("\\!"):
+            tok = tok[1:]
+        if SOLC_DEBUG and i % 50 == 0:
+            print(f'DEBUG first-pass i={i} tok={tok}')
+        if tok == "fn":
+            # parse: fn name (arg1 arg2 ...) : <body tokens...> ;
+            if i + 1 >= len(tokens):
+                raise SolVMError("fn requires a name")
+            name = tokens[i + 1]
+            if not LABEL_RE.match(name):
+                raise SolVMError(f"invalid function name: {name}")
+            # parse args
+            j = i + 2
+            args: list[str] = []
+            if j < len(tokens) and tokens[j] == "(":
+                # standard tokenized form: '(' arg1 arg2 ')' 
+                j += 1
+                while j < len(tokens) and tokens[j] != ")":
+                    args.append(tokens[j])
+                    j += 1
+                if j >= len(tokens) or tokens[j] != ")":
+                    raise SolVMError("unterminated function argument list")
+                j += 1
+            elif j < len(tokens) and tokens[j].startswith("(") and tokens[j].endswith(")"):
+                # compact form: '(a b)'
+                inner = tokens[j][1:-1].strip()
+                if inner:
+                    args = inner.split()
+                else:
+                    args = []
+                j += 1
+            else:
+                raise SolVMError("fn requires argument list in parentheses")
+            if j >= len(tokens) or tokens[j] != ":":
+                raise SolVMError("fn requires ':' after argument list")
+            j += 1
+            # collect body until ';'
+            body_tokens: list[str] = []
+            while j < len(tokens) and tokens[j] != ";":
+                body_tokens.append(tokens[j])
+                j += 1
+            if j >= len(tokens) or tokens[j] != ";":
+                raise SolVMError("function body not terminated with ';'")
+            # process local declarations inside body: collect locals and optional inits
+            locals_list: list[tuple[str, int | None]] = []
+            k = 0
+            while k < len(body_tokens):
+                if body_tokens[k] == "local":
+                    if k + 1 >= len(body_tokens):
+                        raise SolVMError("local requires a name")
+                    local_name = body_tokens[k + 1]
+                    if not LABEL_RE.match(local_name):
+                        raise SolVMError(f"invalid local name: {local_name}")
+                    # optional init value
+                    init_value = None
+                    consumed = 2
+                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                        init_value = parse_number(body_tokens[k + 2])
+                        consumed = 3
+                    local_index = len(locals_list)
+                    locals_list.append((local_name, init_value))
+                    # replace occurrences of the local name in body with a marker
+                    marker = f"__LOCAL_{local_index}"
+                    for idx in range(len(body_tokens)):
+                        if body_tokens[idx] == local_name:
+                            body_tokens[idx] = marker
+                    # remove the local declaration tokens
+                    del body_tokens[k:k+consumed]
+                    continue
+                k += 1
+            # replace occurrences of arg names with a special ARG marker so the body parser
+            # can compile them into runtime 'arg' instructions
+            for idx_arg, arg in enumerate(args):
+                marker = f"__ARG_{idx_arg}"
+                for idx in range(len(body_tokens)):
+                    if body_tokens[idx] == arg:
+                        body_tokens[idx] = marker
+            # store function metadata (args, body tokens, locals)
+            if name in functions:
+                raise SolVMError(f"duplicate function: {name}")
+            functions[name] = {"args": args, "body": body_tokens, "locals": locals_list}
+            i = j + 1
+            continue
+        # not a function definition; keep token
+        cleaned_tokens.append(tok)
+        i += 1
+
+    # No inlining: keep cleaned tokens as main program tokens
+    tokens = cleaned_tokens
+    compile_word_stream(tokens)
+
+    # terminate the main program so execution does not fall through into function bodies
+    if functions:
+        instructions.append(Instruction("halt"))
+
+    # append function bodies after main program so they are not executed unless called
+    for fname, fdata in functions.items():
+        # mark label for function entry
+        if fname in labels:
+            raise SolVMError(f"label/function name conflict: {fname}")
+        labels[fname] = len(instructions)
+        body_tokens = fdata["body"]
+        locals_list = fdata.get("locals", [])
+        argcount = len(fdata["args"])
+        n_locals = len(locals_list)
+        # record function code start index so we can append an implicit retn if needed
+        func_code_start = len(instructions)
+        # At function entry, optional local initializers must run (frame is allocated by caller)
+        # Emit initialization sequences for locals with initial values: push init; push local_addr; st
+        for local_index, (_, init_value) in enumerate(locals_list):
+            if init_value is not None:
+                # push init_value, push address of local, st
+                compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
+            instructions.append(Instruction("push", value))
+            j += 1
+            continue
+
+        # if function body did not contain an explicit ret or retn, append an implicit retn
+        if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
+            instructions.append(Instruction("retn"))
+
+    # validate jump targets
+    for inst in instructions:
+        if inst.op in {"jmp", "jz", "jnz"} and isinstance(inst.arg, str):
+            if inst.arg not in labels:
+                raise SolVMError(f"undefined label: {inst.arg}")
+
+    # build functions mapping name -> metadata for VM/emitter
+    functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
+
+    return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
+
+'''
+
+
+class SolVM:
+    def __init__(self, *, max_steps: int = 1_000_000_000):
+        self.max_steps = max_steps
+        self.stack: list[int] = []
+        self.memory: dict[int, int] = {}
+        self.pc = 0
+        self.halted = False
+        self.program: Optional[Program] = None
+        # call stack for function frames. Each frame is dict with 'ret_pc' and 'args' list
+        self.call_stack: list[dict] = []
+        self.trace_enabled = False
+        self.trace: list[str] = []
+
+    def reset(self) -> None:
+        self.stack = []
+        self.memory = {}
+        self.pc = 0
+        self.halted = False
+        self.program = None
+        # runtime stack pointer (R28) initial default; matches compiler/emitter default
+        self.r28 = 0x000FFFFC
+        self.call_stack = []
+        self.trace = []
+
+    def set_trace(self, enabled: bool) -> None:
+        self.trace_enabled = enabled
+        self.trace = []
+
+    def clear_trace(self) -> None:
+        self.trace = []
+
+    def _record_trace(self, inst: Instruction) -> None:
+        if not self.trace_enabled:
+            return
+        stack_snapshot = list(self.stack)
+        arg_text = "" if inst.arg is None else f" arg={inst.arg}"
+        self.trace.append(
+            f"pc={self.pc} op={inst.op}{arg_text} stack={stack_snapshot} frames={len(self.call_stack)} r28=0x{self.r28:08X}"
+        )
+
+    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> None:
+        self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
+        self.pc = 0
+        self.halted = False
+        # reset runtime stack pointer per program (keep same default)
+        self.r28 = 0x000FFFFC
+        self.call_stack = []
+        self.memory = {}
+        self.trace = []
+        for addr, data in self.program.read_only_data:
+            for offset, byte in enumerate(data):
+                self.memory[addr + offset] = byte
+
+    def _pop(self) -> int:
+        if not self.stack:
+            raise SolVMError("stack underflow")
+        return self.stack.pop()
+
+    def _read_mem(self, address: int, size: int) -> int:
+        value = 0
+        for shift in range(0, size * 8, 8):
+            byte = self.memory.get(address + (shift // 8), 0)
+            value = (value << 8) | byte
+        return to_i32(value)
+
+    def _write_mem(self, address: int, value: int, size: int) -> None:
+        value &= 0xFFFFFFFF
+        for offset in range(size):
+            byte_shift = 8 * (size - 1 - offset)
+            byte = (value >> byte_shift) & 0xFF
+            self.memory[address + offset] = byte
+
+    def run(self) -> list[int]:
+        if self.program is None:
+            raise SolVMError("no program loaded")
+        program = self.program
+        steps = 0
+        while self.pc < len(program.instructions) and not self.halted:
+            steps += 1
+            if steps > self.max_steps:
+                raise SolVMError(format_error("execution exceeded step limit", program.instructions[self.pc].location))
+            inst = program.instructions[self.pc]
+            try:
+                self.execute_instruction(inst, program.labels)
+            except SolVMError as exc:
+                message = str(exc)
+                if inst.location and not message.startswith(inst.location.format() + ":"):
+                    raise SolVMError(format_error(message, inst.location)) from exc
+                raise
+        return self.stack
+
+    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> list[int]:
+        self.load(source, source_path=source_path, read_only_data_base=read_only_data_base, remove_unused_functions=remove_unused_functions)
+        return self.run()
+
+    def execute_instruction(self, inst: Instruction, labels: dict[str, int]) -> None:
+        self._record_trace(inst)
+        op = inst.op
+
+        if op == "push":
+            assert isinstance(inst.arg, int)
+            self.stack.append(inst.arg)
+            self.pc += 1
+            return
+
+        if op == "arg":
+            # push function argument by index from current call frame memory
+            assert isinstance(inst.arg, int)
+            if not self.call_stack:
+                raise SolVMError("'arg' used outside of function frame")
+            frame = self.call_stack[-1]
+            func_name = frame.get("func_name")
+            if func_name is None:
+                raise SolVMError("internal error: frame has no func_name for arg access")
+            func_meta = self.program.functions.get(func_name)
+            if func_meta is None:
+                raise SolVMError(f"unknown function metadata for {func_name}")
+            argcount = func_meta["argcount"]
+            n_locals = func_meta["n_locals"]
+            idx = inst.arg
+            if idx < 0 or idx >= argcount:
+                raise SolVMError(f"argument index out of range: {idx}")
+            addr = frame["frame_base"] + 4 * (n_locals + idx)
+            self.stack.append(self._read_mem(addr, 4))
+            self.pc += 1
+            return
+
+        if op == "local_addr":
+            # push address of local variable (frame-relative)
+            assert isinstance(inst.arg, int)
+            if not self.call_stack:
+                raise SolVMError("local used outside of function frame")
+            frame = self.call_stack[-1]
+            addr = frame["frame_base"] + 4 * inst.arg
+            self.stack.append(addr)
+            self.pc += 1
+            return
+
+        if op == "call":
+            # start a function call: allocate frame in memory, copy args from caller stack into frame, push frame and jump
+            assert isinstance(inst.arg, str)
+            func_name = inst.arg
+            if self.program is None:
+                raise SolVMError("no program loaded")
+            if func_name not in self.program.functions:
+                raise SolVMError(f"unknown function: {func_name}")
+            func_meta = self.program.functions[func_name]
+            argcount = func_meta["argcount"]
+            n_locals = func_meta["n_locals"]
+            frame_size = 4 * (n_locals + argcount)
+            # pop arguments from data stack
+            args = [0] * argcount
+            for j in range(argcount - 1, -1, -1):
+                args[j] = self._pop()
+            # allocate frame by moving R28
+            new_r28 = (self.r28 - frame_size) & 0xFFFFFFFF
+            # write args into frame memory
+            for j in range(argcount):
+                addr = new_r28 + 4 * (n_locals + j)
+                self._write_mem(addr, args[j], 4)
+            # create frame record (record current data stack height so retn can restore it)
+            frame = {"ret_pc": self.pc + 1, "frame_base": new_r28, "func_name": func_name, "stack_height": len(self.stack)}
+            # update R28
+            self.r28 = new_r28
+            self.call_stack.append(frame)
+            # jump to function entry
+            if func_name not in labels:
+                raise SolVMError(f"undefined function label: {func_name}")
+            self.pc = labels[func_name]
+            return
+
+        if op == "ret":
+            # return from function: pop frame and restore R28 and pc (preserve data stack as-is)
+            if not self.call_stack:
+                raise SolVMError("ret without call frame")
+            frame = self.call_stack.pop()
+            # restore R28 (frame_base + frame_size)
+            func_meta = self.program.functions.get(frame.get("func_name") if frame.get("func_name") else "")
+            if func_meta is None:
+                # fallback: no meta, keep R28 unchanged
+                pass
+            else:
+                n_locals = func_meta["n_locals"]
+                argcount = func_meta["argcount"]
+                frame_size = 4 * (n_locals + argcount)
+                self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
+            stack_height = frame["stack_height"]
+            if len(self.stack) > stack_height:
+                self.stack = self.stack[:stack_height] + [self.stack[-1]]
+            else:
+                self.stack = self.stack[:stack_height]
+            self.pc = frame["ret_pc"]
+            return
+
+        if op == "retn":
+            # return (no return value): pop frame, restore R28 and pc, and trim any data pushed by callee
+            if not self.call_stack:
+                raise SolVMError("retn without call frame")
+            frame = self.call_stack.pop()
+            func_meta = self.program.functions.get(frame.get("func_name") if frame.get("func_name") else "")
+            if func_meta is None:
+                pass
+            else:
+                n_locals = func_meta["n_locals"]
+                argcount = func_meta["argcount"]
+                frame_size = 4 * (n_locals + argcount)
+                self.r28 = (frame["frame_base"] + frame_size) & 0xFFFFFFFF
+            stack_height = frame["stack_height"]
+            # Unlike ret, retn must discard every value produced by the
+            # callee.  Keeping the last value here makes each call leak one
+            # data-stack item and eventually turns a balanced loop into a
+            # runtime stack overflow.
+            self.stack = self.stack[:stack_height]
+            self.pc = frame["ret_pc"]
+            return
+
+        if op == "add":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a + b))
+            self.pc += 1
+            return
+
+        if op == "sub":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a - b))
+            self.pc += 1
+            return
+
+        if op == "mul":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a * b))
+            self.pc += 1
+            return
+
+        if op == "and":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a & b))
+            self.pc += 1
+            return
+
+        if op == "or":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a | b))
+            self.pc += 1
+            return
+
+        if op == "xor":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(to_i32(a ^ b))
+            self.pc += 1
+            return
+
+        if op == "not":
+            a = self._pop()
+            self.stack.append(to_i32(~a))
+            self.pc += 1
+            return
+
+        if op == "div":
+            b = self._pop()
+            a = self._pop()
+            if b == 0:
+                raise SolVMError("division by zero")
+            self.stack.append(to_i32(int(a / b)))
+            self.pc += 1
+            return
+
+        if op == "mod":
+            b = self._pop()
+            a = self._pop()
+            if b == 0:
+                raise SolVMError("division by zero")
+            self.stack.append(to_i32(a % b))
+            self.pc += 1
+            return
+
+        if op == "neg":
+            a = self._pop()
+            self.stack.append(to_i32(-a))
+            self.pc += 1
+            return
+
+        if op == "shl":
+            b = self._pop()
+            a = self._pop()
+            sh = b & 0x1F
+            self.stack.append(to_i32((a & UINT32_MAX) << sh))
+            self.pc += 1
+            return
+
+        if op == "shr":
+            b = self._pop()
+            a = self._pop()
+            sh = b & 0x1F
+            self.stack.append(to_i32(a >> sh))
+            self.pc += 1
+            return
+
+        if op == "dup":
+            if not self.stack:
+                raise SolVMError("stack underflow")
+            self.stack.append(self.stack[-1])
+            self.pc += 1
+            return
+
+        if op == "drop":
+            self._pop()
+            self.pc += 1
+            return
+
+        if op == "swap":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            self.stack[-1], self.stack[-2] = self.stack[-2], self.stack[-1]
+            self.pc += 1
+            return
+
+        if op == "over":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            self.stack.append(self.stack[-2])
+            self.pc += 1
+            return
+
+        if op == "rot":
+            if len(self.stack) < 3:
+                raise SolVMError("stack underflow")
+            self.stack[-3], self.stack[-2], self.stack[-1] = self.stack[-2], self.stack[-1], self.stack[-3]
+            self.pc += 1
+            return
+
+        if op == "nip":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            del self.stack[-2]
+            self.pc += 1
+            return
+
+        if op == "tuck":
+            if len(self.stack) < 2:
+                raise SolVMError("stack underflow")
+            b = self._pop()
+            a = self._pop()
+            self.stack.extend([b, a, b])
+            self.pc += 1
+            return
+
+        if op == "ld":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 4))
+            self.pc += 1
+            return
+
+        if op == "st":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 4)
+            self.pc += 1
+            return
+
+        if op == "ldb":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 1))
+            self.pc += 1
+            return
+
+        if op == "ldh":
+            address = self._pop()
+            self.stack.append(self._read_mem(address, 2))
+            self.pc += 1
+            return
+
+        if op == "stb":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 1)
+            self.pc += 1
+            return
+
+        if op == "sth":
+            address = self._pop()
+            value = self._pop()
+            self._write_mem(address, value, 2)
+            self.pc += 1
+            return
+
+        if op == "eq":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a == b else 1)
+            self.pc += 1
+            return
+
+        if op == "neq":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a != b else 1)
+            self.pc += 1
+            return
+
+        if op == "lt":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a < b else 1)
+            self.pc += 1
+            return
+
+        if op == "gt":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a > b else 1)
+            self.pc += 1
+            return
+
+        if op == "le":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a <= b else 1)
+            self.pc += 1
+            return
+
+        if op == "ge":
+            b = self._pop()
+            a = self._pop()
+            self.stack.append(0 if a >= b else 1)
+            self.pc += 1
+            return
+
+        if op == "sgn":
+            a = self._pop()
+            self.stack.append((to_i32(a) & UINT32_MAX) >> 31)
+            self.pc += 1
+            return
+
+        if op == "jmp":
+            assert isinstance(inst.arg, str)
+            self.pc = labels[inst.arg]
+            return
+
+        if op == "jz":
+            assert isinstance(inst.arg, str)
+            cond = self._pop()
+            self.pc = labels[inst.arg] if cond == 0 else self.pc + 1
+            return
+
+        if op == "jnz":
+            assert isinstance(inst.arg, str)
+            cond = self._pop()
+            self.pc = labels[inst.arg] if cond != 0 else self.pc + 1
+            return
+
+        if op == "halt":
+            self.halted = True
+            self.pc += 1
+            return
+
+        if op == "stacksize":
+            self.stack.append(STACK_SIZE_BYTES)
+            self.pc += 1
+            return
+
+        raise SolVMError(f"unknown opcode: {op}")

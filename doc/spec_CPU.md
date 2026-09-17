@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 2.1 (2026-08-09)
+Revision 2.2 (2026-09-17)
 
 # Changelog
+- 2.2 (2026-09-17): Added Extension F (Floating-point instructions, FPU).
 - 2.1 (2026-08-09): Added Extension S (Shortened Instructions Format).
 - 2.0 (2026-08-08): Major revision with updated instruction set and encoding.
 - 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
@@ -42,6 +43,7 @@ All instructions are 4 bytes (32 bits), big-endian bit layout.
 - Memory mode:
   - `[op:6][rd:5][base:5][off16:16]`
 
+
 Bit positions:
 
 - `op`: bits `31..26`
@@ -49,6 +51,20 @@ Bit positions:
 - `rs1/base`: bits `20..16`
 - `rs2`: bits `15..11` (register mode only)
 - `imm16/off16`: bits `15..0` (immediate/memory modes)
+
+
+### 3.2 Extended formats
+- Extended formats are currently needed for:
+  - Floating-point instructions (Extension F)
+  - Other future extensions
+- EXTR/EXTI/EXTM use the sub-opcode (`op2`), with `op` values in the range `0x39`-`0x3B`.
+
+- EXTR:
+  - `[0x39][op2:6][rd:5][rs1:5][rs2:5][rs3:5]`
+- EXTI:
+  - `[0x3A][op2:6][rd:5][rs1:5][imm16:16]`
+- EXTM:
+  - `[0x3B][op2:6][rd:5][base:5][off16:16]`
 
 ## 4. ISA
 
@@ -67,6 +83,9 @@ Bit positions:
 - `0x0A (imm)`: `JAL off16`: Jump and link: `R31 <- PC + 4`, then `PC <- PC + 4 + sign_extend(off16)`
 - `0x0B (reg)`: `JR rd`: Jump to address in `rd`: `PC <- R[rd]`
 - `0x21 (reg)`: `JALR rd`: Jump and link register: `R31 <- PC + 4`, then `PC <- R[rd]`
+- `0x39 (ext)`: reserved for `EXTR` encoding (Extension Register mode)
+- `0x3A (ext)`: reserved for `EXTI` encoding (Extension Immediate mode)
+- `0x3B (ext)`: reserved for `EXTM` encoding (Extension Memory mode)
 - `0x3C (imm)`: `LDIL rd, imm16`: Load the low 16 bits into `rd`, preserving the upper 16 bits
 - `0x3D (imm)`: `LDIH rd, imm16`: Load the high 16 bits into `rd`, preserving the lower 16 bits
 - `0x3E (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
@@ -87,6 +106,7 @@ Bit positions:
   - Bit 3: Extension M (Multiplication/Division)
   - Bit 4: Extension S (Short Mode)
   - Bit 5: Extension I (Interrupts)
+  - Bit 6: Extension F (Floating-point)
 
 ### 4.6 Extension I (Interrupts)
 
@@ -179,6 +199,17 @@ Extension I adds support for external interrupts, additional read-only registers
 
 - `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
 
+## 4.7 Extension F (Floating-point instructions, FPU)
+FPU uses all registers as floating-point registers, no dedicated floating-point registers. (Like the RISC-V Zfinx) Floating-point instructions are encoded in extension formats.
+It only supports single-precision (32-bit) floating-point operations, and all floating-point values are stored in IEEE 754 format.
+
+- `0x00 (EXTR)`: `FADD rd, rs1, rs2`: Floating-point addition: `rd = rs1 + rs2`
+- `0x01 (EXTR)`: `FSUB rd, rs1, rs2`: Floating-point subtraction: `rd = rs1 - rs2`
+- `0x02 (EXTR)`: `FMUL rd, rs1, rs2`: Floating-point multiplication: `rd = rs1 * rs2`
+- `0x03 (EXTR)`: `FDIV rd, rs1, rs2`: Floating-point division: `rd = rs1 / rs2`
+- `0x04 (EXTR)`: `FABS rd, rs1`: Floating-point absolute value: `rd = |rs1|`
+- `0x05 (EXTR)`: `FNEG rd, rs1`: Floating-point negation: `rd = -rs1`
+- `0x06 (EXTR)`: `FSQRT rd, rs1`: Floating-point square root: `rd = sqrt(rs1)`
 
 ## 5. Execution Semantics in Normal Mode
 

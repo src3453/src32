@@ -1,2 +1,95 @@
 {
-  "name":"vscode-sol-syntax","displayName":"vscode-sol-syntax","description":"Syntax highlighter and language server for sol.","version":"0.0.2","engines":{"vscode":"^1.131.0"},"categories":["Programming Languages"],"main":"./out/extension.js","activationEvents":["onLanguage:sol"],"contributes":{"languages":[{"id":"sol","aliases":["sol"],"extensions":[".sol"],"configuration":"./language-configuration.json"}],"grammars":[{"language":"sol","scopeName":"source.sol","path":"./syntaxes/sol.tmLanguage.json"}],"configuration":{"title":"sol","properties":{"sol.languageServer.pythonPath":{"type":"string","default":"python3","description":"Python interpreter used for the sol language server."}}}},"scripts":{"compile":"tsc -p ./tsconfig.json","vscode:prepublish":"npm run compile","package":"vsce package"},"dependencies":{"vscode-languageclient":"^9.0.1"},"devDependencies":{"@types/node":"^24.0.0","@types/vscode":"^1.131.0","typescript":"^5.9.0","@vscode/vsce":"^3.6.0"}}
+    "name": "vscode-sol-syntax",
+    "displayName": "vscode-sol-syntax",
+    "description": "Syntax highlighter and language server for sol.",
+    "version": "0.0.2",
+    "engines": {
+        "vscode": "^1.131.0"
+    },
+    "categories": [
+        "Programming Languages"
+    ],
+    "main": "./out/extension.js",
+    "activationEvents": [
+        "onLanguage:sol"
+    ],
+    "contributes": {
+        "languages": [
+            {
+                "id": "sol",
+                "aliases": [
+                    "sol"
+                ],
+                "extensions": [
+                    ".sol"
+                ],
+                "configuration": "./language-configuration.json"
+            }
+        ],
+        "grammars": [
+            {
+                "language": "sol",
+                "scopeName": "source.sol",
+                "path": "./syntaxes/sol.tmLanguage.json"
+            }
+        ],
+        "semanticTokenScopes": [
+            {
+                "language": "sol",
+                "scopes": {
+                    "operator": [
+                        "variable.other.readwrite.c"
+                    ],
+                    "directive": [
+                        "keyword.control.directive.c"
+                    ],
+                    "control": [
+                        "storage.type.function.sol"
+                    ],
+                    "variable": [
+                        "entity.name.type.sol"
+                    ],
+                    "local": [
+                        "entity.name.type.sol"
+                    ],
+                    "constant": [
+                        "entity.name.type.sol"
+                    ],
+                    "assignment": [
+                        "entity.name.type.sol"
+                    ],
+                    "function": [
+                        "entity.name.function.sol"
+                    ],
+                    "parameter": [
+                        "variable.parameter.sol"
+                    ]
+                }
+            }
+        ],
+        "configuration": {
+            "title": "sol",
+            "properties": {
+                "sol.languageServer.pythonPath": {
+                    "type": "string",
+                    "default": "python3",
+                    "description": "Python interpreter used to run the sol language server."
+                }
+            }
+        }
+    },
+    "scripts": {
+        "compile": "tsc -p ./tsconfig.json",
+        "vscode:prepublish": "npm run compile",
+        "package": "vsce package"
+    },
+    "dependencies": {
+        "vscode-languageclient": "^9.0.1"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.0",
+        "@types/vscode": "^1.131.0",
+        "typescript": "^5.9.0",
+        "@vscode/vsce": "^3.6.0"
+    }
+}

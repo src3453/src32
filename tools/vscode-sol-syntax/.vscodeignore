@@ -4,5 +4,5 @@
 vsc-extension-quickstart.md
 src/**
 tsconfig.json
-node_modules/**
 *.vsix
+server/__pycache__/**
