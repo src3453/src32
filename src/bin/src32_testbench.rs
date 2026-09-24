@@ -33,5 +33,5 @@ fn main() {
         result, expected,
         "R1 mismatch: got {result}, expected {expected}"
     );
-    println!("PASS: {path} => R1={result}");
+    println!("PASS: {path} => R1={result} cycles={}", cpu.cycles());
 }

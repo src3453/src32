@@ -51,6 +51,11 @@ class SourceToken(str):
 
 
 @dataclass(frozen=True)
+class RawAssemblyToken:
+    text: str
+    location: SourceLocation
+
+@dataclass(frozen=True)
 class OpcodeProfile:
     shortable: bool = True
     short_weight: int = 1
@@ -98,10 +103,8 @@ def _opcode_profile(op: str, arg: int | str | None = None) -> OpcodeProfile:
     if op in {"arg", "local_addr"}:
         return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
 
-    if op in {"call", "ret", "retn", "jmp", "jz", "jnz", "halt"}:
+    if op in {"call", "ret", "retn", "jmp", "jz", "jnz", "halt", "asm"}:
         return OpcodeProfile(shortable=False, short_weight=0, normal_weight=0, barrier=True)
-
-    return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
 
 
 @dataclass(frozen=True)
@@ -122,7 +125,8 @@ class Program:
     labels: dict[str, int]
     functions: dict[str, int]
     read_only_data: list[tuple[int, bytes]]
-
+    effective_stack_size_bytes: int = STACK_SIZE_BYTES
+    required_stack_size_bytes: int | None = None
 
 def to_i32(value: int) -> int:
     value &= UINT32_MAX
@@ -131,8 +135,8 @@ def to_i32(value: int) -> int:
     return value
 
 
-def tokenize(source: str, source_path: str | None = None) -> list[SourceToken]:
-    tokens: list[SourceToken] = []
+def tokenize(source: str, source_path: str | None = None) -> list[SourceToken | RawAssemblyToken]:
+    tokens: list[SourceToken | RawAssemblyToken] = []
     current: list[str] = []
     in_string = False
     escaped = False
@@ -159,6 +163,42 @@ def tokenize(source: str, source_path: str | None = None) -> list[SourceToken]:
 
     while i < len(source):
         ch = source[i]
+        if ch == "!" and not current:
+            line_start = source.rfind("\n", 0, i) + 1
+            if not source[line_start:i].strip():
+                directive_end = source.find("\n", i)
+                if directive_end < 0:
+                    directive_end = len(source)
+                directive_line = source[i:directive_end].rstrip("\r")
+                if directive_line.strip() == "!asm":
+                    location = SourceLocation(source_path, line, column)
+                    if directive_end == len(source):
+                        raise SolVMError(f"{location.format()}: !asm requires terminating !end")
+                    block_start = directive_end + 1
+                    cursor = block_start
+                    block_end = None
+                    consume_end = None
+                    while cursor <= len(source):
+                        end = source.find("\n", cursor)
+                        if end < 0:
+                            end = len(source)
+                            after_line = end
+                        else:
+                            after_line = end + 1
+                        if source[cursor:end].rstrip("\r").strip() == "!end":
+                            block_end = cursor
+                            consume_end = after_line
+                            break
+                        if after_line == len(source):
+                            break
+                        cursor = after_line
+                    if block_end is None or consume_end is None:
+                        raise SolVMError(f"{location.format()}: !asm requires terminating !end")
+                    tokens.append(RawAssemblyToken(source[block_start:block_end], location))
+                    for consumed in source[i:consume_end]:
+                        advance(consumed)
+                    i = consume_end
+                    continue
         if in_string:
             current.append(ch)
             if escaped:
@@ -316,6 +356,9 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     next_var_addr = var_base
     functions: dict[str, dict] = {}
     kept_functions: set[str] = set()
+    effective_stack_size_bytes = STACK_SIZE_BYTES
+    required_stack_size_bytes: int | None = None
+    forced_stack_size_seen = False
 
     string_literals: dict[str, int] = {}
     next_string_addr = read_only_data_base
@@ -407,7 +450,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         return False
 
     def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
-        nonlocal next_string_addr, next_var_addr
+        nonlocal next_string_addr, next_var_addr, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
         terminal_ops = {"ret", "retn", "halt"}
         i = start_index
         while i < len(words):
@@ -424,7 +467,10 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
             if stop_tokens is not None and tok in stop_tokens:
                 return i
-
+            if isinstance(tok, RawAssemblyToken):
+                emit("asm", tok.text)
+                i += 1
+                continue
             if tok in macros:
                 words[i:i + 1] = expand_token_recursive(tok, set())
                 continue
@@ -546,6 +592,40 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                         raise SolVMError(f"duplicate macro: {name}")
                     macros[name] = [value_tok]
                     i += 3
+                    continue
+
+                if tok == "!undef":
+                    if i + 1 >= len(words):
+                        raise error("!undef requires a macro name")
+                    name = words[i + 1]
+                    if not LABEL_RE.fullmatch(name):
+                        raise error(f"invalid macro name for !undef: {name}")
+                    macros.pop(name, None)
+                    i += 2
+                    continue
+
+                if tok in {"!required_stack_size", "!force_stack_size"}:
+                    if i + 1 >= len(words):
+                        raise error(f"{tok} requires a byte size")
+                    if not NUMBER_RE.match(words[i + 1]):
+                        raise error(f"invalid byte size for {tok}: {words[i + 1]}")
+                    value = parse_number(words[i + 1])
+                    if value < 0:
+                        raise error(f"{tok} must be non-negative")
+                    if tok == "!required_stack_size":
+                        if required_stack_size_bytes is not None:
+                            raise error("!required_stack_size may only be specified once")
+                        if forced_stack_size_seen and value > effective_stack_size_bytes:
+                            raise error("required stack size exceeds forced stack size")
+                        required_stack_size_bytes = value
+                    else:
+                        if forced_stack_size_seen:
+                            raise error("!force_stack_size may only be specified once")
+                        forced_stack_size_seen = True
+                        effective_stack_size_bytes = value
+                        if required_stack_size_bytes is not None and required_stack_size_bytes > value:
+                            raise error("required stack size exceeds forced stack size")
+                    i += 2
                     continue
 
                 if tok in {"!data", "!db"}:
@@ -731,7 +811,9 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     def called_functions(words: list[str]) -> set[str]:
         called: set[str] = set()
 
-        def visit(word: str, seen_macros: set[str]) -> None:
+        def visit(word: str | RawAssemblyToken, seen_macros: set[str]) -> None:
+            if isinstance(word, RawAssemblyToken):
+                return
             if word.startswith("\\!"):
                 word = word[1:]
             if word in functions:
@@ -799,7 +881,14 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
 
     functions_map = {name: {"argcount": len(data["args"]), "n_locals": len(data.get("locals", []))} for name, data in functions.items()}
 
-    return Program(instructions=instructions, labels=labels, functions=functions_map, read_only_data=read_only_data)
+    return Program(
+        instructions=instructions,
+        labels=labels,
+        functions=functions_map,
+        read_only_data=read_only_data,
+        effective_stack_size_bytes=effective_stack_size_bytes,
+        required_stack_size_bytes=required_stack_size_bytes,
+    )
 
 '''
             instructions.append(Instruction("push", value))
@@ -1026,6 +1115,19 @@ class SolVM:
         if self.program is None:
             raise SolVMError("no program loaded")
         program = self.program
+        if program.effective_stack_size_bytes < 0 or program.effective_stack_size_bytes > STACK_SIZE_BYTES:
+            raise SolVMError(
+                f"effective stack size {program.effective_stack_size_bytes} exceeds fixed capacity {STACK_SIZE_BYTES}"
+            )
+        if program.required_stack_size_bytes is not None:
+            if program.required_stack_size_bytes > STACK_SIZE_BYTES:
+                raise SolVMError(
+                    f"required stack size {program.required_stack_size_bytes} exceeds fixed capacity {STACK_SIZE_BYTES}"
+                )
+            if program.required_stack_size_bytes > program.effective_stack_size_bytes:
+                raise SolVMError(
+                    f"required stack size {program.required_stack_size_bytes} exceeds effective stack size {program.effective_stack_size_bytes}"
+                )
         steps = 0
         while self.pc < len(program.instructions) and not self.halted:
             steps += 1
@@ -1407,13 +1509,17 @@ class SolVM:
             self.pc = labels[inst.arg] if cond != 0 else self.pc + 1
             return
 
+        if op == "asm":
+            raise SolVMError("raw assembly cannot execute in the sol VM")
+
         if op == "halt":
             self.halted = True
             self.pc += 1
             return
 
         if op == "stacksize":
-            self.stack.append(STACK_SIZE_BYTES)
+            assert self.program is not None
+            self.stack.append(self.program.effective_stack_size_bytes)
             self.pc += 1
             return
 

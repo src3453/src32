@@ -41,7 +41,7 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, use_short_mode: bool = True, remove_unused_functions: bool = True) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, optimization: str = "size", no_short_mode: bool = False, remove_unused_functions: bool = True) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         src = f.read()
     try:
@@ -52,7 +52,7 @@ def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_b
             stack_top=stack_top,
             read_only_data_base=read_only_data_base,
             source_path=input_path,
-            use_short_mode=use_short_mode,
+            use_short_mode=optimization == "size" and not no_short_mode,
             remove_unused_functions=remove_unused_functions,
         )
     except SolCompileError as exc:
@@ -68,7 +68,7 @@ def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_b
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="sol tools (VM/REPL and compiler scaffold)")
+    parser = argparse.ArgumentParser(description="sol tools (VM/REPL and compiler)")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
     run_parser = subparsers.add_parser("run", help="run sol source on Python VM")
@@ -82,6 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("-o", "--out", help="output assembly path")
     compile_parser.add_argument("--debug", action="store_true", help="include debug comments in output")
     compile_parser.add_argument("--no-short-mode", action="store_true", help="disable automatic Short Mode instruction selection")
+    compile_parser.add_argument("-O", choices=("size", "speed"), default="size", help="optimize for binary size or execution cycles (default: size)")
     compile_parser.add_argument("--keep-unused-functions", action="store_true", help="keep function definitions that are not reachable from the top-level program")
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
     compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
@@ -106,7 +107,8 @@ def main(argv: list[str] | None = None) -> int:
             var_base=args.var_base,
             stack_top=args.stack_top,
             read_only_data_base=args.read_only_data_base,
-            use_short_mode=not args.no_short_mode,
+            optimization=args.O,
+            no_short_mode=args.no_short_mode,
             remove_unused_functions=not args.keep_unused_functions,
         )
     parser.error(f"unsupported command: {args.command}")

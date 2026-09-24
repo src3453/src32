@@ -400,3 +400,71 @@ x
 """
     stack = vm.run_source(src)
     assert stack == [2, 1]
+
+
+def test_stack_size_directives_set_program_capacity_and_stacksize():
+    program = compile_program("!required_stack_size 12 !force_stack_size 16 stacksize")
+    assert program.required_stack_size_bytes == 12
+    assert program.effective_stack_size_bytes == 16
+    assert SolVM().run_source("!force_stack_size 12 stacksize") == [12]
+    assert SolVM().run_source("!required_stack_size 12 stacksize") == [0x00100000]
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("!required_stack_size", "requires a byte size"),
+        ("!required_stack_size nope", "invalid byte size"),
+        ("!force_stack_size -1", "must be non-negative"),
+        ("!required_stack_size 1 !required_stack_size 1", "only be specified once"),
+        ("!force_stack_size 1 !force_stack_size 1", "only be specified once"),
+        ("!required_stack_size 9 !force_stack_size 8", "exceeds forced stack size"),
+    ],
+)
+def test_stack_size_directive_errors_have_source_locations(source, message):
+    with pytest.raises(SolVMError) as exc_info:
+        compile_program(source, source_path="stack.sol")
+    assert "stack.sol:1:" in str(exc_info.value)
+    assert message in str(exc_info.value)
+
+
+@pytest.mark.parametrize("directive", ["!force_stack_size 1048577", "!required_stack_size 1048577"])
+def test_vm_rejects_stack_capacity_above_fixed_limit(directive):
+    vm = SolVM()
+    vm.load(directive)
+    with pytest.raises(SolVMError, match="exceeds fixed capacity"):
+        vm.run()
+
+
+def test_undef_removes_macro_and_unknown_macro_is_noop():
+    assert SolVM().run_source("!define value 7 value !undef value") == [7]
+    assert SolVM().run_source("!undef absent 3") == [3]
+    assert SolVM().run_source("!define value 7 !undef value !define value 8 value") == [8]
+
+
+@pytest.mark.parametrize("source", ["!undef", "!undef invalid-name"])
+def test_undef_rejects_missing_or_invalid_names_at_source_location(source):
+    with pytest.raises(SolVMError) as exc_info:
+        compile_program(source, source_path="macro.sol")
+    assert "macro.sol:1:" in str(exc_info.value)
+
+
+def test_raw_assembly_survives_include_and_function_extraction(tmp_path):
+    assembly_path = tmp_path / "raw.sol"
+    assembly_path.write_text("!asm\n; preserved ; comment\n# preserved # comment\nNOP\n!end\n", encoding="utf-8")
+    source_path = tmp_path / "main.sol"
+    source = '!include "raw.sol"\nfn f () :\n!asm\nNOP\n!end\n1 ret ; f'
+    program = compile_program(source, source_path=str(source_path))
+
+    raw = [inst for inst in program.instructions if inst.op == "asm"]
+    assert len(raw) == 2
+    assert raw[0].arg == "; preserved ; comment\n# preserved # comment\nNOP\n"
+    assert raw[0].location.path == str(assembly_path)
+    assert raw[1].arg == "NOP\n"
+    assert raw[1].location.path == str(source_path)
+
+
+def test_raw_assembly_requires_terminator_at_start_location(tmp_path):
+    source_path = tmp_path / "missing.sol"
+    with pytest.raises(SolVMError, match=r"missing\.sol:1:1: !asm requires terminating !end"):
+        compile_program("!asm\nNOP", source_path=str(source_path))

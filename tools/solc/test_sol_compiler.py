@@ -245,15 +245,15 @@ def test_compile_comparison_gt():
 def test_compile_comparison_le():
     asm = compile_to_src32_asm("5 3 le")
     assert "SLT R13, R14, R13" in asm
-    assert "__le_false_" in asm
-    assert "__le_end_" in asm
+    assert "__le_false_" not in asm
+    assert "__le_end_" not in asm
 
 
 def test_compile_comparison_ge():
     asm = compile_to_src32_asm("3 5 ge")
     assert "SLT R13, R13, R14" in asm
-    assert "__ge_false_" in asm
-    assert "__ge_end_" in asm
+    assert "__ge_false_" not in asm
+    assert "__ge_end_" not in asm
 
 
 def test_compile_simple_function():
@@ -405,3 +405,31 @@ fn id (a) :
     assert jal_pos > 0
     prologue = asm[:jal_pos]
     assert "ST R1, [R28 + 0]" in prologue
+
+
+def test_stacksize_emits_effective_forced_capacity():
+    asm = compile_to_src32_asm("!required_stack_size 8 !force_stack_size 12 stacksize", use_short_mode=False)
+    assert "LDIL R13, 0x000C" in asm
+
+
+def test_static_stack_capacity_uses_force_and_stack_top():
+    with pytest.raises(SolCompileError, match="stack overflow"):
+        compile_to_src32_asm("!force_stack_size 4 1 2")
+    with pytest.raises(SolCompileError, match="stack overflow"):
+        compile_to_src32_asm("1 2 3", stack_top=4)
+    with pytest.raises(SolCompileError, match="fixed capacity"):
+        compile_to_src32_asm("!force_stack_size 1048577")
+
+
+def test_raw_assembly_preserves_comment_markers_and_flushes_cache():
+    source = "1\n!asm\n; exact ; comment\n# exact # comment\nNOP\n!end\n2 add"
+    asm = compile_to_src32_asm(source)
+
+    assert "ST R1, [R28 + 0]\n; exact ; comment\n# exact # comment\nNOP" in asm
+    assert Assembler().assemble(asm)
+
+
+def test_empty_raw_assembly_is_allowed_and_stack_effect_is_zero():
+    assert "HALT" in compile_to_src32_asm("!asm\n!end")
+    with pytest.raises(SolCompileError, match="stack underflow"):
+        compile_to_src32_asm("!asm\nNOP\n!end\nadd")

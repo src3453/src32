@@ -90,7 +90,9 @@ class Server:
         return None
 
 def send(msg):
-    raw=json.dumps(msg,separators=(",",":")); sys.stdout.write(f"Content-Length: {len(raw.encode())}\r\n\r\n{raw}"); sys.stdout.flush()
+    raw=json.dumps(msg,separators=(",",":")).encode()
+    sys.stdout.buffer.write(f"Content-Length: {len(raw)}\r\n\r\n".encode() + raw)
+    sys.stdout.buffer.flush()
 def main():
     s=Server()
     while True:

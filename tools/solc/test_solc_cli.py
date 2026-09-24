@@ -47,3 +47,20 @@ def test_compile_command_reports_source_location(capsys, tmp_path):
     assert exit_code == 1
     assert "sample.sol:2:1" in captured.err
     assert "unknown word: unknown_word" in captured.err
+
+def test_compile_optimization_profiles_and_no_short_mode_precedence(capsys, tmp_path):
+    source_path = tmp_path / "sample.sol"
+    source_path.write_text("1 2 add", encoding="utf-8")
+
+    assert main(["compile", str(source_path)]) == 0
+    default_asm = capsys.readouterr().out
+    assert main(["compile", "-O", "size", str(source_path)]) == 0
+    size_asm = capsys.readouterr().out
+    assert main(["compile", "-O", "speed", str(source_path)]) == 0
+    speed_asm = capsys.readouterr().out
+    assert main(["compile", "--no-short-mode", "-O", "size", str(source_path)]) == 0
+    forced_asm = capsys.readouterr().out
+
+    assert default_asm == size_asm
+    assert speed_asm != size_asm
+    assert forced_asm == speed_asm

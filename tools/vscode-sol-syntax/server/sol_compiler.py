@@ -5,12 +5,11 @@ from __future__ import annotations
 import re
 from collections import defaultdict
 
-from sol_vm import Instruction, Program, SolVMError, compile_program
+from sol_vm import STACK_SIZE_BYTES, Instruction, Program, SolVMError, compile_program
 
 
 ENTRY_LABEL = "__solc_entry"
 STACK_CACHE_REGS = tuple(f"R{i}" for i in range(1, 13))
-STACK_SIZE_BYTES = 0x00100000
 SHORT_MODE_SWITCH_COST = 2
 
 
@@ -18,11 +17,12 @@ class SolCompileError(RuntimeError):
     pass
 
 
-def check_static_stack_safety(program: Program) -> None:
-    """Validate all reachable data-stack effects."""
-    _check_static_stack_safety(program)
+def check_static_stack_safety(program: Program, stack_capacity_bytes: int | None = None) -> None:
+    """Validate reachable data-stack effects against the available byte capacity."""
+    capacity_bytes = program.effective_stack_size_bytes if stack_capacity_bytes is None else stack_capacity_bytes
+    _check_static_stack_safety(program, capacity_bytes)
 
-def _check_static_stack_safety(program: Program) -> None:
+def _check_static_stack_safety(program: Program, stack_capacity_bytes: int) -> None:
     """Verify stack depth on every reachable generated instruction."""
     instruction_count = len(program.instructions)
     if instruction_count == 0:
@@ -111,14 +111,14 @@ def _check_static_stack_safety(program: Program) -> None:
         elif op == "retn":
             # retn discards every value produced by the callee.
             delta, required = -depth, 0
-        elif op in {"jmp", "halt"}:
+        elif op in {"jmp", "halt", "asm"}:
             delta, required = 0, 0
         else:
             fail(f"cannot analyze stack effect of opcode: {op}")
         if depth < required:
             fail(f"stack underflow at {op} (pc {pc}): requires {required}, has {depth}")
         result = depth + delta
-        capacity = STACK_SIZE_BYTES // 4
+        capacity = max(0, stack_capacity_bytes) // 4
         if result > capacity:
             fail(f"stack overflow at {op} (pc {pc}): depth {result} exceeds {capacity}")
         return result
@@ -450,11 +450,11 @@ class _StackCacheEmitter:
         self.head = 0
 
 
-def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None, use_short_mode: bool = True, short_tag_counter: list[int] | None = None) -> None:
+def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None, use_short_mode: bool = True, short_tag_counter: list[int] | None = None, stack_size_bytes: int = STACK_SIZE_BYTES) -> None:
     if short_tag_counter is None:
         short_tag_counter = [0]
     op = inst.op
-    if debug:
+    if debug and op != "asm":
         lines.append(f"    ; {op} {inst.arg if inst.arg is not None else ''}".rstrip())
 
     if op == "push":
@@ -684,30 +684,14 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
     if op == "le":
         cache.pop_to("R14")
         cache.pop_to("R13")
-        false_label = f"__le_false_{pc}"
-        end_label = f"__le_end_{pc}"
         lines.append("    SLT R13, R14, R13")
-        lines.append(f"    BNE R13, R0, {false_label}")
-        _emit_load_imm32(lines, "R13", 0)
-        lines.append(f"    JMP {end_label}")
-        lines.append(f"{false_label}:")
-        _emit_load_imm32(lines, "R13", 1)
-        lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
 
     if op == "ge":
         cache.pop_to("R14")
         cache.pop_to("R13")
-        false_label = f"__ge_false_{pc}"
-        end_label = f"__ge_end_{pc}"
         lines.append("    SLT R13, R13, R14")
-        lines.append(f"    BNE R13, R0, {false_label}")
-        _emit_load_imm32(lines, "R13", 0)
-        lines.append(f"    JMP {end_label}")
-        lines.append(f"{false_label}:")
-        _emit_load_imm32(lines, "R13", 1)
-        lines.append(f"{end_label}:")
         cache.push_from("R13")
         return
 
@@ -766,8 +750,15 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         return
 
     if op == "stacksize":
-        _emit_load_imm32(lines, "R13", STACK_SIZE_BYTES)
+        _emit_load_imm32(lines, "R13", stack_size_bytes)
         cache.push_from("R13")
+        return
+
+    if op == "asm":
+        assert isinstance(inst.arg, str)
+        cache.flush()
+        cache.reset_empty()
+        lines.extend(inst.arg.splitlines())
         return
 
     if op == "jmp":
@@ -803,9 +794,16 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
 
 
 def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True) -> str:
+    if program.effective_stack_size_bytes < 0 or program.effective_stack_size_bytes > STACK_SIZE_BYTES:
+        raise SolCompileError(
+            f"effective stack size {program.effective_stack_size_bytes} exceeds fixed capacity {STACK_SIZE_BYTES}"
+        )
+    if program.required_stack_size_bytes is not None and program.required_stack_size_bytes > program.effective_stack_size_bytes:
+        raise SolCompileError(
+            f"required stack size {program.required_stack_size_bytes} exceeds effective stack size {program.effective_stack_size_bytes}"
+        )
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
-
     labels_by_pc: dict[int, list[str]] = defaultdict(list)
     for label_name, pc in sorted(program.labels.items(), key=lambda x: (x[1], x[0])):
         labels_by_pc[pc].append(label_name)
@@ -865,6 +863,7 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
             functions_map=program.functions,
             use_short_mode=use_short_mode and short_plan[pc],
             short_tag_counter=short_tag_counter,
+            stack_size_bytes=program.effective_stack_size_bytes,
         )
 
     if not program.instructions or program.instructions[-1].op != "halt":
@@ -889,5 +888,7 @@ def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100
         program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    check_static_stack_safety(program)
+    stack_capacity_bytes = min(program.effective_stack_size_bytes, stack_top + 4)
+    stack_capacity_bytes = max(0, stack_capacity_bytes) // 4 * 4
+    check_static_stack_safety(program, stack_capacity_bytes=stack_capacity_bytes)
     return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)
