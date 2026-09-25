@@ -1,8 +1,9 @@
 # SRC32 Specification
-Revision 2.2 (2026-09-17)
+Revision 2.3 (2026-09-17)
 
 # Changelog
-- 2.2 (2026-09-17): Added Extension F (Floating-point instructions, FPU).
+- 2.3 (2026-09-17): Aligned CPUID, interrupt vectors, implemented extensions, and CPU-reserved MMIO with the Rust CPU.
+- 2.2 (2026-09-17): Added Extension F definitions as a future extension; the current CPU does not implement F.
 - 2.1 (2026-08-09): Added Extension S (Shortened Instructions Format).
 - 2.0 (2026-08-08): Major revision with updated instruction set and encoding.
 - 1.1 (2026-07-02): Added Extension M (Multiplication and Division) instructions, and `SLTU` instruction in Extension A.
@@ -106,8 +107,11 @@ Bit positions:
   - Bit 3: Extension M (Multiplication/Division)
   - Bit 4: Extension S (Short Mode)
   - Bit 5: Extension I (Interrupts)
-  - Bit 6: Extension F (Floating-point)
+  - Bit 6: Extension F (not implemented and not reported by this CPU)
 
+The current CPU implements Base and Extensions A, L, M, S, and I only. It reports
+`CPU_FEATURES = 0x0000003F`; Extension F remains a future instruction-set
+definition and is not decoded or executed by the current CPU.
 ### 4.6 Extension I (Interrupts)
 
 The CPU exposes one external interrupt input from the separate `IRQC` device:
@@ -123,7 +127,7 @@ acceptance:
 EPC = PC                 # next instruction after the completed instruction
 CAUSE = irq_number
 IRQ_ENABLE = 0
-PC = 0xFFFF0080 + irq_number * 4
+PC = 0xFFFF0100 + irq_number * 4
 ```
 
 `IRET` restores normal mode, sets `PC = EPC`, and re-enables interrupts.
@@ -138,7 +142,7 @@ IRQ and drives `irq_valid`/`irq_number`.
 - `0x0E (reg)`: `XOR rd, rs1, rs2`: Bitwise XOR of `rs1` and `rs2`, store result in `rd`
 - `0x0F (reg)`: `SLL rd, rs1, rs2` (logical left): Shift `rs1` left by `rs2` bits, store result in `rd`
 - `0x10 (reg)`: `SRL rd, rs1, rs2` (logical right): Shift `rs1` right by `rs2` bits, store result in `rd`
-- `0x11 (reg)`: `SLA rd, rs1, rs2` (arithmetic left): Shift `rs1` left by `rs2` bits, store result in `rd`
+- `0x11 (reg)`: `SLA rd, rs1, rs2`: Implemented identically to `SLL` (logical left shift); the shift amount is the low 5 bits of `rs2`.
 - `0x12 (reg)`: `SRA rd, rs1, rs2` (arithmetic right): Shift `rs1` right by `rs2` bits, preserving sign, store result in `rd`
 - `0x17 (reg)`: `SLTU rd, rs1, rs2` (unsigned): Set `rd = 1` if `rs1 < rs2` (unsigned), else `rd = 0` (Note: Added in revision 1.1)
 
@@ -150,8 +154,8 @@ IRQ and drives `irq_valid`/`irq_number`.
 
 ### 4.4 Extension M (Multiplication and Division) (Note: Added in revision 1.1)
 - `0x18 (reg)`: `MUL rd, rs1, rs2`: Multiply `rs1` and `rs2`, store lower 32 bits in `rd`
-- `0x19 (reg)`: `DIV rd, rs1, rs2`: Divide `rs1` by `rs2`, store quotient in `rd`. If `rs2` is zero, store `0` in `rd`.
-- `0x1A (reg)`: `MOD rd, rs1, rs2`: Divide `rs1` by `rs2`, store remainder in `rd`. If `rs2` is zero, store `0` in `rd`.
+- `0x19 (reg)`: `DIV rd, rs1, rs2`: Divide `rs1` by `rs2`, store quotient in `rd`. If `rs2` is zero, store `0`; `INT_MIN / -1` returns `INT_MIN`.
+- `0x1A (reg)`: `MOD rd, rs1, rs2`: Divide `rs1` by `rs2`, store remainder in `rd`. If `rs2` is zero, store `0`; `INT_MIN % -1` returns `0`.
 - `0x1B (reg)`: `MULH rd, rs1, rs2`: Multiply `rs1` and `rs2`, store upper 32 bits in `rd`
 - `0x1C (reg)`: `DIVU rd, rs1, rs2`: Divide `rs1` by `rs2` (unsigned), store quotient in `rd`. If `rs2` is zero, store `0` in `rd`.
 
@@ -199,7 +203,10 @@ Extension I adds support for external interrupts, additional read-only registers
 
 - `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
 
-## 4.7 Extension F (Floating-point instructions, FPU)
+## 4.7 Extension F (Floating-point instructions, FPU; future definition, not implemented)
+The following encodings describe a future extension only. The current CPU does
+not decode or execute Extension F, and CPUID does not advertise it.
+
 FPU uses all registers as floating-point registers, no dedicated floating-point registers. (Like the RISC-V Zfinx) Floating-point instructions are encoded in extension formats.
 It only supports single-precision (32-bit) floating-point operations, and all floating-point values are stored in IEEE 754 format.
 
@@ -245,7 +252,27 @@ Rules:
 Endianness:
 
 - Byte-addressable memory
-- 32-bit loads/stores are big-endian
+- Multi-byte values use big-endian byte order; accesses may be unaligned.
+### 6.1 CPU-reserved MMIO
+
+The CPU reserves two byte-addressed regions. Multi-byte values use big-endian
+byte order; accesses may be byte, halfword, or word sized and may be unaligned.
+
+- `0xFFFF0000..0xFFFF0103`: 65 writable vector words at four-byte intervals.
+  Unlisted entries initialize to zero. `vectors[0] = 0xFFFF0000`,
+  `vectors[1] = 0xFFFF0004`, `vectors[2] = 0xFFFF0008`, and
+  `vectors[64] = 0xFFFF0100`. These words are storage; IRQ entry computes its
+  PC directly and does not dereference a vector word.
+- `0xFFFF0200..0xFFFF0293`: CPU state. `R0..R31` occupy offsets
+  `0x200..0x27C`, four bytes each; PC/EPC/CAUSE/STATUS/INSTR_MODE occupy
+  offsets `0x280/0x284/0x288/0x28C/0x290` respectively.
+
+`R0` reads as zero and ignores writes. `STATUS` bit 0 is IRQ enable.
+`INSTR_MODE` bit 0 is 0 for Normal mode and 1 for Short mode; writes retain
+only bit 0. CPU-owned state is published at instruction commit, so a CPU store
+to CPU state registers is overwritten by that commit; stores to vector words
+persist.
+
 
 ## 7. Assembler Specification (`asm.py`)
 
@@ -281,7 +308,8 @@ Endianness:
 
 For label operands or absolute numeric targets of `BEQ`, `BNE`, `JMP`, `JAL`, `JMPS`, `JALS`, `S.JAL`:
 
-- `offset = label_address - (current_pc + 4)`
+- `offset = label_address - (current_pc + instruction_size)`, where
+  `instruction_size` is 4 for Normal mode and 2 for `S.JAL`.
 
 Numeric targets are treated as absolute byte addresses, so `JMP 0x100` and `JMP target` assemble to the same encoding when `target` is located at address `0x100`.
 
@@ -309,16 +337,14 @@ python asm.py input.s -o output.bin
 Implemented in this repository:
 
 - Core CPU fetch/decode/execute loop
-- Base ISA + Extension ALM instructions
-- Extension S (Shortened Instructions Format)
-- Extension I (Interrupts)
+- Base ISA + Extensions A, L, M, S, and I (Extension F is not implemented)
 - 16 MiB RAM-backed bus
+- CPU-reserved vector and state MMIO
 - Two-pass assembler with labels/directives
 
 Planned (future):
 
-- Exception model
-- MMIO devices
+- Exception model beyond the current illegal-instruction/bus panic behavior
 - ROM loader/boot flow
 - Integration tests with assembled programs
 

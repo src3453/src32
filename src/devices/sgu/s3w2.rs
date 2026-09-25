@@ -4,6 +4,8 @@
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
 
+use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
+
 pub const NUM_CHANNELS: usize = 8;
 pub const WAVETABLE_SIZE: usize = 256;
 pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
@@ -17,6 +19,7 @@ pub enum WaveformType {
     Pcm = 1,
     Noise = 2,
     DmaPcm = 3,
+    Sqv4 = 4,
 }
 
 impl From<u8> for WaveformType {
@@ -26,6 +29,7 @@ impl From<u8> for WaveformType {
             1 => WaveformType::Pcm,
             2 => WaveformType::Noise,
             3 => WaveformType::DmaPcm,
+            4 => WaveformType::Sqv4,
             _ => WaveformType::Wavetable,
         }
     }
@@ -71,6 +75,17 @@ pub struct Channel {
     pub pcm_loop_addr: u32,
     pub pcm_control: u8,
 
+    // Incremental SQV4 decode state; only one 64-sample frame is cached.
+    sqv4_validated: bool,
+    sqv4_variant: Option<Sqv4Variant>,
+    sqv4_sample_count: usize,
+    sqv4_frame_size: usize,
+    sqv4_loop_sample: usize,
+    sqv4_cached_frame: Option<usize>,
+    sqv4_next_frame: usize,
+    sqv4_decoder: Sqv4State,
+    sqv4_frame: [i16; 64],
+
     // Internal state
     pub old_phase: u64,
     pub lfsr_state: u32,
@@ -98,6 +113,15 @@ impl Default for Channel {
             pcm_end_addr: 0,
             pcm_loop_addr: 0,
             pcm_control: 0,
+            sqv4_validated: false,
+            sqv4_variant: None,
+            sqv4_sample_count: 0,
+            sqv4_frame_size: 0,
+            sqv4_loop_sample: 0,
+            sqv4_cached_frame: None,
+            sqv4_next_frame: 0,
+            sqv4_decoder: Sqv4State::default(),
+            sqv4_frame: [0; 64],
             old_phase: 0,
             lfsr_state: 0x12D4_803C,
             phase: 0.0,
@@ -125,12 +149,24 @@ impl Channel {
         self.pcm_end_addr = 0;
         self.pcm_loop_addr = 0;
         self.pcm_control = 0;
+        self.invalidate_sqv4();
         self.old_phase = 0;
         self.phase = 0.0;
         self.last_sample = 0;
         self.lfsr_state = 0x12D4_803C;
         self.active = true;
         self.wavetable.fill(0x80);
+    }
+    fn invalidate_sqv4(&mut self) {
+        self.sqv4_validated = false;
+        self.sqv4_variant = None;
+        self.sqv4_sample_count = 0;
+        self.sqv4_frame_size = 0;
+        self.sqv4_loop_sample = 0;
+        self.sqv4_cached_frame = None;
+        self.sqv4_next_frame = 0;
+        self.sqv4_decoder = Sqv4State::default();
+        self.sqv4_frame.fill(0);
     }
 }
 
@@ -202,6 +238,14 @@ impl S3w2Sound {
         let addr = address as usize;
         if addr < self.pcm_ram.len() {
             self.pcm_ram[addr] = value;
+            for channel in &mut self.channels {
+                if channel.waveform_type == WaveformType::Sqv4
+                    && (addr as u32) >= channel.pcm_start_addr
+                    && (addr as u32) < channel.pcm_end_addr
+                {
+                    channel.invalidate_sqv4();
+                }
+            }
         }
     }
 
@@ -247,6 +291,7 @@ impl S3w2Sound {
             }
             2 => {
                 c.waveform_type = WaveformType::from(value);
+                c.invalidate_sqv4();
             }
             3 => {
                 c.volume = value;
@@ -272,6 +317,7 @@ impl S3w2Sound {
             }
             0x0A => {
                 c.phase = 0.0;
+                c.invalidate_sqv4();
                 c.lfsr_state = 0x12D4_803C;
             }
             0x0B => {
@@ -304,6 +350,7 @@ impl S3w2Sound {
             }
             0x0A => {
                 c.phase = 0.0;
+                c.invalidate_sqv4();
                 0
             }
             0x0B => c.modulation_targeting_mode & 0x01,
@@ -319,6 +366,9 @@ impl S3w2Sound {
     pub fn write_channel_pcm_reg(&mut self, ch: usize, offset: u8, value: u8) {
         if ch >= NUM_CHANNELS {
             return;
+        }
+        if offset <= 8 || offset == 9 {
+            self.channels[ch].invalidate_sqv4();
         }
         let c = &mut self.channels[ch];
         match offset {
@@ -406,17 +456,24 @@ impl S3w2Sound {
             return 0;
         }
 
-        let sample = match self.channels[ch].waveform_type {
+        let waveform = self.channels[ch].waveform_type;
+        let sample = match waveform {
             WaveformType::Wavetable => self.generate_wavetable_sample(ch),
             WaveformType::Pcm => self.generate_pcm_sample(ch),
             WaveformType::Noise => self.generate_noise_sample(ch),
             WaveformType::DmaPcm => self.generate_dma_pcm_sample(ch),
+            WaveformType::Sqv4 => self.generate_sqv4_sample(ch),
         };
 
         self.channels[ch].last_sample = sample;
-        ((sample as i32) * (self.channels[ch].volume as i32) / 4) as i16
-    }
+        let volume = self.channels[ch].volume as i32;
+        if waveform == WaveformType::Sqv4 {
+            (sample as i32 * volume / 255) as i16
+        } else {
+            (sample as i32 * volume / 4) as i16
+        }
 
+    }
     fn generate_wavetable_sample(&mut self, ch: usize) -> i16 {
         let abs_target_ch = Self::convert_to_absolute_channel_address(
             ch as u8,
@@ -498,6 +555,115 @@ impl S3w2Sound {
         }
 
         out
+    }
+
+    fn initialize_sqv4(&mut self, ch: usize) -> bool {
+        let start = self.channels[ch].pcm_start_addr as usize;
+        let end = self.channels[ch].pcm_end_addr as usize;
+        if start >= end || end > self.pcm_ram.len() {
+            self.channels[ch].active = false;
+            self.channels[ch].invalidate_sqv4();
+            return false;
+        }
+        let header = match sqv4::inspect(&self.pcm_ram[start..end]) {
+            Ok(header) if header.channels == 1 => header,
+            _ => {
+                self.channels[ch].active = false;
+                self.channels[ch].invalidate_sqv4();
+                return false;
+            }
+        };
+        let loop_address = self.channels[ch].pcm_loop_addr as usize;
+        let loop_sample = if loop_address == 0 || loop_address == start {
+            0
+        } else {
+            let first_fragment = match start.checked_add(16) {
+                Some(address) => address,
+                None => {
+                    self.channels[ch].active = false;
+                    self.channels[ch].invalidate_sqv4();
+                    return false;
+                }
+            };
+            if loop_address < first_fragment {
+                self.channels[ch].active = false;
+                self.channels[ch].invalidate_sqv4();
+                return false;
+            }
+            let fragment_offset = loop_address - first_fragment;
+            if fragment_offset % header.frame_size != 0 {
+                self.channels[ch].active = false;
+                self.channels[ch].invalidate_sqv4();
+                return false;
+            }
+            let frame = fragment_offset / header.frame_size;
+            if frame >= header.frame_count {
+                self.channels[ch].active = false;
+                self.channels[ch].invalidate_sqv4();
+                return false;
+            }
+            frame * 64
+        };
+        let channel = &mut self.channels[ch];
+        channel.sqv4_validated = true;
+        channel.sqv4_variant = Some(header.variant);
+        channel.sqv4_sample_count = header.samples_per_channel;
+        channel.sqv4_frame_size = header.frame_size;
+        channel.sqv4_loop_sample = loop_sample;
+        channel.sqv4_cached_frame = None;
+        channel.sqv4_next_frame = 0;
+        channel.sqv4_decoder = Sqv4State::default();
+        true
+    }
+
+    fn generate_sqv4_sample(&mut self, ch: usize) -> i16 {
+        if !self.channels[ch].sqv4_validated && !self.initialize_sqv4(ch) {
+            return 0;
+        }
+        let start = self.channels[ch].pcm_start_addr as usize;
+        let mut sample_index = (self.channels[ch].phase * 256.0) as usize;
+        let sample_count = self.channels[ch].sqv4_sample_count;
+        if sample_count == 0 {
+            self.channels[ch].active = false;
+            return 0;
+        }
+        if sample_index >= sample_count {
+            if self.channels[ch].pcm_control & 0x02 == 0 {
+                self.channels[ch].active = false;
+                return 0;
+            }
+            sample_index = self.channels[ch].sqv4_loop_sample;
+            self.channels[ch].phase = sample_index as f64 / 256.0;
+        }
+        let frame_index = sample_index / 64;
+        let within_frame = sample_index % 64;
+        let frame_size = self.channels[ch].sqv4_frame_size;
+        let variant = self.channels[ch].sqv4_variant.unwrap();
+        let (pcm_ram, channels) = (&self.pcm_ram, &mut self.channels);
+        let channel = &mut channels[ch];
+        if channel.sqv4_cached_frame != Some(frame_index) {
+            if frame_index < channel.sqv4_next_frame {
+                channel.sqv4_decoder = Sqv4State::default();
+                channel.sqv4_next_frame = 0;
+            }
+            while channel.sqv4_next_frame <= frame_index {
+                let decode_frame = channel.sqv4_next_frame;
+                let fragment_offset = start + 16 + decode_frame * frame_size;
+                let volume = pcm_ram[fragment_offset] as i32;
+                let payload = &pcm_ram[fragment_offset + 1..fragment_offset + frame_size];
+                let count = (sample_count - decode_frame * 64).min(64);
+                for within in 0..count {
+                    let code = sqv4::unpack_code(payload, within, variant.bits());
+                    let reconstructed = sqv4::decode_code(variant, &mut channel.sqv4_decoder, code);
+                    channel.sqv4_frame[within] = (reconstructed * volume / 255) as i16;
+                }
+                channel.sqv4_cached_frame = Some(decode_frame);
+                channel.sqv4_next_frame += 1;
+            }
+        }
+        let sample = channel.sqv4_frame[within_frame];
+        channel.phase += (channel.frequency as f64) / (SOUND_CLOCK as f64) / 8.0;
+        sample
     }
 
     fn generate_noise_sample(&mut self, ch: usize) -> i16 {
@@ -661,5 +827,86 @@ mod tests {
         assert_eq!(out.len(), NUM_CHANNELS);
         assert_eq!(out[0][0].len(), 64);
         assert_eq!(out[0][1].len(), 64);
+    }
+
+    fn sqv4_golden_bytes() -> Vec<u8> {
+        include_str!("../../../../s3w2_core/tests/sqv4_golden.inc")
+            .split(',')
+            .filter_map(|byte| {
+                let byte = byte.trim().trim_start_matches("0x");
+                (!byte.is_empty()).then(|| u8::from_str_radix(byte, 16).unwrap())
+            })
+            .collect()
+    }
+
+    fn configure_sqv4(sound: &mut S3w2Sound, start: u32, end: u32, loop_addr: u32, control: u8) {
+        sound.write_register(0x800, 0x17);
+        sound.write_register(0x801, 0x70); // 6000 Hz => one decoded sample per call
+        sound.write_register(0x802, 4);
+        sound.write_register(0x803, 255);
+        for (base, address) in [(0x810, start), (0x813, end), (0x816, loop_addr)] {
+            sound.write_register(base, (address >> 16) as u8);
+            sound.write_register(base + 1, (address >> 8) as u8);
+            sound.write_register(base + 2, address as u8);
+        }
+        sound.write_register(0x819, control);
+    }
+
+    #[test]
+    fn sqv4_playback_matches_codec_across_frames_loop_reset_and_errors() {
+        let bytes = sqv4_golden_bytes();
+        let decoded = super::sqv4::decode(&bytes).unwrap();
+        assert_eq!(decoded.samples, (1..=65).collect::<Vec<i16>>());
+        let start = 128u32;
+        let end = start + bytes.len() as u32;
+        let mut sound = S3w2Sound::new();
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            sound.write_pcm_ram(start + offset as u32, byte);
+        }
+        configure_sqv4(&mut sound, start, end, start, 1);
+        for expected in 1..=65 {
+            assert_eq!(sound.generate_sample(0), expected);
+        }
+        assert_eq!(sound.generate_sample(0), 0);
+        assert!(!sound.channels[0].active);
+
+        configure_sqv4(&mut sound, start, end, start + 49, 3);
+        sound.write_register(0x80A, 0);
+        for expected in 1..=65 {
+            assert_eq!(sound.generate_sample(0), expected);
+        }
+        assert_eq!(sound.generate_sample(0), 65); // loop to the second fragment boundary
+        sound.write_register(0x80A, 0); // phase reset must also reset predictor replay
+        assert_eq!(sound.generate_sample(0), 1);
+        sound.write_register(0x803, 128);
+        sound.write_register(0x80A, 0);
+        for expected in 1..=65 {
+            assert_eq!(sound.generate_sample(0), expected * 128 / 255);
+        }
+
+
+        sound.write_pcm_ram(start, 0);
+        configure_sqv4(&mut sound, start, end, start, 1);
+        assert_eq!(sound.generate_sample(0), 0);
+        assert!(!sound.channels[0].active);
+
+        configure_sqv4(&mut sound, (PCM_RAM_SIZE - 8) as u32, (PCM_RAM_SIZE + 8) as u32, 0, 1);
+        assert_eq!(sound.generate_sample(0), 0);
+        assert!(!sound.channels[0].active);
+
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            sound.write_pcm_ram(start + offset as u32, byte);
+        }
+        configure_sqv4(&mut sound, start, end, start + 50, 1);
+        assert_eq!(sound.generate_sample(0), 0);
+        assert!(!sound.channels[0].active);
+
+        let stereo = super::sqv4::encode_interleaved(&[1, 1], 2, 8_000, Sqv4Variant::H, 255).unwrap();
+        for (offset, byte) in stereo.iter().copied().enumerate() {
+            sound.write_pcm_ram(start + offset as u32, byte);
+        }
+        configure_sqv4(&mut sound, start, start + stereo.len() as u32, start, 1);
+        assert_eq!(sound.generate_sample(0), 0);
+        assert!(!sound.channels[0].active);
     }
 }
