@@ -1,8 +1,9 @@
-//! SQV4 version 1 encoder and decoder.
+//! SQV4 version 2 encoder and version 1/2 decoder.
 
 use std::fmt;
 
 const HEADER_SIZE: usize = 16;
+const ENCODED_VERSION: u8 = 2;
 const FRAME_SAMPLES: usize = 64;
 const STEPS: [i32; 89] = [
     7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55,
@@ -14,7 +15,8 @@ const STEPS: [i32; 89] = [
 ];
 const H_INDEX_ADJUST: [i32; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 const L_INDEX_ADJUST: [i32; 4] = [-1, 2, 4, 6];
-const L_PLUS_LEVELS: [i32; 4] = [10, 11, 12, 14];
+const LEGACY_L_PLUS_LEVELS: [i32; 4] = [10, 11, 12, 14];
+const L_PLUS_LEVELS: [i32; 4] = [1, 2, 3, 14];
 const L_LEVELS: [i32; 4] = [1, 3, 5, 7];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,6 +90,7 @@ pub(crate) struct State {
 }
 
 pub(crate) struct Header {
+    pub(crate) version: u8,
     pub(crate) variant: Variant,
     pub(crate) channels: u8,
     pub(crate) sample_rate: u32,
@@ -96,7 +99,7 @@ pub(crate) struct Header {
     pub(crate) frame_size: usize,
 }
 
-/// Encode interleaved signed 16-bit PCM into an SQV4 version 1 file.
+/// Encode interleaved signed 16-bit PCM into an SQV4 version 2 file.
 pub fn encode_interleaved(
     pcm: &[i16],
     channels: u8,
@@ -127,7 +130,7 @@ pub fn encode_interleaved(
 
     let mut output = Vec::with_capacity(file_len);
     output.extend_from_slice(b"SQV4");
-    output.extend_from_slice(&[1, variant as u8, channels, 0]);
+    output.extend_from_slice(&[ENCODED_VERSION, variant as u8, channels, 0]);
     output.extend_from_slice(&sample_rate.to_le_bytes());
     output.extend_from_slice(&samples_u32.to_le_bytes());
 
@@ -163,9 +166,10 @@ pub(crate) fn inspect(data: &[u8]) -> Result<Header, Error> {
     if &data[..4] != b"SQV4" {
         return Err(Error::InvalidMagic);
     }
-    if data[4] != 1 {
+    if data[4] != 1 && data[4] != 2 {
         return Err(Error::UnsupportedVersion(data[4]));
     }
+    let version = data[4];
     let variant = Variant::try_from(data[5])?;
     let channels = data[6];
     if channels != 1 && channels != 2 {
@@ -200,7 +204,7 @@ pub(crate) fn inspect(data: &[u8]) -> Result<Header, Error> {
             }
         }
     }
-    Ok(Header { variant, channels, sample_rate, samples_per_channel, frame_count, frame_size })
+    Ok(Header { version, variant, channels, sample_rate, samples_per_channel, frame_count, frame_size })
 }
 
 /// Decode an entire SQV4 version 1 file. Truncation and trailing data are errors.
@@ -219,7 +223,7 @@ pub fn decode(data: &[u8]) -> Result<DecodedAudio, Error> {
             let payload = &data[offset + 1..offset + header.frame_size];
             for within in 0..count {
                 let code = unpack_code(payload, within, header.variant.bits());
-                let reconstructed = decode_code(header.variant, &mut states[channel], code);
+                let reconstructed = decode_code(header.version, header.variant, &mut states[channel], code);
                 let gained = reconstructed * volume as i32 / 255;
                 let interleaved_index = (frame * FRAME_SAMPLES + within) * header.channels as usize + channel;
                 samples[interleaved_index] = gained as i16;
@@ -253,7 +257,7 @@ pub(crate) fn unpack_code(input: &[u8], sample: usize, bits: usize) -> u8 {
     code
 }
 
-fn delta(variant: Variant, state: State, code: u8) -> i32 {
+fn delta(version: u8, variant: Variant, state: State, code: u8) -> i32 {
     let step = STEPS[state.index];
     match variant {
         Variant::H => {
@@ -266,15 +270,20 @@ fn delta(variant: Variant, state: State, code: u8) -> i32 {
         }
         Variant::L | Variant::LPlus => {
             let magnitude = (code & 3) as usize;
-            let level = if variant == Variant::L { L_LEVELS[magnitude] } else { L_PLUS_LEVELS[magnitude] };
+            let level = match variant {
+                Variant::L => L_LEVELS[magnitude],
+                Variant::LPlus if version == 1 => LEGACY_L_PLUS_LEVELS[magnitude],
+                Variant::LPlus => L_PLUS_LEVELS[magnitude],
+                Variant::H => unreachable!(),
+            };
             let diff = (level * step + 4) / 8;
             if code & 4 != 0 { -diff } else { diff }
         }
     }
 }
 
-fn update(variant: Variant, state: &mut State, code: u8) -> i32 {
-    let difference = delta(variant, *state, code);
+fn update(version: u8, variant: Variant, state: &mut State, code: u8) -> i32 {
+    let difference = delta(version, variant, *state, code);
     state.predictor = (state.predictor + difference).clamp(i16::MIN as i32, i16::MAX as i32);
     let adjustment = match variant {
         Variant::H => H_INDEX_ADJUST[code as usize],
@@ -284,8 +293,8 @@ fn update(variant: Variant, state: &mut State, code: u8) -> i32 {
     state.predictor
 }
 
-pub(crate) fn decode_code(variant: Variant, state: &mut State, code: u8) -> i32 {
-    update(variant, state, code)
+pub(crate) fn decode_code(version: u8, variant: Variant, state: &mut State, code: u8) -> i32 {
+    update(version, variant, state, code)
 }
 
 fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
@@ -301,27 +310,47 @@ fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
             }
         }
         let code = magnitude | if input < state.predictor { 8 } else { 0 };
-        update(variant, state, code);
+        update(ENCODED_VERSION, variant, state, code);
         return code;
     }
     let mut best_code = 0;
     let mut best_error = i32::MAX;
     for code in 0..8u8 {
-        let candidate = (state.predictor + delta(variant, *state, code)).clamp(i16::MIN as i32, i16::MAX as i32);
+        let candidate = (state.predictor + delta(ENCODED_VERSION, variant, *state, code)).clamp(i16::MIN as i32, i16::MAX as i32);
         let error = (input - candidate).abs();
         if error < best_error {
             best_error = error;
             best_code = code;
         }
     }
-    update(variant, state, best_code);
+    update(ENCODED_VERSION, variant, state, best_code);
     best_code
 }
 
-/// Exhaustively evaluate the specified L+ candidate codebooks and benchmark.
+#[cfg(test)]
+const L_PLUS_BENCH_TONE: [i16; 128] = [
+    0, 8926, 15150, 17259, 15693, 12291, 9111, 7209,
+    6123, 4321, 355, -5996, -13304, -19056, -20923, -17999,
+    -11314, -3305, 3432, 7423, 8889, 9316, 10311, 12445,
+    14782, 15391, 12542, 5883, -3121, -11761, -17368, -18600,
+    -16000, -11529, -7368, -4690, -3121, -1188, 2542, 8320,
+    14782, 19516, 20311, 16387, 8889, 352, -6568, -10376,
+    -11314, -10928, -10923, -11985, -13304, -13067, -9645, -2750,
+    6123, 14280, 19111, 19362, 15693, 10188, 5150, 1855,
+    0, -1855, -5150, -10188, -15693, -19362, -19111, -14280,
+    -6123, 2750, 9645, 13067, 13304, 11985, 10923, 10928,
+    11314, 10376, 6568, -352, -8889, -16387, -20311, -19516,
+    -14782, -8320, -2542, 1188, 3121, 4690, 7368, 11529,
+    16000, 18600, 17368, 11761, 3121, -5883, -12542, -15391,
+    -14782, -12445, -10311, -9316, -8889, -7423, -3432, 3305,
+    11314, 17999, 20923, 19056, 13304, 5996, -355, -4321,
+    -6123, -7209, -9111, -12291, -15693, -17259, -15150, -8926,
+];
+
+/// Exhaustively evaluate the specified L+ codebooks with deterministic tonal fixtures.
 #[cfg(test)]
 fn benchmark_l_plus() -> (Vec<i32>, u128) {
-    let mut fixtures = Vec::with_capacity(5);
+    let mut fixtures = Vec::with_capacity(6);
     fixtures.push(vec![0i16; 1024]);
     let mut impulse = vec![0i16; 1024];
     impulse[0] = 32767;
@@ -329,6 +358,7 @@ fn benchmark_l_plus() -> (Vec<i32>, u128) {
     fixtures.push(impulse);
     fixtures.push((0..1024).map(|i| (-32768 + (i % 256) as i32 * 256) as i16).collect());
     fixtures.push((0..1024).map(|i| (-32768i64 + (i as i64 * 65535 / 1023)) as i16).collect());
+    fixtures.push((0..8192).map(|i| L_PLUS_BENCH_TONE[i % L_PLUS_BENCH_TONE.len()]).collect());
     fixtures.push((0..1024).map(|i| if i % 128 < 64 { 24576 } else { -24576 }).collect());
 
     let mut winner = Vec::new();
@@ -402,7 +432,7 @@ mod tests {
         let input = [0i16, 1000, -1000, 32767, -32768];
         let actual = encode_interleaved(&input, 1, 8_000, Variant::H, 255).unwrap();
         let mut expected = [0u8; 49];
-        expected[..16].copy_from_slice(&[0x53,0x51,0x56,0x34,1,0,1,0,0x40,0x1f,0,0,5,0,0,0]);
+        expected[..16].copy_from_slice(&[0x53,0x51,0x56,0x34,2,0,1,0,0x40,0x1f,0,0,5,0,0,0]);
         expected[16..].copy_from_slice(&[255,0x70,0x7f,0x0f,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
         assert_eq!(actual, expected);
     }
@@ -447,9 +477,50 @@ mod tests {
 
     #[test]
     fn l_plus_codebook_benchmark_is_reproducible() {
-        assert_eq!(benchmark_l_plus(), (vec![10, 11, 12, 14], 252_189_726_976));
+        assert_eq!(benchmark_l_plus(), (vec![1, 2, 3, 14], 279_448_221_728));
+    }
+    #[test]
+    fn l_plus_v2_reconstructs_mixed_tone_audio_and_preserves_v1_decoding() {
+        let pcm: Vec<i16> = (0..8192)
+            .map(|i| L_PLUS_BENCH_TONE[i % L_PLUS_BENCH_TONE.len()])
+            .collect();
+        let encoded = encode_interleaved(&pcm, 1, 8_000, Variant::LPlus, 255).unwrap();
+        assert_eq!(encoded[4], 2);
+        let decoded = decode(&encoded).unwrap();
+        let squared_error: u64 = pcm
+            .iter()
+            .zip(&decoded.samples)
+            .map(|(&input, &output)| {
+                let error = input as i64 - output as i64;
+                (error * error) as u64
+            })
+            .sum();
+        assert!(squared_error < 32_768_000_000, "L+ v2 tone RMSE exceeds 2000");
+
+        let mut legacy = vec![0u8; 41];
+        legacy[..4].copy_from_slice(b"SQV4");
+        legacy[4..8].copy_from_slice(&[1, 2, 1, 0]);
+        legacy[8..12].copy_from_slice(&8_000u32.to_le_bytes());
+        legacy[12..16].copy_from_slice(&1u32.to_le_bytes());
+        legacy[16] = 255;
+        assert_eq!(decode(&legacy).unwrap().samples, [9]);
+        legacy[4] = 2;
+        assert_eq!(decode(&legacy).unwrap().samples, [1]);
     }
 
+    #[test]
+    fn l_plus_v2_matches_shared_golden_codes() {
+        let golden: Vec<u8> = include_str!("../../../../s3w2_core/tests/sqv4_lplus_golden.inc")
+            .split(',')
+            .filter_map(|byte| {
+                let byte = byte.trim().trim_start_matches("0x");
+                (!byte.is_empty()).then(|| u8::from_str_radix(byte, 16).unwrap())
+            })
+            .collect();
+        let input = [12, 35, 75, 147, 275];
+        assert_eq!(encode_interleaved(&input, 1, 8_000, Variant::LPlus, 255).unwrap(), golden);
+        assert_eq!(decode(&golden).unwrap().samples, input);
+    }
     #[test]
     fn shared_golden_fixture_matches_rust_encoder() {
         let golden: Vec<u8> = include_str!("../../../../s3w2_core/tests/sqv4_golden.inc")

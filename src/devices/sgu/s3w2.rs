@@ -77,6 +77,7 @@ pub struct Channel {
 
     // Incremental SQV4 decode state; only one 64-sample frame is cached.
     sqv4_validated: bool,
+    sqv4_version: u8,
     sqv4_variant: Option<Sqv4Variant>,
     sqv4_sample_count: usize,
     sqv4_frame_size: usize,
@@ -114,6 +115,7 @@ impl Default for Channel {
             pcm_loop_addr: 0,
             pcm_control: 0,
             sqv4_validated: false,
+            sqv4_version: 0,
             sqv4_variant: None,
             sqv4_sample_count: 0,
             sqv4_frame_size: 0,
@@ -159,6 +161,7 @@ impl Channel {
     }
     fn invalidate_sqv4(&mut self) {
         self.sqv4_validated = false;
+        self.sqv4_version = 0;
         self.sqv4_variant = None;
         self.sqv4_sample_count = 0;
         self.sqv4_frame_size = 0;
@@ -606,6 +609,7 @@ impl S3w2Sound {
         };
         let channel = &mut self.channels[ch];
         channel.sqv4_validated = true;
+        channel.sqv4_version = header.version;
         channel.sqv4_variant = Some(header.variant);
         channel.sqv4_sample_count = header.samples_per_channel;
         channel.sqv4_frame_size = header.frame_size;
@@ -639,6 +643,7 @@ impl S3w2Sound {
         let within_frame = sample_index % 64;
         let frame_size = self.channels[ch].sqv4_frame_size;
         let variant = self.channels[ch].sqv4_variant.unwrap();
+        let version = self.channels[ch].sqv4_version;
         let (pcm_ram, channels) = (&self.pcm_ram, &mut self.channels);
         let channel = &mut channels[ch];
         if channel.sqv4_cached_frame != Some(frame_index) {
@@ -654,7 +659,7 @@ impl S3w2Sound {
                 let count = (sample_count - decode_frame * 64).min(64);
                 for within in 0..count {
                     let code = sqv4::unpack_code(payload, within, variant.bits());
-                    let reconstructed = sqv4::decode_code(variant, &mut channel.sqv4_decoder, code);
+                    let reconstructed = sqv4::decode_code(version, variant, &mut channel.sqv4_decoder, code);
                     channel.sqv4_frame[within] = (reconstructed * volume / 255) as i16;
                 }
                 channel.sqv4_cached_frame = Some(decode_frame);
@@ -908,5 +913,28 @@ mod tests {
         configure_sqv4(&mut sound, start, start + stereo.len() as u32, start, 1);
         assert_eq!(sound.generate_sample(0), 0);
         assert!(!sound.channels[0].active);
+    }
+
+    #[test]
+    fn sqv4_lplus_v2_hardware_matches_codec_fixture() {
+        let bytes: Vec<u8> = include_str!("../../../../s3w2_core/tests/sqv4_lplus_golden.inc")
+            .split(',')
+            .filter_map(|byte| {
+                let byte = byte.trim().trim_start_matches("0x");
+                (!byte.is_empty()).then(|| u8::from_str_radix(byte, 16).unwrap())
+            })
+            .collect();
+        let decoded = super::sqv4::decode(&bytes).unwrap();
+        assert_eq!(decoded.variant, Sqv4Variant::LPlus);
+        assert_eq!(decoded.samples, [12, 35, 75, 147, 275]);
+        let start = 256u32;
+        let mut sound = S3w2Sound::new();
+        for (offset, byte) in bytes.iter().copied().enumerate() {
+            sound.write_pcm_ram(start + offset as u32, byte);
+        }
+        configure_sqv4(&mut sound, start, start + bytes.len() as u32, start, 1);
+        for expected in decoded.samples {
+            assert_eq!(sound.generate_sample(0), expected);
+        }
     }
 }
