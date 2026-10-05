@@ -110,12 +110,17 @@ FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入
 | `0x04` | CLEAR | flags, RGBA8888 color, binary32 depth |
 | `0x10` | DRAW_TRIANGLES | vertex address, vertex count, topology, vertex format |
 | `0x11` | DRAW_INDEXED | vertex address, index address, index count, topology, vertex format |
+| `0x12` | DRAW_FLAT_TRIANGLE | three screen-space XYZ vertices, packed RGB, diffuse intensity |
 | `0x00` | END | payloadなし。FIFO投入バッチの終端 |
 | `0x7F` | NOP | 任意 |
 
 頂点アドレスはシステム物理アドレスとする。頂点数・インデックス数は三角形構成可能な数でなければならない。頂点フォーマットはPOSITION (3×f32) 必須、COLOR (RGBA8または4×f32)、NORMAL (3×f32) 任意属性の組み合わせとする。属性はこの順で配置し、COLORはRGBA8を既定とする。インデックスはunsigned 16-bitで、ビッグエンディアンとする。SET_STATEの状態IDは、`0`=シェーディング方式 (0 Gouraud, 1 Phong)、`1`=ライティング有効、`2`=カリング方式 (0 無効, 1 背面除去)、`3`=Zテスト有効、`4`=Z比較関数、`5`=Z書き込み有効、`6`=RGBA書き込みマスク (bit0 R, bit1 G, bit2 B, bit3 A) とする。これらの状態は後続の描画コマンドに適用する。
 
 SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（行列ID、16要素を行優先で格納）、SET_TARGETは6ワード（カラー基底、Z基底、幅、高さ、カラーstride、Z stride）、CLEARは3ワード（flags bit0 color clear / bit1 Z clear、RGBA8888、depth）とする。DRAW_TRIANGLESは4ワード、DRAW_INDEXEDは5ワードで、各々のpayload順は表に記載した順とする。vertex format wordはbit0=COLOR有効、bit1=COLORを4×f32形式、bit2=NORMAL有効とする。位置と法線はbinary32、RGBA8カラーは1ワード内の上位バイトからR,G,B,Aとする。ENDはpayloadなしで、FIFOの1バッチを完了させる。DMAでは指定バイト長末尾がバッチ終端となり、ENDを含めてもよい。
+
+### 6.4 軽量フラット三角形コマンド
+
+`DRAW_FLAT_TRIANGLE` (`0x12`) は、ソフトウェアで変換・投影済みの頂点を送る最小構成の描画コマンドである。payloadは11ワードで、`x0,y0,z0,x1,y1,z1,x2,y2,z2,RGB,intensity` の順とする。頂点座標と深度は符号付き整数、`RGB`は下位24-bitの`0xRRGGBB`、`intensity`は0～255とする。各画素の色は三頂点で一定とし、各RGB成分に`intensity / 255`を乗算する。深度は三角形内で線形補間し、値が小さい画素を手前としてZテスト・更新する。テクスチャ、透視補正、クリッピング、カリングは行わず、画面範囲との交差部分のみラスタライズする。このコマンドはFIFO経由のデモ向けであり、アドレス指定頂点形式とは独立している。
 
 ## 7. MMIOレジスタ
 
