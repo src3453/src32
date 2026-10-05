@@ -1,6 +1,6 @@
 # VPU の使い方チュートリアル
 
-このページでは、sol から VPU の FIFO に描画コマンドを送り、塗りつぶし三角形を描く手順を説明します。まず既存の [3D キューブサンプル](../3d_cube.sol) と同じ軽量経路を使います。
+このページでは、sol から VPU の FIFO に描画コマンドを送り、行列変換済みの立体を描く手順を説明します。回転キューブのサンプルは [3D キューブ](../3d_cube.sol) を参照してください。
 
 ## できることと実装範囲
 
@@ -113,7 +113,7 @@ fn face (a b c d rgb intensity) :
 ;
 ```
 
-実用的な回転キューブ全体は [3d_cube.sol](../3d_cube.sol) にあります。そこでは8頂点を sol で回転・投影し、投影座標と深度を RAM に保存してから、6面を FIFO コマンドで送っています。描画ループの各フレームで `clear_frame`、頂点変換、各面の描画、角度更新を行います。
+実用的な回転キューブ全体は [3d_cube.sol](../3d_cube.sol) にあります。sol は固定小数点の三角関数から各フレームの Model 行列を作り、View 行列と透視 Projection 行列を設定します。キューブの頂点はオブジェクト座標のまま FIFO に送り、VPU が座標変換、深度処理、塗りつぶしを行います。各面の頂点色を同じにして、面単位のフラットシェーディングにしています。
 
 ## 6. VPU 内で行列変換とクリッピングを行う
 
@@ -154,19 +154,19 @@ fn set_identity_matrix (id) :
 リポジトリのルートから sol を SRC32 アセンブリへ変換し、バイナリにします。
 
 ```powershell
-python tools/solc/solc.py compile vpu_tnl_triangle.sol -o vpu_tnl_triangle.a
-python tools/asm/asm.py vpu_tnl_triangle.a -o vpu_tnl_triangle.bin
+python tools/solc/solc.py compile 3d_cube.sol -o 3d_cube.a
+python tools/asm/asm.py 3d_cube.a -o 3d_cube.bin
 ```
 
 ヘッドレス実行器で動作確認する場合は、VPU を含むデバイス構成を使い、ループするデモを実行します。
 
 ```powershell
-cargo run --bin src32_testbench -- vpu_tnl_triangle.bin --allow-running
+cargo run --bin src32_testbench -- 3d_cube.bin --allow-running
 ```
 
 `--allow-running` は、フレームループが続くプログラムをサイクル上限まで実行する指定です。実行器は VPU のエラーフラグと画面内に描画画素があることを確認します。
 
-回転キューブのほうを実行するときは、上記のファイル名を `3d_cube.sol` と `3d_cube.a` / `3d_cube.bin` に置き換えます。このサンプルは投影済み画面座標を使う旧 `0x12` 経路です。
+Gouraud補間とクリッピングの三角形サンプルを実行するときは、`3d_cube.sol` と出力名を `vpu_tnl_triangle.sol` と `vpu_tnl_triangle.a` / `vpu_tnl_triangle.bin` に置き換えます。
 
 ## 問題が起きたとき
 

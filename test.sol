@@ -1,15 +1,97 @@
-# Flat-shaded, untextured cube using the VPU inline triangle command (0x12).
-!const W 320
-!const H 240
+# Rotating cube sent as object-space triangles to the VPU T&L pipeline.
 !const FP 1024
-!const HALF_SIZE 48
-!const CAMERA_Z 240
-!const FOCAL_LENGTH 240
-!const VERTICES 0x00110000
 !const FIFO 0x8003002C
 !const VDP_ENABLE 0x80000000
 !const VDP_MODE 0x80000001
 !const VDP_BORDER 0x80000003
+
+fn emit (word) :
+    word FIFO st
+;
+
+# Convert signed Q10 fixed-point values in [-1,1] to IEEE binary32 bits.
+fn q10_to_f32 (value) :
+    local sign 0
+    local magnitude
+    local scale -10
+    value >magnitude
+    value 0 lt if
+        0x80000000 >sign
+        magnitude neg >magnitude
+    end
+    magnitude 0 eq if
+        0 ret
+    end
+    while
+        magnitude 1024 ge if
+            magnitude 1 shr >magnitude
+            scale 1 add >scale
+        end
+        magnitude 1024 ge
+    end
+    while
+        magnitude 512 lt if
+            magnitude 1 shl >magnitude
+            scale 1 sub >scale
+        end
+        magnitude 512 lt
+    end
+    magnitude 512 sub 14 shl
+    scale 136 add 23 shl or sign or ret
+;
+
+fn clear_frame () :
+    0x04000003 emit
+    3 emit
+    0 emit
+    0 emit
+;
+
+fn set_view_matrix () :
+    0x02000011 emit
+    1 emit # VIEW
+    0x3F800000 emit 0 emit 0 emit 0 emit
+    0 emit 0x3F800000 emit 0 emit 0 emit
+    0 emit 0 emit 0x3F800000 emit 0x43700000 emit
+    0 emit 0 emit 0 emit 0x3F800000 emit
+;
+
+# Infinite-far perspective projection, near plane at camera-space z=1.
+fn set_projection_matrix () :
+    0x02000011 emit
+    2 emit # PROJECTION
+    0x3FC00000 emit 0 emit 0 emit 0 emit # x scale = 1.5
+    0 emit 0x40000000 emit 0 emit 0 emit # y scale = 2.0
+    0 emit 0 emit 0x3F800000 emit 0xBF800000 emit
+    0 emit 0 emit 0x3F800000 emit 0 emit
+;
+
+# Model = Rx(pitch) * Ry(yaw), represented as row-major binary32.
+fn set_model_matrix (yaw pitch) :
+    local sy
+    local cy
+    local sx
+    local cx
+    local m10
+    local m12
+    local m20
+    local m22
+    yaw sin_deg >sy
+    yaw 90 add sin_deg >cy
+    pitch sin_deg >sx
+    pitch 90 add sin_deg >cx
+    sx sy mul FP div >m10
+    sx cy mul neg FP div >m12
+    cx sy mul neg FP div >m20
+    cx cy mul FP div >m22
+
+    0x02000011 emit
+    0 emit # MODEL
+    cy q10_to_f32 emit 0 emit sy q10_to_f32 emit 0 emit
+    m10 q10_to_f32 emit cx q10_to_f32 emit m12 q10_to_f32 emit 0 emit
+    m20 q10_to_f32 emit sx q10_to_f32 emit m22 q10_to_f32 emit 0 emit
+    0 emit 0 emit 0 emit 0x3F800000 emit
+;
 
 fn sin_deg (angle) :
     local a
@@ -27,89 +109,51 @@ fn sin_deg (angle) :
     t 4 mul FP mul 40500 t sub div sign mul ret
 ;
 
-# FIFO accepts 32-bit big-endian command words.
-fn emit (word) :
-    word FIFO st
-;
-
-fn clear_frame () :
-    0x04000003 emit
-    3 emit
-    0 emit
-    0 emit
-;
-
 # Vertex index bits select the signs of object-space x, y, and z.
-fn project_vertices (yaw pitch) :
-    local sn_y
-    local cs_y
-    local sn_x
-    local cs_x
-    local i 0
+fn emit_vertex (index rgba) :
     local x
     local y
     local z
-    local rx
-    local ry
-    local rz
-    local depth
-    local addr
-    yaw sin_deg >sn_y
-    yaw 90 add sin_deg >cs_y
-    pitch sin_deg >sn_x
-    pitch 90 add sin_deg >cs_x
-    while
-        i 1 and 2 mul 1 sub HALF_SIZE mul >x
-        i 1 shr 1 and 2 mul 1 sub HALF_SIZE mul >y
-        i 2 shr 1 and 2 mul 1 sub HALF_SIZE mul >z
-        x cs_y mul z sn_y mul add FP div >rx
-        z cs_y mul x sn_y mul sub FP div >rz
-        y cs_x mul rz sn_x mul sub FP div >ry
-        y sn_x mul rz cs_x mul add FP div CAMERA_Z add >depth
-        VERTICES i 12 mul add >addr
-        rx FOCAL_LENGTH mul depth div W 2 div add addr st
-        H 2 div ry FOCAL_LENGTH mul depth div sub addr 4 add st
-        depth addr 8 add st
-        i 1 add >i
-        i 8 lt
+    index 1 and 0 eq if
+        0x42400000 >x # +48.0f
+    else
+        0xC2400000 >x # -48.0f
     end
+    index 1 shr 1 and 0 eq if
+        0x42400000 >y
+    else
+        0xC2400000 >y
+    end
+    index 2 shr 1 and 0 eq if
+        0x42400000 >z
+    else
+        0xC2400000 >z
+    end
+    x emit
+    y emit
+    z emit
+    rgba emit
 ;
 
-# VPU 0x12 payload: xyz for three vertices, RGB, diffuse shade (0..255).
-fn triangle (a b c rgb shade) :
-    local pa
-    local pb
-    local pc
-    VERTICES a 12 mul add >pa
-    VERTICES b 12 mul add >pb
-    VERTICES c 12 mul add >pc
-    0x1200000B emit
-    pa ld emit
-    pa 4 add ld emit
-    pa 8 add ld emit
-    pb ld emit
-    pb 4 add ld emit
-    pb 8 add ld emit
-    pc ld emit
-    pc 4 add ld emit
-    pc 8 add ld emit
-    rgb emit
-    shade emit
+fn triangle (a b c rgba) :
+    0x1400000C emit
+    a rgba emit_vertex
+    b rgba emit_vertex
+    c rgba emit_vertex
 ;
 
-# Each face is two filled triangles. The VPU shades the whole face uniformly.
-fn face (a b c d rgb shade) :
-    a b c rgb shade triangle
-    a c d rgb shade triangle
+fn face (a b c d rgba) :
+    a b c rgba triangle
+    a c d rgba triangle
 ;
 
 fn draw_cube () :
-    0 2 6 4 0x00E05030 190 face
-    1 5 7 3 0x003060E0 220 face
-    0 1 3 2 0x00E0C030 145 face
-    4 6 7 5 0x0030C070 205 face
-    0 4 5 1 0x00C040C0 115 face
-    2 3 7 6 0x0020C0D0 235 face
+    0 2 6 4 0xE05030FF face # -X face
+    1 5 7 3 0x3060E0FF face # +X face
+    0 1 3 2 0xE0C030FF face # -Y face
+    4 6 7 5 0x30C070FF face # +Y face
+    0 4 5 1 0xC040C0FF face # -Z face
+    2 3 7 6 0x20C0D0FF face # +Z face
 ;
 
 fn frame_wait (FRAME_DELAY) :
@@ -126,15 +170,20 @@ fn main () :
     1 VDP_ENABLE stb
     0 VDP_MODE stb
     0 VDP_BORDER stb
+    set_view_matrix
+    set_projection_matrix
+    0x01000002 emit # SET_STATE, flat shading
+    0 emit
+    0 emit
     local yaw 25
     local pitch 20
     while
         clear_frame
-        yaw pitch project_vertices
+        yaw pitch set_model_matrix
         draw_cube
-        yaw 12 add 360 mod >yaw
-        pitch 7 add 360 mod >pitch
-        8000 frame_wait
+        yaw 2 add 360 mod >yaw
+        pitch 3 add 360 mod >pitch
+        4000 frame_wait
         0
     end
 ;
