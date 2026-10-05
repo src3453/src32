@@ -11,7 +11,7 @@ pub const WAVETABLE_SIZE: usize = 256;
 pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
 pub const SOUND_CLOCK: u32 = 192_000;
-pub const SGU_CLOCK_DIVIDER : u32 = 250; // 48MHz / 250 = 192kHz
+pub const SGU_CLOCK_DIVIDER: u32 = 250; // 48MHz / 250 = 192kHz
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveformType {
@@ -475,7 +475,6 @@ impl S3w2Sound {
         } else {
             (sample as i32 * volume / 4) as i16
         }
-
     }
     fn generate_wavetable_sample(&mut self, ch: usize) -> i16 {
         let abs_target_ch = Self::convert_to_absolute_channel_address(
@@ -659,7 +658,8 @@ impl S3w2Sound {
                 let count = (sample_count - decode_frame * 64).min(64);
                 for within in 0..count {
                     let code = sqv4::unpack_code(payload, within, variant.bits());
-                    let reconstructed = sqv4::decode_code(version, variant, &mut channel.sqv4_decoder, code);
+                    let reconstructed =
+                        sqv4::decode_code(version, variant, &mut channel.sqv4_decoder, code);
                     channel.sqv4_frame[within] = (reconstructed * volume / 255) as i16;
                 }
                 channel.sqv4_cached_frame = Some(decode_frame);
@@ -889,13 +889,18 @@ mod tests {
             assert_eq!(sound.generate_sample(0), expected * 128 / 255);
         }
 
-
         sound.write_pcm_ram(start, 0);
         configure_sqv4(&mut sound, start, end, start, 1);
         assert_eq!(sound.generate_sample(0), 0);
         assert!(!sound.channels[0].active);
 
-        configure_sqv4(&mut sound, (PCM_RAM_SIZE - 8) as u32, (PCM_RAM_SIZE + 8) as u32, 0, 1);
+        configure_sqv4(
+            &mut sound,
+            (PCM_RAM_SIZE - 8) as u32,
+            (PCM_RAM_SIZE + 8) as u32,
+            0,
+            1,
+        );
         assert_eq!(sound.generate_sample(0), 0);
         assert!(!sound.channels[0].active);
 
@@ -906,7 +911,8 @@ mod tests {
         assert_eq!(sound.generate_sample(0), 0);
         assert!(!sound.channels[0].active);
 
-        let stereo = super::sqv4::encode_interleaved(&[1, 1], 2, 8_000, Sqv4Variant::H, 255).unwrap();
+        let stereo =
+            super::sqv4::encode_interleaved(&[1, 1], 2, 8_000, Sqv4Variant::H, 255).unwrap();
         for (offset, byte) in stereo.iter().copied().enumerate() {
             sound.write_pcm_ram(start + offset as u32, byte);
         }

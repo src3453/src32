@@ -31,10 +31,15 @@ fn read_pcm16_wave(data: &[u8]) -> Result<PcmWave, String> {
             return Err("truncated WAVE chunk header".into());
         }
         let chunk_id = &data[offset..offset + 4];
-        let chunk_size = u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
+        let chunk_size =
+            u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
         let chunk_start = offset + 8;
-        let chunk_end = chunk_start.checked_add(chunk_size).ok_or("WAVE chunk size overflow")?;
-        let padded_end = chunk_end.checked_add(chunk_size & 1).ok_or("WAVE chunk padding overflow")?;
+        let chunk_end = chunk_start
+            .checked_add(chunk_size)
+            .ok_or("WAVE chunk size overflow")?;
+        let padded_end = chunk_end
+            .checked_add(chunk_size & 1)
+            .ok_or("WAVE chunk padding overflow")?;
         if padded_end > riff_end {
             return Err("WAVE chunk extends past RIFF boundary".into());
         }
@@ -72,7 +77,9 @@ fn read_pcm16_wave(data: &[u8]) -> Result<PcmWave, String> {
         return Err("WAVE sample rate must be nonzero".into());
     }
     let expected_align = channels * 2;
-    let expected_rate = sample_rate.checked_mul(expected_align as u32).ok_or("WAVE byte rate overflow")?;
+    let expected_rate = sample_rate
+        .checked_mul(expected_align as u32)
+        .ok_or("WAVE byte rate overflow")?;
     if block_align != expected_align || byte_rate != expected_rate {
         return Err("inconsistent WAVE byte rate or block alignment".into());
     }
@@ -84,18 +91,35 @@ fn read_pcm16_wave(data: &[u8]) -> Result<PcmWave, String> {
         .chunks_exact(2)
         .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
         .collect();
-    Ok(PcmWave { channels: channels as u8, sample_rate, samples })
+    Ok(PcmWave {
+        channels: channels as u8,
+        sample_rate,
+        samples,
+    })
 }
 
-fn write_pcm16_wave(path: &Path, channels: u8, sample_rate: u32, samples: &[i16]) -> Result<(), String> {
+fn write_pcm16_wave(
+    path: &Path,
+    channels: u8,
+    sample_rate: u32,
+    samples: &[i16],
+) -> Result<(), String> {
     if channels != 1 && channels != 2 {
         return Err("preview channel count must be mono or stereo".into());
     }
-    let data_size = samples.len().checked_mul(2).ok_or("preview WAV data size overflow")?;
-    let data_size_u32 = u32::try_from(data_size).map_err(|_| "preview WAV exceeds RIFF size limit")?;
-    let riff_size = 36u32.checked_add(data_size_u32).ok_or("preview RIFF size overflow")?;
+    let data_size = samples
+        .len()
+        .checked_mul(2)
+        .ok_or("preview WAV data size overflow")?;
+    let data_size_u32 =
+        u32::try_from(data_size).map_err(|_| "preview WAV exceeds RIFF size limit")?;
+    let riff_size = 36u32
+        .checked_add(data_size_u32)
+        .ok_or("preview RIFF size overflow")?;
     let block_align = channels as u16 * 2;
-    let byte_rate = sample_rate.checked_mul(block_align as u32).ok_or("preview WAV byte rate overflow")?;
+    let byte_rate = sample_rate
+        .checked_mul(block_align as u32)
+        .ok_or("preview WAV byte rate overflow")?;
 
     let mut wav = Vec::with_capacity(44 + data_size);
     wav.extend_from_slice(b"RIFF");
@@ -139,16 +163,29 @@ fn run() -> Result<(), String> {
     }
     let input_path = PathBuf::from(&args[0]);
     let output_path = PathBuf::from(&args[1]);
-    let extension = output_path.extension().and_then(|value| value.to_str()).unwrap_or("");
+    let extension = output_path
+        .extension()
+        .and_then(|value| value.to_str())
+        .unwrap_or("");
     if !extension.eq_ignore_ascii_case("sqv") && !extension.eq_ignore_ascii_case("sqv4") {
         return Err("output extension must be .sqv or .sqv4".into());
     }
-    let variant = args.get(2).map(|text| parse_variant(text)).transpose()?.unwrap_or(Variant::H);
-    let volume = args.get(3).map(|text| {
-        text.parse::<u8>().map_err(|_| "volume must be an integer from 0 to 255".to_string())
-    }).transpose()?.unwrap_or(255);
+    let variant = args
+        .get(2)
+        .map(|text| parse_variant(text))
+        .transpose()?
+        .unwrap_or(Variant::H);
+    let volume = args
+        .get(3)
+        .map(|text| {
+            text.parse::<u8>()
+                .map_err(|_| "volume must be an integer from 0 to 255".to_string())
+        })
+        .transpose()?
+        .unwrap_or(255);
 
-    let input_bytes = fs::read(&input_path).map_err(|error| format!("failed to read input WAV: {error}"))?;
+    let input_bytes =
+        fs::read(&input_path).map_err(|error| format!("failed to read input WAV: {error}"))?;
     let input = read_pcm16_wave(&input_bytes)?;
     let encoded = sqv4::encode_interleaved(
         &input.samples,
@@ -156,15 +193,22 @@ fn run() -> Result<(), String> {
         input.sample_rate,
         variant,
         volume,
-    ).map_err(|error| error.to_string())?;
+    )
+    .map_err(|error| error.to_string())?;
     let preview = sqv4::decode(&encoded).map_err(|error| error.to_string())?;
     let preview_path = preview_path(&output_path)?;
     if input_path.canonicalize().ok() == preview_path.canonicalize().ok() {
         return Err("preview path would overwrite the input WAV".into());
     }
 
-    fs::write(&output_path, encoded).map_err(|error| format!("failed to write SQV4 output: {error}"))?;
-    write_pcm16_wave(&preview_path, preview.channels, preview.sample_rate, &preview.samples)?;
+    fs::write(&output_path, encoded)
+        .map_err(|error| format!("failed to write SQV4 output: {error}"))?;
+    write_pcm16_wave(
+        &preview_path,
+        preview.channels,
+        preview.sample_rate,
+        &preview.samples,
+    )?;
     println!("SQV4: {}", output_path.display());
     println!("Preview WAV: {}", preview_path.display());
     Ok(())

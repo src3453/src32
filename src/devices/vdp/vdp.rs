@@ -58,6 +58,15 @@ pub struct Vdp {
     sc: Sc,
 }
 
+/// Snapshot of the sources currently assigned to each graphics plane.
+pub struct CompositorDebugInfo {
+    pub display_mode: DisplayMode,
+    pub enabled: bool,
+    pub width: usize,
+    pub height: usize,
+    pub gp_components: [Vec<String>; 8],
+}
+
 pub enum VdpFramebuffer<'a> {
     Graphics {
         vram: &'a RefCell<Vec<u8>>,
@@ -343,6 +352,55 @@ impl Vdp {
                 base_gp: self.regs.pcg_output_gp,
                 composed_pixels: OnceLock::new(),
             },
+        }
+    }
+
+    /// Describes which renderers contribute to each GP in the current VDP setup.
+    pub fn compositor_debug_info(&self) -> CompositorDebugInfo {
+        let (width, height) = match self.regs.display_mode {
+            DisplayMode::Graphics => (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT),
+            DisplayMode::PCG => (
+                self.regs.pcg_screen_mode.width(),
+                self.regs.pcg_screen_mode.height(),
+            ),
+        };
+        let mut gp_components: [Vec<String>; 8] = std::array::from_fn(|_| Vec::new());
+
+        match self.regs.display_mode {
+            DisplayMode::Graphics => gp_components[0].push(format!(
+                "GP0 image: Graphics Plane (GP0), {}x{} RGB indexed image",
+                GP_WIDTH, GP_HEIGHT
+            )),
+            DisplayMode::PCG => gp_components[self.regs.pcg_output_gp as usize].push(format!(
+                "Base image: PCG text, {}x{} ({} columns x 30 rows)",
+                width,
+                height,
+                self.regs.pcg_screen_mode.columns()
+            )),
+        }
+
+        if self.regs.display_mode == DisplayMode::Graphics && self.regs.pcg_overlay_enable {
+            gp_components[self.regs.pcg_output_gp as usize].push(format!(
+                "PCG overlay: {}x{} text plane ({} columns x 30 rows)",
+                self.regs.pcg_screen_mode.width(),
+                self.regs.pcg_screen_mode.height(),
+                self.regs.pcg_screen_mode.columns()
+            ));
+        }
+        if self.sc.enabled() {
+            gp_components[self.sc.output_gp() as usize]
+                .push("Sprite Controller (SC): 320x240 RGBA sprite plane".to_string());
+        }
+        let vpu = self.vpu.borrow();
+        gp_components[vpu.output_gp as usize]
+            .push("VPU: 320x240 RGBA pixel plane (alpha blended)".to_string());
+
+        CompositorDebugInfo {
+            display_mode: self.regs.display_mode,
+            enabled: self.regs.display_enable,
+            width,
+            height,
+            gp_components,
         }
     }
 

@@ -100,6 +100,7 @@ impl GuiApp {
 
 struct DebugUiState {
     running: bool,
+    visible_windows: [bool; DebugWindow::COUNT],
     cycles_per_frame_input: String,
     queued_steps: usize,
     disasm_follow_pc: bool,
@@ -109,10 +110,38 @@ struct DebugUiState {
     mem_count_input: String,
 }
 
+#[derive(Clone, Copy)]
+enum DebugWindow {
+    Controls,
+    Disassembly,
+    Memory,
+    Compositor,
+}
+
+impl DebugWindow {
+    const ALL: [Self; Self::COUNT] = [
+        Self::Controls,
+        Self::Disassembly,
+        Self::Memory,
+        Self::Compositor,
+    ];
+    const COUNT: usize = 4;
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Controls => "Debug Controls",
+            Self::Disassembly => "Realtime Disassembly",
+            Self::Memory => "Realtime Memory Monitor",
+            Self::Compositor => "Compositor Debug",
+        }
+    }
+}
+
 impl DebugUiState {
     fn new(start_paused: bool) -> Self {
         Self {
             running: !start_paused,
+            visible_windows: [false; DebugWindow::COUNT],
             cycles_per_frame_input: cpt32::cpu::CYCLES_PER_FRAME.to_string(),
             queued_steps: 0,
             disasm_follow_pc: true,
@@ -157,10 +186,63 @@ impl DebugUiState {
         }
     }
 
-    fn draw_windows(&mut self, ui: &Ui, cpu: &mut Cpu) {
-        self.draw_controls(ui, cpu);
-        self.draw_disassembly(ui, cpu);
-        self.draw_memory(ui, cpu);
+    fn draw_windows(&mut self, ui: &Ui, cpu: &mut Cpu, vdp: &Rc<RefCell<Vdp>>) {
+        ui.main_menu_bar(|| {
+            ui.menu("Windows", || {
+                for window in DebugWindow::ALL {
+                    let index = window as usize;
+                    if ui
+                        .menu_item_config(window.label())
+                        .selected(self.visible_windows[index])
+                        .build()
+                    {
+                        let visible = &mut self.visible_windows[index];
+                        *visible = !*visible;
+                    }
+                }
+            });
+        });
+
+        if self.visible_windows[DebugWindow::Controls as usize] {
+            self.draw_controls(ui, cpu);
+        }
+        if self.visible_windows[DebugWindow::Disassembly as usize] {
+            self.draw_disassembly(ui, cpu);
+        }
+        if self.visible_windows[DebugWindow::Memory as usize] {
+            self.draw_memory(ui, cpu);
+        }
+        if self.visible_windows[DebugWindow::Compositor as usize] {
+            self.draw_compositor(ui, vdp);
+        }
+    }
+
+    fn draw_compositor(&mut self, ui: &Ui, vdp: &Rc<RefCell<Vdp>>) {
+        let info = vdp.borrow().compositor_debug_info();
+        ui.window("Compositor Debug")
+            .size([620.0, 460.0], Condition::FirstUseEver)
+            .build(|| {
+                ui.text(format!(
+                    "Display: {:?} | {} | Output: {}x{}",
+                    info.display_mode,
+                    if info.enabled { "enabled" } else { "disabled" },
+                    info.width,
+                    info.height
+                ));
+                ui.text("Composition order: GP0 (back) to GP7 (front)");
+                ui.separator();
+                for (gp, components) in info.gp_components.iter().enumerate() {
+                    ui.text(format!("GP{gp}"));
+                    if components.is_empty() {
+                        ui.same_line();
+                        ui.text("No configured image source");
+                    } else {
+                        for component in components {
+                            ui.bullet_text(component);
+                        }
+                    }
+                }
+            });
     }
 
     fn draw_controls(&mut self, ui: &Ui, cpu: &mut Cpu) {
@@ -370,7 +452,7 @@ impl DebugGui {
             })?;
 
         let ui = self.imgui.frame();
-        self.state.draw_windows(ui, cpu);
+        self.state.draw_windows(ui, cpu, vdp);
         self.platform.prepare_render(ui, window);
         let draw_data = self.imgui.render();
 

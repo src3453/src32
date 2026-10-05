@@ -106,10 +106,25 @@ const SHORT_INSN_SIZE: u32 = 2;
 
 /// Current phase of the non-pipelined CPU. One call to `tick` advances one state.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CpuState { Fetch, Decode, Execute, MemRead, MemWrite, Mul, Div, Writeback, Halt }
+pub enum CpuState {
+    Fetch,
+    Decode,
+    Execute,
+    MemRead,
+    MemWrite,
+    Mul,
+    Div,
+    Writeback,
+    Halt,
+}
 
 #[derive(Debug, Clone, Copy)]
-enum PendingInstruction { RawNormal(u32), RawShort(u16), Normal(Instruction), Short(ShortInstruction) }
+enum PendingInstruction {
+    RawNormal(u32),
+    RawShort(u16),
+    Normal(Instruction),
+    Short(ShortInstruction),
+}
 
 pub struct Cpu {
     reg: [u32; 32],
@@ -234,52 +249,118 @@ impl Cpu {
         self.cycles
     }
 
-    pub fn state(&self) -> CpuState { self.state }
+    pub fn state(&self) -> CpuState {
+        self.state
+    }
 
     fn is_load(insn: PendingInstruction) -> bool {
-        matches!(insn, PendingInstruction::Normal(Instruction::Ld {..} | Instruction::Ldb {..} | Instruction::Ldh {..}) | PendingInstruction::Short(ShortInstruction::Ld {..}))
+        matches!(
+            insn,
+            PendingInstruction::Normal(
+                Instruction::Ld { .. } | Instruction::Ldb { .. } | Instruction::Ldh { .. }
+            ) | PendingInstruction::Short(ShortInstruction::Ld { .. })
+        )
     }
     fn is_store(insn: PendingInstruction) -> bool {
-        matches!(insn, PendingInstruction::Normal(Instruction::St {..} | Instruction::Stb {..} | Instruction::Sth {..}) | PendingInstruction::Short(ShortInstruction::St {..}))
+        matches!(
+            insn,
+            PendingInstruction::Normal(
+                Instruction::St { .. } | Instruction::Stb { .. } | Instruction::Sth { .. }
+            ) | PendingInstruction::Short(ShortInstruction::St { .. })
+        )
     }
     fn is_mul(insn: PendingInstruction) -> bool {
-        matches!(insn, PendingInstruction::Normal(Instruction::Mul {..} | Instruction::Mulh {..}))
+        matches!(
+            insn,
+            PendingInstruction::Normal(Instruction::Mul { .. } | Instruction::Mulh { .. })
+        )
     }
     fn is_div(insn: PendingInstruction) -> bool {
-        matches!(insn, PendingInstruction::Normal(Instruction::Div {..} | Instruction::Divu {..} | Instruction::Mod {..}))
+        matches!(
+            insn,
+            PendingInstruction::Normal(
+                Instruction::Div { .. } | Instruction::Divu { .. } | Instruction::Mod { .. }
+            )
+        )
     }
 
     /// Advance exactly one CPU clock. Memory and arithmetic operations are
     /// represented as separate bus/functional-unit phases in the FSM.
     pub fn tick(&mut self) {
-        if self.state == CpuState::Fetch { self.sync_from_register_block(); }
-        if !self.running { self.state = CpuState::Halt; return; }
+        if self.state == CpuState::Fetch {
+            self.sync_from_register_block();
+        }
+        if !self.running {
+            self.state = CpuState::Halt;
+            return;
+        }
         self.cycles += 1;
         match self.state {
             CpuState::Fetch => {
-                let raw = match self.instr_mode { InstructionMode::Normal => self.fetch_u32(), InstructionMode::Short => u32::from(self.fetch_u16_at(self.pc)) };
-                self.instruction = Some(match self.instr_mode { InstructionMode::Normal => PendingInstruction::RawNormal(raw), InstructionMode::Short => PendingInstruction::RawShort(raw as u16) });
+                let raw = match self.instr_mode {
+                    InstructionMode::Normal => self.fetch_u32(),
+                    InstructionMode::Short => u32::from(self.fetch_u16_at(self.pc)),
+                };
+                self.instruction = Some(match self.instr_mode {
+                    InstructionMode::Normal => PendingInstruction::RawNormal(raw),
+                    InstructionMode::Short => PendingInstruction::RawShort(raw as u16),
+                });
                 self.state = CpuState::Decode;
             }
             CpuState::Decode => {
-                self.instruction = self.instruction.map(|i| match i { PendingInstruction::RawNormal(raw) => PendingInstruction::Normal(Self::decode(raw)), PendingInstruction::RawShort(raw) => PendingInstruction::Short(Self::decode_short(raw)), other => other });
+                self.instruction = self.instruction.map(|i| match i {
+                    PendingInstruction::RawNormal(raw) => {
+                        PendingInstruction::Normal(Self::decode(raw))
+                    }
+                    PendingInstruction::RawShort(raw) => {
+                        PendingInstruction::Short(Self::decode_short(raw))
+                    }
+                    other => other,
+                });
                 if let Some(insn) = self.instruction {
-                    self.state = if Self::is_load(insn) { CpuState::MemRead } else if Self::is_store(insn) { CpuState::MemWrite } else if Self::is_mul(insn) { self.cycles_left = 3; CpuState::Mul } else if Self::is_div(insn) { self.cycles_left = 16; CpuState::Div } else { CpuState::Execute };
+                    self.state = if Self::is_load(insn) {
+                        CpuState::MemRead
+                    } else if Self::is_store(insn) {
+                        CpuState::MemWrite
+                    } else if Self::is_mul(insn) {
+                        self.cycles_left = 3;
+                        CpuState::Mul
+                    } else if Self::is_div(insn) {
+                        self.cycles_left = 16;
+                        CpuState::Div
+                    } else {
+                        CpuState::Execute
+                    };
                 }
             }
             CpuState::Execute | CpuState::MemRead | CpuState::MemWrite => {
                 self.commit_pending();
-                if self.running { self.state = CpuState::Writeback; } else { self.state = CpuState::Halt; }
+                if self.running {
+                    self.state = CpuState::Writeback;
+                } else {
+                    self.state = CpuState::Halt;
+                }
             }
             CpuState::Mul | CpuState::Div => {
                 self.cycles_left -= 1;
-                if self.cycles_left == 0 { self.commit_pending(); self.state = if self.running { CpuState::Writeback } else { CpuState::Halt }; }
+                if self.cycles_left == 0 {
+                    self.commit_pending();
+                    self.state = if self.running {
+                        CpuState::Writeback
+                    } else {
+                        CpuState::Halt
+                    };
+                }
             }
             CpuState::Writeback => {
                 self.instruction = None;
                 if self.running && self.irq_enable && self.irq_pending {
-                    self.epc = self.pc; self.cause = self.irq_pending_number; self.irq_pending = false; self.irq_enable = false;
-                    self.instr_mode = InstructionMode::Normal; self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+                    self.epc = self.pc;
+                    self.cause = self.irq_pending_number;
+                    self.irq_pending = false;
+                    self.irq_enable = false;
+                    self.instr_mode = InstructionMode::Normal;
+                    self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
                 }
                 self.state = CpuState::Fetch;
             }
@@ -963,9 +1044,15 @@ impl Cpu {
             return false;
         }
         let start = self.cycles;
-        while self.running && (self.cycles == start || self.state != CpuState::Fetch) { self.tick(); }
+        while self.running && (self.cycles == start || self.state != CpuState::Fetch) {
+            self.tick();
+        }
         // Complete one full instruction, returning when its commit returns the FSM to FETCH.
-        if self.cycles == start { while self.running && self.state != CpuState::Fetch { self.tick(); } }
+        if self.cycles == start {
+            while self.running && self.state != CpuState::Fetch {
+                self.tick();
+            }
+        }
         true
     }
 

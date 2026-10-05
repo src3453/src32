@@ -6,12 +6,11 @@ const HEADER_SIZE: usize = 16;
 const ENCODED_VERSION: u8 = 2;
 const FRAME_SAMPLES: usize = 64;
 const STEPS: [i32; 89] = [
-    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55,
-    60, 66, 73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307,
-    337, 371, 408, 449, 494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411,
-    1552, 1707, 1878, 2066, 2272, 2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358,
-    5894, 6484, 7132, 7845, 8630, 9493, 10442, 11487, 12635, 13899, 15289, 16818, 18500,
-    20350, 22385, 24623, 27086, 29794, 32767,
+    7, 8, 9, 10, 11, 12, 13, 14, 16, 17, 19, 21, 23, 25, 28, 31, 34, 37, 41, 45, 50, 55, 60, 66,
+    73, 80, 88, 97, 107, 118, 130, 143, 157, 173, 190, 209, 230, 253, 279, 307, 337, 371, 408, 449,
+    494, 544, 598, 658, 724, 796, 876, 963, 1060, 1166, 1282, 1411, 1552, 1707, 1878, 2066, 2272,
+    2499, 2749, 3024, 3327, 3660, 4026, 4428, 4871, 5358, 5894, 6484, 7132, 7845, 8630, 9493,
+    10442, 11487, 12635, 13899, 15289, 16818, 18500, 20350, 22385, 24623, 27086, 29794, 32767,
 ];
 const H_INDEX_ADJUST: [i32; 16] = [-1, -1, -1, -1, 2, 4, 6, 8, -1, -1, -1, -1, 2, 4, 6, 8];
 const L_INDEX_ADJUST: [i32; 4] = [-1, 2, 4, 6];
@@ -126,7 +125,9 @@ pub fn encode_interleaved(
         .checked_mul(channels as usize)
         .and_then(|v| v.checked_mul(frame_size))
         .ok_or(Error::SizeOverflow)?;
-    let file_len = HEADER_SIZE.checked_add(payload_len).ok_or(Error::SizeOverflow)?;
+    let file_len = HEADER_SIZE
+        .checked_add(payload_len)
+        .ok_or(Error::SizeOverflow)?;
 
     let mut output = Vec::with_capacity(file_len);
     output.extend_from_slice(b"SQV4");
@@ -184,14 +185,19 @@ pub(crate) fn inspect(data: &[u8]) -> Result<Header, Error> {
     }
     let samples_per_channel = u32::from_le_bytes(data[12..16].try_into().unwrap()) as usize;
     let frame_count = samples_per_channel.div_ceil(FRAME_SAMPLES);
-    let frame_size = 1usize.checked_add(variant.payload_bytes()).ok_or(Error::SizeOverflow)?;
+    let frame_size = 1usize
+        .checked_add(variant.payload_bytes())
+        .ok_or(Error::SizeOverflow)?;
     let expected = frame_count
         .checked_mul(channels as usize)
         .and_then(|v| v.checked_mul(frame_size))
         .and_then(|v| v.checked_add(HEADER_SIZE))
         .ok_or(Error::SizeOverflow)?;
     if data.len() != expected {
-        return Err(Error::InvalidFileLength { expected, actual: data.len() });
+        return Err(Error::InvalidFileLength {
+            expected,
+            actual: data.len(),
+        });
     }
     let remainder = samples_per_channel % FRAME_SAMPLES;
     if remainder != 0 {
@@ -199,18 +205,29 @@ pub(crate) fn inspect(data: &[u8]) -> Result<Header, Error> {
         for channel in 0..channels as usize {
             let payload_offset = final_frame_offset + channel * frame_size + 1;
             let payload = &data[payload_offset..payload_offset + variant.payload_bytes()];
-            if (remainder..FRAME_SAMPLES).any(|sample| unpack_code(payload, sample, variant.bits()) != 0) {
+            if (remainder..FRAME_SAMPLES)
+                .any(|sample| unpack_code(payload, sample, variant.bits()) != 0)
+            {
                 return Err(Error::NonZeroPadding);
             }
         }
     }
-    Ok(Header { version, variant, channels, sample_rate, samples_per_channel, frame_count, frame_size })
+    Ok(Header {
+        version,
+        variant,
+        channels,
+        sample_rate,
+        samples_per_channel,
+        frame_count,
+        frame_size,
+    })
 }
 
 /// Decode an entire SQV4 version 1 file. Truncation and trailing data are errors.
 pub fn decode(data: &[u8]) -> Result<DecodedAudio, Error> {
     let header = inspect(data)?;
-    let output_len = header.samples_per_channel
+    let output_len = header
+        .samples_per_channel
         .checked_mul(header.channels as usize)
         .ok_or(Error::SizeOverflow)?;
     let mut samples = vec![0; output_len];
@@ -223,9 +240,11 @@ pub fn decode(data: &[u8]) -> Result<DecodedAudio, Error> {
             let payload = &data[offset + 1..offset + header.frame_size];
             for within in 0..count {
                 let code = unpack_code(payload, within, header.variant.bits());
-                let reconstructed = decode_code(header.version, header.variant, &mut states[channel], code);
+                let reconstructed =
+                    decode_code(header.version, header.variant, &mut states[channel], code);
                 let gained = reconstructed * volume as i32 / 255;
-                let interleaved_index = (frame * FRAME_SAMPLES + within) * header.channels as usize + channel;
+                let interleaved_index =
+                    (frame * FRAME_SAMPLES + within) * header.channels as usize + channel;
                 samples[interleaved_index] = gained as i16;
             }
             offset += header.frame_size;
@@ -316,7 +335,8 @@ fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
     let mut best_code = 0;
     let mut best_error = i32::MAX;
     for code in 0..8u8 {
-        let candidate = (state.predictor + delta(ENCODED_VERSION, variant, *state, code)).clamp(i16::MIN as i32, i16::MAX as i32);
+        let candidate = (state.predictor + delta(ENCODED_VERSION, variant, *state, code))
+            .clamp(i16::MIN as i32, i16::MAX as i32);
         let error = (input - candidate).abs();
         if error < best_error {
             best_error = error;
@@ -329,22 +349,16 @@ fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
 
 #[cfg(test)]
 const L_PLUS_BENCH_TONE: [i16; 128] = [
-    0, 8926, 15150, 17259, 15693, 12291, 9111, 7209,
-    6123, 4321, 355, -5996, -13304, -19056, -20923, -17999,
-    -11314, -3305, 3432, 7423, 8889, 9316, 10311, 12445,
-    14782, 15391, 12542, 5883, -3121, -11761, -17368, -18600,
-    -16000, -11529, -7368, -4690, -3121, -1188, 2542, 8320,
-    14782, 19516, 20311, 16387, 8889, 352, -6568, -10376,
-    -11314, -10928, -10923, -11985, -13304, -13067, -9645, -2750,
-    6123, 14280, 19111, 19362, 15693, 10188, 5150, 1855,
-    0, -1855, -5150, -10188, -15693, -19362, -19111, -14280,
-    -6123, 2750, 9645, 13067, 13304, 11985, 10923, 10928,
-    11314, 10376, 6568, -352, -8889, -16387, -20311, -19516,
-    -14782, -8320, -2542, 1188, 3121, 4690, 7368, 11529,
-    16000, 18600, 17368, 11761, 3121, -5883, -12542, -15391,
-    -14782, -12445, -10311, -9316, -8889, -7423, -3432, 3305,
-    11314, 17999, 20923, 19056, 13304, 5996, -355, -4321,
-    -6123, -7209, -9111, -12291, -15693, -17259, -15150, -8926,
+    0, 8926, 15150, 17259, 15693, 12291, 9111, 7209, 6123, 4321, 355, -5996, -13304, -19056,
+    -20923, -17999, -11314, -3305, 3432, 7423, 8889, 9316, 10311, 12445, 14782, 15391, 12542, 5883,
+    -3121, -11761, -17368, -18600, -16000, -11529, -7368, -4690, -3121, -1188, 2542, 8320, 14782,
+    19516, 20311, 16387, 8889, 352, -6568, -10376, -11314, -10928, -10923, -11985, -13304, -13067,
+    -9645, -2750, 6123, 14280, 19111, 19362, 15693, 10188, 5150, 1855, 0, -1855, -5150, -10188,
+    -15693, -19362, -19111, -14280, -6123, 2750, 9645, 13067, 13304, 11985, 10923, 10928, 11314,
+    10376, 6568, -352, -8889, -16387, -20311, -19516, -14782, -8320, -2542, 1188, 3121, 4690, 7368,
+    11529, 16000, 18600, 17368, 11761, 3121, -5883, -12542, -15391, -14782, -12445, -10311, -9316,
+    -8889, -7423, -3432, 3305, 11314, 17999, 20923, 19056, 13304, 5996, -355, -4321, -6123, -7209,
+    -9111, -12291, -15693, -17259, -15150, -8926,
 ];
 
 /// Exhaustively evaluate the specified L+ codebooks with deterministic tonal fixtures.
@@ -356,10 +370,26 @@ fn benchmark_l_plus() -> (Vec<i32>, u128) {
     impulse[0] = 32767;
     impulse[511] = -32768;
     fixtures.push(impulse);
-    fixtures.push((0..1024).map(|i| (-32768 + (i % 256) as i32 * 256) as i16).collect());
-    fixtures.push((0..1024).map(|i| (-32768i64 + (i as i64 * 65535 / 1023)) as i16).collect());
-    fixtures.push((0..8192).map(|i| L_PLUS_BENCH_TONE[i % L_PLUS_BENCH_TONE.len()]).collect());
-    fixtures.push((0..1024).map(|i| if i % 128 < 64 { 24576 } else { -24576 }).collect());
+    fixtures.push(
+        (0..1024)
+            .map(|i| (-32768 + (i % 256) as i32 * 256) as i16)
+            .collect(),
+    );
+    fixtures.push(
+        (0..1024)
+            .map(|i| (-32768i64 + (i as i64 * 65535 / 1023)) as i16)
+            .collect(),
+    );
+    fixtures.push(
+        (0..8192)
+            .map(|i| L_PLUS_BENCH_TONE[i % L_PLUS_BENCH_TONE.len()])
+            .collect(),
+    );
+    fixtures.push(
+        (0..1024)
+            .map(|i| if i % 128 < 64 { 24576 } else { -24576 })
+            .collect(),
+    );
 
     let mut winner = Vec::new();
     let mut best_score = u128::MAX;
@@ -367,7 +397,9 @@ fn benchmark_l_plus() -> (Vec<i32>, u128) {
         for b in (a + 1)..=13 {
             for c in (b + 1)..=14 {
                 for d in (c + 1)..=15 {
-                    if b - a == c - b && c - b == d - c { continue; }
+                    if b - a == c - b && c - b == d - c {
+                        continue;
+                    }
                     let levels = [a, b, c, d];
                     let mut score = 0u128;
                     for fixture in &fixtures {
@@ -396,9 +428,13 @@ fn encode_code_with_levels(state: &mut State, input: i32, levels: [i32; 4]) -> u
     let mut best = 0;
     let mut best_error = i32::MAX;
     for code in 0..8u8 {
-        let candidate = (state.predictor + delta_with_levels(*state, code, levels)).clamp(i16::MIN as i32, i16::MAX as i32);
+        let candidate = (state.predictor + delta_with_levels(*state, code, levels))
+            .clamp(i16::MIN as i32, i16::MAX as i32);
         let error = (input - candidate).abs();
-        if error < best_error { best_error = error; best = code; }
+        if error < best_error {
+            best_error = error;
+            best = code;
+        }
     }
     update_with_levels(state, best, levels);
     best
@@ -432,8 +468,13 @@ mod tests {
         let input = [0i16, 1000, -1000, 32767, -32768];
         let actual = encode_interleaved(&input, 1, 8_000, Variant::H, 255).unwrap();
         let mut expected = [0u8; 49];
-        expected[..16].copy_from_slice(&[0x53,0x51,0x56,0x34,2,0,1,0,0x40,0x1f,0,0,5,0,0,0]);
-        expected[16..].copy_from_slice(&[255,0x70,0x7f,0x0f,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0]);
+        expected[..16].copy_from_slice(&[
+            0x53, 0x51, 0x56, 0x34, 2, 0, 1, 0, 0x40, 0x1f, 0, 0, 5, 0, 0, 0,
+        ]);
+        expected[16..].copy_from_slice(&[
+            255, 0x70, 0x7f, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0, 0, 0,
+        ]);
         assert_eq!(actual, expected);
     }
 
@@ -450,7 +491,13 @@ mod tests {
                 assert_eq!(decoded.sample_rate, 22_050);
                 assert_eq!(decoded.channels, channels);
                 assert_eq!(decoded.samples.len(), pcm.len());
-                assert!(decoded.samples.iter().zip(&pcm).all(|(a, b)| (*a as i32 - *b as i32).abs() < 128));
+                assert!(
+                    decoded
+                        .samples
+                        .iter()
+                        .zip(&pcm)
+                        .all(|(a, b)| (*a as i32 - *b as i32).abs() < 128)
+                );
                 let empty = encode_interleaved(&[], channels, 48_000, variant, 10).unwrap();
                 assert_eq!(empty.len(), HEADER_SIZE);
                 assert!(decode(&empty).unwrap().samples.is_empty());
@@ -460,18 +507,35 @@ mod tests {
 
     #[test]
     fn malformed_files_and_encoder_arguments_are_rejected() {
-        assert_eq!(encode_interleaved(&[1], 2, 1, Variant::H, 255), Err(Error::MisalignedInterleavedSamples));
-        assert_eq!(encode_interleaved(&[], 0, 1, Variant::H, 255), Err(Error::InvalidChannels(0)));
-        assert_eq!(encode_interleaved(&[], 1, 0, Variant::H, 255), Err(Error::ZeroSampleRate));
+        assert_eq!(
+            encode_interleaved(&[1], 2, 1, Variant::H, 255),
+            Err(Error::MisalignedInterleavedSamples)
+        );
+        assert_eq!(
+            encode_interleaved(&[], 0, 1, Variant::H, 255),
+            Err(Error::InvalidChannels(0))
+        );
+        assert_eq!(
+            encode_interleaved(&[], 1, 0, Variant::H, 255),
+            Err(Error::ZeroSampleRate)
+        );
         let valid = encode_interleaved(&[1], 1, 1, Variant::H, 255).unwrap();
         assert_eq!(decode(&valid[..15]), Err(Error::TruncatedHeader));
-        let mut trailing = valid.clone(); trailing.push(0);
-        assert!(matches!(decode(&trailing), Err(Error::InvalidFileLength { .. })));
-        assert!(matches!(decode(&valid[..valid.len()-1]), Err(Error::InvalidFileLength { .. })));
+        let mut trailing = valid.clone();
+        trailing.push(0);
+        assert!(matches!(
+            decode(&trailing),
+            Err(Error::InvalidFileLength { .. })
+        ));
+        assert!(matches!(
+            decode(&valid[..valid.len() - 1]),
+            Err(Error::InvalidFileLength { .. })
+        ));
         let mut bad_padding = valid.clone();
         bad_padding[18] |= 0x10;
         assert_eq!(decode(&bad_padding), Err(Error::NonZeroPadding));
-        let mut bad = valid; bad[7] = 1;
+        let mut bad = valid;
+        bad[7] = 1;
         assert_eq!(decode(&bad), Err(Error::InvalidReservedByte(1)));
     }
 
@@ -495,7 +559,10 @@ mod tests {
                 (error * error) as u64
             })
             .sum();
-        assert!(squared_error < 32_768_000_000, "L+ v2 tone RMSE exceeds 2000");
+        assert!(
+            squared_error < 32_768_000_000,
+            "L+ v2 tone RMSE exceeds 2000"
+        );
 
         let mut legacy = vec![0u8; 41];
         legacy[..4].copy_from_slice(b"SQV4");
@@ -518,7 +585,10 @@ mod tests {
             })
             .collect();
         let input = [12, 35, 75, 147, 275];
-        assert_eq!(encode_interleaved(&input, 1, 8_000, Variant::LPlus, 255).unwrap(), golden);
+        assert_eq!(
+            encode_interleaved(&input, 1, 8_000, Variant::LPlus, 255).unwrap(),
+            golden
+        );
         assert_eq!(decode(&golden).unwrap().samples, input);
     }
     #[test]
@@ -544,7 +614,10 @@ mod tests {
         let mut reduced_volume = golden.clone();
         reduced_volume[16] = 127;
         reduced_volume[49] = 127;
-        let expected: Vec<i16> = input.iter().map(|sample| (*sample as i32 * 127 / 255) as i16).collect();
+        let expected: Vec<i16> = input
+            .iter()
+            .map(|sample| (*sample as i32 * 127 / 255) as i16)
+            .collect();
         assert_eq!(decode(&reduced_volume).unwrap().samples, expected);
     }
 }
