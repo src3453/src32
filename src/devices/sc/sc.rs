@@ -43,9 +43,8 @@ impl Sc {
 
     /// Rasterizes enabled sprites into a transparent 320x240 RGBA plane.
     pub fn render_frame(&self) -> Vec<[u8; 4]> {
-        let mut output = vec![[0, 0, 0, 0]; 320 * 240];
         if !self.enabled || self.sprite_count == 0 {
-            return output;
+            return Vec::new();
         }
 
         let count = self.sprite_count as usize;
@@ -56,10 +55,11 @@ impl Sc {
             || sat_end.is_none_or(|end| end > VRAM_SIZE)
         {
             self.set_error(STATUS_INVALID_CONFIG);
-            return output;
+            return Vec::new();
         }
 
         let vram = self.vram.borrow();
+        let mut output = vec![[0, 0, 0, 0]; 320 * 240];
         let mut order: Vec<(u8, usize)> = (0..count)
             .map(|i| (vram[sat_start + i * ENTRY_SIZE + 11], i))
             .collect();

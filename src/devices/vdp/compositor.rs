@@ -4,6 +4,13 @@ pub type Rgba = [u8; 4];
 
 /// Straight-alpha source-over blend with round-to-nearest integer arithmetic.
 pub fn source_over(src: Rgba, dst: Rgba) -> Rgba {
+    if src[3] == 0 {
+        return dst;
+    }
+    if src[3] == 255 || dst[3] == 0 {
+        return src;
+    }
+
     let a = src[3] as u64;
     let dst_a = dst[3] as u64;
     let inv = 255 - a;
@@ -23,5 +30,6 @@ pub fn source_over(src: Rgba, dst: Rgba) -> Rgba {
 pub fn compose_gp(layers: [Rgba; 8], backdrop: Rgba) -> Rgba {
     layers
         .into_iter()
+        .filter(|src| src[3] != 0)
         .fold(backdrop, |dst, src| source_over(src, dst))
 }

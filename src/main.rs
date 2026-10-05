@@ -4,7 +4,7 @@ use std::cell::RefCell;
 use std::env;
 use std::path::Path;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
@@ -21,7 +21,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::LogicalSize;
 use winit::event::Event;
 use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, EventLoop, OwnedDisplayHandle};
+use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{Key, NamedKey};
 use winit::window::{Window, WindowAttributes};
 
@@ -31,6 +31,7 @@ mod render;
 
 const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
+const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
 fn load_binary_data(path: &str, bus: &mut Bus) {
     // Utility used to load programs and datas into the bus memory
@@ -51,6 +52,7 @@ struct GuiApp {
     debug_gui: Option<DebugGui>,
     enable_debug_gui: bool,
     start_paused: bool,
+    next_frame_deadline: Instant,
 }
 
 impl GuiApp {
@@ -91,6 +93,7 @@ impl GuiApp {
             debug_gui: None,
             enable_debug_gui,
             start_paused,
+            next_frame_deadline: Instant::now(),
         }
     }
 }
@@ -448,6 +451,11 @@ impl ApplicationHandler for GuiApp {
                 }
             }
             WindowEvent::RedrawRequested => {
+                let now = Instant::now();
+                if now < self.next_frame_deadline {
+                    return;
+                }
+                self.next_frame_deadline = now + FRAME_INTERVAL;
                 self.vdp.borrow_mut().tick();
                 if let (Some(window), Some(presenter)) =
                     (self.window.as_ref(), self.presenter.as_mut())
@@ -485,10 +493,14 @@ impl ApplicationHandler for GuiApp {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = self.window.as_ref() {
-            window.request_redraw();
+    fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
+        let now = Instant::now();
+        if now >= self.next_frame_deadline {
+            if let Some(window) = self.window.as_ref() {
+                window.request_redraw();
+            }
         }
+        event_loop.set_control_flow(ControlFlow::WaitUntil(self.next_frame_deadline));
     }
 }
 

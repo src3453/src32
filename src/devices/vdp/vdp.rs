@@ -15,6 +15,7 @@ use std::cell::RefCell;
 use std::io;
 use std::path::Path;
 use std::rc::Rc;
+use std::sync::OnceLock;
 
 use crate::bus::{Bus, Device};
 use crate::devices::sc::sc::{SC_MMIO_BASE, SC_MMIO_SIZE, Sc};
@@ -78,6 +79,7 @@ pub enum VdpFramebuffer<'a> {
         pcg_cursor_blink_period: u8,
         pcg_cursor_blink_tick: u64,
         pcg_output_gp: u8,
+        composed_pixels: OnceLock<Vec<[u8; 3]>>,
     },
     Pcg {
         vram: &'a RefCell<Vec<u8>>,
@@ -96,6 +98,7 @@ pub enum VdpFramebuffer<'a> {
         sc_pixels: Vec<Rgba>,
         sc_gp: u8,
         base_gp: u8,
+        composed_pixels: OnceLock<Vec<[u8; 3]>>,
     },
     Blank,
 }
@@ -122,6 +125,39 @@ impl<'a> VdpFramebuffer<'a> {
     }
 
     pub fn get_pixel(&self, x: usize, y: usize) -> (u8, u8, u8) {
+        let (width, height) = self.dimensions();
+        if x >= width || y >= height {
+            return (0, 0, 0);
+        }
+        let (composed_pixels, vpu) = match self {
+            VdpFramebuffer::Graphics {
+                composed_pixels,
+                vpu,
+                ..
+            }
+            | VdpFramebuffer::Pcg {
+                composed_pixels,
+                vpu,
+                ..
+            } => (composed_pixels, *vpu),
+            VdpFramebuffer::Blank => return (0, 0, 0),
+        };
+        let pixels = composed_pixels.get_or_init(|| {
+            let vpu = vpu.borrow();
+            let mut pixels = Vec::with_capacity(width * height);
+            for py in 0..height {
+                for px in 0..width {
+                    let (r, g, b) = self.sample_pixel(px, py, &vpu);
+                    pixels.push([r, g, b]);
+                }
+            }
+            pixels
+        });
+        let [r, g, b] = pixels[y * width + x];
+        (r, g, b)
+    }
+
+    fn sample_pixel(&self, x: usize, y: usize, vpu: &Vpu) -> (u8, u8, u8) {
         let base = match self {
             VdpFramebuffer::Graphics { renderer, .. } => renderer.get_pixel(x, y),
             VdpFramebuffer::Pcg {
@@ -151,21 +187,19 @@ impl<'a> VdpFramebuffer<'a> {
             ),
             VdpFramebuffer::Blank => (0, 0, 0),
         };
-        let (sc_pixels, sc_gp, base_gp, vpu) = match self {
+        let (sc_pixels, sc_gp, base_gp) = match self {
             VdpFramebuffer::Graphics {
                 sc_pixels,
                 sc_gp,
                 base_gp,
-                vpu,
                 ..
             }
             | VdpFramebuffer::Pcg {
                 sc_pixels,
                 sc_gp,
                 base_gp,
-                vpu,
                 ..
-            } => (sc_pixels, *sc_gp, *base_gp, *vpu),
+            } => (sc_pixels, *sc_gp, *base_gp),
             VdpFramebuffer::Blank => return (0, 0, 0),
         };
         let mut layers = [[0, 0, 0, 0]; 8];
@@ -205,10 +239,12 @@ impl<'a> VdpFramebuffer<'a> {
             }
         }
         if x < VDP_ACTIVE_WIDTH && y < VDP_ACTIVE_HEIGHT {
-            let sprite = sc_pixels[y * VDP_ACTIVE_WIDTH + x];
+            let sprite = sc_pixels
+                .get(y * VDP_ACTIVE_WIDTH + x)
+                .copied()
+                .unwrap_or([0, 0, 0, 0]);
             layers[sc_gp as usize] = source_over(sprite, layers[sc_gp as usize]);
         }
-        let vpu = vpu.borrow();
         let (r, g, b, a) = vpu.pixel(x, y);
         let vpu_pixel = [r, g, b, a];
         layers[vpu.output_gp as usize] = source_over(vpu_pixel, layers[vpu.output_gp as usize]);
@@ -260,7 +296,11 @@ impl Vdp {
             return VdpFramebuffer::Blank;
         }
 
-        let sc_pixels = self.sc.render_frame();
+        let sc_pixels = if self.sc.enabled() {
+            self.sc.render_frame()
+        } else {
+            Vec::new()
+        };
         match self.regs.display_mode {
             DisplayMode::Graphics => VdpFramebuffer::Graphics {
                 vram: self.vram.as_ref(),
@@ -282,6 +322,7 @@ impl Vdp {
                 pcg_cursor_blink_period: self.regs.pcg_cursor_blink_period,
                 pcg_cursor_blink_tick: self.state.pcg_cursor_blink_tick,
                 pcg_output_gp: self.regs.pcg_output_gp,
+                composed_pixels: OnceLock::new(),
             },
             DisplayMode::PCG => VdpFramebuffer::Pcg {
                 vram: self.vram.as_ref(),
@@ -300,6 +341,7 @@ impl Vdp {
                 sc_pixels,
                 sc_gp: self.sc.output_gp(),
                 base_gp: self.regs.pcg_output_gp,
+                composed_pixels: OnceLock::new(),
             },
         }
     }
