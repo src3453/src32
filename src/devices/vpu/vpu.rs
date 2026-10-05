@@ -6,9 +6,18 @@ pub const VPU_WIDTH: usize = 320;
 pub const VPU_HEIGHT: usize = 240;
 const FIFO_CAPACITY: usize = 4096;
 
+#[derive(Clone, Copy)]
+struct ClipVertex {
+    position: [f32; 4],
+    color: [f32; 4],
+}
+
 pub struct Vpu {
     pub(crate) plane: Vec<u8>,
     depth: Vec<i32>,
+    depth_f32: Vec<f32>,
+    matrices: [[f32; 16]; 3],
+    shading_mode: u32,
     pub(crate) fifo: Vec<u32>,
     pub(crate) command: Vec<u32>,
     pub(crate) expected: Option<usize>,
@@ -23,6 +32,9 @@ impl Vpu {
         Self {
             plane: vec![0; VPU_WIDTH * VPU_HEIGHT * 4],
             depth: vec![i32::MAX; VPU_WIDTH * VPU_HEIGHT],
+            depth_f32: vec![1.0; VPU_WIDTH * VPU_HEIGHT],
+            matrices: [identity_matrix(); 3],
+            shading_mode: 0,
             fifo: Vec::new(),
             command: Vec::new(),
             expected: None,
@@ -102,8 +114,23 @@ impl Vpu {
                 }
                 if flags & 2 != 0 {
                     self.depth.fill(i32::MAX);
+                    self.depth_f32.fill(1.0);
                 }
                 if flags & !3 != 0 {
+                    self.status |= 1 << 3;
+                }
+            }
+            0x01 if p.len() == 2 && p[0] == 0 && p[1] <= 1 => {
+                self.shading_mode = p[1];
+            }
+            0x02 if p.len() == 17 && p[0] <= 2 => {
+                let mut matrix = [0.0; 16];
+                for (dst, bits) in matrix.iter_mut().zip(&p[1..]) {
+                    *dst = f32::from_bits(*bits);
+                }
+                if matrix.iter().all(|value| value.is_finite()) {
+                    self.matrices[p[0] as usize] = matrix;
+                } else {
                     self.status |= 1 << 3;
                 }
             }
@@ -111,8 +138,10 @@ impl Vpu {
             // packed RGB, and an 8-bit diffuse intensity. Color is constant
             // across the face (flat shading); no texture or interpolation.
             0x12 if p.len() == 11 => self.draw_flat_triangle(&p),
+            // DRAW_TL_TRIANGLE: three POSITION(float3)+COLOR(RGBA8) vertices.
+            0x14 if p.len() == 12 => self.draw_transformed_triangle(&p),
             // The interpreter deliberately rejects commands it cannot safely consume.
-            0x01 | 0x02 | 0x03 | 0x10 | 0x11 | 0x7f => self.status |= 1 << 3,
+            0x01 | 0x02 | 0x03 | 0x10 | 0x11 | 0x13 | 0x7f => self.status |= 1 << 3,
             _ => self.status |= 1 << 3,
         }
         self.expected = None;
@@ -169,4 +198,201 @@ impl Vpu {
             }
         }
     }
+
+    fn draw_transformed_triangle(&mut self, p: &[u32]) {
+        let mut vertices = [ClipVertex {
+            position: [0.0; 4],
+            color: [0.0; 4],
+        }; 3];
+        for (i, vertex) in vertices.iter_mut().enumerate() {
+            let offset = i * 4;
+            let position = [
+                f32::from_bits(p[offset]),
+                f32::from_bits(p[offset + 1]),
+                f32::from_bits(p[offset + 2]),
+                1.0,
+            ];
+            if !position[..3].iter().all(|value| value.is_finite()) {
+                self.status |= 1 << 3;
+                return;
+            }
+            vertex.position = transform_position(&self.matrices, position);
+            let rgba = p[offset + 3].to_be_bytes();
+            vertex.color = rgba.map(|channel| channel as f32 / 255.0);
+        }
+        if vertices
+            .iter()
+            .any(|vertex| !vertex.position.iter().all(|value| value.is_finite()))
+        {
+            self.status |= 1 << 3;
+            return;
+        }
+
+        let flat_color = vertices[0].color;
+        let mut polygon = vertices.to_vec();
+        for plane in 0..6 {
+            polygon = clip_polygon(polygon, plane);
+            if polygon.len() < 3 {
+                return;
+            }
+        }
+        for i in 1..polygon.len() - 1 {
+            let tri = [polygon[0], polygon[i], polygon[i + 1]];
+            let color = if self.shading_mode == 0 {
+                Some(flat_color)
+            } else {
+                None
+            };
+            self.rasterize_transformed_triangle(tri, color);
+        }
+    }
+
+    fn rasterize_transformed_triangle(&mut self, tri: [ClipVertex; 3], flat: Option<[f32; 4]>) {
+        let mut screen = [[0.0f32; 2]; 3];
+        let mut inv_w = [0.0f32; 3];
+        let mut depth = [0.0f32; 3];
+        for i in 0..3 {
+            let w = tri[i].position[3];
+            if w <= f32::EPSILON {
+                return;
+            }
+            inv_w[i] = 1.0 / w;
+            screen[i] = [
+                (tri[i].position[0] * inv_w[i] + 1.0) * (VPU_WIDTH as f32 * 0.5),
+                (1.0 - tri[i].position[1] * inv_w[i]) * (VPU_HEIGHT as f32 * 0.5),
+            ];
+            depth[i] = tri[i].position[2] * inv_w[i];
+        }
+        let edge = |a: usize, b: usize, x: f32, y: f32| {
+            (x - screen[a][0]) * (screen[b][1] - screen[a][1])
+                - (y - screen[a][1]) * (screen[b][0] - screen[a][0])
+        };
+        let area = edge(0, 1, screen[2][0], screen[2][1]);
+        if area.abs() <= f32::EPSILON {
+            return;
+        }
+        let min_x = screen
+            .iter()
+            .map(|p| p[0].floor() as i32)
+            .min()
+            .unwrap()
+            .max(0) as usize;
+        let max_x = screen
+            .iter()
+            .map(|p| p[0].ceil() as i32)
+            .max()
+            .unwrap()
+            .min(VPU_WIDTH as i32 - 1);
+        let min_y = screen
+            .iter()
+            .map(|p| p[1].floor() as i32)
+            .min()
+            .unwrap()
+            .max(0) as usize;
+        let max_y = screen
+            .iter()
+            .map(|p| p[1].ceil() as i32)
+            .max()
+            .unwrap()
+            .min(VPU_HEIGHT as i32 - 1);
+        if max_x < min_x as i32 || max_y < min_y as i32 {
+            return;
+        }
+        for y in min_y..=max_y as usize {
+            for x in min_x..=max_x as usize {
+                let px = x as f32 + 0.5;
+                let py = y as f32 + 0.5;
+                let weights = [edge(1, 2, px, py), edge(2, 0, px, py), edge(0, 1, px, py)];
+                let inside = if area > 0.0 {
+                    weights.iter().all(|weight| *weight >= 0.0)
+                } else {
+                    weights.iter().all(|weight| *weight <= 0.0)
+                };
+                if !inside {
+                    continue;
+                }
+                let bary = weights.map(|weight| weight / area);
+                let z = bary[0] * depth[0] + bary[1] * depth[1] + bary[2] * depth[2];
+                let index = y * VPU_WIDTH + x;
+                if z < 0.0 || z > 1.0 || z >= self.depth_f32[index] {
+                    continue;
+                }
+                self.depth_f32[index] = z;
+                let color = if let Some(flat_color) = flat {
+                    flat_color
+                } else {
+                    let denominator = bary[0] * inv_w[0] + bary[1] * inv_w[1] + bary[2] * inv_w[2];
+                    if denominator.abs() <= f32::EPSILON {
+                        continue;
+                    }
+                    std::array::from_fn(|channel| {
+                        (bary[0] * tri[0].color[channel] * inv_w[0]
+                            + bary[1] * tri[1].color[channel] * inv_w[1]
+                            + bary[2] * tri[2].color[channel] * inv_w[2])
+                            / denominator
+                    })
+                };
+                let rgba = color.map(|value| (value.clamp(0.0, 1.0) * 255.0 + 0.5) as u8);
+                self.plane[index * 4..index * 4 + 4].copy_from_slice(&rgba);
+            }
+        }
+    }
+}
+
+fn identity_matrix() -> [f32; 16] {
+    [
+        1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0,
+    ]
+}
+
+fn transform_position(matrices: &[[f32; 16]; 3], mut position: [f32; 4]) -> [f32; 4] {
+    for matrix in matrices {
+        let input = position;
+        for row in 0..4 {
+            position[row] = (0..4).map(|col| matrix[row * 4 + col] * input[col]).sum();
+        }
+    }
+    position
+}
+
+fn clip_distance(vertex: ClipVertex, plane: usize) -> f32 {
+    let [x, y, z, w] = vertex.position;
+    match plane {
+        0 => x + w,
+        1 => w - x,
+        2 => y + w,
+        3 => w - y,
+        4 => z,
+        _ => w - z,
+    }
+}
+
+fn clip_polygon(polygon: Vec<ClipVertex>, plane: usize) -> Vec<ClipVertex> {
+    let Some(mut previous) = polygon.last().copied() else {
+        return polygon;
+    };
+    let mut previous_distance = clip_distance(previous, plane);
+    let mut output = Vec::with_capacity(polygon.len() + 1);
+    for current in polygon {
+        let current_distance = clip_distance(current, plane);
+        let previous_inside = previous_distance >= 0.0;
+        let current_inside = current_distance >= 0.0;
+        if previous_inside != current_inside {
+            let t = previous_distance / (previous_distance - current_distance);
+            output.push(ClipVertex {
+                position: std::array::from_fn(|i| {
+                    previous.position[i] + t * (current.position[i] - previous.position[i])
+                }),
+                color: std::array::from_fn(|i| {
+                    previous.color[i] + t * (current.color[i] - previous.color[i])
+                }),
+            });
+        }
+        if current_inside {
+            output.push(current);
+        }
+        previous = current;
+        previous_distance = current_distance;
+    }
+    output
 }

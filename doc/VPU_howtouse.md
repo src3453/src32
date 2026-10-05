@@ -4,11 +4,11 @@
 
 ## できることと実装範囲
 
-現在のエミュレータで実際に使える描画コマンドは、画面クリア (`CLEAR`, `0x04`) とフラットシェーディング三角形 (`DRAW_FLAT_TRIANGLE`, `0x12`) です。コマンドは FIFO 経由で送ります。キューブの回転、座標変換、透視投影は sol 側で行い、VPU は画面座標の三角形を塗りつぶします。
+現在のエミュレータでは、画面クリア (`CLEAR`, `0x04`)、フラット三角形 (`DRAW_FLAT_TRIANGLE`, `0x12`)、変換前頂点の描画 (`DRAW_TL_TRIANGLE`, `0x14`)、変換行列設定 (`SET_MATRIX`, `0x02`)、シェーディング方式選択 (`SET_STATE`, `0x01`) を FIFO 経由で使えます。`0x12` は投影済み座標用です。`0x14` は頂点を Model/View/Projection 行列で変換してから描きます。
 
-三角形は各画素で一定の RGB 色を使います。コマンドに渡した明度係数を VPU が RGB に乗算するため、面ごとに色や明るさを変えられます。深度は三角形内で補間し、値が小さいものを手前として扱います。テクスチャ、クリッピング、背面カリング、Gouraud/Phong ライティングは、この軽量経路では使えません。
+フラットモードでは1つの頂点色を三角形全体に使い、Gouraudモードでは頂点色を三角形内で透視補正付きで補間します。T&L経路はクリップ空間で左右・上下・近遠の6面をクリップし、深度テストして塗りつぶします。法線を使った照明計算、テクスチャ、背面カリングはまだありません。`0x12` の明度係数付き画素描画経路は引き続き使えます。
 
-より広いコマンド形式と将来の仕様は [VPU 仕様書](spec_VPU.md)を参照してください。仕様書にある行列、アドレス指定頂点、DMA などの機能の一部は、現時点のエミュレータではまだ実装されていません。
+より広いコマンド形式と実装範囲は [VPU 仕様書](spec_VPU.md)を参照してください。アドレス指定頂点、インデックス描画、DMA、Phongライティングなどはまだ実装されていません。
 
 ## MMIO アドレス
 
@@ -115,22 +115,58 @@ fn face (a b c d rgb intensity) :
 
 実用的な回転キューブ全体は [3d_cube.sol](../3d_cube.sol) にあります。そこでは8頂点を sol で回転・投影し、投影座標と深度を RAM に保存してから、6面を FIFO コマンドで送っています。描画ループの各フレームで `clear_frame`、頂点変換、各面の描画、角度更新を行います。
 
+## 6. VPU 内で行列変換とクリッピングを行う
+
+`SET_MATRIX` はpayload 17語で、行列IDと16個のbinary32値を送ります。次の例は単位行列を1つ登録する関数です。行列を3つ登録すると `Projection × View × Model × position` の順に適用されます。
+
+```sol
+fn set_identity_matrix (id) :
+    0x02000011 emit
+    id emit
+    0x3F800000 emit 0 emit 0 emit 0 emit
+    0 emit 0x3F800000 emit 0 emit 0 emit
+    0 emit 0 emit 0x3F800000 emit 0 emit
+    0 emit 0 emit 0 emit 0x3F800000 emit
+;
+
+0 set_identity_matrix # MODEL
+1 set_identity_matrix # VIEW
+2 set_identity_matrix # PROJECTION
+```
+
+`DRAW_TL_TRIANGLE` はpayload 12語です。各頂点を「x, y, z のbinary32ビット列、RGBA8888」の4語で送ります。色のバイト順は上位から R, G, B, A です。シェーディング状態ID 0に値0（flat）または1（Gouraud）を設定します。
+
+```sol
+0x01000002 emit # SET_STATE, payload 2語
+0 emit           # 状態ID: shading mode
+1 emit           # Gouraud
+
+0x1400000C emit # DRAW_TL_TRIANGLE, payload 12語
+0xBF000000 emit 0xBF000000 emit 0x3F000000 emit 0xFF0000FF emit
+0x3F000000 emit 0xBF000000 emit 0x3F000000 emit 0x00FF00FF emit
+0 emit           0x3F000000 emit 0x3F000000 emit 0x0000FFFF emit
+```
+
+位置値はbinary32そのものではなく、32-bit語としてのIEEE 754ビット列です。`vpu_tnl_triangle.sol` は単位行列、Gouraud色、画面右端からはみ出す頂点を使い、VPU側の行列処理とクリッピングを実演します。
+
 ## ビルドと実行
 
 リポジトリのルートから sol を SRC32 アセンブリへ変換し、バイナリにします。
 
 ```powershell
-python tools/solc/solc.py compile 3d_cube.sol -o 3d_cube.a
-python tools/asm/asm.py 3d_cube.a -o 3d_cube.bin
+python tools/solc/solc.py compile vpu_tnl_triangle.sol -o vpu_tnl_triangle.a
+python tools/asm/asm.py vpu_tnl_triangle.a -o vpu_tnl_triangle.bin
 ```
 
 ヘッドレス実行器で動作確認する場合は、VPU を含むデバイス構成を使い、ループするデモを実行します。
 
 ```powershell
-cargo run --bin src32_testbench -- 3d_cube.bin --allow-running
+cargo run --bin src32_testbench -- vpu_tnl_triangle.bin --allow-running
 ```
 
 `--allow-running` は、フレームループが続くプログラムをサイクル上限まで実行する指定です。実行器は VPU のエラーフラグと画面内に描画画素があることを確認します。
+
+回転キューブのほうを実行するときは、上記のファイル名を `3d_cube.sol` と `3d_cube.a` / `3d_cube.bin` に置き換えます。このサンプルは投影済み画面座標を使う旧 `0x12` 経路です。
 
 ## 問題が起きたとき
 
@@ -145,3 +181,4 @@ cargo run --bin src32_testbench -- 3d_cube.bin --allow-running
 - [VPU コマンド・レジスタ仕様](spec_VPU.md)
 - [VDP 合成仕様](spec_VDP.md)
 - [回転キューブの sol サンプル](../3d_cube.sol)
+- [VPU T&L・クリッピング・Gouraud の sol サンプル](../vpu_tnl_triangle.sol)

@@ -111,6 +111,7 @@ FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入
 | `0x10` | DRAW_TRIANGLES | vertex address, vertex count, topology, vertex format |
 | `0x11` | DRAW_INDEXED | vertex address, index address, index count, topology, vertex format |
 | `0x12` | DRAW_FLAT_TRIANGLE | three screen-space XYZ vertices, packed RGB, diffuse intensity |
+| `0x14` | DRAW_TL_TRIANGLE | 3 vertices, each POSITION(float3) and packed RGBA8 color |
 | `0x00` | END | payloadなし。FIFO投入バッチの終端 |
 | `0x7F` | NOP | 任意 |
 
@@ -121,6 +122,14 @@ SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（
 ### 6.4 軽量フラット三角形コマンド
 
 `DRAW_FLAT_TRIANGLE` (`0x12`) は、ソフトウェアで変換・投影済みの頂点を送る最小構成の描画コマンドである。payloadは11ワードで、`x0,y0,z0,x1,y1,z1,x2,y2,z2,RGB,intensity` の順とする。頂点座標と深度は符号付き整数、`RGB`は下位24-bitの`0xRRGGBB`、`intensity`は0～255とする。各画素の色は三頂点で一定とし、各RGB成分に`intensity / 255`を乗算する。深度は三角形内で線形補間し、値が小さい画素を手前としてZテスト・更新する。テクスチャ、透視補正、クリッピング、カリングは行わず、画面範囲との交差部分のみラスタライズする。このコマンドはFIFO経由のデモ向けであり、アドレス指定頂点形式とは独立している。
+
+### 6.5 最小変換・クリッピング・シェーディング経路
+
+エミュレータの最小T&L経路では、`SET_MATRIX` (`0x02`) でMODEL、VIEW、PROJECTION行列をそれぞれ設定し、`DRAW_TL_TRIANGLE` (`0x14`) で未変換頂点を投入する。行列はIEEE 754 binary32、行優先で、変換は列ベクトル規約 `clip = Projection × View × Model × position` とする。行列IDは0=MODEL、1=VIEW、2=PROJECTION。
+
+`SET_STATE` (`0x01`) は状態ID 0のシェーディング方式のみ実装する。値0はflat（第0頂点の色を三角形全体に使用）、値1はGouraud（頂点色を透視補正付きで補間）である。`DRAW_TL_TRIANGLE` のpayloadは12語、各頂点につき位置x/y/zのbinary32を3語、その後にRGBA8を上位バイトから格納した1語を並べる。法線や固定機能ライティングはまだ扱わない。
+
+T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`）に対してポリゴンをクリップし、生成頂点の色も補間する。残ったポリゴンは画面座標へ変換され、深度テスト付きで塗りつぶす。画面サイズは320×240固定で、テクスチャと背面カリングは行わない。
 
 ## 7. MMIOレジスタ
 

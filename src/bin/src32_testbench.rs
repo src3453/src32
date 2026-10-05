@@ -45,7 +45,7 @@ fn main() {
             (0..240).any(|y| (0..320).any(|x| framebuffer.get_pixel(x, y) != (0, 0, 0)));
         assert!(
             has_cube_pixel,
-            "VPU command stream produced no visible cube pixels"
+            "VPU command stream produced no visible pixels"
         );
         println!(
             "PASS: {path} still running at cycle budget {}; VPU status=0x{vpu_status:08X}",
