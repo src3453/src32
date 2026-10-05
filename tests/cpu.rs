@@ -1,5 +1,5 @@
 use cpt32::bus::Bus;
-use cpt32::cpu::Cpu;
+use cpt32::cpu::{Cpu, CpuState};
 use cpt32::devices::ram::connect_ram;
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 4] {
@@ -52,6 +52,95 @@ fn s_add(rd: u8, rs1: u8, rs2: u8) -> [u8; 2] {
 
 fn s_ret() -> [u8; 2] {
     encode_short(0xF000)
+}
+
+#[test]
+fn fsm_advances_one_state_per_tick_and_commits_at_writeback() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    cpu.load_program(0, &encode_r(0x03, 3, 1, 2));
+    cpu.write_reg(1, 20).unwrap();
+    cpu.write_reg(2, 22).unwrap();
+
+    assert_eq!(cpu.state(), CpuState::Fetch);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Decode);
+    assert_eq!(cpu.cycles(), 1);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Execute);
+    assert_eq!(cpu.read_reg(3), 0);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Writeback);
+    assert_eq!(cpu.read_reg(3), 42);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Fetch);
+    assert_eq!(cpu.cycles(), 4);
+}
+
+#[test]
+fn fsm_load_and_store_use_memory_states_and_distinct_latency() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    cpu.write_mem_u32_be(0x100, 0x1234_5678);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x01, 3, 1, 0)); // LD R3, [R1]
+    image.extend_from_slice(&encode_i(0x02, 3, 1, 4)); // ST R3, [R1+4]
+    cpu.load_program(0, &image);
+    cpu.write_reg(1, 0x100).unwrap();
+
+    cpu.tick(); // fetch
+    cpu.tick(); // decode -> memory read
+    assert_eq!(cpu.state(), CpuState::MemRead);
+    assert_eq!(cpu.read_reg(3), 0);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Writeback);
+    assert_eq!(cpu.read_reg(3), 0x1234_5678);
+    cpu.tick(); // writeback
+    let after_load = cpu.cycles();
+
+    cpu.tick();
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::MemWrite);
+    cpu.tick();
+    assert_eq!(cpu.read_mem_u32_be(0x104), 0x1234_5678);
+    cpu.tick();
+    assert_eq!(cpu.cycles() - after_load, 4);
+}
+
+#[test]
+fn fsm_multicycle_operations_stall_then_resume_with_cycle_accurate_budget() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x18, 3, 1, 2)); // MUL
+    image.extend_from_slice(&encode_r(0x19, 4, 1, 2)); // DIV
+    cpu.load_program(0, &image);
+    cpu.write_reg(1, 21).unwrap();
+    cpu.write_reg(2, 3).unwrap();
+
+    cpu.run(2);
+    assert_eq!(cpu.state(), CpuState::Mul);
+    assert_eq!(cpu.read_reg(3), 0);
+    cpu.run(2);
+    assert_eq!(cpu.state(), CpuState::Mul);
+    assert_eq!(cpu.read_reg(3), 0);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Writeback);
+    assert_eq!(cpu.read_reg(3), 63);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Fetch);
+
+    cpu.run(2);
+    assert_eq!(cpu.state(), CpuState::Div);
+    cpu.run(15);
+    assert_eq!(cpu.state(), CpuState::Div);
+    assert_eq!(cpu.read_reg(4), 0);
+    cpu.tick();
+    assert_eq!(cpu.state(), CpuState::Writeback);
+    assert_eq!(cpu.read_reg(4), 7);
 }
 
 #[test]
@@ -204,7 +293,7 @@ fn extension_m_and_sltu() {
     image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
 
     cpu.load_program(0, &image);
-    cpu.run(128);
+    cpu.run(160);
 
     assert_eq!(cpu.read_reg(3), 1);
     assert_eq!(cpu.read_reg(4), 0);

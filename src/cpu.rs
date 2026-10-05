@@ -214,6 +214,7 @@ impl Cpu {
 
     pub fn set_pc(&mut self, pc: u32) {
         self.pc = pc;
+        self.sync_register_block();
     }
 
     pub fn instruction_mode(&self) -> InstructionMode {
@@ -222,6 +223,7 @@ impl Cpu {
 
     pub fn set_instruction_mode(&mut self, mode: InstructionMode) {
         self.instr_mode = mode;
+        self.sync_register_block();
     }
 
     pub fn is_running(&self) -> bool {
@@ -250,7 +252,7 @@ impl Cpu {
     /// Advance exactly one CPU clock. Memory and arithmetic operations are
     /// represented as separate bus/functional-unit phases in the FSM.
     pub fn tick(&mut self) {
-        self.sync_from_register_block();
+        if self.state == CpuState::Fetch { self.sync_from_register_block(); }
         if !self.running { self.state = CpuState::Halt; return; }
         self.cycles += 1;
         match self.state {
@@ -364,6 +366,7 @@ impl Cpu {
             return Ok("Warning: Writing to R0 has no effect".into());
         }
         self.reg[reg] = value;
+        self.sync_register_block();
         Ok("".into())
     }
 
