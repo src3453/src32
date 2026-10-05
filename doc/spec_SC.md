@@ -70,7 +70,7 @@ SC MMIO baseは `0x80010000`、sizeは64 KiB。レジスタは32-bit big-endian�
 | `0x0014` | SPRITE_COUNT | RW | 0～256 |
 | `0x0018` | OUTPUT_GP | RW | 0～7 |
 
-RESET後はSC disabled、sprite count=0、SAT base=0、output GP=0、status clear。設定値は即時反映し、frame latch/double bufferingは初版に含めない。reserved control bitは0を書き、1を書いた場合はINVALID_CONFIGを記録する。
+RESET後はSC disabled、sprite count=0、SAT base=0、output GP=1、status clear。GP1を既定にすることでGP0のビットマップ/PCGに重ねて使える。設定値は即時反映し、frame latch/double bufferingは初版に含めない。reserved control bitは0を書き、1を書いた場合はINVALID_CONFIGを記録する。
 
 ## 7. VRAM共有と同期
 

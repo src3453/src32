@@ -49,6 +49,7 @@ GPレイヤー順はGP番号で決まり、供給元内の順序は各供給元�
 - VDP MMIO: `0x80000000`–`0x8000FFFF`。
 - 既存VRAMオフセットとPCGフォント/セルデータを直ちに移動しない。GP追加時の割当は各供給元のbase/stride設定と共に後方互換性を確認して定義する。
 - 既存の `DISPLAY_MODE=Graphics/PCG` は互換レジスタとして読み書きできるが、新合成経路では供給元の有効/無効とGP割当へ変換する。新仕様でGraphics/PCGを画面全体の排他的モードにはしない。
+- 初期移行ではbitmapはGP0、PCGの出力GPはVDPレジスタ `0xF00A`（0～7、reset値0）、PCGの重ね描き有効は `0xF00B`（reset値0）、SCのGPはSC `OUTPUT_GP`（reset値1）、VPUのGPはVPUレジスタ `0x0014`（reset値7）で選択する。Graphics modeでは `PCG_OVERLAY_ENABLE` を立てるとbitmapとPCGを同時に出力できる。旧PCG modeはPCGを画面ベースとして使う互換動作を維持する。
 - レジスタの詳細オフセットは実装移行時に定義する。現行の基本レジスタ・PCGレジスタの意味は移行表を併記するまで削除しない。
 
 ## 6. 同期とフレーム整合性

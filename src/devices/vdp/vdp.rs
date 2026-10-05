@@ -17,11 +17,13 @@ use std::path::Path;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
+use crate::devices::sc::sc::{SC_MMIO_BASE, SC_MMIO_SIZE, Sc};
+use crate::devices::vdp::compositor::{Rgba, compose_gp, source_over};
 use crate::devices::vdp::gp::{CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH, Gp0};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
 use crate::devices::vdp::reg::DisplayMode;
 use crate::devices::vdp::reg::VdpRegs;
-use crate::devices::vpu::vpu::{Vpu, VPU_MMIO_BASE, VPU_MMIO_SIZE};
+use crate::devices::vpu::vpu::{VPU_MMIO_BASE, VPU_MMIO_SIZE, Vpu};
 
 pub const VDP_VRAM_BASE: u32 = 0x10000000;
 pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
@@ -52,6 +54,7 @@ pub struct Vdp {
     regs: VdpRegs,
     state: VdpState,
     vpu: Rc<RefCell<Vpu>>,
+    sc: Sc,
 }
 
 pub enum VdpFramebuffer<'a> {
@@ -60,6 +63,21 @@ pub enum VdpFramebuffer<'a> {
         renderer: &'a Gp0,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
+        sc_pixels: Vec<Rgba>,
+        sc_gp: u8,
+        base_gp: u8,
+        pcg: &'a PcgRenderer,
+        pcg_overlay_enable: bool,
+        pcg_screen_mode: PcgScreenMode,
+        pcg_font_bank: u8,
+        pcg_swap_fg_bg: bool,
+        pcg_cursor_pos_x: u8,
+        pcg_cursor_pos_y: u8,
+        pcg_cursor_enable: bool,
+        pcg_cursor_lines: u8,
+        pcg_cursor_blink_period: u8,
+        pcg_cursor_blink_tick: u64,
+        pcg_output_gp: u8,
     },
     Pcg {
         vram: &'a RefCell<Vec<u8>>,
@@ -75,6 +93,9 @@ pub enum VdpFramebuffer<'a> {
         cursor_blink_tick: u64,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
+        sc_pixels: Vec<Rgba>,
+        sc_gp: u8,
+        base_gp: u8,
     },
     Blank,
 }
@@ -130,20 +151,69 @@ impl<'a> VdpFramebuffer<'a> {
             ),
             VdpFramebuffer::Blank => (0, 0, 0),
         };
-        let vpu = match self {
-            VdpFramebuffer::Graphics { vpu, .. } | VdpFramebuffer::Pcg { vpu, .. } => Some(*vpu),
-            VdpFramebuffer::Blank => None,
+        let (sc_pixels, sc_gp, base_gp, vpu) = match self {
+            VdpFramebuffer::Graphics {
+                sc_pixels,
+                sc_gp,
+                base_gp,
+                vpu,
+                ..
+            }
+            | VdpFramebuffer::Pcg {
+                sc_pixels,
+                sc_gp,
+                base_gp,
+                vpu,
+                ..
+            } => (sc_pixels, *sc_gp, *base_gp, *vpu),
+            VdpFramebuffer::Blank => return (0, 0, 0),
         };
-        if let Some(vpu) = vpu {
-            let (r, g, b, a) = vpu.borrow().pixel(x, y);
-            let alpha = a as u16;
-            return (
-                ((r as u16 * alpha + base.0 as u16 * (255 - alpha)) / 255) as u8,
-                ((g as u16 * alpha + base.1 as u16 * (255 - alpha)) / 255) as u8,
-                ((b as u16 * alpha + base.2 as u16 * (255 - alpha)) / 255) as u8,
-            );
+        let mut layers = [[0, 0, 0, 0]; 8];
+        layers[base_gp as usize] = [base.0, base.1, base.2, 255];
+        if let VdpFramebuffer::Graphics {
+            pcg,
+            pcg_overlay_enable: true,
+            pcg_screen_mode,
+            pcg_font_bank,
+            pcg_swap_fg_bg,
+            pcg_cursor_pos_x,
+            pcg_cursor_pos_y,
+            pcg_cursor_enable,
+            pcg_cursor_lines,
+            pcg_cursor_blink_period,
+            pcg_cursor_blink_tick,
+            pcg_output_gp,
+            ..
+        } = self
+        {
+            if x < VDP_ACTIVE_WIDTH && y < VDP_ACTIVE_HEIGHT {
+                let rgb = pcg.get_pixel(
+                    x,
+                    y,
+                    *pcg_screen_mode,
+                    *pcg_font_bank,
+                    *pcg_swap_fg_bg,
+                    *pcg_cursor_pos_x,
+                    *pcg_cursor_pos_y,
+                    *pcg_cursor_enable,
+                    *pcg_cursor_lines,
+                    *pcg_cursor_blink_period,
+                    *pcg_cursor_blink_tick,
+                );
+                layers[*pcg_output_gp as usize] =
+                    source_over([rgb.0, rgb.1, rgb.2, 255], layers[*pcg_output_gp as usize]);
+            }
         }
-        base
+        if x < VDP_ACTIVE_WIDTH && y < VDP_ACTIVE_HEIGHT {
+            let sprite = sc_pixels[y * VDP_ACTIVE_WIDTH + x];
+            layers[sc_gp as usize] = source_over(sprite, layers[sc_gp as usize]);
+        }
+        let vpu = vpu.borrow();
+        let (r, g, b, a) = vpu.pixel(x, y);
+        let vpu_pixel = [r, g, b, a];
+        layers[vpu.output_gp as usize] = source_over(vpu_pixel, layers[vpu.output_gp as usize]);
+        let composed = compose_gp(layers, [0, 0, 0, 255]);
+        (composed[0], composed[1], composed[2])
     }
 
     fn read_border_pixel(vram: &RefCell<Vec<u8>>, border_color: u8) -> (u8, u8, u8) {
@@ -161,6 +231,7 @@ impl Vdp {
     pub fn with_font_path<P: AsRef<Path>>(font_path: Option<P>) -> Self {
         let vram = Rc::new(RefCell::new(vec![0; VDP_VRAM_SIZE as usize]));
         let vpu = Rc::new(RefCell::new(Vpu::new()));
+        let sc = Sc::new(Rc::clone(&vram));
         let gp0 = Gp0::new(Rc::clone(&vram));
         let pcg = PcgRenderer::new(Rc::clone(&vram));
         let vdp = Self {
@@ -173,6 +244,7 @@ impl Vdp {
                 pcg_cursor_blink_tick: 0,
             },
             vpu,
+            sc,
         };
         vdp.gp0.init_clut();
         vdp.pcg.init_clut();
@@ -188,12 +260,28 @@ impl Vdp {
             return VdpFramebuffer::Blank;
         }
 
+        let sc_pixels = self.sc.render_frame();
         match self.regs.display_mode {
             DisplayMode::Graphics => VdpFramebuffer::Graphics {
                 vram: self.vram.as_ref(),
                 renderer: &self.gp0,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
+                sc_pixels,
+                sc_gp: self.sc.output_gp(),
+                base_gp: 0,
+                pcg: &self.pcg,
+                pcg_overlay_enable: self.regs.pcg_overlay_enable,
+                pcg_screen_mode: self.regs.pcg_screen_mode,
+                pcg_font_bank: self.regs.pcg_font_bank,
+                pcg_swap_fg_bg: self.regs.pcg_swap_fg_bg,
+                pcg_cursor_pos_x: self.regs.pcg_cursor_pos_x,
+                pcg_cursor_pos_y: self.regs.pcg_cursor_pos_y,
+                pcg_cursor_enable: self.regs.pcg_cursor_enable,
+                pcg_cursor_lines: self.regs.pcg_cursor_lines,
+                pcg_cursor_blink_period: self.regs.pcg_cursor_blink_period,
+                pcg_cursor_blink_tick: self.state.pcg_cursor_blink_tick,
+                pcg_output_gp: self.regs.pcg_output_gp,
             },
             DisplayMode::PCG => VdpFramebuffer::Pcg {
                 vram: self.vram.as_ref(),
@@ -209,6 +297,9 @@ impl Vdp {
                 cursor_blink_tick: self.state.pcg_cursor_blink_tick,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
+                sc_pixels,
+                sc_gp: self.sc.output_gp(),
+                base_gp: self.regs.pcg_output_gp,
             },
         }
     }
@@ -242,11 +333,14 @@ impl Vdp {
         }
     }
 
-    fn read_pcg_register(&self, reg_addr: u32) -> u8 {
-        if self.regs.display_mode != DisplayMode::PCG {
-            return 0;
-        }
+    fn read_sc_register(&self, reg_addr: u32) -> u8 {
+        self.sc.read_register(reg_addr)
+    }
+    fn write_sc_register(&mut self, reg_addr: u32, value: u8) {
+        self.sc.write_register(reg_addr, value);
+    }
 
+    fn read_pcg_register(&self, reg_addr: u32) -> u8 {
         match reg_addr {
             0xF000 => (self.regs.display_enable as u8) ^ 1,
             0xF001 => self.regs.pcg_font_bank,
@@ -258,6 +352,8 @@ impl Vdp {
             0xF007 => self.regs.pcg_cursor_enable as u8,
             0xF008 => self.regs.pcg_cursor_lines,
             0xF009 => self.regs.pcg_cursor_blink_period,
+            0xF00A => self.regs.pcg_output_gp,
+            0xF00B => self.regs.pcg_overlay_enable as u8,
             0xFFFF => 0,
             _ => 0,
         }
@@ -281,10 +377,6 @@ impl Vdp {
             return;
         }
 
-        if self.regs.display_mode != DisplayMode::PCG {
-            return;
-        }
-
         match reg_addr {
             0xF000 => self.regs.display_enable = (value & 1) == 0,
             0xF001 => self.regs.pcg_font_bank = value & 1,
@@ -296,6 +388,14 @@ impl Vdp {
             0xF007 => self.regs.pcg_cursor_enable = (value & 1) != 0,
             0xF008 => self.regs.pcg_cursor_lines = value,
             0xF009 => self.regs.pcg_cursor_blink_period = value,
+            0xF00A => {
+                if value < 8 {
+                    self.regs.pcg_output_gp = value;
+                } else {
+                    self.regs.status |= 1;
+                }
+            }
+            0xF00B => self.regs.pcg_overlay_enable = value & 1 != 0,
             0xFFFF => {
                 if value & 1 != 0 {
                     self.reset_state();
@@ -310,6 +410,7 @@ impl Vdp {
 enum VdpPort {
     Vram,
     Regs,
+    Sc,
 }
 
 struct VdpDevice {
@@ -327,6 +428,7 @@ impl Device for VdpDevice {
     fn read(&mut self, addr: u32) -> u8 {
         match self.port {
             VdpPort::Vram => self.vdp.borrow().vram.borrow()[addr as usize],
+            VdpPort::Sc => self.vdp.borrow().read_sc_register(addr),
             VdpPort::Regs => {
                 let vdp = self.vdp.borrow();
                 if addr < 0x0100 {
@@ -343,6 +445,7 @@ impl Device for VdpDevice {
     fn write(&mut self, addr: u32, value: u8) {
         match self.port {
             VdpPort::Vram => self.vdp.borrow_mut().vram.borrow_mut()[addr as usize] = value,
+            VdpPort::Sc => self.vdp.borrow_mut().write_sc_register(addr, value),
             VdpPort::Regs => {
                 let mut vdp = self.vdp.borrow_mut();
                 if addr < 0x0100 {
@@ -358,6 +461,7 @@ impl Device for VdpDevice {
         match self.port {
             VdpPort::Vram => VDP_VRAM_SIZE,
             VdpPort::Regs => VDP_REG_SIZE,
+            VdpPort::Sc => SC_MMIO_SIZE,
         }
     }
 }
@@ -408,13 +512,19 @@ pub fn connect_vdp_with_font<P: AsRef<Path>>(
         VDP_REG_BASE,
         Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)),
     );
+    bus.add_device(
+        SC_MMIO_BASE,
+        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Sc)),
+    );
     bus.add_device(VPU_MMIO_BASE, Box::new(VpuRegisterDevice::new(vpu)));
     vdp
 }
 
 struct VpuRegisterDevice(Rc<RefCell<Vpu>>);
 impl VpuRegisterDevice {
-    fn new(vpu: Rc<RefCell<Vpu>>) -> Self { Self(vpu) }
+    fn new(vpu: Rc<RefCell<Vpu>>) -> Self {
+        Self(vpu)
+    }
 }
 impl Device for VpuRegisterDevice {
     fn read(&mut self, addr: u32) -> u8 {
@@ -426,6 +536,7 @@ impl Device for VpuRegisterDevice {
             4 => (v.status >> shift) as u8,
             0x0c => ((v.fifo.len() as u32) >> shift) as u8,
             0x10 => (4096u32 >> shift) as u8,
+            0x14 => (v.output_gp as u32 >> shift) as u8,
             _ => 0,
         }
     }
@@ -435,14 +546,39 @@ impl Device for VpuRegisterDevice {
         let mut v = self.0.borrow_mut();
         match reg {
             4 => v.status &= !((value as u32) << shift),
-            8 if shift == 0 && value & 2 != 0 => { v.fifo.clear(); v.command.clear(); v.expected = None; v.status = 0; v.write_latch = 0; v.write_mask = 0; }
-            8 if shift == 0 && value & 4 != 0 => { v.fifo.clear(); v.command.clear(); v.expected = None; v.status = 0; v.write_latch = 0; v.write_mask = 0; v.plane.fill(0); }
+            8 if shift == 0 && value & 2 != 0 => {
+                v.fifo.clear();
+                v.command.clear();
+                v.expected = None;
+                v.status = 0;
+                v.write_latch = 0;
+                v.write_mask = 0;
+            }
+            8 if shift == 0 && value & 4 != 0 => {
+                v.fifo.clear();
+                v.command.clear();
+                v.expected = None;
+                v.status = 0;
+                v.write_latch = 0;
+                v.write_mask = 0;
+                v.plane.fill(0);
+            }
+            0x14 if shift == 0 => {
+                if value < 8 {
+                    v.output_gp = value;
+                } else {
+                    v.status |= 1 << 3;
+                }
+            }
             0x2c if shift == 0 => {
                 if v.write_mask == 0x07 {
                     let word = v.write_latch | value as u32;
-                    v.write_latch = 0; v.write_mask = 0;
+                    v.write_latch = 0;
+                    v.write_mask = 0;
                     v.push(word);
-                } else { v.status |= 1 << 3; }
+                } else {
+                    v.status |= 1 << 3;
+                }
             }
             0x2c => {
                 let byte = (3 - shift / 8) as u8;
@@ -452,5 +588,7 @@ impl Device for VpuRegisterDevice {
             _ => {}
         }
     }
-    fn size(&self) -> u32 { VPU_MMIO_SIZE }
+    fn size(&self) -> u32 {
+        VPU_MMIO_SIZE
+    }
 }

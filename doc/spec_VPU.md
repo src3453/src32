@@ -128,6 +128,7 @@ SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（
 | `0x0008` | CONTROL | RW | bit0 IRQ_ENABLE, bit1 FIFO_RESET (write-1 pulse), bit2 SOFT_RESET (write-1 pulse) |
 | `0x000C` | FIFO_LEVEL | R | FIFO使用中ワード数 |
 | `0x0010` | FIFO_CAPACITY | R | FIFO容量（ワード数、実装固定値） |
+| `0x0014` | OUTPUT_GP | RW | VDP出力先GP (0～7、reset値7)。無効値は無視してCOMMAND_ERRORを立てる |
 | `0x0020` | DMA_ADDRESS | RW | コマンド列開始アドレス |
 | `0x0024` | DMA_LENGTH | RW | コマンド列長（バイト） |
 | `0x0028` | DMA_START | W | bit0に1を書いてDMA実行開始 |

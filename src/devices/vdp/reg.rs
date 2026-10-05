@@ -18,6 +18,8 @@ pub struct VdpRegs {
     pub pcg_cursor_enable: bool,
     pub pcg_cursor_lines: u8,
     pub pcg_cursor_blink_period: u8,
+    pub pcg_output_gp: u8,
+    pub pcg_overlay_enable: bool,
     pub status: u8,
 }
 
@@ -35,6 +37,8 @@ impl VdpRegs {
             pcg_cursor_enable: false,
             pcg_cursor_lines: 0,
             pcg_cursor_blink_period: 0,
+            pcg_output_gp: 0,
+            pcg_overlay_enable: false,
             status: 0,
         }
     }

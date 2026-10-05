@@ -11,15 +11,19 @@ pub mod devices {
     }
     pub mod sgu {
         pub mod s3w2;
-        pub mod sqv4;
         pub mod sgu;
+        pub mod sqv4;
     }
     pub mod vdp {
         pub mod clut;
+        pub mod compositor;
         pub mod gp;
         pub mod pcg;
         pub mod reg;
         pub mod vdp;
+    }
+    pub mod sc {
+        pub mod sc;
     }
     pub mod vpu {
         pub mod vpu;
