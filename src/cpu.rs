@@ -104,6 +104,13 @@ pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0100;
 const INSN_SIZE: u32 = 4;
 const SHORT_INSN_SIZE: u32 = 2;
 
+/// Current phase of the non-pipelined CPU. One call to `tick` advances one state.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CpuState { Fetch, Decode, Execute, MemRead, MemWrite, Mul, Div, Writeback, Halt }
+
+#[derive(Debug, Clone, Copy)]
+enum PendingInstruction { RawNormal(u32), RawShort(u16), Normal(Instruction), Short(ShortInstruction) }
+
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
@@ -118,6 +125,9 @@ pub struct Cpu {
     irq_pending_number: u8,
     irq_line: bool,
     register_block: Rc<RefCell<CpuRegisterBlock>>,
+    state: CpuState,
+    instruction: Option<PendingInstruction>,
+    cycles_left: u32,
 }
 
 impl Cpu {
@@ -138,6 +148,9 @@ impl Cpu {
             irq_pending_number: 0,
             irq_line: false,
             register_block,
+            state: CpuState::Fetch,
+            instruction: None,
+            cycles_left: 0,
         };
         cpu.sync_register_block();
         cpu
@@ -154,6 +167,9 @@ impl Cpu {
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
+        self.state = CpuState::Fetch;
+        self.instruction = None;
+        self.cycles_left = 0;
         self.sync_register_block();
     }
 
@@ -214,6 +230,68 @@ impl Cpu {
 
     pub fn cycles(&self) -> u128 {
         self.cycles
+    }
+
+    pub fn state(&self) -> CpuState { self.state }
+
+    fn is_load(insn: PendingInstruction) -> bool {
+        matches!(insn, PendingInstruction::Normal(Instruction::Ld {..} | Instruction::Ldb {..} | Instruction::Ldh {..}) | PendingInstruction::Short(ShortInstruction::Ld {..}))
+    }
+    fn is_store(insn: PendingInstruction) -> bool {
+        matches!(insn, PendingInstruction::Normal(Instruction::St {..} | Instruction::Stb {..} | Instruction::Sth {..}) | PendingInstruction::Short(ShortInstruction::St {..}))
+    }
+    fn is_mul(insn: PendingInstruction) -> bool {
+        matches!(insn, PendingInstruction::Normal(Instruction::Mul {..} | Instruction::Mulh {..}))
+    }
+    fn is_div(insn: PendingInstruction) -> bool {
+        matches!(insn, PendingInstruction::Normal(Instruction::Div {..} | Instruction::Divu {..} | Instruction::Mod {..}))
+    }
+
+    /// Advance exactly one CPU clock. Memory and arithmetic operations are
+    /// represented as separate bus/functional-unit phases in the FSM.
+    pub fn tick(&mut self) {
+        self.sync_from_register_block();
+        if !self.running { self.state = CpuState::Halt; return; }
+        self.cycles += 1;
+        match self.state {
+            CpuState::Fetch => {
+                let raw = match self.instr_mode { InstructionMode::Normal => self.fetch_u32(), InstructionMode::Short => u32::from(self.fetch_u16_at(self.pc)) };
+                self.instruction = Some(match self.instr_mode { InstructionMode::Normal => PendingInstruction::RawNormal(raw), InstructionMode::Short => PendingInstruction::RawShort(raw as u16) });
+                self.state = CpuState::Decode;
+            }
+            CpuState::Decode => {
+                self.instruction = self.instruction.map(|i| match i { PendingInstruction::RawNormal(raw) => PendingInstruction::Normal(Self::decode(raw)), PendingInstruction::RawShort(raw) => PendingInstruction::Short(Self::decode_short(raw)), other => other });
+                if let Some(insn) = self.instruction {
+                    self.state = if Self::is_load(insn) { CpuState::MemRead } else if Self::is_store(insn) { CpuState::MemWrite } else if Self::is_mul(insn) { self.cycles_left = 3; CpuState::Mul } else if Self::is_div(insn) { self.cycles_left = 16; CpuState::Div } else { CpuState::Execute };
+                }
+            }
+            CpuState::Execute | CpuState::MemRead | CpuState::MemWrite => {
+                self.commit_pending();
+                if self.running { self.state = CpuState::Writeback; } else { self.state = CpuState::Halt; }
+            }
+            CpuState::Mul | CpuState::Div => {
+                self.cycles_left -= 1;
+                if self.cycles_left == 0 { self.commit_pending(); self.state = if self.running { CpuState::Writeback } else { CpuState::Halt }; }
+            }
+            CpuState::Writeback => {
+                self.instruction = None;
+                if self.running && self.irq_enable && self.irq_pending {
+                    self.epc = self.pc; self.cause = self.irq_pending_number; self.irq_pending = false; self.irq_enable = false;
+                    self.instr_mode = InstructionMode::Normal; self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+                }
+                self.state = CpuState::Fetch;
+            }
+            CpuState::Halt => {}
+        }
+        self.sync_register_block();
+    }
+
+    fn commit_pending(&mut self) {
+        match self.instruction {
+            Some(PendingInstruction::Normal(i)) => self.execute_normal(i),
+            Some(PendingInstruction::Short(i)) => self.execute_short(i),
+            _ => {}
+        }
     }
 
     pub fn epc(&self) -> u32 {
@@ -877,56 +955,21 @@ impl Cpu {
         txt
     }
 
-    fn step(&mut self) {
-        // MMIO writes made by firmware/debuggers become visible before the
-        // next instruction. CPU-owned state is published again on commit.
-        self.sync_from_register_block();
-        if !self.running {
-            return;
-        }
-
-        self.cycles += 1;
-        match self.instr_mode {
-            InstructionMode::Normal => {
-                let raw = self.fetch_u32();
-                let insn = Self::decode(raw);
-                self.cycles += 1; // decode
-                self.execute_normal(insn);
-            }
-            InstructionMode::Short => {
-                let raw = self.fetch_u16_at(self.pc);
-                let insn = Self::decode_short(raw);
-                self.cycles += 1; // decode
-                self.execute_short(insn);
-            }
-        }
-        self.cycles += 1; // execute
-
-        // Interrupts are sampled only after the complete instruction has
-        // committed. This also makes the saved EPC the next instruction.
-        if self.running && self.irq_enable && self.irq_pending {
-            self.epc = self.pc;
-            self.cause = self.irq_pending_number;
-            self.irq_pending = false;
-            self.irq_enable = false;
-            self.instr_mode = InstructionMode::Normal;
-            self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
-        }
-        self.sync_register_block();
-    }
-
     pub fn step_once(&mut self) -> bool {
         if !self.running {
             return false;
         }
-        self.step();
+        let start = self.cycles;
+        while self.running && (self.cycles == start || self.state != CpuState::Fetch) { self.tick(); }
+        // Complete one full instruction, returning when its commit returns the FSM to FETCH.
+        if self.cycles == start { while self.running && self.state != CpuState::Fetch { self.tick(); } }
         true
     }
 
     pub fn run(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
         while (self.cycles < start_cycles + max_cycles as u128) && self.running {
-            self.step();
+            self.tick();
         }
     }
 }

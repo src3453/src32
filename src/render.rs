@@ -423,6 +423,8 @@ impl WgpuPresenter {
         ) -> Result<(), FrameError>,
     {
         let framebuffer = vdp.borrow();
+        // VdpFramebuffer::get_pixel composites the VPU RGBA plane over the
+        // selected VDP graphics/PCG plane before the existing wgpu upload.
         let fb = framebuffer.framebuffer();
         let (frame_width, frame_height) = fb.dimensions();
         self.ensure_frame_texture(frame_width as u32, frame_height as u32);

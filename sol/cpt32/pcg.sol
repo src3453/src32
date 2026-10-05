@@ -33,17 +33,17 @@ fn _pcg_acopy (ptr len ptr2) :
 ;
 
 fn _pcg_set_cur (x y) :
-    x 0x8003f005 stb
-    y 0x8003f006 stb
+    x 0x8000f005 stb
+    y 0x8000f006 stb
 ;
 
 fn col40 () :
-    0 0x8003f003 stb # mode
+    0 0x8000f003 stb # mode
     40 >pcg_width
 ;
 
 fn col80 () :
-    1 0x8003f003 stb # mode
+    1 0x8000f003 stb # mode
     80 >pcg_width
 ;
 
@@ -62,11 +62,11 @@ fn cls (color) :
 ;
 
 fn initPCG () :
-    1 0x80030001 stb # mode
-    0 0x8003f003 stb # mode
-    0 0x8003f000 stb # enable
-    1 0x8003f007 stb # cursor
-    10 0x8003f009 stb # cursor
+    1 0x80000001 stb # mode
+    0 0x8000f003 stb # mode
+    0 0x8000f000 stb # enable
+    1 0x8000f007 stb # cursor
+    10 0x8000f009 stb # cursor
     0 0 _pcg_set_cur # cursor
 ;
 

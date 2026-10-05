@@ -21,6 +21,9 @@ pub mod devices {
         pub mod reg;
         pub mod vdp;
     }
+    pub mod vpu {
+        pub mod vpu;
+    }
     pub mod pec {
         pub mod rng;
         pub mod serial;
