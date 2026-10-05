@@ -13,7 +13,7 @@ _pcg_ln
 "  SGU (rev 0.1; S3W2)" prnlnscr
 0x15 colorfg
 "  VPU (Not installed)" prnlnscr
-"  SC (Not installed)" prnlnscr
+"  SGC (Not installed)" prnlnscr
 "  DMAC (Not installed)" prnlnscr
 "  IRQC (Not installed)" prnlnscr
 _pcg_ln 

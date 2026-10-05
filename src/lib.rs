@@ -22,8 +22,8 @@ pub mod devices {
         pub mod reg;
         pub mod vdp;
     }
-    pub mod sc {
-        pub mod sc;
+    pub mod sgc {
+        pub mod sgc;
     }
     pub mod vpu {
         pub mod vpu;

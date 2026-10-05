@@ -18,7 +18,7 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::bus::{Bus, Device};
-use crate::devices::sc::sc::{SC_MMIO_BASE, SC_MMIO_SIZE, Sc};
+use crate::devices::sgc::sgc::{SGC_MMIO_BASE, SGC_MMIO_SIZE, Sgc};
 use crate::devices::vdp::compositor::{Rgba, compose_gp, source_over};
 use crate::devices::vdp::gp::{CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH, Gp0};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
@@ -55,7 +55,7 @@ pub struct Vdp {
     regs: VdpRegs,
     state: VdpState,
     vpu: Rc<RefCell<Vpu>>,
-    sc: Sc,
+    sgc: Sgc,
 }
 
 /// Snapshot of the sources currently assigned to each graphics plane.
@@ -73,8 +73,8 @@ pub enum VdpFramebuffer<'a> {
         renderer: &'a Gp0,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
-        sc_pixels: Vec<Rgba>,
-        sc_gp: u8,
+        sgc_pixels: Vec<Rgba>,
+        sgc_gp: u8,
         base_gp: u8,
         pcg: &'a PcgRenderer,
         pcg_overlay_enable: bool,
@@ -104,8 +104,8 @@ pub enum VdpFramebuffer<'a> {
         cursor_blink_tick: u64,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
-        sc_pixels: Vec<Rgba>,
-        sc_gp: u8,
+        sgc_pixels: Vec<Rgba>,
+        sgc_gp: u8,
         base_gp: u8,
         composed_pixels: OnceLock<Vec<[u8; 3]>>,
     },
@@ -196,19 +196,19 @@ impl<'a> VdpFramebuffer<'a> {
             ),
             VdpFramebuffer::Blank => (0, 0, 0),
         };
-        let (sc_pixels, sc_gp, base_gp) = match self {
+        let (sgc_pixels, sgc_gp, base_gp) = match self {
             VdpFramebuffer::Graphics {
-                sc_pixels,
-                sc_gp,
+                sgc_pixels,
+                sgc_gp,
                 base_gp,
                 ..
             }
             | VdpFramebuffer::Pcg {
-                sc_pixels,
-                sc_gp,
+                sgc_pixels,
+                sgc_gp,
                 base_gp,
                 ..
-            } => (sc_pixels, *sc_gp, *base_gp),
+            } => (sgc_pixels, *sgc_gp, *base_gp),
             VdpFramebuffer::Blank => return (0, 0, 0),
         };
         let mut layers = [[0, 0, 0, 0]; 8];
@@ -248,11 +248,11 @@ impl<'a> VdpFramebuffer<'a> {
             }
         }
         if x < VDP_ACTIVE_WIDTH && y < VDP_ACTIVE_HEIGHT {
-            let sprite = sc_pixels
+            let sprite = sgc_pixels
                 .get(y * VDP_ACTIVE_WIDTH + x)
                 .copied()
                 .unwrap_or([0, 0, 0, 0]);
-            layers[sc_gp as usize] = source_over(sprite, layers[sc_gp as usize]);
+            layers[sgc_gp as usize] = source_over(sprite, layers[sgc_gp as usize]);
         }
         let (r, g, b, a) = vpu.pixel(x, y);
         let vpu_pixel = [r, g, b, a];
@@ -276,7 +276,7 @@ impl Vdp {
     pub fn with_font_path<P: AsRef<Path>>(font_path: Option<P>) -> Self {
         let vram = Rc::new(RefCell::new(vec![0; VDP_VRAM_SIZE as usize]));
         let vpu = Rc::new(RefCell::new(Vpu::new()));
-        let sc = Sc::new(Rc::clone(&vram));
+        let sgc = Sgc::new(Rc::clone(&vram));
         let gp0 = Gp0::new(Rc::clone(&vram));
         let pcg = PcgRenderer::new(Rc::clone(&vram));
         let vdp = Self {
@@ -289,7 +289,7 @@ impl Vdp {
                 pcg_cursor_blink_tick: 0,
             },
             vpu,
-            sc,
+            sgc,
         };
         vdp.gp0.init_clut();
         vdp.pcg.init_clut();
@@ -305,8 +305,8 @@ impl Vdp {
             return VdpFramebuffer::Blank;
         }
 
-        let sc_pixels = if self.sc.enabled() {
-            self.sc.render_frame()
+        let sgc_pixels = if self.sgc.enabled() {
+            self.sgc.render_frame()
         } else {
             Vec::new()
         };
@@ -316,8 +316,8 @@ impl Vdp {
                 renderer: &self.gp0,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
-                sc_pixels,
-                sc_gp: self.sc.output_gp(),
+                sgc_pixels,
+                sgc_gp: self.sgc.output_gp(),
                 base_gp: 0,
                 pcg: &self.pcg,
                 pcg_overlay_enable: self.regs.pcg_overlay_enable,
@@ -347,8 +347,8 @@ impl Vdp {
                 cursor_blink_tick: self.state.pcg_cursor_blink_tick,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
-                sc_pixels,
-                sc_gp: self.sc.output_gp(),
+                sgc_pixels,
+                sgc_gp: self.sgc.output_gp(),
                 base_gp: self.regs.pcg_output_gp,
                 composed_pixels: OnceLock::new(),
             },
@@ -387,9 +387,9 @@ impl Vdp {
                 self.regs.pcg_screen_mode.columns()
             ));
         }
-        if self.sc.enabled() {
-            gp_components[self.sc.output_gp() as usize]
-                .push("Sprite Controller (SC): 320x240 RGBA sprite plane".to_string());
+        if self.sgc.enabled() {
+            gp_components[self.sgc.output_gp() as usize]
+                .push("Screen Graphics Controller (SGC): 320x240 RGBA sprite plane".to_string());
         }
         let vpu = self.vpu.borrow();
         gp_components[vpu.output_gp as usize]
@@ -433,11 +433,11 @@ impl Vdp {
         }
     }
 
-    fn read_sc_register(&self, reg_addr: u32) -> u8 {
-        self.sc.read_register(reg_addr)
+    fn read_sgc_register(&self, reg_addr: u32) -> u8 {
+        self.sgc.read_register(reg_addr)
     }
-    fn write_sc_register(&mut self, reg_addr: u32, value: u8) {
-        self.sc.write_register(reg_addr, value);
+    fn write_sgc_register(&mut self, reg_addr: u32, value: u8) {
+        self.sgc.write_register(reg_addr, value);
     }
 
     fn read_pcg_register(&self, reg_addr: u32) -> u8 {
@@ -510,7 +510,7 @@ impl Vdp {
 enum VdpPort {
     Vram,
     Regs,
-    Sc,
+    Sgc,
 }
 
 struct VdpDevice {
@@ -528,7 +528,7 @@ impl Device for VdpDevice {
     fn read(&mut self, addr: u32) -> u8 {
         match self.port {
             VdpPort::Vram => self.vdp.borrow().vram.borrow()[addr as usize],
-            VdpPort::Sc => self.vdp.borrow().read_sc_register(addr),
+            VdpPort::Sgc => self.vdp.borrow().read_sgc_register(addr),
             VdpPort::Regs => {
                 let vdp = self.vdp.borrow();
                 if addr < 0x0100 {
@@ -545,7 +545,7 @@ impl Device for VdpDevice {
     fn write(&mut self, addr: u32, value: u8) {
         match self.port {
             VdpPort::Vram => self.vdp.borrow_mut().vram.borrow_mut()[addr as usize] = value,
-            VdpPort::Sc => self.vdp.borrow_mut().write_sc_register(addr, value),
+            VdpPort::Sgc => self.vdp.borrow_mut().write_sgc_register(addr, value),
             VdpPort::Regs => {
                 let mut vdp = self.vdp.borrow_mut();
                 if addr < 0x0100 {
@@ -561,7 +561,7 @@ impl Device for VdpDevice {
         match self.port {
             VdpPort::Vram => VDP_VRAM_SIZE,
             VdpPort::Regs => VDP_REG_SIZE,
-            VdpPort::Sc => SC_MMIO_SIZE,
+            VdpPort::Sgc => SGC_MMIO_SIZE,
         }
     }
 }
@@ -613,8 +613,8 @@ pub fn connect_vdp_with_font<P: AsRef<Path>>(
         Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)),
     );
     bus.add_device(
-        SC_MMIO_BASE,
-        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Sc)),
+        SGC_MMIO_BASE,
+        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Sgc)),
     );
     bus.add_device(VPU_MMIO_BASE, Box::new(VpuRegisterDevice::new(vpu)));
     vdp

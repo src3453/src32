@@ -1,11 +1,11 @@
-//! Sprite controller: VRAM SAT reader and indexed sprite rasterizer.
+//! Screen graphics controller: VRAM SAT reader and indexed sprite rasterizer.
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-pub const SC_MMIO_BASE: u32 = 0x8001_0000;
-pub const SC_MMIO_SIZE: u32 = 0x1_0000;
-pub const SC_MAX_SPRITES: usize = 256;
+pub const SGC_MMIO_BASE: u32 = 0x8001_0000;
+pub const SGC_MMIO_SIZE: u32 = 0x1_0000;
+pub const SGC_MAX_SPRITES: usize = 256;
 const ENTRY_SIZE: usize = 16;
 const VRAM_SIZE: usize = 0x40_0000;
 const CLUT_START: usize = 0x12_c00;
@@ -13,7 +13,7 @@ const CLUT_START: usize = 0x12_c00;
 const STATUS_INVALID_CONFIG: u32 = 1 << 1;
 const STATUS_INVALID_SPRITE: u32 = 1 << 2;
 
-pub struct Sc {
+pub struct Sgc {
     vram: Rc<RefCell<Vec<u8>>>,
     enabled: bool,
     sat_base: u32,
@@ -22,7 +22,7 @@ pub struct Sc {
     status: Cell<u32>,
 }
 
-impl Sc {
+impl Sgc {
     pub fn new(vram: Rc<RefCell<Vec<u8>>>) -> Self {
         Self {
             vram,
@@ -51,7 +51,7 @@ impl Sc {
         let sat_start = self.sat_base as usize;
         let sat_end = sat_start.checked_add(count.saturating_mul(ENTRY_SIZE));
         if sat_start & 15 != 0
-            || count > SC_MAX_SPRITES
+            || count > SGC_MAX_SPRITES
             || sat_end.is_none_or(|end| end > VRAM_SIZE)
         {
             self.set_error(STATUS_INVALID_CONFIG);
@@ -145,7 +145,7 @@ impl Sc {
     pub fn read_register(&self, addr: u32) -> u8 {
         let aligned = addr & !3;
         let value = match aligned {
-            0x00 => 0x5343_3031,
+            0x00 => 0x5347_4331,
             0x04 => self.enabled as u32,
             0x08 => self.status.get(),
             0x10 => self.sat_base,

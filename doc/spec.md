@@ -92,7 +92,7 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
 - 機能:
   - 表示タイミングと最終画素合成
   - GP0～GP7の論理レイヤー管理（小さい番号が奥）
-  - ビットマップ、PCG、SC、VPU等の描画供給元をGP単位でsource-over合成
+  - ビットマップ、PCG、SGC、VPU等の描画供給元をGP単位でsource-over合成
 
 - 特徴:
   - 解像度: 320x240 (標準), 640x480 (拡張)
@@ -116,21 +116,15 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
 
 ---
 
-## 2.6 SC (Sprite Controller)
+## 2.6 SGC (Screen Graphics Controller)
 
 - 機能:
   - VRAMの属性テーブルとパターンから2Dスプライトを描画
-  - SC内のpriority/index順制御
-  - flip、整数拡大縮小
-  - 選択したGPへの透明ピクセル出力
+  - MMIO FIFOコマンドによる線分、矩形、三角形などの2D描画
+  - スプライトのpriority/index順制御、flip、整数拡大縮小
+  - 選択したGPへの画素出力
 
-- BitBlt機能:
-  - メモリコピー
-  - 塗りつぶし
-  - 透明転送
-  - マスク処理
-
-初版の詳細は [`spec_SC.md`](spec_SC.md) を参照。回転とBitBltは初版SC仕様に含めない。
+詳細は [`spec_SGC.md`](spec_SGC.md) を参照。回転とBitBltは初版SGC仕様に含めない。
 
 ---
 
@@ -219,7 +213,7 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
 | Address Range | Size | Device | Attributes |
 |--------------|------|--------|-----------|
 | 0x80000000 - 0x8000FFFF | 64KB | VDP | RWS |
-| 0x80010000 - 0x8001FFFF | 64KB | SC | RWS |
+| 0x80010000 - 0x8001FFFF | 64KB | SGC | RWS |
 | 0x80020000 - 0x8002FFFF | 64KB | SGU | RWS |
 | 0x80030000 - 0x8003FFFF | 64KB | VPU | RWS |
 | 0x80040000 - 0x8004FFFF | 64KB | PeC | RWS |
