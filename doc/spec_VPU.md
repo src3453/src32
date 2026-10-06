@@ -112,6 +112,8 @@ FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入
 | `0x11` | DRAW_INDEXED | vertex address, index address, index count, topology, vertex format |
 | `0x12` | DRAW_FLAT_TRIANGLE | three screen-space XYZ vertices, packed RGB, diffuse intensity |
 | `0x14` | DRAW_TL_TRIANGLE | 3 vertices, each POSITION(float3) and packed RGBA8 color |
+| `0x15` | SET_LIGHT | light index, enabled, ambient/diffuse/specular/emission RGB, position XYZ |
+| `0x16` | DRAW_TL_LIT_TRIANGLE | 3 vertices, each POSITION(float3), NORMAL(float3), packed RGBA8 color |
 | `0x00` | END | payloadなし。FIFO投入バッチの終端 |
 | `0x7F` | NOP | 任意 |
 
@@ -127,7 +129,11 @@ SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（
 
 エミュレータの最小T&L経路では、`SET_MATRIX` (`0x02`) でMODEL、VIEW、PROJECTION行列をそれぞれ設定し、`DRAW_TL_TRIANGLE` (`0x14`) で未変換頂点を投入する。行列はIEEE 754 binary32、行優先で、変換は列ベクトル規約 `clip = Projection × View × Model × position` とする。行列IDは0=MODEL、1=VIEW、2=PROJECTION。
 
-`SET_STATE` (`0x01`) は状態ID 0のシェーディング方式のみ実装する。値0はflat（第0頂点の色を三角形全体に使用）、値1はGouraud（頂点色を透視補正付きで補間）である。`DRAW_TL_TRIANGLE` のpayloadは12語、各頂点につき位置x/y/zのbinary32を3語、その後にRGBA8を上位バイトから格納した1語を並べる。法線や固定機能ライティングはまだ扱わない。
+`SET_STATE` (`0x01`) のpayloadは状態IDと値の2語である。状態ID 0はシェーディング方式（0=flat、1=Gouraud）、状態ID 1は固定機能ライティング（0=無効、1=有効）を選ぶ。flatは三角形の一定色を使い、Gouraudは頂点色を透視補正付きで補間する。`DRAW_TL_TRIANGLE` (`0x14`) のpayloadは12語で、各頂点につき位置x/y/zのbinary32を3語、その後にRGBA8を上位バイトから格納した1語を並べる。この旧コマンドはライティングを行わない。
+
+ライトは最大8個で、`SET_LIGHT` (`0x15`) のpayloadは17語である。語順は `light_index, enabled, ambient_r, ambient_g, ambient_b, diffuse_r, diffuse_g, diffuse_b, specular_r, specular_g, specular_b, emission_r, emission_g, emission_b, position_x, position_y, position_z`。色成分と位置はIEEE 754 binary32、enabledは0または1、indexは0～7とする。ライト位置はVIEW座標系で指定する。頂点カラーがマテリアルの拡散色とアルファ値になる。Ambientは頂点カラーとの積、DiffuseはLambert項、Specularはshininess 16固定のBlinn-Phong項として計算し、Emissionはライトごとの一定RGB加算として扱う。各ライトの寄与を合計して画素出力時に0～1へクランプする。距離減衰やスポットライトはない。
+
+`DRAW_TL_LIT_TRIANGLE` (`0x16`) は法線付きT&L三角形で、payloadは21語、各頂点につき `POSITION.x/y/z`、`NORMAL.x/y/z` のbinary32各3語とRGBA8 1語をこの順で格納する。位置と法線はMODEL座標系で入力し、法線はVIEW×MODELの逆転置3×3行列で変換して正規化する。ライティングが無効なら頂点カラーをそのまま使う。有効時、Gouraudはライティング後の頂点色を補間する。flatは3頂点法線の平均と第0頂点のVIEW位置で1回照明計算し、三角形全体に同じ色を使う。隣接三角形で同じflat照明を得るには、第0頂点と法線を共通にする。法線付きコマンドには非特異なVIEW×MODEL上3×3行列が必要となる。
 
 T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`）に対してポリゴンをクリップし、生成頂点の色も補間する。残ったポリゴンは画面座標へ変換され、深度テスト付きで塗りつぶす。画面サイズは320×240固定で、テクスチャと背面カリングは行わない。
 

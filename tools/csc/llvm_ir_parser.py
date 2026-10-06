@@ -153,6 +153,9 @@ def parse_llvm_ir(source: str) -> LLVMModule:
 
 def _skip_declare(tokens, pos):
     """Skip a declare statement. Declare format: declare <ret_type> @name(<params>)"""
+    # _skip_top_level_record stops at the next top-level declaration or
+    # definition. Consume this `declare` first so the scan makes progress.
+    pos[0] += 1
     _skip_top_level_record(tokens, pos)
 
 

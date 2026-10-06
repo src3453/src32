@@ -6,7 +6,7 @@ use std::rc::Rc;
 use crate::bus::Device;
 
 pub const VECTOR_BASE: u32 = 0xFFFF_0000;
-pub const VECTOR_SIZE: u32 = 0x104;
+pub const VECTOR_SIZE: u32 = 0x140;
 pub const RESET_VECTOR: u32 = VECTOR_BASE;
 pub const ILLEGAL_INSTRUCTION_VECTOR: u32 = VECTOR_BASE + 0x04;
 pub const BUS_ERROR_VECTOR: u32 = VECTOR_BASE + 0x08;
@@ -24,12 +24,12 @@ pub struct CpuRegisterBlock {
     pub cause: u32,
     pub status: u32,
     pub instr_mode: u32,
-    vectors: [u32; 65],
+    vectors: [u32; 80],
 }
 
 impl CpuRegisterBlock {
     pub fn new() -> Self {
-        let mut vectors = [0; 65];
+        let mut vectors = [0; 80];
         vectors[0] = RESET_VECTOR;
         vectors[1] = ILLEGAL_INSTRUCTION_VECTOR;
         vectors[2] = BUS_ERROR_VECTOR;
@@ -112,7 +112,24 @@ pub const CPU_REG_BASE: u32 = 0xFFFF_0200;
 
 pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegisterBlock>> {
     let regs = Rc::new(RefCell::new(CpuRegisterBlock::new()));
-    bus.add_device(VECTOR_BASE, Box::new(SharedCpuDevice(regs.clone())));
+    // Leave 0xFFFF0010..0xFFFF00FF available for devices such as IRQC.
+    // Reset/exception vectors and IRQ vectors are separate mapped windows.
+    bus.add_device(
+        VECTOR_BASE,
+        Box::new(SharedCpuVectorDevice {
+            regs: regs.clone(),
+            offset: 0,
+            size: 0x10,
+        }),
+    );
+    bus.add_device(
+        INTERRUPT_VECTOR,
+        Box::new(SharedCpuVectorDevice {
+            regs: regs.clone(),
+            offset: 0x100,
+            size: 0x40,
+        }),
+    );
     bus.add_device(
         CPU_REG_BASE,
         Box::new(SharedCpuRegisterDevice(regs.clone())),
@@ -120,16 +137,20 @@ pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegiste
     regs
 }
 
-struct SharedCpuDevice(Rc<RefCell<CpuRegisterBlock>>);
-impl Device for SharedCpuDevice {
+struct SharedCpuVectorDevice {
+    regs: Rc<RefCell<CpuRegisterBlock>>,
+    offset: u32,
+    size: u32,
+}
+impl Device for SharedCpuVectorDevice {
     fn read(&mut self, addr: u32) -> u8 {
-        self.0.borrow_mut().read(addr)
+        self.regs.borrow_mut().read(addr + self.offset)
     }
     fn write(&mut self, addr: u32, value: u8) {
-        self.0.borrow_mut().write(addr, value);
+        self.regs.borrow_mut().write(addr + self.offset, value);
     }
     fn size(&self) -> u32 {
-        VECTOR_SIZE
+        self.size
     }
 }
 

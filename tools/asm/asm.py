@@ -612,6 +612,8 @@ class Assembler:
                 rd = parse_reg(tokens[1], entry.lineno)
                 imm = self.parse_imm_or_label(tokens[2], entry.lineno)
                 if op in {"LDIH", "LDIL"}:
+                    if tokens[2] in self.symbols:
+                        imm = (imm >> 16) & 0xFFFF if op == "LDIH" else imm & 0xFFFF
                     if not -0x8000 <= imm <= 0xFFFF:
                         raise ValueError(f"line {entry.lineno}: immediate out of 16-bit range: {imm}")
                     self.emit_insn(enc_i(opcode, rd, 0, imm))

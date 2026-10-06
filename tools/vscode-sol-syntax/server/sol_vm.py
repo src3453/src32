@@ -5,12 +5,19 @@ from __future__ import annotations
 import ast
 from dataclasses import dataclass
 import logging
+import math
 import os
 import re
+import struct
 from typing import NamedTuple
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
+FLOAT_RE = re.compile(
+    r"^-?(?:[0-9]+\.[0-9]*(?:[eE][+-]?[0-9]+)?|\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+|inf|nan)[fF]$"
+)
+NUMBER_RE = re.compile(
+    FLOAT_RE.pattern + r"|^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$"
+)
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
@@ -276,6 +283,17 @@ def _decode_string_literal(token: str) -> str:
 
 
 def parse_number(token: str) -> int:
+    if FLOAT_RE.fullmatch(token):
+        core = token[:-1]
+        try:
+            value = float(core)
+            if not math.isfinite(value):
+                raise ValueError("float literal is not finite")
+            bits = struct.unpack(">I", struct.pack(">f", value))[0]
+        except (ValueError, OverflowError, struct.error) as exc:
+            raise SolVMError(f"invalid or out-of-range float literal: {token}") from exc
+        return to_i32(bits)
+
     is_unsigned = token.endswith("u")
     core = token[:-1] if is_unsigned else token
     if core == "":

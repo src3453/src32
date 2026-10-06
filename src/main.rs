@@ -539,6 +539,8 @@ impl ApplicationHandler for GuiApp {
                 }
                 self.next_frame_deadline = now + FRAME_INTERVAL;
                 self.vdp.borrow_mut().tick();
+                self.cpu.set_irq_source(0, true);
+                self.cpu.set_irq_source(0, false);
                 if let (Some(window), Some(presenter)) =
                     (self.window.as_ref(), self.presenter.as_mut())
                 {

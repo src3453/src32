@@ -4,11 +4,11 @@
 
 ## できることと実装範囲
 
-現在のエミュレータでは、画面クリア (`CLEAR`, `0x04`)、フラット三角形 (`DRAW_FLAT_TRIANGLE`, `0x12`)、変換前頂点の描画 (`DRAW_TL_TRIANGLE`, `0x14`)、変換行列設定 (`SET_MATRIX`, `0x02`)、シェーディング方式選択 (`SET_STATE`, `0x01`) を FIFO 経由で使えます。`0x12` は投影済み座標用です。`0x14` は頂点を Model/View/Projection 行列で変換してから描きます。
+現在のエミュレータでは、画面クリア (`CLEAR`, `0x04`)、フラット三角形 (`DRAW_FLAT_TRIANGLE`, `0x12`)、変換前頂点の描画 (`DRAW_TL_TRIANGLE`, `0x14`)、ライト設定 (`SET_LIGHT`, `0x15`)、法線付き変換頂点の描画 (`DRAW_TL_LIT_TRIANGLE`, `0x16`)、変換行列設定 (`SET_MATRIX`, `0x02`)、シェーディング方式選択 (`SET_STATE`, `0x01`) を FIFO 経由で使えます。`0x12` は投影済み座標用です。`0x14` と `0x16` は頂点を Model/View/Projection 行列で変換してから描きます。
 
-フラットモードでは1つの頂点色を三角形全体に使い、Gouraudモードでは頂点色を三角形内で透視補正付きで補間します。T&L経路はクリップ空間で左右・上下・近遠の6面をクリップし、深度テストして塗りつぶします。法線を使った照明計算、テクスチャ、背面カリングはまだありません。`0x12` の明度係数付き画素描画経路は引き続き使えます。
+`0x16` は頂点法線をVIEW×MODELの逆転置行列で変換して照明します。ライトは最大8個まで設定でき、各ライトはAmbient、Diffuse、Specular、Emission、VIEW座標のPositionを持ちます。flatは三角形全体で一定の照明色、Gouraudは頂点ごとの照明色を補間します。T&L経路はクリップ空間の6面をクリップし、深度テストして塗りつぶします。テクスチャと背面カリングはありません。`0x12` の明度係数付き画素描画経路も引き続き使えます。
 
-より広いコマンド形式と実装範囲は [VPU 仕様書](spec_VPU.md)を参照してください。アドレス指定頂点、インデックス描画、DMA、Phongライティングなどはまだ実装されていません。
+より広いコマンド形式と実装範囲は [VPU 仕様書](spec_VPU.md)を参照してください。アドレス指定頂点、インデックス描画、DMA、距離減衰付きライトなどはまだ実装されていません。
 
 ## MMIO アドレス
 
@@ -148,6 +148,37 @@ fn set_identity_matrix (id) :
 ```
 
 位置値はbinary32そのものではなく、32-bit語としてのIEEE 754ビット列です。`vpu_tnl_triangle.sol` は単位行列、Gouraud色、画面右端からはみ出す頂点を使い、VPU側の行列処理とクリッピングを実演します。
+
+## 7. 法線とライトでシェーディングする
+
+`SET_LIGHT` (`0x15`) でライトを登録し、`SET_STATE` の状態ID 1を1にしてライティングを有効にします。ライトは最大8個（番号0～7）です。コマンドのpayloadは17語で、色と位置はbinary32のビット列、位置はVIEW座標です。
+
+```sol
+0x15000011 emit # SET_LIGHT, payload 17語
+0 emit           # ライト番号 0
+1 emit           # enabled
+0x3DCCCCCD emit 0x3DCCCCCD emit 0x3DCCCCCD emit # Ambient RGB = 0.1
+0x3F666666 emit 0x3F666666 emit 0x3F666666 emit # Diffuse RGB = 0.9
+0x3E99999A emit 0x3E99999A emit 0x3E99999A emit # Specular RGB = 0.3
+0 emit 0 emit 0 emit                         # Emission RGB = 0
+0xC2C80000 emit 0x42C80000 emit 0x42A00000 emit # Position = (-100, 100, 80)
+
+0x01000002 emit # SET_STATE
+1 emit           # 状態ID: lighting
+1 emit           # 有効
+```
+
+法線付き三角形 `DRAW_TL_LIT_TRIANGLE` (`0x16`) のpayloadは21語です。各頂点につき位置XYZ、法線XYZをbinary32で送り、その後にRGBA8888を送ります。位置と法線はMODEL座標で指定します。AmbientとDiffuseは頂点色を材質色として計算し、Specularはshininess 16固定、Emissionはライトごとの一定色を加算します。シェーディング状態ID 0を0にするとflat、1にするとGouraudです。
+
+```sol
+0x16000015 emit # DRAW_TL_LIT_TRIANGLE, payload 21語
+# 頂点0: position (x,y,z), normal (nx,ny,nz), RGBA
+0xBF000000 emit 0xBF000000 emit 0x3F000000 emit
+0 emit 0 emit 0x3F800000 emit 0xFF8040FF emit
+# 頂点1と頂点2も同じ7語形式で続ける
+```
+
+無効化するライトは同じ `SET_LIGHT` を送り、enabledを0にします。色の計算式とコマンドの全payloadは [VPU仕様書](spec_VPU.md) を参照してください。
 
 ## ビルドと実行
 

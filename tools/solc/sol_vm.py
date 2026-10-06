@@ -3,14 +3,21 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import logging
+import math
 import os
 import re
+import struct
 from typing import NamedTuple
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-NUMBER_RE = re.compile(r"^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$")
+FLOAT_RE = re.compile(
+    r"^-?(?:[0-9]+\.[0-9]*(?:[eE][+-]?[0-9]+)?|\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+|inf|nan)[fF]$"
+)
+NUMBER_RE = re.compile(
+    FLOAT_RE.pattern + r"|^-?[0-9]+u?$|^0[xX][0-9a-fA-F]+u?$|^0[bB][01]+u?$"
+)
 INT32_MIN = -(2**31)
 INT32_MAX = 2**31 - 1
 UINT32_MAX = 2**32 - 1
@@ -125,6 +132,7 @@ class Program:
     labels: dict[str, int]
     functions: dict[str, int]
     read_only_data: list[tuple[int, bytes]]
+    irq_handlers: dict[int, str] = field(default_factory=dict)
     effective_stack_size_bytes: int = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
 
@@ -276,6 +284,17 @@ def _decode_string_literal(token: str) -> str:
 
 
 def parse_number(token: str) -> int:
+    if FLOAT_RE.fullmatch(token):
+        core = token[:-1]
+        try:
+            value = float(core)
+            if not math.isfinite(value):
+                raise ValueError("float literal is not finite")
+            bits = struct.unpack(">I", struct.pack(">f", value))[0]
+        except (ValueError, OverflowError, struct.error) as exc:
+            raise SolVMError(f"invalid or out-of-range float literal: {token}") from exc
+        return to_i32(bits)
+
     is_unsigned = token.endswith("u")
     core = token[:-1] if is_unsigned else token
     if core == "":
@@ -355,6 +374,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     macros: dict[str, list[str]] = {}
     next_var_addr = var_base
     functions: dict[str, dict] = {}
+    irq_handlers: dict[int, str] = {}
     kept_functions: set[str] = set()
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
@@ -798,6 +818,16 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             if name in functions:
                 raise SolVMError(f"duplicate function: {name}")
             functions[name] = {"args": args, "body": body_tokens, "locals": locals_list}
+            irq_match = re.fullmatch(r"irq(\d+)", name)
+            if irq_match:
+                irq_number = int(irq_match.group(1))
+                if irq_number > 15:
+                    raise SolVMError(f"IRQ handler number must be 0..15: {name}")
+                if args:
+                    raise SolVMError(f"IRQ handler must not have arguments: {name}")
+                if irq_number in irq_handlers:
+                    raise SolVMError(f"duplicate IRQ handler: {name}")
+                irq_handlers[irq_number] = name
             i = j + 1
             continue
 
@@ -834,6 +864,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         reachable_functions: set[str] = set()
         pending_functions = list(called_functions(cleaned_tokens))
         pending_functions.extend(kept_functions)
+        pending_functions.extend(irq_handlers.values())
         while pending_functions:
             function_name = pending_functions.pop()
             if function_name in reachable_functions:
@@ -888,6 +919,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         read_only_data=read_only_data,
         effective_stack_size_bytes=effective_stack_size_bytes,
         required_stack_size_bytes=required_stack_size_bytes,
+        irq_handlers=irq_handlers,
     )
 
 '''

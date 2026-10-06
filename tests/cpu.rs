@@ -237,6 +237,58 @@ fn irq_is_edge_triggered_and_iret_restores_state() {
 }
 
 #[test]
+fn irq_controller_mmio_drives_cpu_interrupt_input() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    cpu.load_program(0, &encode_r(0x03, 1, 1, 1));
+
+    // IRQC enable bit 0 is the low byte of its 16-bit enable register.
+    cpu.write_mem_u8(0xFFFF_0045, 0x01);
+    cpu.set_irq_source(0, true);
+    cpu.set_irq_source(0, false);
+
+    assert!(cpu.step_once());
+    assert_eq!(cpu.irq_cause(), 0);
+    assert_eq!(cpu.pc(), 0xFFFF_0100);
+    assert_eq!(cpu.read_mem_u8(0xFFFF_0041), 0x01);
+
+    // The vector window is mapped independently from IRQC's 0xFFFF0040 page.
+    cpu.write_mem_u32_be(0xFFFF_0100, 0x1234_5678);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0100), 0x1234_5678);
+}
+
+#[test]
+fn halt_resumes_when_enabled_irq_arrives_and_returns_after_halt() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 42)); // ADDI R1, R0, 42
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.write_mem_u32_be(0xFFFF_0100, u32::from_be_bytes(encode_iret()));
+
+    cpu.run(3);
+    assert!(!cpu.is_running());
+    assert_eq!(cpu.pc(), 4);
+
+    cpu.write_mem_u8(0xFFFF_0045, 0x01);
+    cpu.set_irq_source(0, true);
+    cpu.set_irq_source(0, false);
+    cpu.run(1);
+    assert!(cpu.is_running());
+    assert_eq!(cpu.pc(), 0xFFFF_0100);
+    // The IRQ handler acknowledges the latched IRQC source before IRET.
+    cpu.write_mem_u8(0xFFFF_0041, 0x01);
+
+    cpu.run(12);
+    assert_eq!(cpu.read_reg(1), 42);
+    assert!(!cpu.is_running());
+}
+
+#[test]
 fn cpu_reserved_vectors_and_registers_are_mmio_mapped() {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
@@ -345,6 +397,34 @@ fn short_mode_jmps_executes_and_returns_to_normal() {
 
     assert_eq!(cpu.read_reg(3), 12);
     assert_eq!(cpu.pc(), 16);
+}
+
+#[test]
+fn iret_restores_short_mode_interrupted_by_irq() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+
+    image.extend_from_slice(&encode_i(0x1D, 0, 0, 0)); // JMPS +0
+    image.extend_from_slice(&s_ldi(1, 5));
+    image.extend_from_slice(&s_ret());
+    cpu.load_program(0, &image);
+    cpu.write_mem_u32_be(0xFFFF_0108, u32::from_be_bytes(encode_iret()));
+    cpu.set_irq_input(true, 2);
+
+    assert!(cpu.step_once());
+    assert_eq!(cpu.pc(), 0xFFFF_0108);
+    assert_eq!(cpu.instruction_mode(), cpt32::cpu::InstructionMode::Normal);
+
+    cpu.set_irq_input(false, 2);
+    assert!(cpu.step_once());
+    assert_eq!(cpu.pc(), 4);
+    assert_eq!(cpu.instruction_mode(), cpt32::cpu::InstructionMode::Short);
+    assert!(cpu.irq_enabled());
+
+    assert!(cpu.step_once());
+    assert_eq!(cpu.read_reg(1), 5);
 }
 
 #[test]

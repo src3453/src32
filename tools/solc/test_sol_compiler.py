@@ -161,6 +161,55 @@ def test_assembler_accepts_signed_ldi():
     assert binary[4:] == assembler.assemble("LDIL R1, -1")
 
 
+def test_assembler_splits_label_for_ldih_and_ldil():
+    assembler = Assembler()
+    binary = assembler.assemble(
+        "LDIH R1, irq_dispatch\n"
+        "LDIL R1, irq_dispatch\n"
+        ".ORG 0x00010000\n"
+        "irq_dispatch:\n"
+        "NOP"
+    )
+
+    assert binary[:8] == assembler.assemble("LDIH R1, 0x0001\nLDIL R1, 0x0000")
+
+
+def test_compile_irq_handler_installs_indirect_vectors_and_dispatcher():
+    asm = compile_to_src32_asm("fn irq5 () : retn ; halt", use_short_mode=False)
+
+    assert "LDIH R30, __solc_irq_dispatch" in asm
+    assert "LDIL R30, __solc_irq_dispatch" in asm
+    assert "LDIH R14, 0x2FC0" in asm  # JR R30 instruction word
+    assert "ST R14, [R13 + 276]" in asm  # IRQ 5 vector slot
+    assert "LD R14, [R13 + 0]" in asm  # CPU CAUSE register
+    assert "BEQ R14, R15, __solc_irq_case_5" in asm
+    assert "JAL irq5" in asm
+    assert "IRET" in asm
+    assert ".ORG 0xFFFF" not in asm
+
+    # Vectors live in MMIO and are initialized at runtime, so the resulting
+    # flat program image must remain compact enough to assemble normally.
+    binary = Assembler().assemble(asm)
+    assert len(binary) < 0x10000
+
+
+def test_compile_rejects_irq_handler_return_value():
+    source = "fn irq3 () : 1 ret ; halt"
+    with pytest.raises(SolCompileError, match="cannot return a value"):
+        compile_to_src32_asm(source)
+
+
+def test_compile_cpt32_irqc_irq_number_helper():
+    irqc_path = Path(__file__).resolve().parents[2] / "sol" / "cpt32" / "irqc.sol"
+    source = f'!include "{irqc_path.as_posix()}"\n0 irqc_irq_number'
+    asm = compile_to_src32_asm(source, use_short_mode=False)
+
+    assert "irqc_irq_number:" in asm
+    assert "0xFFFF0040" not in asm  # library variable is loaded as split immediates
+    assert "0xFFFF0044" not in asm
+    Assembler().assemble(asm)
+
+
 def test_compile_unknown_word_error():
     with pytest.raises(SolCompileError, match="unknown word"):
         compile_to_src32_asm("1 foo")

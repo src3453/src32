@@ -92,7 +92,7 @@ Bit positions:
 - `0x3E (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
-- `0x3F (reg)`: `HALT`: Stop execution loop
+- `0x3F (reg)`: `HALT`: Stop instruction execution until an enabled IRQ is accepted; `IRET` resumes after the `HALT`
 `BEQ`/`BNE` note:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
@@ -130,7 +130,8 @@ IRQ_ENABLE = 0
 PC = 0xFFFF0100 + irq_number * 4
 ```
 
-`IRET` restores normal mode, sets `PC = EPC`, and re-enables interrupts.
+`IRET` restores the instruction mode that was active at interrupt entry, sets
+`PC = EPC`, and re-enables interrupts.
 Nested interrupts are disabled in this revision. Source arbitration is not a
 CPU function: the external `IRQC` selects the lowest-numbered enabled pending
 IRQ and drives `irq_valid`/`irq_number`.
@@ -241,7 +242,7 @@ Rules:
 - `CPUID`: writes ID/features to fixed registers
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
-- `HALT`: stop execution loop
+- `HALT`: stop instruction execution until an enabled IRQ is accepted; `IRET` resumes at the instruction after `HALT`
 
 ## 6. Memory Model (Current Emulator)
 
@@ -255,14 +256,15 @@ Endianness:
 - Multi-byte values use big-endian byte order; accesses may be unaligned.
 ### 6.1 CPU-reserved MMIO
 
-The CPU reserves two byte-addressed regions. Multi-byte values use big-endian
+CPU vectors and state use byte-addressed MMIO. Multi-byte values use big-endian
 byte order; accesses may be byte, halfword, or word sized and may be unaligned.
 
-- `0xFFFF0000..0xFFFF0103`: 65 writable vector words at four-byte intervals.
-  Unlisted entries initialize to zero. `vectors[0] = 0xFFFF0000`,
-  `vectors[1] = 0xFFFF0004`, `vectors[2] = 0xFFFF0008`, and
-  `vectors[64] = 0xFFFF0100`. These words are storage; IRQ entry computes its
-  PC directly and does not dereference a vector word.
+- `0xFFFF0000..0xFFFF000F`: reset and exception vector words.
+- `0xFFFF0100..0xFFFF013F`: sixteen writable IRQ vector instruction slots.
+  IRQ entry sets PC to `0xFFFF0100 + CAUSE * 4` and executes the instruction
+  stored in that slot.
+- `0xFFFF0040..0xFFFF004F`: IRQC pending and enable registers. The gaps between
+  vector windows are left available for MMIO devices.
 - `0xFFFF0200..0xFFFF0293`: CPU state. `R0..R31` occupy offsets
   `0x200..0x27C`, four bytes each; PC/EPC/CAUSE/STATUS/INSTR_MODE occupy
   offsets `0x280/0x284/0x288/0x28C/0x290` respectively.
@@ -289,6 +291,7 @@ persist.
   - `JAL func`
   - `LDIH R5, 0x1234`
   - `LDIL R5, 0x5678`
+- `LDIH`/`LDIL` accept a label as the immediate: `LDIH` loads its upper 16 bits and `LDIL` loads its lower 16 bits. Use both to construct a 32-bit absolute address.
 - Directives:
   - `.ORG <address>`
   - `.BYTE <value>`

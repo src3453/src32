@@ -814,6 +814,17 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     lines.append(".ORG 0x00000000")
     lines.append(f"{ENTRY_LABEL}:")
     _emit_load_imm32(lines, "R28", stack_top)
+    irq_handlers = program.irq_handlers or {}
+    if irq_handlers:
+        # R30 is reserved for the IRQ dispatcher address. The vector table is
+        # writable MMIO, so install one indirect jump instruction per vector
+        # instead of placing code at the 0xFFFFxxxx addresses in the binary.
+        lines.append("    LDIH R30, __solc_irq_dispatch")
+        lines.append("    LDIL R30, __solc_irq_dispatch")
+        _emit_load_imm32(lines, "R13", 0xFFFF0000)
+        _emit_load_imm32(lines, "R14", (0x0B << 26) | (30 << 21))  # JR R30
+        for irq_number in range(16):
+            lines.append(f"    ST R14, [R13 + {0x100 + irq_number * 4}]")
     cache = _StackCacheEmitter(lines, use_short_mode=use_short_mode, short_tag_counter=short_tag_counter)
 
     current_func: str | None = None
@@ -869,6 +880,49 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     if not program.instructions or program.instructions[-1].op != "halt":
         cache.flush()
         lines.append("    HALT")
+
+    # The common dispatcher is reached through the writable vector slots.
+    # Preserve the interrupted register file, inspect CAUSE, invoke the
+    # matching zero-argument sol function, restore state, and return via IRET.
+    if irq_handlers:
+        dispatch_label = "__solc_irq_dispatch"
+        restore_label = "__solc_irq_restore"
+        if dispatch_label in program.labels or restore_label in program.labels:
+            raise SolCompileError("solc IRQ dispatcher label is reserved")
+        lines.append(f"{dispatch_label}:")
+        lines.append("    ADDI R28, R28, -124")
+        for reg in range(1, 32):
+            if reg != 28:
+                lines.append(f"    ST R{reg}, [R28 + {(reg - 1) * 4}]")
+        _emit_load_imm32(lines, "R13", 0xFFFF0288)
+        lines.append("    LD R14, [R13 + 0]")
+        for irq_number, _function_name in sorted(irq_handlers.items()):
+            case_label = f"__solc_irq_case_{irq_number}"
+            lines.append(f"    ADDI R15, R0, {irq_number}")
+            lines.append(f"    BEQ R14, R15, {case_label}")
+        lines.append(f"    JMP {restore_label}")
+
+        for irq_number, function_name in sorted(irq_handlers.items()):
+            case_label = f"__solc_irq_case_{irq_number}"
+            if case_label in program.labels:
+                raise SolCompileError(f"solc IRQ label is reserved: {case_label}")
+            start = program.labels[function_name]
+            following = [program.labels[name] for name in program.functions if program.labels[name] > start]
+            end = min(following) if following else len(program.instructions)
+            if any(program.instructions[pc].op == "ret" for pc in range(start, end)):
+                raise SolCompileError(f"IRQ handler '{function_name}' cannot return a value")
+            lines.append(f"{case_label}:")
+            frame_size = 4 * (2 + program.functions[function_name]["n_locals"])
+            lines.append(f"    ADDI R28, R28, -{frame_size}")
+            lines.append(f"    JAL {function_name}")
+            lines.append(f"    JMP {restore_label}")
+
+        lines.append(f"{restore_label}:")
+        for reg in range(1, 32):
+            if reg != 28:
+                lines.append(f"    LD R{reg}, [R28 + {(reg - 1) * 4}]")
+        lines.append("    ADDI R28, R28, 124")
+        lines.append("    IRET")
 
     lines = _coalesce_short_trampolines(lines)
 

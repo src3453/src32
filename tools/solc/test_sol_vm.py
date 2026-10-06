@@ -1,6 +1,6 @@
 import pytest
 
-from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program
+from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program, parse_number
 
 
 def test_compiled_instruction_carries_opcode_profile():
@@ -10,6 +10,26 @@ def test_compiled_instruction_carries_opcode_profile():
     assert program.instructions[0].profile.short_weight == 1
     assert program.instructions[2].profile.shortable is True
     assert program.instructions[2].profile.short_weight > 0
+
+
+def test_compile_program_records_irq_handler_and_keeps_it_reachable():
+    program = compile_program("fn irq5 () : retn ; halt")
+
+    assert program.irq_handlers == {5: "irq5"}
+    assert "irq5" in program.functions
+
+
+@pytest.mark.parametrize(
+    ("source", "message"),
+    [
+        ("fn irq16 () : retn ; halt", "number must be 0..15"),
+        ("fn irq2 (arg) : retn ; halt", "must not have arguments"),
+        ("fn irq0 () : retn ; fn irq00 () : retn ; halt", "duplicate IRQ handler"),
+    ],
+)
+def test_compile_program_rejects_invalid_irq_handlers(source, message):
+    with pytest.raises(SolVMError, match=message):
+        compile_program(source)
 
 
 def test_compiled_instruction_carries_source_location(tmp_path):
@@ -126,6 +146,26 @@ def test_unsigned_and_hex():
     vm = SolVM()
     stack = vm.run_source("0xFFFFFFFF 1 add")
     assert stack == [0]
+
+
+@pytest.mark.parametrize(
+    ("literal", "expected_bits"),
+    [
+        ("1.5f", 0x3FC00000),
+        ("-2.25F", -0x3FF00000),
+        (".5f", 0x3F000000),
+        ("1.25e2f", 0x42FA0000),
+    ],
+)
+def test_float_literals_are_pushed_as_ieee754_single_precision(literal, expected_bits):
+    assert parse_number(literal) == expected_bits
+    assert SolVM().run_source(literal) == [expected_bits]
+
+
+@pytest.mark.parametrize("literal", ["infF", "-infF", "nanF", "1e999F"])
+def test_non_finite_and_out_of_range_float_literals_are_rejected(literal):
+    with pytest.raises(SolVMError, match="invalid or out-of-range float literal"):
+        parse_number(literal)
 
 
 def test_string_literal_pushes_pointer_and_loads_read_only_bytes():

@@ -1,4 +1,5 @@
 # Rotating cube sent as object-space triangles to the VPU T&L pipeline.
+!include "sol/cpt32/irqc.sol"
 !const FP 1024
 !const FIFO 0x8003002C
 !const VDP_ENABLE 0x80000000
@@ -50,20 +51,20 @@ fn clear_frame () :
 fn set_view_matrix () :
     0x02000011 emit
     1 emit # VIEW
-    0x3F800000 emit 0 emit 0 emit 0 emit
-    0 emit 0x3F800000 emit 0 emit 0 emit
-    0 emit 0 emit 0x3F800000 emit 0x43700000 emit
-    0 emit 0 emit 0 emit 0x3F800000 emit
+    1.0f emit 0.0f emit 0.0f emit 0.0f emit
+    0.0f emit 1.0f emit 0.0f emit 0.0f emit
+    0.0f emit 0.0f emit 1.0f emit 240.0f emit
+    0.0f emit 0.0f emit 0.0f emit 1.0f emit
 ;
 
 # Infinite-far perspective projection, near plane at camera-space z=1.
 fn set_projection_matrix () :
     0x02000011 emit
     2 emit # PROJECTION
-    0x3FC00000 emit 0 emit 0 emit 0 emit # x scale = 1.5
-    0 emit 0x40000000 emit 0 emit 0 emit # y scale = 2.0
-    0 emit 0 emit 0x3F800000 emit 0xBF800000 emit
-    0 emit 0 emit 0x3F800000 emit 0 emit
+    1.5f emit 0.0f emit 0.0f emit 0.0f emit # x scale = 1.5
+    0.0f emit 2.0f emit 0.0f emit 0.0f emit # y scale = 2.0
+    0.0f emit 0.0f emit 1.0f emit -1.0f emit
+    0.0f emit 0.0f emit 1.0f emit 0.0f emit
 ;
 
 # Model = Rx(pitch) * Ry(yaw), represented as row-major binary32.
@@ -87,10 +88,10 @@ fn set_model_matrix (yaw pitch) :
 
     0x02000011 emit
     0 emit # MODEL
-    cy q10_to_f32 emit 0 emit sy q10_to_f32 emit 0 emit
-    m10 q10_to_f32 emit cx q10_to_f32 emit m12 q10_to_f32 emit 0 emit
-    m20 q10_to_f32 emit sx q10_to_f32 emit m22 q10_to_f32 emit 0 emit
-    0 emit 0 emit 0 emit 0x3F800000 emit
+    cy q10_to_f32 emit 0.0f emit sy q10_to_f32 emit 0.0f emit
+    m10 q10_to_f32 emit cx q10_to_f32 emit m12 q10_to_f32 emit 0.0f emit
+    m20 q10_to_f32 emit sx q10_to_f32 emit m22 q10_to_f32 emit 0.0f emit
+    0.0f emit 0.0f emit 0.0f emit 1.0f emit
 ;
 
 fn sin_deg (angle) :
@@ -110,50 +111,70 @@ fn sin_deg (angle) :
 ;
 
 # Vertex index bits select the signs of object-space x, y, and z.
-fn emit_vertex (index rgba) :
+fn emit_vertex (index nx ny nz rgba) :
     local x
     local y
     local z
     index 1 and 0 eq if
-        0x42400000 >x # +48.0f
+        48.0f >x
     else
-        0xC2400000 >x # -48.0f
+        -48.0f >x
     end
     index 1 shr 1 and 0 eq if
-        0x42400000 >y
+        48.0f >y
     else
-        0xC2400000 >y
+        -48.0f >y
     end
     index 2 shr 1 and 0 eq if
-        0x42400000 >z
+        48.0f >z
     else
-        0xC2400000 >z
+        -48.0f >z
     end
     x emit
     y emit
     z emit
+    nx emit
+    ny emit
+    nz emit
     rgba emit
 ;
 
-fn triangle (a b c rgba) :
-    0x1400000C emit
-    a rgba emit_vertex
-    b rgba emit_vertex
-    c rgba emit_vertex
+fn triangle (a b c rgba nx ny nz) :
+    0x16000015 emit
+    a nx ny nz rgba emit_vertex
+    b nx ny nz rgba emit_vertex
+    c nx ny nz rgba emit_vertex
 ;
 
-fn face (a b c d rgba) :
-    a b c rgba triangle
-    a c d rgba triangle
+fn face (a b c d rgba nx ny nz) :
+    a b c rgba nx ny nz triangle
+    a c d rgba nx ny nz triangle
 ;
 
 fn draw_cube () :
-    0 2 6 4 0xE05030FF face # -X face
-    1 5 7 3 0x3060E0FF face # +X face
-    0 1 3 2 0xE0C030FF face # -Y face
-    4 6 7 5 0x30C070FF face # +Y face
-    0 4 5 1 0xC040C0FF face # -Z face
-    2 3 7 6 0x20C0D0FF face # +Z face
+    1 3 7 5 0xE05030FF -1.0f 0.0f 0.0f face # -X face
+    0 2 6 4 0x3060E0FF 1.0f 0.0f 0.0f face # +X face
+    2 3 7 6 0xE0C030FF 0.0f -1.0f 0.0f face # -Y face
+    0 1 5 4 0x30C070FF 0.0f 1.0f 0.0f face # +Y face
+    4 5 7 6 0xC040C0FF 0.0f 0.0f -1.0f face # -Z face
+    0 1 3 2 0x20C0D0FF 0.0f 0.0f 1.0f face # +Z face
+;
+
+fn setup_light () :
+    0x15000011 emit # SET_LIGHT, light 0 enabled
+    0 emit 1 emit
+    0.1f emit 0.1f emit 0.1f emit # ambient
+    0.9f emit 0.9f emit 0.9f emit # diffuse
+    0.3f emit 0.3f emit 0.3f emit # specular
+    0.0f emit 0.0f emit 0.0f emit # emission
+    -100.0f emit 100.0f emit 80.0f emit # view-space position
+    0x01000002 emit # SET_STATE lighting on
+    1 emit 1 emit
+;
+
+fn irq0 () :
+    1 IRQC_PENDING sth
+    retn
 ;
 
 fn main () :
@@ -162,9 +183,12 @@ fn main () :
     0 VDP_BORDER stb
     set_view_matrix
     set_projection_matrix
+    setup_light
     0x01000002 emit # SET_STATE, flat shading
     0 emit
     0 emit
+    1 IRQC_PENDING sth
+    1 IRQC_ENABLE sth
     local yaw 25
     local pitch 20
     while
@@ -173,6 +197,7 @@ fn main () :
         draw_cube
         yaw 2 add 360 mod >yaw
         pitch 3 add 360 mod >pitch
+        halt
         0
     end
 ;

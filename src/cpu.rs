@@ -5,6 +5,7 @@
 
 use crate::bus::{Bus, BusAccessSource};
 use crate::devices::cpu::CpuRegisterBlock;
+use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -134,12 +135,18 @@ pub struct Cpu {
     cycles: u128,
     instr_mode: InstructionMode,
     epc: u32,
+    irq_return_mode: InstructionMode,
     cause: u8,
     irq_enable: bool,
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
+    external_irq_line: bool,
+    external_irq_number: u8,
+    irqc_line: bool,
+    irqc_number: u8,
     register_block: Rc<RefCell<CpuRegisterBlock>>,
+    irq_controller: Rc<RefCell<IrqController>>,
     state: CpuState,
     instruction: Option<PendingInstruction>,
     cycles_left: u32,
@@ -149,6 +156,7 @@ impl Cpu {
     pub fn new(bus: Bus) -> Self {
         let mut bus = bus;
         let register_block = crate::devices::cpu::connect_cpu_registers(&mut bus);
+        let irq_controller = crate::devices::irqc::irqc::connect_irqc(&mut bus);
         let mut cpu = Self {
             reg: [0; 32],
             pc: 0,
@@ -157,12 +165,18 @@ impl Cpu {
             cycles: 0,
             instr_mode: InstructionMode::Normal,
             epc: 0,
+            irq_return_mode: InstructionMode::Normal,
             cause: 0,
             irq_enable: true,
             irq_pending: false,
             irq_pending_number: 0,
             irq_line: false,
+            external_irq_line: false,
+            external_irq_number: 0,
+            irqc_line: false,
+            irqc_number: 0,
             register_block,
+            irq_controller,
             state: CpuState::Fetch,
             instruction: None,
             cycles_left: 0,
@@ -177,11 +191,16 @@ impl Cpu {
         self.running = true;
         self.instr_mode = InstructionMode::Normal;
         self.epc = 0;
+        self.irq_return_mode = InstructionMode::Normal;
         self.cause = 0;
         self.irq_enable = true;
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
+        self.external_irq_line = false;
+        self.external_irq_number = 0;
+        self.irqc_line = false;
+        self.irqc_number = 0;
         self.state = CpuState::Fetch;
         self.instruction = None;
         self.cycles_left = 0;
@@ -287,12 +306,20 @@ impl Cpu {
     /// Advance exactly one CPU clock. Memory and arithmetic operations are
     /// represented as separate bus/functional-unit phases in the FSM.
     pub fn tick(&mut self) {
+        let irq_output = self.irq_controller.borrow().irq_output();
+        self.irqc_line = irq_output.valid;
+        self.irqc_number = irq_output.number;
+        self.refresh_irq_input();
         if self.state == CpuState::Fetch {
             self.sync_from_register_block();
         }
         if !self.running {
             self.state = CpuState::Halt;
-            return;
+            if !self.accept_pending_irq() {
+                // HALT still consumes clock cycles so run() can poll IRQ inputs.
+                self.cycles += 1;
+                return;
+            }
         }
         self.cycles += 1;
         match self.state {
@@ -354,19 +381,30 @@ impl Cpu {
             }
             CpuState::Writeback => {
                 self.instruction = None;
-                if self.running && self.irq_enable && self.irq_pending {
-                    self.epc = self.pc;
-                    self.cause = self.irq_pending_number;
-                    self.irq_pending = false;
-                    self.irq_enable = false;
-                    self.instr_mode = InstructionMode::Normal;
-                    self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
-                }
+                self.accept_pending_irq();
                 self.state = CpuState::Fetch;
             }
             CpuState::Halt => {}
         }
         self.sync_register_block();
+    }
+
+    fn accept_pending_irq(&mut self) -> bool {
+        if !self.irq_enable || !self.irq_pending {
+            return false;
+        }
+
+        self.epc = self.pc;
+        self.irq_return_mode = self.instr_mode;
+        self.cause = self.irq_pending_number;
+        self.irq_pending = false;
+        self.irq_enable = false;
+        self.instr_mode = InstructionMode::Normal;
+        self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        self.instruction = None;
+        self.running = true;
+        self.state = CpuState::Fetch;
+        true
     }
 
     fn commit_pending(&mut self) {
@@ -392,11 +430,29 @@ impl Cpu {
     /// Drive the CPU's external IRQ input. A rising edge latches one request.
     /// IRQC owns source arbitration; the CPU only receives the selected number.
     pub fn set_irq_input(&mut self, level: bool, number: u8) {
+        self.external_irq_line = level;
+        self.external_irq_number = number & 0x0F;
+        self.refresh_irq_input();
+    }
+
+    fn refresh_irq_input(&mut self) {
+        let level = self.external_irq_line || self.irqc_line;
+        let number = if self.external_irq_line {
+            self.external_irq_number
+        } else {
+            self.irqc_number
+        };
         if level && !self.irq_line {
             self.irq_pending = true;
             self.irq_pending_number = number & 0x0F;
         }
         self.irq_line = level;
+    }
+
+    /// Drive an external source into IRQC. Sources are edge-latched by the
+    /// controller and delivered to the CPU when their enable bit is set.
+    pub fn set_irq_source(&mut self, number: u8, level: bool) {
+        self.irq_controller.borrow_mut().set_source(number, level);
     }
 
     pub fn read_mem_u8(&mut self, addr: u32) -> u8 {
@@ -845,7 +901,7 @@ impl Cpu {
             }
             Instruction::Iret => {
                 self.pc = self.epc;
-                self.instr_mode = InstructionMode::Normal;
+                self.instr_mode = self.irq_return_mode;
                 self.irq_enable = true;
             }
             Instruction::And { rd, rs1, rs2 } => {
@@ -1041,7 +1097,10 @@ impl Cpu {
 
     pub fn step_once(&mut self) -> bool {
         if !self.running {
-            return false;
+            self.tick();
+            if !self.running {
+                return false;
+            }
         }
         let start = self.cycles;
         while self.running && (self.cycles == start || self.state != CpuState::Fetch) {
@@ -1058,8 +1117,14 @@ impl Cpu {
 
     pub fn run(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
-        while (self.cycles < start_cycles + max_cycles as u128) && self.running {
+        let end_cycles = start_cycles.saturating_add(max_cycles as u128);
+        while self.cycles < end_cycles {
             self.tick();
+            if !self.running {
+                // No device can change IRQ inputs during this synchronous run;
+                // one idle tick has polled the current lines, so skip the rest.
+                self.cycles = end_cycles;
+            }
         }
     }
 }

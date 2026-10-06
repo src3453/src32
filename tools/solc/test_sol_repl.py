@@ -27,5 +27,5 @@ def test_repl_reports_error_and_continues():
     )
 
     assert rc == 0
-    assert any(line.startswith("error: stack underflow") for line in outputs)
+    assert any(line.startswith("error: ") and "stack underflow" in line for line in outputs)
     assert any("stack: [1]" in line for line in outputs)

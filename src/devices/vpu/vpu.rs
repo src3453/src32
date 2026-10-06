@@ -9,7 +9,30 @@ const FIFO_CAPACITY: usize = 4096;
 #[derive(Clone, Copy)]
 struct ClipVertex {
     position: [f32; 4],
+    view_position: [f32; 3],
+    normal: [f32; 3],
     color: [f32; 4],
+}
+
+#[derive(Clone, Copy)]
+struct Light {
+    enabled: bool,
+    ambient: [f32; 3],
+    diffuse: [f32; 3],
+    specular: [f32; 3],
+    emission: [f32; 3],
+    position: [f32; 3],
+}
+
+impl Light {
+    const DISABLED: Self = Self {
+        enabled: false,
+        ambient: [0.0; 3],
+        diffuse: [0.0; 3],
+        specular: [0.0; 3],
+        emission: [0.0; 3],
+        position: [0.0; 3],
+    };
 }
 
 pub struct Vpu {
@@ -18,6 +41,8 @@ pub struct Vpu {
     depth_f32: Vec<f32>,
     matrices: [[f32; 16]; 3],
     shading_mode: u32,
+    lighting_enabled: bool,
+    lights: [Light; 8],
     pub(crate) fifo: Vec<u32>,
     pub(crate) command: Vec<u32>,
     pub(crate) expected: Option<usize>,
@@ -35,6 +60,8 @@ impl Vpu {
             depth_f32: vec![1.0; VPU_WIDTH * VPU_HEIGHT],
             matrices: [identity_matrix(); 3],
             shading_mode: 0,
+            lighting_enabled: false,
+            lights: [Light::DISABLED; 8],
             fifo: Vec::new(),
             command: Vec::new(),
             expected: None,
@@ -123,6 +150,9 @@ impl Vpu {
             0x01 if p.len() == 2 && p[0] == 0 && p[1] <= 1 => {
                 self.shading_mode = p[1];
             }
+            0x01 if p.len() == 2 && p[0] == 1 && p[1] <= 1 => {
+                self.lighting_enabled = p[1] != 0;
+            }
             0x02 if p.len() == 17 && p[0] <= 2 => {
                 let mut matrix = [0.0; 16];
                 for (dst, bits) in matrix.iter_mut().zip(&p[1..]) {
@@ -134,14 +164,32 @@ impl Vpu {
                     self.status |= 1 << 3;
                 }
             }
+            0x15 if p.len() == 17 && p[0] < 8 && p[1] <= 1 => {
+                let values: Vec<f32> = p[2..].iter().map(|bits| f32::from_bits(*bits)).collect();
+                if values.iter().all(|value| value.is_finite()) {
+                    let light = Light {
+                        enabled: p[1] != 0,
+                        ambient: [values[0], values[1], values[2]],
+                        diffuse: [values[3], values[4], values[5]],
+                        specular: [values[6], values[7], values[8]],
+                        emission: [values[9], values[10], values[11]],
+                        position: [values[12], values[13], values[14]],
+                    };
+                    self.lights[p[0] as usize] = light;
+                } else {
+                    self.status |= 1 << 3;
+                }
+            }
             // DRAW_FLAT_TRIANGLE: three (x, y, depth) integer vertices,
             // packed RGB, and an 8-bit diffuse intensity. Color is constant
             // across the face (flat shading); no texture or interpolation.
             0x12 if p.len() == 11 => self.draw_flat_triangle(&p),
             // DRAW_TL_TRIANGLE: three POSITION(float3)+COLOR(RGBA8) vertices.
             0x14 if p.len() == 12 => self.draw_transformed_triangle(&p),
+            // DRAW_TL_LIT_TRIANGLE: three POSITION(float3)+NORMAL(float3)+COLOR(RGBA8).
+            0x16 if p.len() == 21 => self.draw_transformed_triangle_with_normals(&p),
             // The interpreter deliberately rejects commands it cannot safely consume.
-            0x01 | 0x02 | 0x03 | 0x10 | 0x11 | 0x13 | 0x7f => self.status |= 1 << 3,
+            0x01 | 0x02 | 0x03 | 0x10 | 0x11 | 0x13 | 0x15 | 0x7f => self.status |= 1 << 3,
             _ => self.status |= 1 << 3,
         }
         self.expected = None;
@@ -200,12 +248,33 @@ impl Vpu {
     }
 
     fn draw_transformed_triangle(&mut self, p: &[u32]) {
+        self.draw_transformed_triangle_impl(p, false);
+    }
+
+    fn draw_transformed_triangle_with_normals(&mut self, p: &[u32]) {
+        self.draw_transformed_triangle_impl(p, true);
+    }
+
+    fn draw_transformed_triangle_impl(&mut self, p: &[u32], has_normal: bool) {
+        let stride = if has_normal { 7 } else { 4 };
+        let model_view = multiply_matrix(&self.matrices[1], &self.matrices[0]);
+        let normal_matrix = if has_normal {
+            let Some(matrix) = inverse_transpose_3x3(&model_view) else {
+                self.status |= 1 << 3;
+                return;
+            };
+            matrix
+        } else {
+            [[0.0, 0.0, 0.0]; 3]
+        };
         let mut vertices = [ClipVertex {
             position: [0.0; 4],
+            view_position: [0.0; 3],
+            normal: [0.0; 3],
             color: [0.0; 4],
         }; 3];
         for (i, vertex) in vertices.iter_mut().enumerate() {
-            let offset = i * 4;
+            let offset = i * stride;
             let position = [
                 f32::from_bits(p[offset]),
                 f32::from_bits(p[offset + 1]),
@@ -216,8 +285,23 @@ impl Vpu {
                 self.status |= 1 << 3;
                 return;
             }
-            vertex.position = transform_position(&self.matrices, position);
-            let rgba = p[offset + 3].to_be_bytes();
+            let model_position = transform_matrix(&self.matrices[0], position);
+            let view_position = transform_matrix(&self.matrices[1], model_position);
+            vertex.position = transform_matrix(&self.matrices[2], view_position);
+            vertex.view_position = [view_position[0], view_position[1], view_position[2]];
+            if has_normal {
+                let normal = [
+                    f32::from_bits(p[offset + 3]),
+                    f32::from_bits(p[offset + 4]),
+                    f32::from_bits(p[offset + 5]),
+                ];
+                if !normal.iter().all(|value| value.is_finite()) {
+                    self.status |= 1 << 3;
+                    return;
+                }
+                vertex.normal = normalize(apply_normal_matrix(&normal_matrix, normal));
+            }
+            let rgba = p[offset + if has_normal { 6 } else { 3 }].to_be_bytes();
             vertex.color = rgba.map(|channel| channel as f32 / 255.0);
         }
         if vertices
@@ -228,6 +312,33 @@ impl Vpu {
             return;
         }
 
+        if has_normal && self.lighting_enabled {
+            if self.shading_mode == 0 {
+                let normal = normalize(std::array::from_fn(|axis| {
+                    vertices
+                        .iter()
+                        .map(|vertex| vertex.normal[axis])
+                        .sum::<f32>()
+                }));
+                // Use the first vertex as the flat-shading sample point. The two
+                // triangles of a quad share this anchor, so point-light terms
+                // remain identical across their common face.
+                let position = vertices[0].view_position;
+                let color = shade_vertex(vertices[0].color, position, normal, &self.lights);
+                for vertex in &mut vertices {
+                    vertex.color = color;
+                }
+            } else {
+                for vertex in &mut vertices {
+                    vertex.color = shade_vertex(
+                        vertex.color,
+                        vertex.view_position,
+                        vertex.normal,
+                        &self.lights,
+                    );
+                }
+            }
+        }
         let flat_color = vertices[0].color;
         let mut polygon = vertices.to_vec();
         for plane in 0..6 {
@@ -345,14 +456,104 @@ fn identity_matrix() -> [f32; 16] {
     ]
 }
 
-fn transform_position(matrices: &[[f32; 16]; 3], mut position: [f32; 4]) -> [f32; 4] {
-    for matrix in matrices {
-        let input = position;
-        for row in 0..4 {
-            position[row] = (0..4).map(|col| matrix[row * 4 + col] * input[col]).sum();
+fn transform_matrix(matrix: &[f32; 16], position: [f32; 4]) -> [f32; 4] {
+    std::array::from_fn(|row| {
+        (0..4)
+            .map(|col| matrix[row * 4 + col] * position[col])
+            .sum()
+    })
+}
+
+fn multiply_matrix(a: &[f32; 16], b: &[f32; 16]) -> [f32; 16] {
+    std::array::from_fn(|index| {
+        let row = index / 4;
+        let col = index % 4;
+        (0..4).map(|k| a[row * 4 + k] * b[k * 4 + col]).sum()
+    })
+}
+
+fn inverse_transpose_3x3(matrix: &[f32; 16]) -> Option<[[f32; 3]; 3]> {
+    let a = matrix[0];
+    let b = matrix[1];
+    let c = matrix[2];
+    let d = matrix[4];
+    let e = matrix[5];
+    let f = matrix[6];
+    let g = matrix[8];
+    let h = matrix[9];
+    let i = matrix[10];
+    let det = a * (e * i - f * h) - b * (d * i - f * g) + c * (d * h - e * g);
+    if !det.is_finite() || det.abs() <= f32::EPSILON {
+        return None;
+    }
+    let inv_det = 1.0 / det;
+    let inverse = [
+        [
+            (e * i - f * h) * inv_det,
+            (c * h - b * i) * inv_det,
+            (b * f - c * e) * inv_det,
+        ],
+        [
+            (f * g - d * i) * inv_det,
+            (a * i - c * g) * inv_det,
+            (c * d - a * f) * inv_det,
+        ],
+        [
+            (d * h - e * g) * inv_det,
+            (b * g - a * h) * inv_det,
+            (a * e - b * d) * inv_det,
+        ],
+    ];
+    Some(std::array::from_fn(|row| {
+        std::array::from_fn(|col| inverse[col][row])
+    }))
+}
+
+fn apply_normal_matrix(matrix: &[[f32; 3]; 3], normal: [f32; 3]) -> [f32; 3] {
+    std::array::from_fn(|row| (0..3).map(|col| matrix[row][col] * normal[col]).sum())
+}
+
+fn normalize(vector: [f32; 3]) -> [f32; 3] {
+    let length = vector.iter().map(|value| value * value).sum::<f32>().sqrt();
+    if length.is_finite() && length > f32::EPSILON {
+        vector.map(|value| value / length)
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+fn shade_vertex(
+    albedo: [f32; 4],
+    position: [f32; 3],
+    normal: [f32; 3],
+    lights: &[Light; 8],
+) -> [f32; 4] {
+    let view = normalize([-position[0], -position[1], -position[2]]);
+    let mut rgb = [0.0; 3];
+    for light in lights.iter().filter(|light| light.enabled) {
+        let to_light = normalize([
+            light.position[0] - position[0],
+            light.position[1] - position[1],
+            light.position[2] - position[2],
+        ]);
+        let ndotl = (0..3)
+            .map(|i| normal[i] * to_light[i])
+            .sum::<f32>()
+            .max(0.0);
+        let half_vector = normalize(std::array::from_fn(|i| to_light[i] + view[i]));
+        let ndoth = (0..3)
+            .map(|i| normal[i] * half_vector[i])
+            .sum::<f32>()
+            .max(0.0);
+        let specular = if ndotl > 0.0 { ndoth.powi(16) } else { 0.0 };
+        for channel in 0..3 {
+            rgb[channel] += albedo[channel] * light.ambient[channel]
+                + albedo[channel] * light.diffuse[channel] * ndotl
+                + light.specular[channel] * specular
+                + light.emission[channel];
         }
     }
-    position
+    [rgb[0], rgb[1], rgb[2], albedo[3]]
 }
 
 fn clip_distance(vertex: ClipVertex, plane: usize) -> f32 {
@@ -383,6 +584,13 @@ fn clip_polygon(polygon: Vec<ClipVertex>, plane: usize) -> Vec<ClipVertex> {
                 position: std::array::from_fn(|i| {
                     previous.position[i] + t * (current.position[i] - previous.position[i])
                 }),
+                view_position: std::array::from_fn(|i| {
+                    previous.view_position[i]
+                        + t * (current.view_position[i] - previous.view_position[i])
+                }),
+                normal: normalize(std::array::from_fn(|i| {
+                    previous.normal[i] + t * (current.normal[i] - previous.normal[i])
+                })),
                 color: std::array::from_fn(|i| {
                     previous.color[i] + t * (current.color[i] - previous.color[i])
                 }),
