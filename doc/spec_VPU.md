@@ -15,7 +15,7 @@ VPUは、CPT32の3Dグラフィックス処理を行う固定機能パイプラ�
 | 項目 | 仕様 |
 |---|---|
 | MMIO領域 | `0x80030000`–`0x8003FFFF` (64 KiB) |
-| 入力 | 32-bit address space上のコマンド列、頂点データ、テクスチャ（将来拡張） |
+| 入力 | 32-bit address space上のコマンド列、頂点データ、FIFO登録テクスチャ |
 | 描画先 | VRAM (`0x10000000`–`0x103FFFFF`)。カラー/ZターゲットはVRAM内。 |
 | 標準画面 | 320×240 pixels |
 | コマンド投入 | MMIO FIFO またはメインRAMからのDMA実行 |
@@ -49,7 +49,7 @@ VPUのカラーターゲットとZターゲットはVPUコマンドで指定す�
 
 ### 3.2 プリミティブ
 
-初版で描画可能なプリミティブは三角形のみとする。コマンドの頂点数に従い、独立三角形（3頂点ずつ）またはtriangle stripを指定できる。stripでは各三角形の向きを交互に反転する。線、点、四角形、テクスチャマッピングは予約扱いとする。
+初版で描画可能なプリミティブは三角形のみとする。実装済みFIFOコマンドでは独立した三角形を描画できる。線、点、四角形は予約扱いとする。テクスチャ付き三角形は6.6節で規定する。
 
 ## 4. シェーディングと深度
 
@@ -67,7 +67,7 @@ VPUのカラーターゲットとZターゲットはVPUコマンドで指定す�
 - 各光源は有効フラグ、方向、RGB色、ambient/diffuse/specular係数を持つ。
 - 材質はambient/diffuse/specular RGB係数およびshininess値を持つ。
 - RGB値と係数は有限のbinary32値として扱い、最終カラーを0～1にクランプして8-bit RGBAへ変換する。
-- 点光源、フォグ、テクスチャ、アルファブレンディングは初版対象外。
+- 点光源、フォグ、アルファブレンディングは初版対象外。
 
 ### 4.4 Zバッファ
 
@@ -114,6 +114,8 @@ FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入
 | `0x14` | DRAW_TL_TRIANGLE | 3 vertices, each POSITION(float3) and packed RGBA8 color |
 | `0x15` | SET_LIGHT | light index, enabled, ambient/diffuse/specular/emission RGB, position XYZ |
 | `0x16` | DRAW_TL_LIT_TRIANGLE | 3 vertices, each POSITION(float3), NORMAL(float3), packed RGBA8 color |
+| `0x17` | TEXTURE_UPLOAD | texture ID, width, height, packed RGBA4444 texels |
+| `0x18` | DRAW_TEXTURED_TRIANGLE | texture ID, shading mode, 3 vertices with POSITION(float3), UV(float2), packed RGBA8 color |
 | `0x00` | END | payloadなし。FIFO投入バッチの終端 |
 | `0x7F` | NOP | 任意 |
 
@@ -135,7 +137,17 @@ SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（
 
 `DRAW_TL_LIT_TRIANGLE` (`0x16`) は法線付きT&L三角形で、payloadは21語、各頂点につき `POSITION.x/y/z`、`NORMAL.x/y/z` のbinary32各3語とRGBA8 1語をこの順で格納する。位置と法線はMODEL座標系で入力し、法線はVIEW×MODELの逆転置3×3行列で変換して正規化する。ライティングが無効なら頂点カラーをそのまま使う。有効時、Gouraudはライティング後の頂点色を補間する。flatは3頂点法線の平均と第0頂点のVIEW位置で1回照明計算し、三角形全体に同じ色を使う。隣接三角形で同じflat照明を得るには、第0頂点と法線を共通にする。法線付きコマンドには非特異なVIEW×MODEL上3×3行列が必要となる。
 
-T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`）に対してポリゴンをクリップし、生成頂点の色も補間する。残ったポリゴンは画面座標へ変換され、深度テスト付きで塗りつぶす。画面サイズは320×240固定で、テクスチャと背面カリングは行わない。
+### 6.6 テクスチャ登録とテクスチャ付き三角形
+
+テクスチャ形式はRGBA4444のみとし、幅・高さは各1～1024、行は上から下、画素は左から右に詰める。画素のbyte0は`R<<4 | G`、byte1は`B<<4 | A`。各ニブルを`n * 17`として8-bitへ展開する。テクスチャはIDで参照し、画素データは`TEXTURE_UPLOAD`でVPUにコピーする。
+
+`TEXTURE_UPLOAD` (`0x17`) のpayload長は `3 + ceil(width*height/2)` ワード。語順は `id, width, height, packed_texels...`。各データワードの上位16-bitが先の画素、下位16-bitが次の画素で、各16-bit値は`R:G:B:A`の順に4-bitずつ格納する。画素数が奇数の場合、最後の下位16-bitは無視する。同じIDへの再登録は既存テクスチャを置き換える。最大コマンド長は`3 + 1024*1024/2` payloadワード。寸法、長さが不正な登録はコマンドエラーとし、既存登録を保持する。
+
+`DRAW_TEXTURED_TRIANGLE` (`0x18`) のpayloadは20ワードで、`texture_id, shading_mode`に続き、3頂点それぞれの`POSITION.x/y/z` binary32、`u/v` binary32、RGBA8カラー1ワードの順。shading_modeは0=NONE、1=FLAT、2=GOURAUD。位置・UVは有限値でなければならず、未知ID、不正モード、非有限値はコマンドエラーとなり描画しない。変換・クリッピングは通常のT&L経路に従う。UVは画面上でアフィン補間し、透視補正を行わない。サンプル位置の`floor(u*width), floor(v*height)`を各々テクスチャ境界へクランプする（Clamp-to-edge、最近傍）。
+
+NONEはテクスチャRGBAをそのまま出力する。FLATはコマンド頂点0のRGBAを三角形全体に用い、GOURAUDは頂点RGBAを画面空間で補間する。SET_STATEでライティングが有効なら、三角形の幾何法線を求め、FLATは頂点0のVIEW位置、GOURAUDは各頂点のVIEW位置で既存固定機能ライトを評価してから色を補間する。NONEではライティングを適用しない。FLAT/GOURAUDはテクスチャと頂点色の各チャンネルの積を計算し、最近傍の整数へ丸めてRGBA8888として出力する。ブレンディングは行わない。
+
+T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`）に対してポリゴンをクリップし、生成頂点の色・UVも補間する。残ったポリゴンは画面座標へ変換され、深度テスト付きで塗りつぶす。画面サイズは320×240固定。
 
 ## 7. MMIOレジスタ
 
@@ -167,4 +179,4 @@ DMAまたはFIFOの全コマンド処理完了時にDONEを立てる。IRQ_ENABL
 
 ## 9. 初版の範囲外
 
-テクスチャマッピング、透過・ブレンディング、フォグ、ポイント/ライン描画、シェーダープログラム、マルチサンプル、複数同時カラーターゲット、非同期フェンスは初版では規定しない。opcodeおよび状態IDは将来拡張用に予約する。
+透過・ブレンディング、フォグ、ポイント/ライン描画、シェーダープログラム、ミップマップ、マルチサンプル、複数同時カラーターゲット、非同期フェンスは初版では規定しない。テクスチャ解放コマンドも未実装であり、再登録またはVPUリセットで破棄する。

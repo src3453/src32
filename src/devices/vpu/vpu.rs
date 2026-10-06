@@ -5,6 +5,7 @@ pub(crate) const VPU_MMIO_SIZE: u32 = 0x10000;
 pub const VPU_WIDTH: usize = 320;
 pub const VPU_HEIGHT: usize = 240;
 const FIFO_CAPACITY: usize = 4096;
+const MAX_COMMAND_WORDS: usize = 3 + 1024 * 1024 / 2;
 
 #[derive(Clone, Copy)]
 struct ClipVertex {
@@ -12,6 +13,7 @@ struct ClipVertex {
     view_position: [f32; 3],
     normal: [f32; 3],
     color: [f32; 4],
+    uv: [f32; 2],
 }
 
 #[derive(Clone, Copy)]
@@ -43,6 +45,7 @@ pub struct Vpu {
     shading_mode: u32,
     lighting_enabled: bool,
     lights: [Light; 8],
+    textures: std::collections::HashMap<u32, (usize, usize, Vec<u8>)>,
     pub(crate) fifo: Vec<u32>,
     pub(crate) command: Vec<u32>,
     pub(crate) expected: Option<usize>,
@@ -62,6 +65,7 @@ impl Vpu {
             shading_mode: 0,
             lighting_enabled: false,
             lights: [Light::DISABLED; 8],
+            textures: std::collections::HashMap::new(),
             fifo: Vec::new(),
             command: Vec::new(),
             expected: None,
@@ -105,7 +109,7 @@ impl Vpu {
                     self.status |= 1 << 2;
                     continue;
                 }
-                if count > FIFO_CAPACITY {
+                if count > MAX_COMMAND_WORDS {
                     self.status |= 1 << 3;
                     continue;
                 }
@@ -188,6 +192,10 @@ impl Vpu {
             0x14 if p.len() == 12 => self.draw_transformed_triangle(&p),
             // DRAW_TL_LIT_TRIANGLE: three POSITION(float3)+NORMAL(float3)+COLOR(RGBA8).
             0x16 if p.len() == 21 => self.draw_transformed_triangle_with_normals(&p),
+            // TEXTURE_UPLOAD: id, width, height, then two RGBA4444 texels per word.
+            0x17 if p.len() >= 3 => self.upload_texture(&p),
+            // DRAW_TEXTURED_TRIANGLE: texture id, then 3x position(float3), uv(float2), rgba8.
+            0x18 if p.len() == 20 => self.draw_textured_triangle(&p),
             // The interpreter deliberately rejects commands it cannot safely consume.
             0x01 | 0x02 | 0x03 | 0x10 | 0x11 | 0x13 | 0x15 | 0x7f => self.status |= 1 << 3,
             _ => self.status |= 1 << 3,
@@ -255,6 +263,237 @@ impl Vpu {
         self.draw_transformed_triangle_impl(p, true);
     }
 
+    fn upload_texture(&mut self, p: &[u32]) {
+        let (id, width, height) = (p[0], p[1] as usize, p[2] as usize);
+        let pixels = width.saturating_mul(height);
+        if width == 0
+            || height == 0
+            || width > 1024
+            || height > 1024
+            || p.len() != 3 + (pixels + 1) / 2
+        {
+            self.status |= 1 << 3;
+            return;
+        }
+        let mut rgba = Vec::with_capacity(pixels * 4);
+        for word in &p[3..] {
+            for texel in [(*word >> 16) as u16, *word as u16] {
+                if rgba.len() / 4 == pixels {
+                    break;
+                }
+                for nibble in [
+                    (texel >> 12) as u8,
+                    (texel >> 8) as u8 & 15,
+                    (texel >> 4) as u8 & 15,
+                    texel as u8 & 15,
+                ] {
+                    rgba.push(nibble * 17);
+                }
+            }
+        }
+        self.textures.insert(id, (width, height, rgba));
+    }
+
+    fn draw_textured_triangle(&mut self, p: &[u32]) {
+        let mode = p[1];
+        if mode > 2 {
+            self.status |= 1 << 3;
+            return;
+        }
+        let Some((width, height, data)) = self.textures.get(&p[0]) else {
+            self.status |= 1 << 3;
+            return;
+        };
+        let (width, height, data) = (*width, *height, data.clone());
+        let mut vertices = [ClipVertex {
+            position: [0.0; 4],
+            view_position: [0.0; 3],
+            normal: [0.0; 3],
+            color: [0.0; 4],
+            uv: [0.0; 2],
+        }; 3];
+        for i in 0..3 {
+            let o = 2 + i * 6;
+            let pos = [
+                f32::from_bits(p[o]),
+                f32::from_bits(p[o + 1]),
+                f32::from_bits(p[o + 2]),
+                1.0,
+            ];
+            let model = transform_matrix(&self.matrices[0], pos);
+            let view = transform_matrix(&self.matrices[1], model);
+            vertices[i].position = transform_matrix(&self.matrices[2], view);
+            vertices[i].view_position = [view[0], view[1], view[2]];
+            vertices[i].uv = [f32::from_bits(p[o + 3]), f32::from_bits(p[o + 4])];
+            vertices[i].color = p[o + 5].to_be_bytes().map(|c| c as f32 / 255.0);
+            if !vertices[i]
+                .position
+                .iter()
+                .chain(vertices[i].uv.iter())
+                .all(|v| v.is_finite())
+            {
+                self.status |= 1 << 3;
+                return;
+            }
+        }
+        let edge_a: [f32; 3] = std::array::from_fn(|axis| {
+            vertices[1].view_position[axis] - vertices[0].view_position[axis]
+        });
+        let edge_b: [f32; 3] = std::array::from_fn(|axis| {
+            vertices[2].view_position[axis] - vertices[0].view_position[axis]
+        });
+        let face_normal = normalize([
+            edge_a[1] * edge_b[2] - edge_a[2] * edge_b[1],
+            edge_a[2] * edge_b[0] - edge_a[0] * edge_b[2],
+            edge_a[0] * edge_b[1] - edge_a[1] * edge_b[0],
+        ]);
+        if self.lighting_enabled && mode == 1 {
+            vertices[0].color = shade_vertex(
+                vertices[0].color,
+                vertices[0].view_position,
+                face_normal,
+                &self.lights,
+            );
+        } else if self.lighting_enabled && mode == 2 {
+            for vertex in &mut vertices {
+                vertex.color = shade_vertex(
+                    vertex.color,
+                    vertex.view_position,
+                    face_normal,
+                    &self.lights,
+                );
+            }
+        }
+        let mut polygon = vertices.to_vec();
+        for plane in 0..6 {
+            polygon = clip_polygon(polygon, plane);
+            if polygon.len() < 3 {
+                return;
+            }
+        }
+        let flat_color = vertices[0].color;
+        for i in 1..polygon.len() - 1 {
+            self.rasterize_textured_triangle(
+                [polygon[0], polygon[i], polygon[i + 1]],
+                width,
+                height,
+                &data,
+                mode,
+                flat_color,
+            );
+        }
+    }
+
+    fn rasterize_textured_triangle(
+        &mut self,
+        tri: [ClipVertex; 3],
+        width: usize,
+        height: usize,
+        data: &[u8],
+        mode: u32,
+        flat_color: [f32; 4],
+    ) {
+        let mut screen = [[0.0f32; 2]; 3];
+        let mut inv_w = [0.0; 3];
+        let mut depth = [0.0; 3];
+        for i in 0..3 {
+            let w = tri[i].position[3];
+            if w <= f32::EPSILON {
+                return;
+            }
+            inv_w[i] = 1.0 / w;
+            screen[i] = [
+                (tri[i].position[0] * inv_w[i] + 1.0) * VPU_WIDTH as f32 * 0.5,
+                (1.0 - tri[i].position[1] * inv_w[i]) * VPU_HEIGHT as f32 * 0.5,
+            ];
+            depth[i] = tri[i].position[2] * inv_w[i];
+        }
+        let edge = |a: usize, b: usize, x: f32, y: f32| {
+            (x - screen[a][0]) * (screen[b][1] - screen[a][1])
+                - (y - screen[a][1]) * (screen[b][0] - screen[a][0])
+        };
+        let area = edge(0, 1, screen[2][0], screen[2][1]);
+        if area.abs() <= f32::EPSILON {
+            return;
+        }
+        let minx = screen
+            .iter()
+            .map(|p| p[0].floor() as i32)
+            .min()
+            .unwrap()
+            .max(0) as usize;
+        let maxx = screen
+            .iter()
+            .map(|p| p[0].ceil() as i32)
+            .max()
+            .unwrap()
+            .min(VPU_WIDTH as i32 - 1);
+        let miny = screen
+            .iter()
+            .map(|p| p[1].floor() as i32)
+            .min()
+            .unwrap()
+            .max(0) as usize;
+        let maxy = screen
+            .iter()
+            .map(|p| p[1].ceil() as i32)
+            .max()
+            .unwrap()
+            .min(VPU_HEIGHT as i32 - 1);
+        if maxx < minx as i32 || maxy < miny as i32 {
+            return;
+        }
+        for y in miny..=maxy as usize {
+            for x in minx..=maxx as usize {
+                let weights = [
+                    edge(1, 2, x as f32 + 0.5, y as f32 + 0.5),
+                    edge(2, 0, x as f32 + 0.5, y as f32 + 0.5),
+                    edge(0, 1, x as f32 + 0.5, y as f32 + 0.5),
+                ];
+                if !weights
+                    .iter()
+                    .all(|w| if area > 0.0 { *w >= 0.0 } else { *w <= 0.0 })
+                {
+                    continue;
+                }
+                let b = weights.map(|w| w / area);
+                let z = b[0] * depth[0] + b[1] * depth[1] + b[2] * depth[2];
+                let idx = y * VPU_WIDTH + x;
+                if z < 0.0 || z > 1.0 || z >= self.depth_f32[idx] {
+                    continue;
+                }
+                self.depth_f32[idx] = z;
+                let interp = |f: fn(ClipVertex) -> [f32; 2]| {
+                    std::array::from_fn::<_, 2, _>(|c| (0..3).map(|i| b[i] * f(tri[i])[c]).sum())
+                };
+                let uv: [f32; 2] = interp(|v| v.uv);
+                let c: [f32; 4] = if mode == 1 {
+                    flat_color
+                } else {
+                    std::array::from_fn(|ch| {
+                        (0..3)
+                            .map(|i| b[i] * tri[i].color[ch])
+                            .sum::<f32>()
+                            .clamp(0.0, 1.0)
+                    })
+                };
+                let tx = (uv[0] * width as f32)
+                    .floor()
+                    .clamp(0.0, (width - 1) as f32) as usize;
+                let ty = (uv[1] * height as f32)
+                    .floor()
+                    .clamp(0.0, (height - 1) as f32) as usize;
+                let ti = (ty * width + tx) * 4;
+                let rgba: [u8; 4] = std::array::from_fn(|ch| {
+                    let t = data[ti + ch] as f32 / 255.0;
+                    let v = if mode == 0 { t } else { t * c[ch] };
+                    (v.clamp(0.0, 1.0) * 255.0 + 0.5) as u8
+                });
+                self.plane[idx * 4..idx * 4 + 4].copy_from_slice(&rgba);
+            }
+        }
+    }
+
     fn draw_transformed_triangle_impl(&mut self, p: &[u32], has_normal: bool) {
         let stride = if has_normal { 7 } else { 4 };
         let model_view = multiply_matrix(&self.matrices[1], &self.matrices[0]);
@@ -272,6 +511,7 @@ impl Vpu {
             view_position: [0.0; 3],
             normal: [0.0; 3],
             color: [0.0; 4],
+            uv: [0.0; 2],
         }; 3];
         for (i, vertex) in vertices.iter_mut().enumerate() {
             let offset = i * stride;
@@ -594,6 +834,7 @@ fn clip_polygon(polygon: Vec<ClipVertex>, plane: usize) -> Vec<ClipVertex> {
                 color: std::array::from_fn(|i| {
                     previous.color[i] + t * (current.color[i] - previous.color[i])
                 }),
+                uv: std::array::from_fn(|i| previous.uv[i] + t * (current.uv[i] - previous.uv[i])),
             });
         }
         if current_inside {
@@ -603,4 +844,135 @@ fn clip_polygon(polygon: Vec<ClipVertex>, plane: usize) -> Vec<ClipVertex> {
         previous_distance = current_distance;
     }
     output
+}
+
+#[cfg(test)]
+mod texture_tests {
+    use super::*;
+
+    fn send(vpu: &mut Vpu, opcode: u8, payload: &[u32]) {
+        vpu.push(((opcode as u32) << 24) | payload.len() as u32);
+        for word in payload {
+            vpu.push(*word);
+        }
+    }
+
+    #[test]
+    fn upload_unpacks_rgba4444_and_expands_nibbles() {
+        let mut vpu = Vpu::new();
+        send(&mut vpu, 0x17, &[7, 2, 1, 0x1234_abcd]);
+        assert_eq!(
+            vpu.textures[&7],
+            (2, 1, vec![0x11, 0x22, 0x33, 0x44, 0xaa, 0xbb, 0xcc, 0xdd])
+        );
+        assert_eq!(vpu.status & (1 << 3), 0);
+    }
+
+    #[test]
+    fn invalid_upload_preserves_previous_texture_and_sets_error() {
+        let mut vpu = Vpu::new();
+        send(&mut vpu, 0x17, &[1, 1, 1, 0x1234_0000]);
+        let old = vpu.textures[&1].clone();
+        send(&mut vpu, 0x17, &[1, 1025, 1, 0]);
+        assert_eq!(vpu.textures[&1], old);
+        assert_ne!(vpu.status & (1 << 3), 0);
+    }
+
+    #[test]
+    fn textured_triangle_samples_rgba_and_unknown_id_errors() {
+        let mut vpu = Vpu::new();
+        vpu.textures.insert(4, (1, 1, vec![200, 100, 50, 255]));
+        let screen = [[20.0, 20.0], [100.0, 20.0], [20.0, 100.0]];
+        let tri = std::array::from_fn(|i| ClipVertex {
+            position: [
+                screen[i][0] / 160.0 - 1.0,
+                1.0 - screen[i][1] / 120.0,
+                0.5,
+                1.0,
+            ],
+            view_position: [0.0; 3],
+            normal: [0.0; 3],
+            color: [1.0; 4],
+            uv: [0.5; 2],
+        });
+        let texture_data = vpu.textures[&4].2.clone();
+        vpu.rasterize_textured_triangle(tri, 1, 1, &texture_data, 0, [1.0; 4]);
+        assert_eq!(vpu.pixel(30, 30), (200, 100, 50, 255));
+        let mut command = vec![99, 0];
+        command.extend([0, 0, 0, 0, 0, 0xffff_ffff].repeat(3));
+        send(&mut vpu, 0x18, &command);
+        assert_ne!(vpu.status & (1 << 3), 0);
+    }
+
+    #[test]
+    fn gouraud_modulates_rgba_and_clamps_uv_to_edge() {
+        let mut vpu = Vpu::new();
+        let screen = [[20.0, 20.0], [100.0, 20.0], [20.0, 100.0]];
+        let tri = std::array::from_fn(|i| ClipVertex {
+            position: [
+                screen[i][0] / 160.0 - 1.0,
+                1.0 - screen[i][1] / 120.0,
+                0.5,
+                1.0,
+            ],
+            view_position: [0.0; 3],
+            normal: [0.0; 3],
+            color: [0.5; 4],
+            uv: [2.0, -1.0],
+        });
+        vpu.rasterize_textured_triangle(tri, 1, 1, &[200, 100, 50, 255], 2, [1.0; 4]);
+        assert_eq!(vpu.pixel(30, 30), (100, 50, 25, 127));
+    }
+
+    #[test]
+    fn flat_uses_vertex_zero_color_for_entire_triangle() {
+        let mut vpu = Vpu::new();
+        let screen = [[20.0, 20.0], [100.0, 20.0], [20.0, 100.0]];
+        let colors = [[1.0, 0.0, 0.0, 1.0], [0.0, 1.0, 0.0, 1.0], [0.0, 0.0, 1.0, 1.0]];
+        let tri = std::array::from_fn(|i| ClipVertex {
+            position: [
+                screen[i][0] / 160.0 - 1.0,
+                1.0 - screen[i][1] / 120.0,
+                0.5,
+                1.0,
+            ],
+            view_position: [0.0; 3],
+            normal: [0.0; 3],
+            color: colors[i],
+            uv: [0.5; 2],
+        });
+        vpu.rasterize_textured_triangle(tri, 1, 1, &[255; 4], 1, tri[0].color);
+        assert_eq!(vpu.pixel(30, 30), (255, 0, 0, 255));
+    }
+
+    #[test]
+    fn textured_flat_triangle_uses_enabled_vpu_light() {
+        let mut vpu = Vpu::new();
+        vpu.textures.insert(3, (1, 1, vec![255; 4]));
+        vpu.lighting_enabled = true;
+        vpu.lights[0] = Light {
+            enabled: true,
+            ambient: [0.0; 3],
+            diffuse: [0.25; 3],
+            specular: [0.0; 3],
+            emission: [0.0; 3],
+            position: [0.0, 0.0, 2.0],
+        };
+        let mut payload = vec![3, 1];
+        for [x, y] in [[-0.8f32, -0.8f32], [0.8, -0.8], [-0.8, 0.8]] {
+            payload.extend([
+                x.to_bits(),
+                y.to_bits(),
+                0.5f32.to_bits(),
+                0.5f32.to_bits(),
+                0.5f32.to_bits(),
+                0xffff_ffff,
+            ]);
+        }
+        send(&mut vpu, 0x18, &payload);
+        let lit = vpu.pixel(80, 100);
+        assert!(lit.0 > 40 && lit.0 < 100, "expected diffuse illumination, got {lit:?}");
+        assert_eq!(lit.0, lit.1);
+        assert_eq!(lit.1, lit.2);
+    }
 }

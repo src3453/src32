@@ -1,5 +1,6 @@
 # Rotating cube sent as object-space triangles to the VPU T&L pipeline.
 !include "sol/cpt32/irqc.sol"
+!include "sol/cpt32/pec_rng.sol"
 !const FP 1024
 !const FIFO 0x8003002C
 !const VDP_ENABLE 0x80000000
@@ -110,8 +111,38 @@ fn sin_deg (angle) :
     t 4 mul FP mul 40500 t sub div sign mul ret
 ;
 
+# Generate one opaque grayscale RGBA4444 noise texel from the hardware RNG.
+fn noise_texel () :
+    local n
+    rand 15 and >n
+    n 12 shl n 8 shl or n 4 shl or 15 or ret
+;
+
+# Upload 32x32 RGBA4444 noise. Two texels are packed in each FIFO payload word.
+fn setup_noise_texture () :
+    local i 0
+    local pair
+    local opcode 23
+    local shift 24
+    while
+        opcode 1 shl >opcode
+        shift 1 sub >shift
+        shift 0 gt
+    end
+    opcode 515 or emit # TEXTURE_UPLOAD, 3 descriptor words + 512 packed texel words
+    1 emit # texture ID
+    32 emit
+    32 emit
+    while
+        noise_texel 16 shl noise_texel or >pair
+        pair emit
+        i 1 add >i
+        i 512 lt
+    end
+;
+
 # Vertex index bits select the signs of object-space x, y, and z.
-fn emit_vertex (index nx ny nz rgba) :
+fn emit_cube_vertex (index u v rgba) :
     local x
     local y
     local z
@@ -133,42 +164,43 @@ fn emit_vertex (index nx ny nz rgba) :
     x emit
     y emit
     z emit
-    nx emit
-    ny emit
-    nz emit
+    u emit
+    v emit
     rgba emit
 ;
 
-fn triangle (a b c rgba nx ny nz) :
-    0x16000015 emit
-    a nx ny nz rgba emit_vertex
-    b nx ny nz rgba emit_vertex
-    c nx ny nz rgba emit_vertex
+fn triangle (a b c u0 v0 u1 v1 u2 v2 rgba) :
+    0x18000014 emit # texture 1, Flat, then three position/UV/color vertices
+    1 emit # texture ID
+    1 emit # Flat: vertex[0] color modulates the texture across the face
+    a u0 v0 rgba emit_cube_vertex
+    b u1 v1 rgba emit_cube_vertex
+    c u2 v2 rgba emit_cube_vertex
 ;
 
-fn face (a b c d rgba nx ny nz) :
-    a b c rgba nx ny nz triangle
-    a c d rgba nx ny nz triangle
+fn face (a b c d rgba) :
+    a b c 0.0f 0.0f 1.0f 0.0f 1.0f 1.0f rgba triangle
+    a c d 0.0f 0.0f 1.0f 1.0f 0.0f 1.0f rgba triangle
 ;
 
 fn draw_cube () :
-    1 3 7 5 0xE05030FF -1.0f 0.0f 0.0f face # -X face
-    0 2 6 4 0x3060E0FF 1.0f 0.0f 0.0f face # +X face
-    2 3 7 6 0xE0C030FF 0.0f -1.0f 0.0f face # -Y face
-    0 1 5 4 0x30C070FF 0.0f 1.0f 0.0f face # +Y face
-    4 5 7 6 0xC040C0FF 0.0f 0.0f -1.0f face # -Z face
-    0 1 3 2 0x20C0D0FF 0.0f 0.0f 1.0f face # +Z face
+    1 5 7 3 0xE05030FF face # -X, warm red tint
+    0 2 6 4 0x3060E0FF face # +X, blue tint
+    2 3 7 6 0xE0C030FF face # -Y, yellow tint
+    0 4 5 1 0x30C070FF face # +Y, green tint
+    4 6 7 5 0xC040C0FF face # -Z, purple tint
+    0 1 3 2 0x20C0D0FF face # +Z, cyan tint
 ;
 
 fn setup_light () :
     0x15000011 emit # SET_LIGHT, light 0 enabled
     0 emit 1 emit
-    0.1f emit 0.1f emit 0.1f emit # ambient
-    0.9f emit 0.9f emit 0.9f emit # diffuse
-    0.3f emit 0.3f emit 0.3f emit # specular
+    0.2f emit 0.2f emit 0.2f emit # ambient
+    0.8f emit 0.8f emit 0.8f emit # diffuse
+    0.2f emit 0.2f emit 0.2f emit # specular
     0.0f emit 0.0f emit 0.0f emit # emission
-    0.0f emit 100.0f emit -80.0f emit # view-space position
-    0x01000002 emit # SET_STATE lighting on
+    -100.0f emit 100.0f emit 80.0f emit # view-space point position
+    0x01000002 emit # enable fixed-function lighting
     1 emit 1 emit
 ;
 
@@ -181,12 +213,11 @@ fn main () :
     1 VDP_ENABLE stb
     0 VDP_MODE stb
     0 VDP_BORDER stb
+    initPRNG
+    setup_noise_texture
     set_view_matrix
     set_projection_matrix
     setup_light
-    0x01000002 emit # SET_STATE, flat shading
-    0 emit
-    0 emit
     1 IRQC_PENDING sth
     1 IRQC_ENABLE sth
     local yaw 25
