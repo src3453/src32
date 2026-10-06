@@ -4,6 +4,9 @@
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
 
+use std::cell::RefCell;
+use std::rc::Rc;
+
 use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
 
 pub const NUM_CHANNELS: usize = 8;
@@ -175,7 +178,7 @@ impl Channel {
 
 pub struct S3w2Sound {
     pub channels: [Channel; NUM_CHANNELS],
-    pub pcm_ram: Vec<u8>,
+    pub pcm_ram: Rc<RefCell<Vec<u8>>>,
 }
 
 impl Default for S3w2Sound {
@@ -186,16 +189,20 @@ impl Default for S3w2Sound {
 
 impl S3w2Sound {
     pub fn new() -> Self {
+        Self::with_pcm_ram(Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE])))
+    }
+
+    pub fn with_pcm_ram(pcm_ram: Rc<RefCell<Vec<u8>>>) -> Self {
         let mut sound = Self {
             channels: std::array::from_fn(|_| Channel::default()),
-            pcm_ram: vec![0; PCM_RAM_SIZE],
+            pcm_ram,
         };
         sound.reset();
         sound
     }
 
     pub fn reset(&mut self) {
-        self.pcm_ram.fill(0);
+        self.pcm_ram.borrow_mut().fill(0);
         for ch in 0..NUM_CHANNELS {
             self.reset_channel(ch);
         }
@@ -239,8 +246,9 @@ impl S3w2Sound {
 
     pub fn write_pcm_ram(&mut self, address: u32, value: u8) {
         let addr = address as usize;
-        if addr < self.pcm_ram.len() {
-            self.pcm_ram[addr] = value;
+        let mut pcm_ram = self.pcm_ram.borrow_mut();
+        if addr < pcm_ram.len() {
+            pcm_ram[addr] = value;
             for channel in &mut self.channels {
                 if channel.waveform_type == WaveformType::Sqv4
                     && (addr as u32) >= channel.pcm_start_addr
@@ -254,8 +262,9 @@ impl S3w2Sound {
 
     pub fn read_pcm_ram(&self, address: u32) -> u8 {
         let addr = address as usize;
-        if addr < self.pcm_ram.len() {
-            self.pcm_ram[addr]
+        let pcm_ram = self.pcm_ram.borrow();
+        if addr < pcm_ram.len() {
+            pcm_ram[addr]
         } else {
             0
         }
@@ -540,7 +549,7 @@ impl S3w2Sound {
         }
 
         let addr = ((phase + c.pcm_start_addr as u64) as usize) & (PCM_RAM_SIZE - 1);
-        let sample8 = self.pcm_ram[addr];
+        let sample8 = self.pcm_ram.borrow()[addr];
         let mut out = (sample8 as i32 - 128) as i16;
 
         let c = &mut self.channels[ch];
@@ -562,12 +571,13 @@ impl S3w2Sound {
     fn initialize_sqv4(&mut self, ch: usize) -> bool {
         let start = self.channels[ch].pcm_start_addr as usize;
         let end = self.channels[ch].pcm_end_addr as usize;
-        if start >= end || end > self.pcm_ram.len() {
+        let pcm_ram = self.pcm_ram.borrow();
+        if start >= end || end > pcm_ram.len() {
             self.channels[ch].active = false;
             self.channels[ch].invalidate_sqv4();
             return false;
         }
-        let header = match sqv4::inspect(&self.pcm_ram[start..end]) {
+        let header = match sqv4::inspect(&pcm_ram[start..end]) {
             Ok(header) if header.channels == 1 => header,
             _ => {
                 self.channels[ch].active = false;
@@ -643,7 +653,8 @@ impl S3w2Sound {
         let frame_size = self.channels[ch].sqv4_frame_size;
         let variant = self.channels[ch].sqv4_variant.unwrap();
         let version = self.channels[ch].sqv4_version;
-        let (pcm_ram, channels) = (&self.pcm_ram, &mut self.channels);
+        let pcm_ram = self.pcm_ram.borrow();
+        let channels = &mut self.channels;
         let channel = &mut channels[ch];
         if channel.sqv4_cached_frame != Some(frame_index) {
             if frame_index < channel.sqv4_next_frame {
@@ -761,7 +772,7 @@ mod tests {
     fn test_initialization() {
         let mut sound = S3w2Sound::new();
         assert_eq!(sound.channels.len(), NUM_CHANNELS);
-        assert_eq!(sound.pcm_ram.len(), PCM_RAM_SIZE);
+        assert_eq!(sound.pcm_ram.borrow().len(), PCM_RAM_SIZE);
         assert_eq!(sound.read_register(0x000), 0x80);
     }
 

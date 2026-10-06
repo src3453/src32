@@ -10,7 +10,7 @@ _pcg_ln
 "Subsys:" prnlnscr
 "  VDP (rev 0.2)" prnlnscr
 "  PeC (rev 0.3)" prnlnscr
-"  SGU (rev 0.1; S3W2)" prnlnscr
+"  SGU x2 (rev 0.1; S3W2)" prnlnscr
 0x15 colorfg
 "  VPU (Not installed)" prnlnscr
 "  SGC (Not installed)" prnlnscr

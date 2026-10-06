@@ -44,7 +44,7 @@ fn load_binary_data(path: &str, bus: &mut Bus) {
 struct GuiApp {
     cpu: Cpu,
     vdp: Rc<RefCell<Vdp>>,
-    sgu: Rc<RefCell<S3w2Sound>>,
+    sgu: [Rc<RefCell<S3w2Sound>>; 2],
     audio_host: Option<audio::AudioHost>,
     display_handle: Option<OwnedDisplayHandle>,
     window: Option<Window>,
@@ -555,7 +555,18 @@ impl ApplicationHandler for GuiApp {
                     if let Some(audio_host) = self.audio_host.as_ref() {
                         let sample_count =
                             (audio_host.sample_rate() / cpt32::sys::FRAME_RATE) as usize;
-                        let (left, right) = self.sgu.borrow_mut().clock_mixed(sample_count);
+                        let (left0, right0) = self.sgu[0].borrow_mut().clock_mixed(sample_count);
+                        let (left1, right1) = self.sgu[1].borrow_mut().clock_mixed(sample_count);
+                        let left: Vec<i16> = left0
+                            .into_iter()
+                            .zip(left1)
+                            .map(|(a, b)| a.saturating_add(b))
+                            .collect();
+                        let right: Vec<i16> = right0
+                            .into_iter()
+                            .zip(right1)
+                            .map(|(a, b)| a.saturating_add(b))
+                            .collect();
                         audio_host.push_samples_i16(&left, &right);
                     }
 
