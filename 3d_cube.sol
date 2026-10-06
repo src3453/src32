@@ -199,7 +199,7 @@ fn setup_light () :
     0.8f emit 0.8f emit 0.8f emit # diffuse
     0.2f emit 0.2f emit 0.2f emit # specular
     0.0f emit 0.0f emit 0.0f emit # emission
-    -100.0f emit 100.0f emit 80.0f emit # view-space point position
+    0.0f emit 0.0f emit -100.0f emit # view-space point position outside the cube on the camera side (-Z)
     0x01000002 emit # enable fixed-function lighting
     1 emit 1 emit
 ;

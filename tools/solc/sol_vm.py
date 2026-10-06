@@ -135,6 +135,9 @@ class Program:
     irq_handlers: dict[int, str] = field(default_factory=dict)
     effective_stack_size_bytes: int = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
+    stack_top: int = 0x000FFFFC
+    var_base: int = 0x00100000
+    read_only_data_base: int = STRING_POOL_BASE
 
 def to_i32(value: int) -> int:
     value &= UINT32_MAX
@@ -325,7 +328,14 @@ def parse_number(token: str) -> int:
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
-def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
+def compile_program(source: str, var_base: int | None = None, read_only_data_base: int | None = None, stack_top: int | None = None, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
+    var_base_overridden = var_base is not None
+    rodata_base_overridden = read_only_data_base is not None
+    stack_top_overridden = stack_top is not None
+    var_base = 0x00100000 if var_base is None else var_base
+    read_only_data_base = STRING_POOL_BASE if read_only_data_base is None else read_only_data_base
+    stack_top = 0x000FFFFC if stack_top is None else stack_top
+    directive_seen: set[str] = set()
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
 
@@ -379,6 +389,21 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
     forced_stack_size_seen = False
+
+    def compiler_address(directive: str, token: str) -> int:
+        if not NUMBER_RE.match(token):
+            raise SolVMError(f"{directive} requires a numeric address")
+        if token.lower().startswith("0x"):
+            value = int(token.rstrip("uU"), 16)
+        elif token.lower().startswith("0b"):
+            value = int(token.rstrip("uU"), 2)
+        elif token.endswith(("u", "U")):
+            value = int(token[:-1], 10)
+        else:
+            value = int(token, 10)
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"{directive} address must be in range 0..0xFFFFFFFF")
+        return value
 
     string_literals: dict[str, int] = {}
     next_string_addr = read_only_data_base
@@ -470,7 +495,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         return False
 
     def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
-        nonlocal next_string_addr, next_var_addr, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
+        nonlocal next_string_addr, next_var_addr, stack_top, var_base, read_only_data_base, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
         terminal_ops = {"ret", "retn", "halt"}
         i = start_index
         while i < len(words):
@@ -561,6 +586,30 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     if name not in functions:
                         raise error(f"unknown function for !keepfn: {name}")
                     kept_functions.add(name)
+                    i += 2
+                    continue
+                setting_names = {
+                    "!stack_top": "stack_top",
+                    "!var_base": "var_base",
+                    "!rodata_base": "rodata_base",
+                }
+                if tok in setting_names:
+                    if i + 1 >= len(words):
+                        raise SolVMError(f"{tok} requires an address")
+                    setting = setting_names[tok]
+                    if setting in directive_seen:
+                        raise SolVMError(f"{tok} may only be specified once")
+                    directive_seen.add(setting)
+                    value = compiler_address(tok, words[i + 1])
+                    # Explicit compiler/API options have precedence over source directives.
+                    if setting == "stack_top" and not stack_top_overridden:
+                        stack_top = value
+                    elif setting == "var_base" and not var_base_overridden:
+                        var_base = value
+                        next_var_addr = value
+                    elif setting == "rodata_base" and not rodata_base_overridden:
+                        read_only_data_base = value
+                        next_string_addr = value
                     i += 2
                     continue
                 if tok == "!const":
@@ -920,6 +969,9 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         effective_stack_size_bytes=effective_stack_size_bytes,
         required_stack_size_bytes=required_stack_size_bytes,
         irq_handlers=irq_handlers,
+        stack_top=stack_top,
+        var_base=var_base,
+        read_only_data_base=read_only_data_base,
     )
 
 '''
@@ -1111,12 +1163,12 @@ class SolVM:
             f"pc={self.pc} op={inst.op}{arg_text} stack={stack_snapshot} frames={len(self.call_stack)} r28=0x{self.r28:08X}"
         )
 
-    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> None:
+    def load(self, source: str, source_path: str | None = None, read_only_data_base: int | None = None, remove_unused_functions: bool = True) -> None:
         self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)
-        self.r28 = 0x000FFFFC
+        self.r28 = self.program.stack_top
         self.call_stack = []
         self.memory = {}
         self.trace = []
@@ -1175,7 +1227,7 @@ class SolVM:
                 raise
         return self.stack
 
-    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> list[int]:
+    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int | None = None, remove_unused_functions: bool = True) -> list[int]:
         self.load(source, source_path=source_path, read_only_data_base=read_only_data_base, remove_unused_functions=remove_unused_functions)
         return self.run()
 

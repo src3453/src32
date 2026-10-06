@@ -41,7 +41,7 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, optimization: str = "size", no_short_mode: bool = False, remove_unused_functions: bool = True) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, optimization: str = "size", no_short_mode: bool = False, remove_unused_functions: bool = True) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         src = f.read()
     try:
@@ -84,9 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--no-short-mode", action="store_true", help="disable automatic Short Mode instruction selection")
     compile_parser.add_argument("-O", choices=("size", "speed"), default="size", help="optimize for binary size or execution cycles (default: size)")
     compile_parser.add_argument("--keep-unused-functions", action="store_true", help="keep function definitions that are not reachable from the top-level program")
-    compile_parser.add_argument("--var-base", type=_parse_int_option, default=0x00100000, help="base address to allocate global variables (default: 0x00100000)")
-    compile_parser.add_argument("--stack-top", type=_parse_int_option, default=0x000FFFFC, help="initial stack top address for R28 (default: 0x000FFFFC)")
-    compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=0x00020000, help="base address for read-only data (default: 0x20000)")
+    compile_parser.add_argument("--var-base", type=_parse_int_option, default=None, help="override the source !var_base directive (default: 0x00100000)")
+    compile_parser.add_argument("--stack-top", type=_parse_int_option, default=None, help="override the source !stack_top directive (default: 0x000FFFFC)")
+    compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=None, help="override the source !rodata_base directive (default: 0x00020000)")
     return parser
 
 

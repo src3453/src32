@@ -157,6 +157,7 @@ impl Cpu {
         let mut bus = bus;
         let register_block = crate::devices::cpu::connect_cpu_registers(&mut bus);
         let irq_controller = crate::devices::irqc::irqc::connect_irqc(&mut bus);
+        bus.attach_irq_controller(Rc::clone(&irq_controller));
         let mut cpu = Self {
             reg: [0; 32],
             pc: 0,
@@ -306,6 +307,7 @@ impl Cpu {
     /// Advance exactly one CPU clock. Memory and arithmetic operations are
     /// represented as separate bus/functional-unit phases in the FSM.
     pub fn tick(&mut self) {
+        self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
         self.irqc_number = irq_output.number;
@@ -492,7 +494,11 @@ impl Cpu {
         if reg >= self.reg.len() {
             panic!("Invalid register index: {reg}");
         }
-        if reg == REG_ZERO { 0 } else { self.reg[reg] }
+        if reg == REG_ZERO {
+            0
+        } else {
+            self.reg[reg]
+        }
     }
 
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
@@ -791,7 +797,11 @@ impl Cpu {
     }
 
     fn short_reg_to_gpr(sr: u8) -> usize {
-        if sr < 15 { sr as usize } else { REG_LR }
+        if sr < 15 {
+            sr as usize
+        } else {
+            REG_LR
+        }
     }
 
     fn read_short_reg(&self, sr: u8) -> u32 {
@@ -1121,9 +1131,9 @@ impl Cpu {
         while self.cycles < end_cycles {
             self.tick();
             if !self.running {
-                // No device can change IRQ inputs during this synchronous run;
-                // one idle tick has polled the current lines, so skip the rest.
-                self.cycles = end_cycles;
+                if !self.bus.has_pending_dma() {
+                    self.cycles = end_cycles;
+                }
             }
         }
     }

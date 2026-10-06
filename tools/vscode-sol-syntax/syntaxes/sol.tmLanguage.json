@@ -91,7 +91,7 @@
 		"directives": {
 			"patterns": [{
 				"name": "meta.directive.sol",
-				"match": "^(\\s*)(!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm|data|db)\\b)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
+				"match": "^(\\s*)(!(?:include|define|undef|const|var|end|required_stack_size|required_return_stack_size|force_stack_size|force_return_stack_size|asm|data|db|stack_top|var_base|rodata_base)\\b)(?:\\s+([A-Za-z_][A-Za-z0-9_]*))?",
 				"captures": {
 					"2": {
 						"name": "keyword.control.directive.c"

@@ -14,6 +14,9 @@
 !const VPU_SHADE_FLAT 1
 !const VPU_SHADE_GOURAUD 2
 
+!const VPU_MODEL_UPLOAD 0x1A
+!const VPU_DRAW_MODEL 0x1B
+
 fn vpu_emit (word) :
     while
         VPU_STATUS ld 2 and 0 neq
@@ -125,6 +128,47 @@ fn vpu_draw_textured_triangle (texture_id shading_mode vertex_ptr) :
         i 1 add >i
         i 18 lt
     end
+;
+
+# ptr contains 27 words: each vertex has POSITION xyz, NORMAL xyz, UV uv,
+# and packed RGBA8 color. Positions and normals are in MODEL space.
+fn vpu_draw_textured_lit_triangle (texture_id shading_mode vertex_ptr) :
+    25 29 vpu_command_word vpu_emit
+    texture_id vpu_emit
+    shading_mode vpu_emit
+    local i 0
+    while
+        vertex_ptr ld vpu_emit
+        vertex_ptr 4 add >vertex_ptr
+        i 1 add >i
+        i 27 lt
+    end
+;
+
+# Upload count records from RAM. Each record is texture ID plus 27 words of
+# POSITION/NORMAL/UV/RGBA8 for the three vertices.
+fn vpu_upload_model (model_id triangle_count record_ptr) :
+    local payload_words
+    triangle_count 28 mul 2 add >payload_words
+    VPU_MODEL_UPLOAD payload_words vpu_command_word vpu_emit
+    model_id vpu_emit
+    triangle_count vpu_emit
+    local total_words
+    triangle_count 28 mul >total_words
+    local i 0
+    while
+        record_ptr ld vpu_emit
+        record_ptr 4 add >record_ptr
+        i 1 add >i
+        i total_words lt
+    end
+;
+
+# Draw a model cached in VPU memory with the selected NONE/FLAT/GOURAUD mode.
+fn vpu_draw_model (model_id shading_mode) :
+    VPU_DRAW_MODEL 2 vpu_command_word vpu_emit
+    model_id vpu_emit
+    shading_mode vpu_emit
 ;
 
 # ptr contains 12 words: three POSITION xyz + packed RGBA8 vertices.

@@ -12,7 +12,7 @@ TOKEN_TYPES = ["comment", "string", "number", "operator", "directive", "control"
 TOKEN_MODIFIERS = []
 OPS = {"add","sub","mul","div","mod","neg","and","or","xor","shl","shr","eq","neq","lt","gt","le","ge","sgn","not","dup","drop","swap","over","rot","nip","tuck","ld","st","ldb","ldh","stb","sth","stacksize","halt","ret","retn"}
 CONTROL = {"fn","if","while","else","end","local"}
-DIRECTIVES = {"!include","!define","!undef","!const","!var","!end","!required_stack_size","!force_stack_size","!asm","!data","!db","!keepfn"}
+DIRECTIVES = {"!include","!define","!undef","!const","!var","!end","!required_stack_size","!force_stack_size","!asm","!data","!db","!keepfn","!stack_top","!var_base","!rodata_base"}
 
 class Server:
     def __init__(self): self.docs = {}

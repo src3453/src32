@@ -114,6 +114,7 @@ fn print_memory(cpu: &mut Cpu, mut addr: u32, count: usize) {
 pub fn run(program_path: Option<&str>) {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
+    cpt32::bus::connect_bmc_dmac(&mut bus);
     connect_uart_with_stdin(&mut bus, false);
     connect_rng(&mut bus);
     let _sgu = connect_sgu(&mut bus);

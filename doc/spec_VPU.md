@@ -21,6 +21,19 @@ VPUは、CPT32の3Dグラフィックス処理を行う固定機能パイプラ�
 | コマンド投入 | MMIO FIFO またはメインRAMからのDMA実行 |
 | バイト順 | 32-bitレジスタおよびコマンドはビッグエンディアン |
 
+### 2.1 フレームバッファ色形式
+
+VPUのカラー出力はリセット時にRGB555とする。各画素のR/G/Bをそれぞれ5-bit（0～31）に量子化し、VDPへ渡す際に8-bitへ展開する。量子化には画面座標に固定した4×4 Bayer行列を使い、5-bit境界付近の色を隣接するレベルへ分散して階調を補う。行列は次の通りで、座標は左上を(0,0)とし、画面全体で繰り返す。
+
+```text
+ 0  8  2 10
+12  4 14  6
+ 3 11  1  9
+15  7 13  5
+```
+
+アルファ値と深度値はこの量子化の対象外とする。したがって透明度付きテクスチャも、RGBのみRGB555相当で出力される。
+
 VPUのカラーターゲットとZターゲットはVPUコマンドで指定する。出力GPはVPUの表示状態で指定する。VDPはVPUのカラー出力をそのGPの他の供給元と合成し、GP番号に従い最終合成する。GP間の順序、alpha合成、表示タイミングは[VDP仕様](spec_VDP.md)に従う。VPUは表示タイミングを制御しない。
 
 ## 3. 固定パイプライン
@@ -96,7 +109,7 @@ CPUはFIFO_DATAレジスタへコマンドワードを順番に書き込む。FI
 
 ### 6.2 DMA方式
 
-CPUはメインRAM上のコマンド列の開始アドレスとバイト長を設定し、DMA_STARTへ書き込む。アドレスと長さは4バイト境界でなければならない。実行中の再STARTはBUSYエラーとする。コマンド列末尾まで実行後にDONEを立て、完了割り込みを発生させる（割り込み有効時）。DMAはVRAMおよびMMIOをソースとして参照できない。
+CPUはDMACチャネルを使い、Main RAM上のコマンド列をVPU `FIFO_DATA` (`0x8003002C`)へ転送できる。32-bit転送幅、source increment、destination fixedを設定し、転送byte数は4-byte境界とする。DMA転送完了後にVPU側のコマンド実行も完了している。VPU FIFOをDMA転送先として許可する例外はBMC/DMAC仕様を参照する。
 
 FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入経路からの書き込みは受理せず、BUSYエラーとする。
 
@@ -116,6 +129,9 @@ FIFO入力とDMA実行は同時に開始できない。BUSY中の異なる投入
 | `0x16` | DRAW_TL_LIT_TRIANGLE | 3 vertices, each POSITION(float3), NORMAL(float3), packed RGBA8 color |
 | `0x17` | TEXTURE_UPLOAD | texture ID, width, height, packed RGBA4444 texels |
 | `0x18` | DRAW_TEXTURED_TRIANGLE | texture ID, shading mode, 3 vertices with POSITION(float3), UV(float2), packed RGBA8 color |
+| `0x19` | DRAW_TEXTURED_LIT_TRIANGLE | texture ID, shading mode, 3 vertices with POSITION(float3), NORMAL(float3), UV(float2), packed RGBA8 color |
+| `0x1A` | MODEL_UPLOAD | model ID, triangle count, then triangle records (texture ID + 27 vertex words) |
+| `0x1B` | DRAW_MODEL | model ID, shading mode |
 | `0x00` | END | payloadなし。FIFO投入バッチの終端 |
 | `0x7F` | NOP | 任意 |
 
@@ -145,7 +161,13 @@ SET_STATEはpayload 2ワード（状態ID、値）、SET_MATRIXは17ワード（
 
 `DRAW_TEXTURED_TRIANGLE` (`0x18`) のpayloadは20ワードで、`texture_id, shading_mode`に続き、3頂点それぞれの`POSITION.x/y/z` binary32、`u/v` binary32、RGBA8カラー1ワードの順。shading_modeは0=NONE、1=FLAT、2=GOURAUD。位置・UVは有限値でなければならず、未知ID、不正モード、非有限値はコマンドエラーとなり描画しない。変換・クリッピングは通常のT&L経路に従う。UVは画面上でアフィン補間し、透視補正を行わない。サンプル位置の`floor(u*width), floor(v*height)`を各々テクスチャ境界へクランプする（Clamp-to-edge、最近傍）。
 
-NONEはテクスチャRGBAをそのまま出力する。FLATはコマンド頂点0のRGBAを三角形全体に用い、GOURAUDは頂点RGBAを画面空間で補間する。SET_STATEでライティングが有効なら、三角形の幾何法線を求め、FLATは頂点0のVIEW位置、GOURAUDは各頂点のVIEW位置で既存固定機能ライトを評価してから色を補間する。NONEではライティングを適用しない。FLAT/GOURAUDはテクスチャと頂点色の各チャンネルの積を計算し、最近傍の整数へ丸めてRGBA8888として出力する。ブレンディングは行わない。
+`DRAW_TEXTURED_LIT_TRIANGLE` (`0x19`) は同じテクスチャ描画に頂点法線を加える。payloadは29ワードで、`texture_id, shading_mode`に続き、3頂点それぞれの`POSITION.xyz, NORMAL.xyz, UV.uv`（binary32）とRGBA8カラー1ワードを格納する。位置と法線はMODEL座標系で入力し、法線はVIEW×MODELの逆転置3×3行列で変換して正規化する。FLATは幾何法線で頂点0を照明し、GOURAUDは各頂点法線で照明した色を画面空間で補間する。NONEでは照明せず、テクスチャ色を使う。UV・カラー・クリッピング動作は`0x18`と同じ。
+
+`MODEL_UPLOAD` (`0x1A`) は三角形データをVPU内にキャッシュする。payloadは`model_id, triangle_count`に続き、各三角形につき`texture_id`と`0x19`の頂点データ27ワードを格納する。payload長は`2 + triangle_count × 28`ワードで、同じmodel IDへの登録は置き換えとなる。キャッシュはVPUリセットまで保持する。
+
+`DRAW_MODEL` (`0x1B`) はキャッシュ済みモデルを現在の行列、ライト、テクスチャ状態で再描画する。payloadは`model_id, shading_mode`。初回登録後は視点行列とモデル描画命令だけを送り、三角形データの再送を省ける。未登録IDまたは範囲外のshading modeはコマンドエラーとなる。
+
+NONEはテクスチャRGBAをそのまま出力する。FLATはコマンド頂点0のRGBAを三角形全体に用い、GOURAUDは頂点RGBAを画面空間で補間する。SET_STATEでライティングが有効なら、三角形の幾何法線を求め、FLATは頂点0のVIEW位置、GOURAUDは各頂点のVIEW位置で既存固定機能ライトを評価してから色を補間する。NONEではライティングを適用しない。FLAT/GOURAUDはテクスチャと頂点色の各チャンネルの積を計算し、最近傍の整数へ丸めてRGBA8888の作業色を得た後、カラー出力時に2.1節のRGB555量子化を行う。ブレンディングは行わない。
 
 T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`）に対してポリゴンをクリップし、生成頂点の色・UVも補間する。残ったポリゴンは画面座標へ変換され、深度テスト付きで塗りつぶす。画面サイズは320×240固定。
 
@@ -161,20 +183,16 @@ T&L経路はクリップ空間で6面（`-w≤x≤w`, `-w≤y≤w`, `0≤z≤w`�
 | `0x000C` | FIFO_LEVEL | R | FIFO使用中ワード数 |
 | `0x0010` | FIFO_CAPACITY | R | FIFO容量（ワード数、実装固定値） |
 | `0x0014` | OUTPUT_GP | RW | VDP出力先GP (0～7、reset値7)。無効値は無視してCOMMAND_ERRORを立てる |
-| `0x0020` | DMA_ADDRESS | RW | コマンド列開始アドレス |
-| `0x0024` | DMA_LENGTH | RW | コマンド列長（バイト） |
-| `0x0028` | DMA_START | W | bit0に1を書いてDMA実行開始 |
 | `0x002C` | FIFO_DATA | W | コマンドFIFOへ1ワード投入 |
-| `0x0030` | IRQ_ACK | W | bit0に1を書いてDONEをクリア |
 
-DMAまたはFIFOの全コマンド処理完了時にDONEを立てる。IRQ_ENABLE時はVPU完了IRQをIRQCへ通知する。IRQ番号はシステム割り込み表のデバイスイベント枠（IRQ5）を使用する。
+DMAはDMACからFIFO_DATAへ転送する。FIFO経由で投入したコマンドは投入順に実行される。
 
 ## 8. エラー、同期、リセット
 
 - STATUSの各エラービットとDONEはwrite-1-to-clearとする。BUSYとFIFO_FULLは状態から導出する。
 - 描画コマンドは投入順に実行され、後続コマンドは先行する状態変更・描画の完了後に評価される。
 - CPUはBUSY解除またはDONEをポーリングして完了を確認できる。
-- SOFT_RESETはFIFO、実行状態、エラーフラグを初期化し、VRAM内容は変更しない。
+- SOFT_RESETはFIFO、実行状態、エラーフラグを初期化し、VRAM、テクスチャ、キャッシュ済みモデルは変更しない。
 - リセット後は標準ビューポート(320×240)、Gouraud、ライティング無効、背面カリング無効、ZテストLESS有効、Z書き込み有効、RGBA書き込み有効とする。描画ターゲットのベースアドレスは未設定であり、設定前の描画はTARGET_ERRORとなる。
 
 ## 9. 初版の範囲外

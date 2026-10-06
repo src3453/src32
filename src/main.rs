@@ -13,7 +13,7 @@ use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
 use cpt32::devices::sgu::sgu::connect_sgu;
-use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
+use cpt32::devices::vdp::vdp::{connect_vdp_with_font, Vdp};
 use imgui::{Condition, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
@@ -65,6 +65,7 @@ impl GuiApp {
     ) -> Self {
         let mut bus = Bus::new();
         connect_ram(&mut bus);
+        cpt32::bus::connect_bmc_dmac(&mut bus);
         connect_uart(&mut bus);
         connect_rng(&mut bus);
         let sgu = connect_sgu(&mut bus);

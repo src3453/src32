@@ -4,7 +4,11 @@ pub mod bus;
 pub mod cpu;
 pub mod sys;
 pub mod devices {
+    pub mod bmc;
     pub mod cpu;
+    pub mod dmac {
+        pub mod dmac;
+    }
     pub mod ram;
     pub mod irqc {
         pub mod irqc;

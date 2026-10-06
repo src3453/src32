@@ -97,10 +97,10 @@ impl WgpuPresenter {
     pub fn new(
         window: &Window,
         display_handle: impl winit::raw_window_handle::HasDisplayHandle
-        + fmt::Debug
-        + Send
-        + Sync
-        + 'static,
+            + fmt::Debug
+            + Send
+            + Sync
+            + 'static,
     ) -> Self {
         let size = window.inner_size();
         let instance = Instance::new(InstanceDescriptor::new_with_display_handle(Box::new(

@@ -937,12 +937,12 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True) -> str:
     try:
-        program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
+        program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, stack_top=stack_top, source_path=source_path, remove_unused_functions=remove_unused_functions)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    stack_capacity_bytes = min(program.effective_stack_size_bytes, stack_top + 4)
+    stack_capacity_bytes = min(program.effective_stack_size_bytes, program.stack_top + 4)
     stack_capacity_bytes = max(0, stack_capacity_bytes) // 4 * 4
     check_static_stack_safety(program, stack_capacity_bytes=stack_capacity_bytes)
-    return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)
+    return emit_src32_from_program(program, debug=debug, stack_top=program.stack_top, use_short_mode=use_short_mode)

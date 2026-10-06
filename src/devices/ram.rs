@@ -29,7 +29,7 @@ impl Device for Ram {
     }
 }
 
-const RAM_SIZE: usize = 0x1000000; // 16MB 
+const RAM_SIZE: usize = 0x1000000; // 16MB
 pub fn connect_ram(bus: &mut crate::bus::Bus) {
     bus.add_device(0, Box::new(Ram::new(RAM_SIZE)));
 }

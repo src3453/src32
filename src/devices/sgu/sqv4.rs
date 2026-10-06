@@ -41,11 +41,19 @@ impl TryFrom<u8> for Variant {
 
 impl Variant {
     pub(crate) fn bits(self) -> usize {
-        if self == Self::H { 4 } else { 3 }
+        if self == Self::H {
+            4
+        } else {
+            3
+        }
     }
 
     pub(crate) fn payload_bytes(self) -> usize {
-        if self == Self::H { 32 } else { 24 }
+        if self == Self::H {
+            32
+        } else {
+            24
+        }
     }
 }
 
@@ -285,7 +293,11 @@ fn delta(version: u8, variant: Variant, state: State, code: u8) -> i32 {
                 + if magnitude & 1 != 0 { step >> 2 } else { 0 }
                 + if magnitude & 2 != 0 { step >> 1 } else { 0 }
                 + if magnitude & 4 != 0 { step } else { 0 };
-            if code & 8 != 0 { -diff } else { diff }
+            if code & 8 != 0 {
+                -diff
+            } else {
+                diff
+            }
         }
         Variant::L | Variant::LPlus => {
             let magnitude = (code & 3) as usize;
@@ -296,7 +308,11 @@ fn delta(version: u8, variant: Variant, state: State, code: u8) -> i32 {
                 Variant::H => unreachable!(),
             };
             let diff = (level * step + 4) / 8;
-            if code & 4 != 0 { -diff } else { diff }
+            if code & 4 != 0 {
+                -diff
+            } else {
+                diff
+            }
         }
     }
 }
@@ -448,7 +464,11 @@ fn decode_code_with_levels(state: &mut State, code: u8, levels: [i32; 4]) -> i32
 #[cfg(test)]
 fn delta_with_levels(state: State, code: u8, levels: [i32; 4]) -> i32 {
     let diff = (levels[(code & 3) as usize] * STEPS[state.index] + 4) / 8;
-    if code & 4 != 0 { -diff } else { diff }
+    if code & 4 != 0 {
+        -diff
+    } else {
+        diff
+    }
 }
 
 #[cfg(test)]
@@ -491,13 +511,11 @@ mod tests {
                 assert_eq!(decoded.sample_rate, 22_050);
                 assert_eq!(decoded.channels, channels);
                 assert_eq!(decoded.samples.len(), pcm.len());
-                assert!(
-                    decoded
-                        .samples
-                        .iter()
-                        .zip(&pcm)
-                        .all(|(a, b)| (*a as i32 - *b as i32).abs() < 128)
-                );
+                assert!(decoded
+                    .samples
+                    .iter()
+                    .zip(&pcm)
+                    .all(|(a, b)| (*a as i32 - *b as i32).abs() < 128));
                 let empty = encode_interleaved(&[], channels, 48_000, variant, 10).unwrap();
                 assert_eq!(empty.len(), HEADER_SIZE);
                 assert!(decode(&empty).unwrap().samples.is_empty());

@@ -56,6 +56,8 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - DMAによるバス共有
   - 単一アドレス空間
 
+調停とDMA転送の詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
+
 ---
 
 ## 2.4 Memory
@@ -151,7 +153,9 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
 - 特徴:
   - 6チャネルDMA
   - 非同期転送
-  - バス共有制御
+  - BMC経由のバス共有
+
+BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 
 ---
 
@@ -218,6 +222,7 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
 | 0x80030000 - 0x8003FFFF | 64KB | VPU | RWS |
 | 0x80040000 - 0x8004FFFF | 64KB | PeC | RWS |
 | 0x80050000 - 0x8005FFFF | 64KB | DMAC | RWS |
+| 0x80060000 - 0x8006FFFF | 64KB | BMC | RWS |
 
 ### System
 
