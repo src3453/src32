@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
-use crate::devices::sgu::s3w2::{S3w2Sound, PCM_RAM_SIZE};
+use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound};
 
 pub const SGU_REG_BASE: u32 = 0x8002_0000;
 pub const SGU2_REG_BASE: u32 = 0x8002_1000;

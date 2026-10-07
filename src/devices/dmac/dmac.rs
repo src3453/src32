@@ -4,11 +4,16 @@ use std::rc::Rc;
 use crate::bus::{Bus, Device};
 use crate::devices::bmc::Bmc;
 
+use crate::devices::pec::idc::idc::{DmaDirection, IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
 pub const DMAC_BASE: u32 = 0x8005_0000;
 pub const DMAC_SIZE: u32 = 0x1_0000;
 const CHANNEL_COUNT: usize = 6;
 const CHANNEL_BASE: u32 = 0x100;
 const CHANNEL_STRIDE: u32 = 0x20;
+
+fn is_idc_address(address: u32) -> bool {
+    address >= IDC_BASE && address < IDC_BASE + IDC_SIZE
+}
 
 const STATUS_BUSY: u32 = 1;
 const STATUS_DONE: u32 = 1 << 1;
@@ -76,6 +81,7 @@ pub struct Dmac {
     irq_status: u8,
     pub(crate) channels: [Channel; CHANNEL_COUNT],
     bmc: Rc<RefCell<Bmc>>,
+    idc: Option<Rc<RefCell<Idc>>>,
 }
 
 impl Dmac {
@@ -87,7 +93,12 @@ impl Dmac {
             irq_status: 0,
             channels: std::array::from_fn(|_| Channel::new()),
             bmc,
+            idc: None,
         }
+    }
+
+    pub(crate) fn attach_idc(&mut self, idc: Rc<RefCell<Idc>>) {
+        self.idc = Some(idc);
     }
 
     pub(crate) fn request_mask(&self) -> u8 {
@@ -96,7 +107,20 @@ impl Dmac {
         }
         let mut requests = 0;
         for (index, channel) in self.channels.iter().enumerate() {
-            if channel.status & STATUS_BUSY != 0 {
+            if channel.status & STATUS_BUSY == 0 {
+                continue;
+            }
+            let uses_idc = channel.src == IDC_DATA_ADDRESS || channel.dst == IDC_DATA_ADDRESS;
+            let can_request = if !uses_idc {
+                true
+            } else if channel.src == IDC_DATA_ADDRESS && channel.phase == Phase::Write {
+                true
+            } else {
+                self.idc
+                    .as_ref()
+                    .is_some_and(|idc| idc.borrow().dma_request_ready(index))
+            };
+            if can_request {
                 requests |= 1 << (index + 2);
             }
         }
@@ -126,34 +150,79 @@ impl Dmac {
     }
 
     pub(crate) fn complete_op(&mut self, index: usize, value: u32) {
-        let channel = &mut self.channels[index];
-        if channel.phase == Phase::Read {
-            channel.buffer = value;
-            channel.phase = Phase::Write;
+        let (idc_endpoint, done) = {
+            let channel = &mut self.channels[index];
+            if channel.phase == Phase::Read {
+                channel.buffer = value;
+                channel.phase = Phase::Write;
+                return;
+            }
+            let width = channel.width().unwrap_or(1) as u32;
+            if channel.control & (1 << 2) == 0 {
+                channel.src_current = channel.src_current.wrapping_add(width);
+            }
+            if channel.control & (1 << 4) == 0 {
+                channel.dst_current = channel.dst_current.wrapping_add(width);
+            }
+            channel.remain = channel.remain.saturating_sub(width);
+            (
+                channel.src == IDC_DATA_ADDRESS || channel.dst == IDC_DATA_ADDRESS,
+                channel.remain == 0,
+            )
+        };
+        let abort_at_boundary = idc_endpoint
+            && self
+                .idc
+                .as_ref()
+                .is_some_and(|idc| idc.borrow_mut().dma_byte_completed(index));
+        if abort_at_boundary {
+            self.fail_without_idc(index, 3);
             return;
         }
-        let width = channel.width().unwrap_or(1) as u32;
-        if channel.control & (1 << 2) == 0 {
-            channel.src_current = channel.src_current.wrapping_add(width);
-        }
-        if channel.control & (1 << 4) == 0 {
-            channel.dst_current = channel.dst_current.wrapping_add(width);
-        }
-        channel.remain = channel.remain.saturating_sub(width);
-        if channel.remain == 0 {
-            channel.status &= !STATUS_BUSY;
-            channel.status |= STATUS_DONE;
+        if done {
+            self.channels[index].status &= !STATUS_BUSY;
+            self.channels[index].status |= STATUS_DONE;
             self.raise_irq(index);
         } else {
-            channel.phase = Phase::Read;
+            self.channels[index].phase = Phase::Read;
         }
     }
 
     pub(crate) fn fail(&mut self, index: usize, code: u32) {
+        let notify_idc = self
+            .idc
+            .as_ref()
+            .is_some_and(|idc| idc.borrow().dma_channel() == Some(index));
+        self.fail_without_idc(index, code);
+        if notify_idc {
+            if let Some(idc) = &self.idc {
+                idc.borrow_mut().dma_failed(index);
+            }
+        }
+    }
+
+    fn fail_without_idc(&mut self, index: usize, code: u32) {
         let channel = &mut self.channels[index];
         channel.status &= !(STATUS_BUSY | STATUS_DONE | STATUS_ERROR | 0xF0);
         channel.status |= STATUS_ERROR | ((code & 0xF) << 4);
         self.raise_irq(index);
+    }
+
+    pub(crate) fn fail_from_idc(&mut self, index: usize, code: u32) {
+        if index < CHANNEL_COUNT && self.channels[index].status & STATUS_BUSY != 0 {
+            self.fail_without_idc(index, code);
+        }
+    }
+
+    fn reject_start(&mut self, index: usize, code: u32, notify_idc: bool) {
+        self.fail_without_idc(index, code);
+        if notify_idc {
+            if let Some(idc) = &self.idc {
+                if idc.borrow().dma_requirements().is_some() {
+                    idc.borrow_mut().dma_start_failed();
+                }
+            }
+        }
     }
 
     fn raise_irq(&mut self, index: usize) {
@@ -165,40 +234,104 @@ impl Dmac {
     pub(crate) fn irq_pending(&self) -> bool {
         self.irq_status != 0
     }
+    pub(crate) fn has_active_transfer(&self) -> bool {
+        self.enabled
+            && self
+                .channels
+                .iter()
+                .any(|channel| channel.status & STATUS_BUSY != 0)
+    }
+    pub(crate) fn process_idc_abort_boundaries(&mut self) {
+        for index in 0..CHANNEL_COUNT {
+            let channel = &self.channels[index];
+            if channel.status & STATUS_BUSY == 0
+                || channel.phase != Phase::Read
+                || !(is_idc_address(channel.src) || is_idc_address(channel.dst))
+            {
+                continue;
+            }
+            let abort = self
+                .idc
+                .as_ref()
+                .is_some_and(|idc| idc.borrow_mut().abort_dma_at_boundary(index));
+            if abort {
+                self.fail_without_idc(index, 3);
+            }
+        }
+    }
 
     fn start(&mut self, index: usize) {
+        let channel = &self.channels[index];
+        let endpoint_configured = is_idc_address(channel.src) || is_idc_address(channel.dst);
         if !self.enabled || self.channel_enable & (1 << index) == 0 {
-            self.fail(index, 1);
+            self.reject_start(index, 1, endpoint_configured);
             return;
         }
-        let channel = &mut self.channels[index];
         if channel.status & STATUS_BUSY != 0 {
             return;
         }
+        let (src, dst, count, control) = (channel.src, channel.dst, channel.count, channel.control);
         let Some(width) = channel.width() else {
-            channel.status =
-                (channel.status & !(STATUS_DONE | STATUS_ERROR | 0xF0)) | STATUS_ERROR | (1 << 4);
-            if self.irq_enable & (1 << index) != 0 {
-                self.irq_status |= 1 << index;
-            }
+            self.reject_start(index, 1, endpoint_configured);
             return;
         };
-        let src_mode = (channel.control >> 2) & 3;
-        let dst_mode = (channel.control >> 4) & 3;
-        if channel.count == 0
-            || channel.count % u32::from(width) != 0
-            || channel.src % u32::from(width) != 0
-            || channel.dst % u32::from(width) != 0
+        let src_mode = (control >> 2) & 3;
+        let dst_mode = (control >> 4) & 3;
+        if count == 0
+            || count % u32::from(width) != 0
+            || src % u32::from(width) != 0
+            || dst % u32::from(width) != 0
             || src_mode > 1
             || dst_mode > 1
         {
-            channel.status =
-                (channel.status & !(STATUS_DONE | STATUS_ERROR | 0xF0)) | STATUS_ERROR | (1 << 4);
-            if self.irq_enable & (1 << index) != 0 {
-                self.irq_status |= 1 << index;
-            }
+            self.reject_start(index, 1, endpoint_configured);
             return;
         }
+
+        if endpoint_configured {
+            let active = self
+                .idc
+                .as_ref()
+                .and_then(|idc| idc.borrow().dma_requirements());
+            let another_channel_uses_endpoint =
+                self.channels.iter().enumerate().any(|(other, channel)| {
+                    other != index
+                        && (channel.src == IDC_DATA_ADDRESS || channel.dst == IDC_DATA_ADDRESS)
+                });
+            let valid = active.is_some_and(|(direction, expected_count)| {
+                if another_channel_uses_endpoint || count != expected_count || width != 1 {
+                    return false;
+                }
+                match direction {
+                    DmaDirection::DeviceToMemory => {
+                        src == IDC_DATA_ADDRESS
+                            && src_mode == 1
+                            && dst != IDC_DATA_ADDRESS
+                            && dst_mode == 0
+                    }
+                    DmaDirection::MemoryToDevice => {
+                        dst == IDC_DATA_ADDRESS
+                            && dst_mode == 1
+                            && src != IDC_DATA_ADDRESS
+                            && src_mode == 0
+                    }
+                }
+            });
+            if !valid {
+                self.reject_start(index, 1, active.is_some());
+                return;
+            }
+            let attached = self
+                .idc
+                .as_ref()
+                .is_some_and(|idc| idc.borrow_mut().attach_dma(index));
+            if !attached {
+                self.reject_start(index, 1, true);
+                return;
+            }
+        }
+
+        let channel = &mut self.channels[index];
         channel.src_current = channel.src;
         channel.dst_current = channel.dst;
         channel.remain = channel.count;

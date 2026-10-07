@@ -57,7 +57,8 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 - 1チャネルの転送長は1～`0xFFFFFFFF` byte。0 byteは開始エラー。
 - 転送幅は8/16/32-bitから選び、byte countは転送幅の倍数とする。source/destinationは転送幅に整列させる。
 - sourceとdestinationはそれぞれ固定または転送幅分のincrementを選択できる。初版ではdecrement、2D/stride、scatter-gather、chainingはサポートしない。
-- メモリ転送対象はMain RAM、VRAM、PCMRAM。MMIOは通常の転送先として不許可だが、32-bit固定destinationに限りVPUの`FIFO_DATA` (`0x8003002C`)を許可する。Main RAM上のVPUコマンドバッファをまとめて投入する用途に使う。その他のMMIO、ROM、未定義領域は不許可とし、違反は当該チャネルのADDR_ERRORで停止する。
+- メモリ転送対象はMain RAM、VRAM、PCMRAM。MMIOは通常の転送先として不許可だが、既存の32-bit固定destination例外としてVPUの`FIFO_DATA` (`0x8003002C`)を許可する。加えてIDC仕様で定める場合に限り、唯一の追加MMIO endpoint `0x80041024` (PeC IDC `DATA`) を8-bit転送で使用できる。その他のMMIO、ROM、未定義領域は不許可とし、違反は当該チャネルのADDR_ERRORで停止する。
+- IDC endpoint例外の向きはIDC operationで固定する。READはsource=`0x80041024` fixed、destination=許可されたRAM increment、WRITEはsource=許可されたRAM increment、destination=`0x80041024` fixed。幅は8-bitのみ、byte countはactiveなIDC READ/WRITEの`SECTOR_COUNT × 512`と完全一致させる。VPU例外は既存どおり32-bit fixed destinationに限り、通常メモリDMA制約は変わらない。IDC endpointをこの形式以外で使う設定は開始時の設定エラー（`ERROR_CODE=1`）とする。
 - 読み出しbeat完了後に書き込みbeatを発行する。途中エラー時は残りを中止し、既に書き込んだデータはロールバックしない。
 - sourceとdestinationが重なる場合の動作は逐次コピーと同じで、memmove相当の逆方向コピーは行わない。
 - 完了時にDONEを立てる。IRQ_ENABLEの該当チャネルbitが1なら共有IRQ1を要求する。IRQ_STATUSとDONEはソフトウェアがクリアする。
@@ -106,10 +107,14 @@ CHn_STATUSのbit定義:
 
 開始時にDMACは設定値を検査し、SRC/DST/COUNTを内部にラッチする。BUSY中の設定レジスタ書き込みと再STARTは無視し、進行中の転送状態は変更しない。開始条件不正の場合はデータ転送を行わず、ERROR_CODE=1でERRORを立てる。CHn_PRIORITYはBUSY中に変更しても次の調停から使う。
 
+IDC DATA endpointを含む開始時検査では、IDC READ/WRITE commandがactiveであること、operationに対応するsource/destination addressとfixed/increment mode、8-bit幅、IDC sector countと完全一致するbyte countを検証する。IDC commandがactiveでない場合、方向/幅/mode/count/addressが合わない場合、または別channelの設定が同じIDC endpointを使用する場合、STARTを拒否してDMAC `ERROR_CODE=1`でERRORを記録する。IDC側の進行中commandはDMA mismatch (`ERROR_CODE=5`)として終了する。IDC DATA以外のMMIO endpointをこの例外で許可してはならない。
+
+IDC channelはIDCがassertするrequest/DRQがあるbyteだけを転送する。IDCがsector readyを示す前はDMAC requestを出さず、BMC bus beatを発行しない。DRQが下がっている間、転送byte count/REMAINを進めずchannelはready待ちでBUSYを維持する。IDC sector timing、staging、media error、sector境界ABORTの詳細は[`spec_IDC.md`](spec_IDC.md)に従う。DMAC側ABORT自体は従来どおりbeat境界で停止し、IDCに中断を通知する。
+
 DMA有効化、チャネル有効化、CHn_CONTROL.STARTの順に設定する。転送中はCHn_REMAINをbyte単位で更新する。正常完了時はBUSYを下げ、REMAIN=0、DONEを立てる。IRQ_ENABLEの該当チャネルbitが1ならIRQ_STATUSにpendingを立て、IRQCのIRQ1へ通知する。エラーでもERRORとIRQ_STATUSを立て、該当チャネルのIRQが許可されていればIRQ1を通知する。
 
 ABORTまたはCHn_CONTROL.ABORTは次のbeat境界で停止し、完了済みの書き込みを保持したままBUSYを下げる。中止はERROR_CODE=3としてERRORを立てる。GLOBAL_CONTROLを0にすると新しいチャネル開始を禁止し、進行中チャネルも次のbeat境界で中止してERROR_CODE=3を記録する。
 
 ## 3. リセット値と予約事項
 
-リセット直後、DMACの全チャネルは無効かつidle、IRQ_ENABLE/IRQ_STATUSは0である。BMCは有効で、CPU=P0、VPU=P1、各DMA=P2、MAX_BURST=16とする。初版ではBMC/DMACのDMA進捗はbeat境界で観測できればよく、サイクル精度のデバイス待ち時間やPeC FIFO handshakeは別仕様で追加する。
+リセット直後、DMACの全チャネルは無効かつidle、IRQ_ENABLE/IRQ_STATUSは0である。BMCは有効で、CPU=P0、VPU=P1、各DMA=P2、MAX_BURST=16とする。IDC DATA endpointのsector-ready handshakeは本書2.3節と[`spec_IDC.md`](spec_IDC.md)で定める。その他のデバイス待ち時間やPeC FIFO handshakeは個別のデバイス仕様に従う。

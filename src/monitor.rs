@@ -2,6 +2,7 @@ use std::io::{self, Write};
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
+use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
 use cpt32::devices::ram::connect_ram;
@@ -115,6 +116,8 @@ pub fn run(program_path: Option<&str>) {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
     cpt32::bus::connect_bmc_dmac(&mut bus);
+    connect_idc_from_config(&mut bus)
+        .unwrap_or_else(|error| panic!("Invalid disk configuration: {error}"));
     connect_uart_with_stdin(&mut bus, false);
     connect_rng(&mut bus);
     let _sgu = connect_sgu(&mut bus);

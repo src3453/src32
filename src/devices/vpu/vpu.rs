@@ -850,12 +850,7 @@ impl Vpu {
 /// Quantizes RGB888 to RGB555 with a screen-anchored 4x4 Bayer pattern, then
 /// expands the 5-bit channels back to 8-bit values for the VDP compositor.
 fn rgb555_dither(rgb: [u8; 3], x: usize, y: usize) -> [u8; 3] {
-    const BAYER_4X4: [[u8; 4]; 4] = [
-        [0, 8, 2, 10],
-        [12, 4, 14, 6],
-        [3, 11, 1, 9],
-        [15, 7, 13, 5],
-    ];
+    const BAYER_4X4: [[u8; 4]; 4] = [[0, 8, 2, 10], [12, 4, 14, 6], [3, 11, 1, 9], [15, 7, 13, 5]];
     let threshold = BAYER_4X4[y & 3][x & 3] as u32;
     rgb.map(|channel| {
         let scaled = channel as u32 * 31;

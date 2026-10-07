@@ -2,10 +2,11 @@
 use std::env;
 use std::fs;
 
-use cpt32::bus::connect_devices_with_vdp;
 use cpt32::bus::Bus;
+use cpt32::bus::connect_devices_with_vdp;
 use cpt32::cpu::Cpu;
 
+use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 fn main() {
     let args: Vec<String> = env::args().skip(1).collect();
     let path = args
@@ -22,6 +23,7 @@ fn main() {
 
     let mut bus = Bus::new();
     let vdp = connect_devices_with_vdp(&mut bus);
+    connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     let mut cpu = Cpu::new(bus);
     cpu.load_program(0, &image);
     cpu.run(5_000_000);

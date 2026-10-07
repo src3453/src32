@@ -19,13 +19,13 @@ use std::rc::Rc;
 use std::sync::OnceLock;
 
 use crate::bus::{Bus, Device};
-use crate::devices::sgc::sgc::{Sgc, SGC_MMIO_BASE, SGC_MMIO_SIZE};
-use crate::devices::vdp::compositor::{compose_gp, source_over, Rgba};
-use crate::devices::vdp::gp::{Gp0, CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH};
+use crate::devices::sgc::sgc::{SGC_MMIO_BASE, SGC_MMIO_SIZE, Sgc};
+use crate::devices::vdp::compositor::{Rgba, compose_gp, source_over};
+use crate::devices::vdp::gp::{CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH, Gp0};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
 use crate::devices::vdp::reg::VdpRegs;
 use crate::devices::vdp::reg::{BitmapColorMode, DisplayMode};
-use crate::devices::vpu::vpu::{Vpu, VPU_MMIO_BASE, VPU_MMIO_SIZE};
+use crate::devices::vpu::vpu::{VPU_MMIO_BASE, VPU_MMIO_SIZE, Vpu};
 
 pub const VDP_VRAM_BASE: u32 = 0x10000000;
 pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
@@ -639,7 +639,6 @@ mod tests {
                 .iter()
                 .any(|entry| entry.contains("20 columns x 15 rows"))
         );
-
     }
 
     #[test]

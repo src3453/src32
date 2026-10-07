@@ -8,12 +8,13 @@ use std::time::{Duration, Instant};
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
+use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
 use cpt32::devices::sgu::sgu::connect_sgu;
-use cpt32::devices::vdp::vdp::{connect_vdp_with_font, Vdp};
+use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
 use imgui::{Condition, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
@@ -68,6 +69,8 @@ impl GuiApp {
         cpt32::bus::connect_bmc_dmac(&mut bus);
         connect_uart(&mut bus);
         connect_rng(&mut bus);
+        connect_idc_from_config(&mut bus)
+            .unwrap_or_else(|error| panic!("Invalid disk configuration: {error}"));
         let sgu = connect_sgu(&mut bus);
 
         load_binary_data(program_path, &mut bus);

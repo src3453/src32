@@ -220,9 +220,17 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 | 0x80010000 - 0x8001FFFF | 64KB | SGC | RWS |
 | 0x80020000 - 0x8002FFFF | 64KB | SGU x2 (SGU 2 registers at 0x80021000; shared PCMRAM) | RWS |
 | 0x80030000 - 0x8003FFFF | 64KB | VPU | RWS |
-| 0x80040000 - 0x8004FFFF | 64KB | PeC | RWS |
+| 0x80040000 - 0x8004FFFF | 64KB | PeC (UART / RNG / IDC) | RWS |
 | 0x80050000 - 0x8005FFFF | 64KB | DMAC | RWS |
 | 0x80060000 - 0x8006FFFF | 64KB | BMC | RWS |
+
+PeCのMMIOはUART、RNG、IDCの各領域を含む。IDCの詳細は[`spec_IDC.md`](spec_IDC.md)を参照。
+
+| PeC subdevice | Address Range | Specification |
+|---|---|---|
+| UART | 0x80040000 - 0x8004000F | [`spec_PeC.md`](spec_PeC.md) |
+| RNG | 0x80040010 - 0x8004002F | [`spec_PeC.md`](spec_PeC.md) |
+| IDC | 0x80041000 - 0x80041FFF | [`spec_IDC.md`](spec_IDC.md) |
 
 ### System
 
@@ -328,10 +336,10 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
   - IRQ0 (最高) ～ IRQ15 (最低)
   - IRQ0: VBlank
   - IRQ1: DMA完了(チャネル番号はレジスタで指定)
-  - IRQ2: HBlank (デフォルトは無効化、必要に応じて有効化)
+  - IRQ2: IDC完了/エラー (PeC IDC)
   - IRQ3: PeC(I/O)イベント
   - IRQ4: タイマー
-  - IRQ5: その他デバイスイベント
+  - IRQ5: HBlank、その他デバイスイベント
   - IRQ6-15: 将来拡張用
 - ネスト可能（優先度ベース）
 - ACKは書き込み方式

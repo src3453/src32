@@ -8,9 +8,10 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use crate::devices::bmc::{connect_bmc, Bmc};
-use crate::devices::dmac::dmac::{connect_dmac, Dmac};
+use crate::devices::bmc::{Bmc, connect_bmc};
+use crate::devices::dmac::dmac::{Dmac, connect_dmac};
 use crate::devices::irqc::irqc::IrqController;
+use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
 use crate::devices::vdp::vdp::Vdp;
 
 struct DeviceMap {
@@ -37,6 +38,7 @@ pub struct Bus {
     bus_error: bool,
     bmc: Option<Rc<RefCell<Bmc>>>,
     dmac: Option<Rc<RefCell<Dmac>>>,
+    idc: Option<Rc<RefCell<Idc>>>,
     irq_controller: Option<Rc<RefCell<IrqController>>>,
 }
 
@@ -48,6 +50,7 @@ impl Bus {
             bus_error: false,
             bmc: None,
             dmac: None,
+            idc: None,
             irq_controller: None,
         }
     }
@@ -60,19 +63,35 @@ impl Bus {
         self.dmac = Some(dmac);
     }
 
+    pub(crate) fn attach_idc(&mut self, idc: Rc<RefCell<Idc>>) {
+        if let Some(dmac) = &self.dmac {
+            dmac.borrow_mut().attach_idc(Rc::clone(&idc));
+        }
+        self.idc = Some(idc);
+    }
+
     pub(crate) fn attach_irq_controller(&mut self, irq: Rc<RefCell<IrqController>>) {
         self.irq_controller = Some(irq);
     }
 
     /// Advance one arbitration opportunity while the CPU clock is running.
     pub fn tick_devices(&mut self) {
+        if let Some(dmac) = &self.dmac {
+            dmac.borrow_mut().process_idc_abort_boundaries();
+        }
+        let dma_failure = self.idc.as_ref().and_then(|idc| idc.borrow_mut().tick());
+        if let (Some(channel), Some(dmac)) = (dma_failure, &self.dmac) {
+            dmac.borrow_mut().fail_from_idc(channel, 2);
+        }
+        self.refresh_device_irqs();
         self.service_dma_request(false);
     }
 
     pub fn has_pending_dma(&self) -> bool {
         self.dmac
             .as_ref()
-            .is_some_and(|dmac| dmac.borrow().request_mask() != 0)
+            .is_some_and(|dmac| dmac.borrow().has_active_transfer())
+            || self.idc.as_ref().is_some_and(|idc| idc.borrow().is_busy())
     }
 
     fn request_mask(&self, include_cpu: bool) -> u8 {
@@ -97,7 +116,7 @@ impl Bus {
         let channel = usize::from(selected - 2);
         let op = dmac.borrow().next_op(channel);
         let result = match op {
-            Some(op) => self.execute_dma_op(op),
+            Some(op) => self.execute_dma_op(op, channel),
             None => None,
         };
         {
@@ -111,11 +130,29 @@ impl Bus {
             }
         }
         bmc.borrow_mut().release();
-        self.refresh_dma_irq();
+        self.refresh_device_irqs();
         Some(selected)
     }
 
-    fn execute_dma_op(&mut self, op: crate::devices::dmac::dmac::DmaOp) -> Option<u32> {
+    fn execute_dma_op(
+        &mut self,
+        op: crate::devices::dmac::dmac::DmaOp,
+        channel: usize,
+    ) -> Option<u32> {
+        if op.address == IDC_DATA_ADDRESS {
+            if op.width != 1 {
+                return None;
+            }
+            let idc = self.idc.as_ref()?.clone();
+            return if op.write {
+                idc.borrow_mut()
+                    .dma_write_data(channel, op.value as u8)
+                    .then_some(op.value & 0xFF)
+            } else {
+                idc.borrow_mut().dma_read_data(channel).map(u32::from)
+            };
+        }
+
         let end = op.address.checked_add(u32::from(op.width))?;
         let allowed = (op.address < 0x0100_0000 && end <= 0x0100_0000)
             || (op.address >= 0x1000_0000 && end <= 0x1040_0000)
@@ -150,9 +187,19 @@ impl Bus {
         }
     }
 
-    fn refresh_dma_irq(&mut self) {
-        if let (Some(dmac), Some(irq)) = (&self.dmac, &self.irq_controller) {
-            irq.borrow_mut().set_source(1, dmac.borrow().irq_pending());
+    fn refresh_device_irqs(&mut self) {
+        let dmac_pending = self
+            .dmac
+            .as_ref()
+            .is_some_and(|dmac| dmac.borrow().irq_pending());
+        let idc_pending = self
+            .idc
+            .as_ref()
+            .is_some_and(|idc| idc.borrow().irq_asserted());
+        if let Some(irq) = &self.irq_controller {
+            let mut irq = irq.borrow_mut();
+            irq.set_source(1, dmac_pending);
+            irq.set_source(2, idc_pending);
         }
     }
 
@@ -261,6 +308,9 @@ impl Bus {
 
     /// Read a byte for a debugger view. `None` represents an open bus.
     pub fn read_debug_u8(&mut self, addr: u32) -> Option<u8> {
+        if addr == IDC_DATA_ADDRESS {
+            return self.idc.as_ref().map(|idc| idc.borrow().peek_data_byte());
+        }
         if let Some((device, offset)) = self.find_device(addr) {
             return Some(device.read(offset));
         }
@@ -272,7 +322,7 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device_mut(addr) {
             device.write(offset, value);
-            self.refresh_dma_irq();
+            self.refresh_device_irqs();
             self.release_cpu_access();
             return;
         }
@@ -284,7 +334,22 @@ impl Bus {
         panic!("Invalid I/O write: 0x{:08X}", addr);
     }
 
+    fn overlaps_idc_data(address: u32, width: u32) -> bool {
+        address
+            .checked_add(width)
+            .is_some_and(|end| address <= IDC_DATA_ADDRESS && IDC_DATA_ADDRESS < end)
+    }
+
+    fn invalid_idc_u32_access(address: u32) -> bool {
+        Self::overlaps_idc_data(address, 4)
+            || (address >= IDC_BASE && address < IDC_BASE + IDC_SIZE && address & 3 != 0)
+    }
+
     pub fn read_u32_be(&mut self, addr: u32) -> u32 {
+        if Self::invalid_idc_u32_access(addr) {
+            self.bus_error = true;
+            return 0;
+        }
         let b0 = self.read_u8(addr) as u32;
         let b1 = self.read_u8(addr.wrapping_add(1)) as u32;
         let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
@@ -293,6 +358,10 @@ impl Bus {
     }
 
     pub fn write_u32_be(&mut self, addr: u32, value: u32) {
+        if Self::invalid_idc_u32_access(addr) {
+            self.bus_error = true;
+            return;
+        }
         self.write_u8(addr, ((value >> 24) & 0xFF) as u8);
         self.write_u8(addr.wrapping_add(1), ((value >> 16) & 0xFF) as u8);
         self.write_u8(addr.wrapping_add(2), ((value >> 8) & 0xFF) as u8);

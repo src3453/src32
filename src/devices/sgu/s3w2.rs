@@ -708,11 +708,7 @@ impl S3w2Sound {
             c.lfsr_state = (c.lfsr_state >> 1) | (bit << 22);
         }
 
-        if (c.lfsr_state & 1) != 0 {
-            127
-        } else {
-            -128
-        }
+        if (c.lfsr_state & 1) != 0 { 127 } else { -128 }
     }
 
     fn generate_dma_pcm_sample(&mut self, _ch: usize) -> i16 {

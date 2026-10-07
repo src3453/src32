@@ -494,11 +494,7 @@ impl Cpu {
         if reg >= self.reg.len() {
             panic!("Invalid register index: {reg}");
         }
-        if reg == REG_ZERO {
-            0
-        } else {
-            self.reg[reg]
-        }
+        if reg == REG_ZERO { 0 } else { self.reg[reg] }
     }
 
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
@@ -797,11 +793,7 @@ impl Cpu {
     }
 
     fn short_reg_to_gpr(sr: u8) -> usize {
-        if sr < 15 {
-            sr as usize
-        } else {
-            REG_LR
-        }
+        if sr < 15 { sr as usize } else { REG_LR }
     }
 
     fn read_short_reg(&self, sr: u8) -> u32 {
