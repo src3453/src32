@@ -206,9 +206,33 @@ def rgba8(rgb: tuple[float, float, float]) -> int:
     return (channels[0] << 24) | (channels[1] << 16) | (channels[2] << 8) | 0xFF
 
 
-def rgba4444(pixel: tuple[int, int, int, int]) -> int:
+_BAYER_4X4 = (
+    (0, 8, 2, 10),
+    (12, 4, 14, 6),
+    (3, 11, 1, 9),
+    (15, 7, 13, 5),
+)
+
+
+def quantize_rgb4(channel: int, x: int, y: int) -> int:
+    """Ordered-dither one 8-bit color channel to 4 bits using a 4x4 Bayer matrix."""
+    channel = max(0, min(255, int(channel)))
+    level, remainder = divmod(channel, 17)
+    threshold = _BAYER_4X4[y & 3][x & 3]
+    # Compare against centered thresholds so each Bayer cell covers one of 16 bins.
+    if level < 15 and remainder * 32 > 17 * (threshold * 2 + 1):
+        level += 1
+    return level
+
+
+def rgba4444(pixel: tuple[int, int, int, int], x: int = 0, y: int = 0) -> int:
     r, g, b, a = (max(0, min(255, int(channel))) for channel in pixel)
-    return ((r >> 4) << 12) | ((g >> 4) << 8) | ((b >> 4) << 4) | (a >> 4)
+    return (
+        (quantize_rgb4(r, x, y) << 12)
+        | (quantize_rgb4(g, x, y) << 8)
+        | (quantize_rgb4(b, x, y) << 4)
+        | (a >> 4)
+    )
 
 
 def load_texture(path: Path | None) -> tuple[int, int, list[int]]:
@@ -228,7 +252,10 @@ def load_texture(path: Path | None) -> tuple[int, int, list[int]]:
                 size = (max(1, round(image.width * scale)), max(1, round(image.height * scale)))
                 image = image.resize(size, Image.Resampling.LANCZOS)
             width, height = image.size
-            pixels = [rgba4444(p) for p in image.getdata()]
+            pixels = [
+                rgba4444(pixel, index % width, index // width)
+                for index, pixel in enumerate(image.getdata())
+            ]
     except ObjConvertError:
         raise
     except Exception as exc:
@@ -510,7 +537,7 @@ fn submit_vpu_commands (source byte_count) :
 !const VDP_BORDER 0x{VDP_BORDER:08X}
 {irq_registers}
 {dmac_directives}
-!const SHADE_MODE 1 # 1=flat, 2=Gouraud
+!const SHADE_MODE 2 # 1=flat, 2=Gouraud
 !const TEXTURE_BLOB_ADDR 0x{data_base:08X}
 !const TEXTURE_BLOB_WORDS {len(texture_words)}
 !const MODEL_BLOB_ADDR 0x{model_base:08X}

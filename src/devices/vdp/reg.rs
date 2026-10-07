@@ -6,9 +6,19 @@ pub enum DisplayMode {
     PCG = 1,
 }
 
+/// Pixel storage format used by the GP0 bitmap plane.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum BitmapColorMode {
+    Palette256 = 0,
+    Rgb555 = 1,
+    Rgb888 = 2,
+}
+
 pub struct VdpRegs {
     pub display_enable: bool,
     pub display_mode: DisplayMode,
+    pub bitmap_color_mode: BitmapColorMode,
     pub border_color: u8,
     pub pcg_screen_mode: PcgScreenMode,
     pub pcg_font_bank: u8,
@@ -28,6 +38,7 @@ impl VdpRegs {
         Self {
             display_enable: true,
             display_mode: DisplayMode::Graphics,
+            bitmap_color_mode: BitmapColorMode::Palette256,
             border_color: 0,
             pcg_screen_mode: PcgScreenMode::Columns40,
             pcg_font_bank: 0,
@@ -47,6 +58,18 @@ impl VdpRegs {
         self.display_mode = match value & 1 {
             0 => DisplayMode::Graphics,
             _ => DisplayMode::PCG,
+        };
+    }
+
+    pub fn set_bitmap_color_mode(&mut self, value: u8) {
+        self.bitmap_color_mode = match value {
+            0 => BitmapColorMode::Palette256,
+            1 => BitmapColorMode::Rgb555,
+            2 => BitmapColorMode::Rgb888,
+            _ => {
+                self.status |= 1;
+                return;
+            }
         };
     }
 

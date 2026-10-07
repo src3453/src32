@@ -9,6 +9,7 @@
 // 0x0001: VDP_MODE:RW (Display mode) (0 = Graphics, 1 = PCG)
 // 0x0002: STATUS:R- (Status register) (0 = OK, 1 = Error)
 // 0x0003: BORDER_COLOR:RW (Overscan border color index, 0-63)
+// 0x0004: BITMAP_COLOR_MODE:RW (0 = 256-color palette, 1 = RGB555, 2 = RGB888)
 // 0xF000-FFFF: Mode-specific registers (Graphics or PCG mode)
 
 use std::cell::RefCell;
@@ -22,8 +23,8 @@ use crate::devices::sgc::sgc::{Sgc, SGC_MMIO_BASE, SGC_MMIO_SIZE};
 use crate::devices::vdp::compositor::{compose_gp, source_over, Rgba};
 use crate::devices::vdp::gp::{Gp0, CLUT_ENTRY_SIZE, CLUT_START_ADDR, GP_HEIGHT, GP_WIDTH};
 use crate::devices::vdp::pcg::{PcgRenderer, PcgScreenMode};
-use crate::devices::vdp::reg::DisplayMode;
 use crate::devices::vdp::reg::VdpRegs;
+use crate::devices::vdp::reg::{BitmapColorMode, DisplayMode};
 use crate::devices::vpu::vpu::{Vpu, VPU_MMIO_BASE, VPU_MMIO_SIZE};
 
 pub const VDP_VRAM_BASE: u32 = 0x10000000;
@@ -72,6 +73,7 @@ pub enum VdpFramebuffer<'a> {
         vram: &'a RefCell<Vec<u8>>,
         renderer: &'a Gp0,
         border_color: u8,
+        bitmap_color_mode: BitmapColorMode,
         vpu: &'a RefCell<Vpu>,
         sgc_pixels: Vec<Rgba>,
         sgc_gp: u8,
@@ -168,7 +170,11 @@ impl<'a> VdpFramebuffer<'a> {
 
     fn sample_pixel(&self, x: usize, y: usize, vpu: &Vpu) -> (u8, u8, u8) {
         let base = match self {
-            VdpFramebuffer::Graphics { renderer, .. } => renderer.get_pixel(x, y),
+            VdpFramebuffer::Graphics {
+                renderer,
+                bitmap_color_mode,
+                ..
+            } => renderer.get_pixel(x, y, *bitmap_color_mode),
             VdpFramebuffer::Pcg {
                 renderer,
                 screen_mode,
@@ -315,6 +321,7 @@ impl Vdp {
                 vram: self.vram.as_ref(),
                 renderer: &self.gp0,
                 border_color: self.regs.border_color,
+                bitmap_color_mode: self.regs.bitmap_color_mode,
                 vpu: self.vpu.as_ref(),
                 sgc_pixels,
                 sgc_gp: self.sgc.output_gp(),
@@ -368,8 +375,8 @@ impl Vdp {
 
         match self.regs.display_mode {
             DisplayMode::Graphics => gp_components[0].push(format!(
-                "GP0 image: Graphics Plane (GP0), {}x{} RGB indexed image",
-                GP_WIDTH, GP_HEIGHT
+                "GP0 image: Graphics Plane (GP0), {}x{} {:?} image",
+                GP_WIDTH, GP_HEIGHT, self.regs.bitmap_color_mode
             )),
             DisplayMode::PCG => gp_components[self.regs.pcg_output_gp as usize].push(format!(
                 "Base image: PCG text, {}x{} ({} columns x 30 rows)",
@@ -429,6 +436,7 @@ impl Vdp {
             0x01 => self.regs.display_mode as u8,
             0x02 => self.regs.status,
             0x03 => self.regs.border_color,
+            0x04 => self.regs.bitmap_color_mode as u8,
             _ => 0,
         }
     }
@@ -465,6 +473,7 @@ impl Vdp {
             0x01 => self.regs.set_display_mode(value),
             0x02 => self.regs.status = value & 1,
             0x03 => self.regs.border_color = value & 0x3F,
+            0x04 => self.regs.set_bitmap_color_mode(value),
             _ => {}
         }
     }
