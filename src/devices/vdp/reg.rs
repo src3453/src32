@@ -74,6 +74,10 @@ impl VdpRegs {
     }
 
     pub fn set_pcg_screen_mode(&mut self, value: u8) {
-        self.pcg_screen_mode = PcgScreenMode::from_u8(value);
+        if let Some(mode) = PcgScreenMode::from_u8(value) {
+            self.pcg_screen_mode = mode;
+        } else {
+            self.status |= 1;
+        }
     }
 }

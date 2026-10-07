@@ -4,13 +4,13 @@
 
 SGCはスプライト属性を読み、VRAM上の画像を2Dラスタライズするとともに、CPUがMMIO経由で投入するコマンドFIFOから2D図形を描画するグラフィックス供給元である。出力先はVDPの `GP0`～`GP7` のうち1つを選ぶ。SGC内部の描画順は選択GP内に限られ、GP間の前後関係はVDPのGP番号（小さい番号が奥）で決まる。
 
-SGCのFIFOコマンドは線分、塗りつぶし矩形、塗りつぶし三角形などの基本2Dプリミティブを扱う。CPUはコマンドをMMIOのFIFO DATAレジスタへ書き込み、SGCが順番に処理する。FIFOはコマンドの一部を分断して保持できるが、不完全なコマンドは必要ワードが揃うまで実行しない。
+SGCのFIFOコマンドは線分、塗りつぶし矩形、塗りつぶし三角形、Unifont glyph描画などの基本2Dプリミティブを扱う。CPUはコマンドをMMIOのFIFO DATAレジスタへ書き込み、SGCが順番に処理する。FIFOはコマンドの一部を分断して保持できるが、不完全なコマンドは必要ワードが揃うまで実行しない。
 
 ## 2. 初版機能
 
 - VRAM内Sprite Attribute Table (SAT)からスプライト属性を取得し、4bpp indexed patternを64色CLUTでRGBへ変換する。
 - X/Y位置、幅/高さ、H/V flip、整数拡大率、透明インデックス、enableを扱う。
-- MMIO FIFOから線分、塗りつぶし矩形、塗りつぶし三角形を描画する。
+- MMIO FIFOから線分、塗りつぶし矩形、塗りつぶし三角形、Unifont glyphを描画する。
 - プリミティブの座標を画面領域でクリップし、指定GPへ画素を供給する。
 - スプライト内priority/index順と、プリミティブFIFO順を維持する。
 
@@ -59,7 +59,7 @@ FIFOプリミティブは不透明な単色描画とし、色はSGCの現在のC
 
 ## 5. 表示順
 
-スプライト同士はpriority昇順、次にsprite index昇順で処理し、後に処理した不透明pixelが手前となる。FIFOプリミティブはスプライト描画より後に処理され、FIFO順に重ねる。実装はフレーム内の描画タイミングを調整してよいが、SGCの不透明な描画結果についてこの論理順を維持する。透明sprite pixelは書き込みを行わない。
+スプライト同士はpriority昇順、次にsprite index昇順で処理し、後に処理した不透明pixelが手前となる。FIFO描画コマンドはスプライト描画より後に処理され、FIFO順に重ねる。実装はフレーム内の描画タイミングを調整してよいが、SGCの不透明な描画結果についてこの論理順を維持する。透明sprite pixelは書き込みを行わない。`GLYPH`はglyph内の0-bitを透明として書き込まない。
 
 ## 6. MMIO
 
@@ -91,7 +91,10 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 | `0x10` | LINE | 5 words。続く4 wordは始点X、始点Y、終点X、終点Y |
 | `0x11` | RECT | 5 words。続く4 wordは左上X、左上Y、右下排他的X、右下排他的Y |
 | `0x12` | TRIANGLE | 7 words。続く6 wordは頂点1～3それぞれのX,Y |
+| `0x13` | GLYPH | 4 words。続く3 wordはUnicode BMP code unit、X、Y |
 | `0xFF` | NOP | 1 word。予約・整列用 |
+
+`GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
 
 座標wordはbit31:16を0、bit15:0をsigned座標とする。三角形・線分の辺を含む描画規則は「制約と画素形式」に従う。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。コマンド実行後にFIFO_ERRORが立っても、そのコマンドの宣言word数を消費して後続コマンドの解釈を継続する。
 

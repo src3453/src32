@@ -1,12 +1,10 @@
 // PCG (Programmable Character Generator) renderer for the VDP (Video Display Processor)
 
 // PCG Specification:
-// Screen resolution: 320x240 pixels
-// Character size: 8x8 pixels
-// Screen layout: 40 columns x 30 rows (320/8 = 40, 240/8 = 30)
-// Number of characters: 256 (CP437 character set)
-// Character data: rewritable font data stored in VRAM, 2 Font banks (Bank 0 and Bank 1), each bank can hold 256 characters (8 bytes per character, total 2048 bytes per bank)
-// Color capabilities: 6-bit color, foreground and background colors can be set per character
+// Screen modes: 40x30 or 80x30 cells of 8x8 glyphs; mode 2 is 20x15 cells of 16x16 BMP glyphs.
+// Display area: 320x240 pixels for the 40-column and 16x16 modes.
+// Modes 0/1 use two rewritable 256-glyph font banks in VRAM; mode 2 uses the shared Unifont ROM.
+// Color capabilities: 6-bit color, foreground and background colors can be set per character.
 
 // VRAM Layout for PCG (from base address):
 // 0x00000 - 0x004AF: Text data (40 columns x 30 rows = 1200 bytes)
@@ -20,10 +18,10 @@
 // 0xF000: /PCG_ENABLE:RW (PCG enable) (0 = enable, 1 = disable)
 // 0xF001: PCG_FONT_BANK:RW (PCG Font bank select) (0 = Bank 0, 1 = Bank 1)
 // 0xF002: SWAP_FGBG:RW (Swap FG/BG colors) (0 = normal, 1 = swap)
-// 0xF003: SCREEN_MODE:RW (Screen mode select) (0 = 40x30, 1 = 80x30)
+// 0xF003: SCREEN_MODE:RW (0 = 40x30, 1 = 80x30, 2 = 20x15 cells of 16x16 glyphs)
 // 0xF004: STATUS:R- (Status register) (0 = OK, 1 = Error)
-// 0xF005: CURSOR_POS_X:RW (Cursor X position) (0-39 for 40 columns, 0-79 for 80 columns)
-// 0xF006: CURSOR_POS_Y:RW (Cursor Y position) (0-29 for 30 rows)
+// 0xF005: CURSOR_POS_X:RW (mode-dependent: 0-39, 0-79, or 0-19)
+// 0xF006: CURSOR_POS_Y:RW (mode-dependent: 0-29 or 0-14)
 // 0xF007: CURSOR_ENABLE:RW (Cursor enable) (0 = disable, 1 = enable)
 // 0xF008: /CURSOR_LINES:RW (Cursor lines) (MSB: line 0, LSB: line 7; 0 = visible, 1 = invisible)
 // 0xF009: CURSOR_BLINK_PERIOD:RW (Cursor blink period) (0 = none, 1~255 = blink period in frames (in each blink state, 1 means 2 frames in total))
@@ -35,19 +33,24 @@ use std::io;
 use std::path::Path;
 use std::rc::Rc;
 
+use crate::devices::vdp::chr_rom::{UNIFONT_BMP_ROM, lookup_row};
 use crate::devices::vdp::clut::CLUT_DEFAULT;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum PcgScreenMode {
     Columns40 = 0,
     Columns80 = 1,
+    Unifont16x16 = 2,
 }
 
 impl PcgScreenMode {
-    pub fn from_u8(value: u8) -> Self {
-        match value & 1 {
-            0 => Self::Columns40,
-            _ => Self::Columns80,
+    pub fn from_u8(value: u8) -> Option<Self> {
+        match value {
+            0 => Some(Self::Columns40),
+            1 => Some(Self::Columns80),
+            2 => Some(Self::Unifont16x16),
+            _ => None,
         }
     }
 
@@ -55,15 +58,37 @@ impl PcgScreenMode {
         match self {
             Self::Columns40 => 40,
             Self::Columns80 => 80,
+            Self::Unifont16x16 => 20,
+        }
+    }
+
+    pub fn rows(self) -> usize {
+        match self {
+            Self::Unifont16x16 => 15,
+            Self::Columns40 | Self::Columns80 => PCG_ROWS,
+        }
+    }
+
+    pub fn cell_width(self) -> usize {
+        match self {
+            Self::Unifont16x16 => 16,
+            Self::Columns40 | Self::Columns80 => PCG_CELL_WIDTH,
+        }
+    }
+
+    pub fn cell_height(self) -> usize {
+        match self {
+            Self::Unifont16x16 => 16,
+            Self::Columns40 | Self::Columns80 => PCG_CELL_HEIGHT,
         }
     }
 
     pub fn width(self) -> usize {
-        self.columns() * PCG_CELL_WIDTH
+        self.columns() * self.cell_width()
     }
 
     pub fn height(self) -> usize {
-        PCG_ROWS * PCG_CELL_HEIGHT
+        self.rows() * self.cell_height()
     }
 }
 
@@ -86,11 +111,15 @@ pub const PCG_BG_ATTR_ADDR: usize = 0x02000;
 
 pub struct PcgRenderer {
     vram: Rc<RefCell<Vec<u8>>>,
+    unifont_rom: &'static [u8; crate::devices::vdp::chr_rom::UNIFONT_ROM_SIZE],
 }
 
 impl PcgRenderer {
     pub fn new(vram: Rc<RefCell<Vec<u8>>>) -> Self {
-        Self { vram }
+        Self {
+            vram,
+            unifont_rom: UNIFONT_BMP_ROM,
+        }
     }
 
     pub fn init_clut(&self) {
@@ -154,27 +183,38 @@ impl PcgRenderer {
     ) -> (u8, u8, u8) {
         let width = screen_mode.width();
         let columns = screen_mode.columns();
+        let cell_width = screen_mode.cell_width();
+        let cell_height = screen_mode.cell_height();
         if x >= width || y >= screen_mode.height() {
             return (0, 0, 0);
         }
 
         let vram = self.vram.borrow();
-        let char_col = x / PCG_CELL_WIDTH;
-        let char_row = y / PCG_CELL_HEIGHT;
+        let char_col = x / cell_width;
+        let char_row = y / cell_height;
         let char_index = char_row * columns + char_col;
-        let row_in_char = y % PCG_CELL_HEIGHT;
-        let bit_in_row = PCG_CELL_WIDTH - 1 - (x % PCG_CELL_WIDTH);
-        let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
+        let row_in_char = y % cell_height;
+        let local_x = x % cell_width;
+        let is_unifont_mode = screen_mode == PcgScreenMode::Unifont16x16;
+        let bit_set = if is_unifont_mode {
+            let text_offset = PCG_TEXT_ADDR + char_index * 2;
+            let code_unit = u16::from_be_bytes([vram[text_offset], vram[text_offset + 1]]);
+            let row = lookup_row(self.unifont_rom, code_unit, row_in_char)
+                .expect("PCG mode has a 16-row glyph");
+            row[local_x / 8] & (1 << (7 - local_x % 8)) != 0
+        } else {
+            let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
+            let bank_base = if font_bank & 1 == 0 {
+                PCG_FONT_BANK0_ADDR
+            } else {
+                PCG_FONT_BANK1_ADDR
+            };
+            let font_offset = bank_base + glyph * PCG_CELL_HEIGHT + row_in_char;
+            let row_bits = vram[font_offset];
+            row_bits & (1 << (PCG_CELL_WIDTH - 1 - local_x)) != 0
+        };
         let fg = vram[PCG_FG_ATTR_ADDR + char_index] & 0x3F;
         let bg = vram[PCG_BG_ATTR_ADDR + char_index] & 0x3F;
-        let bank_base = if font_bank & 1 == 0 {
-            PCG_FONT_BANK0_ADDR
-        } else {
-            PCG_FONT_BANK1_ADDR
-        };
-        let font_offset = bank_base + glyph * PCG_CELL_HEIGHT + row_in_char;
-        let row_bits = vram[font_offset];
-        let bit_set = ((row_bits >> bit_in_row) & 1) != 0;
         let use_fg = if swap_fg_bg { !bit_set } else { bit_set };
         let color = if use_fg { fg } else { bg };
         let mut rgb = Self::clut_rgb(&vram, color);
@@ -182,12 +222,13 @@ impl PcgRenderer {
         if cursor_enable {
             let cursor_x = cursor_pos_x as usize;
             let cursor_y = cursor_pos_y as usize;
-            if cursor_x < screen_mode.columns() && cursor_y < PCG_ROWS {
-                let cell_x = x / PCG_CELL_WIDTH;
-                let cell_y = y / PCG_CELL_HEIGHT;
+            if cursor_x < screen_mode.columns() && cursor_y < screen_mode.rows() {
+                let cell_x = x / cell_width;
+                let cell_y = y / cell_height;
                 if cell_x == cursor_x && cell_y == cursor_y {
-                    let line = y % PCG_CELL_HEIGHT;
-                    let line_visible = ((cursor_lines >> (7 - line)) & 1) == 0;
+                    let line = y % cell_height;
+                    let cursor_line = if is_unifont_mode { line / 2 } else { line };
+                    let line_visible = ((cursor_lines >> (7 - cursor_line)) & 1) == 0;
                     let cursor_visible = if cursor_blink_period == 0 {
                         true
                     } else {

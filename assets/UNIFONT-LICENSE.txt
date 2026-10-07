@@ -1,0 +1,20 @@
+GNU Unifont Plane 0 bitmap data
+================================
+
+Version: GNU Unifont 18.0.01
+Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
+Project and license information: https://unifoundry.com/unifont.html
+
+SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
+SHA-256 (generated ROM): 0787d651d2f0b6353aaa924ca5b4c569e56f9ad339462c0f04d80733ccb7368f
+
+GNU Unifont fonts are dual-licensed under the SIL Open Font License (OFL)
+version 1.1 and the GNU General Public License version 2 or later (GPL-2+)
+with the GNU Font Embedding Exception. The OFL 1.1 and the complete GPL-2+
+Font Embedding Exception terms are published in the GNU Unifont project's
+LICENSE.txt. Consult that upstream license file for the complete legal text.
+
+This repository includes the unmodified upstream gzip-compressed Plane 0
+.hex source and a generated fixed-size glyph ROM. The converter maps source
+records by Unicode code point; absent BMP code points and UTF-16 surrogate
+code units use the U+FFFD replacement glyph.

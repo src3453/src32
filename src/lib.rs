@@ -19,6 +19,7 @@ pub mod devices {
         pub mod sqv4;
     }
     pub mod vdp {
+        pub mod chr_rom;
         pub mod clut;
         pub mod compositor;
         pub mod gp;

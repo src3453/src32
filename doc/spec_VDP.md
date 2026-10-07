@@ -27,7 +27,19 @@ VPU output ───┘             │
 
 ### 2.1 PCG
 
-PCGは独立した表示モードではなく描画供給元となる。初期実装では1つの設定可能GPへ供給し、文字セルの背景色・前景色を不透明画素として出す。背景色を透明にする設定は後方互換用でなく新規機能として別途定義する。40/80列表示、フォントバンク、カーソルはPCGの属性であり、最終画面モードを排他的に切り替えない。
+PCGは独立した表示モードではなく描画供給元となる。初期実装では1つの設定可能GPへ供給し、文字セルの背景色・前景色を不透明画素として出す。背景色を透明にする設定は後方互換用でなく新規機能として別途定義する。`SCREEN_MODE`、フォントバンク、カーソルはPCGの属性であり、最終画面モードを排他的に切り替えない。
+
+`SCREEN_MODE` (`0xF003`) は次の値を取る。`0`～`2`以外の書込みでは現在値を維持し、VDP error status bitを立てる。
+
+| 値 | セル構成 | 解像度 |
+|---:|---|---:|
+| `0` | 40列×30行、8×8 glyph | 320×240 |
+| `1` | 80列×30行、8×8 glyph | 640×240 |
+| `2` | 20列×15行、16×16 BMP glyph | 320×240 |
+
+mode 2の文字セルは `row * 20 + column` 順で、VRAM `0x00000`からUTF-16BEのBMP code unitを2 byte（上位byte先行）で格納する。属性は既存のFG base `0x01000`とBG base `0x02000`を使い、同じcell indexの各1 byteの下位6 bitをCLUT indexとする。色swap、前景/背景とも不透明な描画、カーソルのblinkと色反転は既存PCG動作に従う。`PCG_FONT_BANK`はmode 2で無視する。
+
+mode 2のカーソル範囲はX=0～19、Y=0～14。8-bit `CURSOR_LINES`の各bit（MSBがglyph row 0）は隣接する2 scanlineへ適用する。UTF-16 surrogate code unitはU+FFFDとして表示し、surrogate pairを使った補助平面文字表示は行わない。
 
 ### 2.2 ビットマップGP
 
@@ -58,6 +70,8 @@ GPレイヤー順はGP番号で決まり、供給元内の順序は各供給元�
 - VRAM: `0x10000000`–`0x103FFFFF`、4 MiBを共有する。
 - VDP MMIO: `0x80000000`–`0x8000FFFF`。
 - 共通レジスタ `0x04` は `BITMAP_COLOR_MODE`。`0`=256色パレット、`1`=RGB555、`2`=RGB888。`0`～`2`以外の書き込みは現在の色形式を維持し、STATUSのerror bitを立てる。
+- PCG `SCREEN_MODE=2`ではVRAM `0x00000`～`0x004AF`を文字セルに使う。600セル分を `row * 20 + column` 順に並べ、各セルをUTF-16BE（上位byte先行）の2 byteで格納する。FG/BG属性baseは従来どおり`0x01000`/`0x02000`で、各600 byteの下位6 bitをCLUT indexとする。mode 0/1のフォントバンクとraw 2/4 KiBファイル読込み契約は変更しない。
+- PCGとSGC仕様の`GLYPH`コマンドは、読み取り専用のGNU Unifont 18.0.01 Plane 0 ROMを共有する。ROMは`assets/unifont-bmp.chr`として実行ファイルへ埋め込み、CPU可視VRAMには配置しない。BMP code unit順の65,536 slot（各32 byte、合計2 MiB）を持ち、各glyphは行優先の16行×2 byte、左pixelを最上位bitとする。8×16 glyphは左byteに置き右byteを0にし、16×16 glyphは2 byteを使う。未収録code unitとUTF-16 surrogateはU+FFFD glyphへ置換する。入力、変換ツール、ライセンス情報は`assets/unifont-18.0.01.hex.gz`、`tools/unifont_hex_to_chr.py`、`assets/UNIFONT-LICENSE.txt`に記録する。
 - 既存VRAMオフセットとPCGフォント/セルデータを直ちに移動しない。GP追加時の割当は各供給元のbase/stride設定と共に後方互換性を確認して定義する。
 - 既存の `DISPLAY_MODE=Graphics/PCG` は互換レジスタとして読み書きできるが、新合成経路では供給元の有効/無効とGP割当へ変換する。新仕様でGraphics/PCGを画面全体の排他的モードにはしない。
 - 初期移行ではbitmapはGP0、PCGの出力GPはVDPレジスタ `0xF00A`（0～7、reset値0）、PCGの重ね描き有効は `0xF00B`（reset値0）、SCのGPはSC `OUTPUT_GP`（reset値1）、VPUのGPはVPUレジスタ `0x0014`（reset値7）で選択する。Graphics modeでは `PCG_OVERLAY_ENABLE` を立てるとbitmapとPCGを同時に出力できる。旧PCG modeはPCGを画面ベースとして使う互換動作を維持する。

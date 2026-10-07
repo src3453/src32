@@ -379,19 +379,21 @@ impl Vdp {
                 GP_WIDTH, GP_HEIGHT, self.regs.bitmap_color_mode
             )),
             DisplayMode::PCG => gp_components[self.regs.pcg_output_gp as usize].push(format!(
-                "Base image: PCG text, {}x{} ({} columns x 30 rows)",
+                "Base image: PCG text, {}x{} ({} columns x {} rows)",
                 width,
                 height,
-                self.regs.pcg_screen_mode.columns()
+                self.regs.pcg_screen_mode.columns(),
+                self.regs.pcg_screen_mode.rows()
             )),
         }
 
         if self.regs.display_mode == DisplayMode::Graphics && self.regs.pcg_overlay_enable {
             gp_components[self.regs.pcg_output_gp as usize].push(format!(
-                "PCG overlay: {}x{} text plane ({} columns x 30 rows)",
+                "PCG overlay: {}x{} text plane ({} columns x {} rows)",
                 self.regs.pcg_screen_mode.width(),
                 self.regs.pcg_screen_mode.height(),
-                self.regs.pcg_screen_mode.columns()
+                self.regs.pcg_screen_mode.columns(),
+                self.regs.pcg_screen_mode.rows()
             ));
         }
         if self.sgc.enabled() {
@@ -600,6 +602,116 @@ mod tests {
 
         assert_eq!(fb.border_pixel(), (0x00, 0xFF, 0xFF));
         assert_eq!(fb.get_pixel(0, 0), (0, 0, 0));
+    }
+
+    fn set_unifont_cell(vdp: &Vdp, index: usize, code_unit: u16) {
+        let mut vram = vdp.vram.borrow_mut();
+        let text = crate::devices::vdp::pcg::PCG_TEXT_ADDR + index * 2;
+        let [high, low] = code_unit.to_be_bytes();
+        vram[text] = high;
+        vram[text + 1] = low;
+        vram[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR + index] = 1;
+        vram[crate::devices::vdp::pcg::PCG_BG_ATTR_ADDR + index] = 2;
+    }
+
+    fn mode2_vdp() -> Vdp {
+        let mut vdp = Vdp::new();
+        vdp.write_common_register(0x01, DisplayMode::PCG as u8);
+        vdp.write_pcg_register(0xF003, 2);
+        vdp.write_pcg_register(0xF001, 1);
+        set_unifont_cell(&vdp, 0, 0x3042);
+        let mut vram = vdp.vram.borrow_mut();
+        let clut = crate::devices::vdp::pcg::PCG_CLUT_START_ADDR;
+        vram[clut + 3..clut + 6].copy_from_slice(&[255, 0, 0]);
+        vram[clut + 6..clut + 9].copy_from_slice(&[0, 0, 200]);
+        drop(vram);
+        vdp
+    }
+
+    #[test]
+    fn pcg_mode2_framebuffer_is_320_by_240() {
+        let vdp = mode2_vdp();
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.dimensions(), (320, 240));
+        assert_eq!(fb.get_pixel(320, 239), (0, 0, 0));
+        assert!(
+            vdp.compositor_debug_info().gp_components[0]
+                .iter()
+                .any(|entry| entry.contains("20 columns x 15 rows"))
+        );
+
+    }
+
+    #[test]
+    fn pcg_mode2_utf16be_selects_unifont_glyph_and_colors() {
+        let vdp = mode2_vdp();
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.get_pixel(5, 1), (255, 0, 0));
+        assert_eq!(fb.get_pixel(0, 1), (0, 0, 200));
+        assert_eq!(fb.get_pixel(8, 7), (255, 0, 0));
+        assert_eq!(fb.get_pixel(15, 7), (0, 0, 200));
+    }
+
+    #[test]
+    fn pcg_mode2_cursor_maps_eight_mask_bits_to_sixteen_rows_at_last_cell() {
+        let mut vdp = mode2_vdp();
+        set_unifont_cell(&vdp, 299, 0x3042);
+        vdp.write_pcg_register(0xF005, 19);
+        vdp.write_pcg_register(0xF006, 14);
+        vdp.write_pcg_register(0xF007, 1);
+        vdp.write_pcg_register(0xF008, 0x7F);
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.get_pixel(304, 224), (255, 255, 55));
+        assert_eq!(fb.get_pixel(304, 225), (255, 255, 55));
+        assert_eq!(fb.get_pixel(304, 226), (0, 0, 200));
+
+        let mut vdp = mode2_vdp();
+        set_unifont_cell(&vdp, 299, 0x3042);
+        vdp.write_pcg_register(0xF005, 19);
+        vdp.write_pcg_register(0xF006, 14);
+        vdp.write_pcg_register(0xF007, 1);
+        vdp.write_pcg_register(0xF008, 0xFE);
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.get_pixel(319, 239), (255, 255, 55));
+    }
+
+    #[test]
+    fn pcg_mode2_invalid_mode_retains_mode_and_sets_error_status() {
+        let mut vdp = mode2_vdp();
+        vdp.write_pcg_register(0xF003, 0x82);
+        assert_eq!(vdp.regs.pcg_screen_mode, PcgScreenMode::Unifont16x16);
+        assert_eq!(vdp.read_pcg_register(0xF004), 1);
+        assert_eq!(vdp.framebuffer().dimensions(), (320, 240));
+    }
+
+    #[test]
+    fn pcg_mode2_keeps_legacy_mode_dimensions_and_font_banks() {
+        let mut vdp = Vdp::new();
+        vdp.write_common_register(0x01, DisplayMode::PCG as u8);
+        {
+            let mut vram = vdp.vram.borrow_mut();
+            let clut = crate::devices::vdp::pcg::PCG_CLUT_START_ADDR;
+            vram[clut + 3..clut + 6].copy_from_slice(&[255, 0, 0]);
+            vram[clut + 6..clut + 9].copy_from_slice(&[0, 0, 200]);
+            vram[0] = 1;
+            vram[1] = 2;
+            vram[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR] = 1;
+            vram[crate::devices::vdp::pcg::PCG_BG_ATTR_ADDR] = 2;
+            vram[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR + 1] = 1;
+            vram[crate::devices::vdp::pcg::PCG_BG_ATTR_ADDR + 1] = 2;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 8] = 0x80;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK1_ADDR + 8] = 0x40;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK1_ADDR + 16] = 0x80;
+        }
+        vdp.write_pcg_register(0xF003, 0);
+        assert_eq!(vdp.framebuffer().dimensions(), (320, 240));
+        assert_eq!(vdp.framebuffer().get_pixel(0, 0), (255, 0, 0));
+        vdp.write_pcg_register(0xF001, 1);
+        assert_eq!(vdp.framebuffer().get_pixel(1, 0), (255, 0, 0));
+        vdp.write_pcg_register(0xF003, 1);
+        assert_eq!(vdp.framebuffer().dimensions(), (640, 240));
+        assert_eq!(vdp.framebuffer().get_pixel(8, 0), (255, 0, 0));
+        assert_eq!(vdp.framebuffer().get_pixel(9, 0), (0, 0, 200));
     }
 }
 
