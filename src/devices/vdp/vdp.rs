@@ -397,8 +397,10 @@ impl Vdp {
             ));
         }
         if self.sgc.enabled() {
-            gp_components[self.sgc.output_gp() as usize]
-                .push("Screen Graphics Controller (SGC): 320x240 RGBA sprite plane".to_string());
+            gp_components[self.sgc.output_gp() as usize].push(
+                "Screen Graphics Controller (SGC): 320x240 RGBA sprite and command plane"
+                    .to_string(),
+            );
         }
         let vpu = self.vpu.borrow();
         gp_components[vpu.output_gp as usize]
@@ -422,6 +424,7 @@ impl Vdp {
     }
 
     pub fn tick(&mut self) {
+        self.sgc.tick();
         self.state.tick_count += 1;
         self.state.pcg_cursor_blink_tick += 1;
     }
@@ -711,6 +714,25 @@ mod tests {
         assert_eq!(vdp.framebuffer().dimensions(), (640, 240));
         assert_eq!(vdp.framebuffer().get_pixel(8, 0), (255, 0, 0));
         assert_eq!(vdp.framebuffer().get_pixel(9, 0), (0, 0, 200));
+    }
+
+    #[test]
+    fn sgc_fifo_rect_is_composited_on_its_selected_graphics_plane() {
+        let mut vdp = Vdp::new();
+        vdp.vram.borrow_mut()[CLUT_START_ADDR + 3..CLUT_START_ADDR + 6]
+            .copy_from_slice(&[240, 20, 10]);
+        vdp.write_sgc_register(0x07, 1);
+        for word in [0x0100_0001u32, 0x1100_0000, 2, 3, 4, 5] {
+            for (lane, byte) in word.to_be_bytes().into_iter().enumerate() {
+                vdp.write_sgc_register(0x20 + lane as u32, byte);
+            }
+        }
+
+        vdp.tick();
+        let framebuffer = vdp.framebuffer();
+        assert_eq!(framebuffer.get_pixel(2, 3), (240, 20, 10));
+        assert_eq!(framebuffer.get_pixel(3, 4), (240, 20, 10));
+        assert_eq!(framebuffer.get_pixel(4, 4), (0, 0, 0));
     }
 }
 

@@ -63,7 +63,7 @@ FIFOプリミティブは不透明な単色描画とし、色はSGCの現在のC
 
 ## 6. MMIO
 
-SGC MMIO baseは `0x80010000`、sizeは64 KiB。レジスタは32-bit big-endian、4-byte aligned。byte accessはレジスタ内の対応byte laneに反映する。FIFO DATAへの部分byte/halfword書込みは、書き込まれたbyte laneを上位から順にFIFOへ追加する。未定義領域は0を読み、書込みを無視する。
+SGC MMIO baseは `0x80010000`、sizeは64 KiB。レジスタは32-bit big-endian、4-byte aligned。byte accessはレジスタ内の対応byte laneに反映する。FIFO DATAへのbyte/halfword書込みは各laneをword latchへ蓄積し、4 laneが揃った時点で1 wordを上位byteからFIFOへ投入する。未定義領域は0を読み、書込みを無視する。
 
 | Offset | Register | Access | 定義 |
 |---:|---|:---:|---|
@@ -77,13 +77,15 @@ SGC MMIO baseは `0x80010000`、sizeは64 KiB。レジスタは32-bit big-endian
 | `0x0024` | FIFO_STATUS | R | bit31:16 FIFO内word数、bit15:0 空きword数 |
 | `0x0028` | FIFO_CONTROL | RW | bit0 FIFO clear pulse |
 
-FIFOは最大256 wordを保持する。FIFO_DATAへの書込みは、空きがない場合にバスを待たせず、そのwordを破棄してFIFO_FULLをstickyに記録する。FIFOは有効なSGCにより非同期に消費される。CONTROLのenable=0ではFIFO内容を実行せず保持する。soft resetまたはFIFO clearはFIFOを空にし、未完コマンド状態も破棄する。FIFO clearはBUSY中の描画を中断せず、FIFO内の未実行wordと未完コマンドだけを消去する。
+FIFOは最大256 wordを保持する。FIFO_DATAへの書込みは、空きがない場合にバスを待たせず、そのwordを破棄してFIFO_FULLをstickyに記録する。SGCは各VDP `tick`でFIFO内の完全なコマンドを投入順に消費し、CONTROLのenable=0では内容を保持する。STATUSのBUSYはenable中にFIFOにwordが残っている場合に立つ。soft resetまたはFIFO clearはFIFOと未完コマンドを破棄する。FIFO clear時にFIFO wordまたは書込み途中のbyte laneが残っていればFIFO_ERRORを記録する。FIFO clearは既に描画したコマンド画素を消去しない。soft resetはFIFO、未完word latch、描画済みコマンド画素を消去する。
 
-RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、status clear。reserved control bitは0を書き、1を書いた場合はINVALID_CONFIGを記録する。設定値は即時反映し、frame latch/double bufferingは初版に含めない。
+コマンド画素はSGCの透明320×240 planeに保持され、後続コマンドが不透明画素を上書きする。各frameでspriteを再ラスタライズしてからこのplaneを重ねる。SGC disabled中はFIFOを消費せず、描画planeも出力しない。
+
+RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、status clear、描画plane透明。reserved control bitは0を書き、1を書いた場合はINVALID_CONFIGを記録する。設定値は即時反映し、frame latch/double bufferingは初版に含めない。
 
 ## 7. FIFOコマンド形式
 
-各コマンドは32-bit word列で表し、すべてbig-endianでFIFOへ投入する。wordのbit31:24がopcode、bit23:0がopcode固有データである。整数座標は符号付き16-bitで、320×240の座標系を使う。座標値は画面外を指定でき、描画時にクリップする。
+各コマンドは32-bit word列で表し、すべてbig-endianでFIFOへ投入する。wordのbit31:24がopcode、bit23:0がopcode固有データである。SET_COLORのbit5:0を除くbit23:6と、他の既知opcode wordのbit23:0は0とする。整数座標は符号付き16-bitで、320×240の座標系を使う。座標値は画面外を指定でき、描画時にclipする。
 
 | Opcode | コマンド | Word列 (opcode wordを含む) |
 |---:|---|---|
@@ -96,9 +98,9 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 
 `GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
 
-座標wordはbit31:16を0、bit15:0をsigned座標とする。三角形・線分の辺を含む描画規則は「制約と画素形式」に従う。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。コマンド実行後にFIFO_ERRORが立っても、そのコマンドの宣言word数を消費して後続コマンドの解釈を継続する。
+座標payload wordはbit31:16を0、bit15:0をsigned座標とする。三角形は各整数座標位置をsampleし、辺を含めて塗りつぶす。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。既知opcodeの不正コマンドはそのopcodeの宣言word数を消費し、後続の解釈を継続する。長さを定義していないopcodeはheader 1 wordのみを消費する。
 
-FIFOにコマンド途中までしか届いていない場合、その先頭wordと後続wordを保持し、完全なコマンドになるまで待つ。コマンド投入はSET_COLORを含めFIFO順に処理される。初版の描画コマンドは単一の現在色を使い、出力GPはOUTPUT_GP設定に従う。
+FIFOにコマンド途中までしか届いていない場合、その先頭wordと後続wordを保持し、完全なコマンドになるまで待つ。コマンド投入はSET_COLORを含めFIFO順に処理される。初版の描画コマンドは単一の現在色を使い、出力GPはOUTPUT_GP設定に従う。LINEは両端を含む整数 Bresenham 線分、RECTは左上を含み右端・下端を含まない矩形とする。
 
 ## 8. VRAM共有と同期
 
