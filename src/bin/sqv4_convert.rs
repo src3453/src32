@@ -4,99 +4,9 @@ use std::path::{Path, PathBuf};
 use std::process;
 
 use cpt32::devices::sgu::sqv4::{self, Variant};
+use cpt32::wav::read_pcm16_wave;
 
 const USAGE: &str = "usage: sqv4_convert INPUT.wav OUTPUT.sqv|OUTPUT.sqv4 [H|L|L+] [VOLUME 0..255]";
-
-struct PcmWave {
-    channels: u8,
-    sample_rate: u32,
-    samples: Vec<i16>,
-}
-
-fn read_pcm16_wave(data: &[u8]) -> Result<PcmWave, String> {
-    if data.len() < 12 || &data[..4] != b"RIFF" || &data[8..12] != b"WAVE" {
-        return Err("input is not a RIFF/WAVE file".into());
-    }
-    let riff_size = u32::from_le_bytes(data[4..8].try_into().unwrap()) as usize;
-    let riff_end = riff_size.checked_add(8).ok_or("RIFF size overflow")?;
-    if riff_end < 12 || riff_end > data.len() {
-        return Err("truncated RIFF/WAVE file".into());
-    }
-
-    let mut format = None;
-    let mut pcm_data = None;
-    let mut offset = 12;
-    while offset < riff_end {
-        if riff_end - offset < 8 {
-            return Err("truncated WAVE chunk header".into());
-        }
-        let chunk_id = &data[offset..offset + 4];
-        let chunk_size =
-            u32::from_le_bytes(data[offset + 4..offset + 8].try_into().unwrap()) as usize;
-        let chunk_start = offset + 8;
-        let chunk_end = chunk_start
-            .checked_add(chunk_size)
-            .ok_or("WAVE chunk size overflow")?;
-        let padded_end = chunk_end
-            .checked_add(chunk_size & 1)
-            .ok_or("WAVE chunk padding overflow")?;
-        if padded_end > riff_end {
-            return Err("WAVE chunk extends past RIFF boundary".into());
-        }
-        if chunk_id == b"fmt " {
-            if format.is_some() || chunk_size < 16 {
-                return Err("invalid or duplicate WAVE fmt chunk".into());
-            }
-            let fields = &data[chunk_start..chunk_end];
-            format = Some((
-                u16::from_le_bytes(fields[0..2].try_into().unwrap()),
-                u16::from_le_bytes(fields[2..4].try_into().unwrap()),
-                u32::from_le_bytes(fields[4..8].try_into().unwrap()),
-                u32::from_le_bytes(fields[8..12].try_into().unwrap()),
-                u16::from_le_bytes(fields[12..14].try_into().unwrap()),
-                u16::from_le_bytes(fields[14..16].try_into().unwrap()),
-            ));
-        } else if chunk_id == b"data" {
-            if pcm_data.is_some() {
-                return Err("duplicate WAVE data chunk".into());
-            }
-            pcm_data = Some(&data[chunk_start..chunk_end]);
-        }
-        offset = padded_end;
-    }
-
-    let (encoding, channels, sample_rate, byte_rate, block_align, bits_per_sample) =
-        format.ok_or("WAVE fmt chunk is missing")?;
-    if encoding != 1 || bits_per_sample != 16 {
-        return Err("input must use uncompressed 16-bit PCM WAV".into());
-    }
-    if channels != 1 && channels != 2 {
-        return Err("input must be mono or stereo".into());
-    }
-    if sample_rate == 0 {
-        return Err("WAVE sample rate must be nonzero".into());
-    }
-    let expected_align = channels * 2;
-    let expected_rate = sample_rate
-        .checked_mul(expected_align as u32)
-        .ok_or("WAVE byte rate overflow")?;
-    if block_align != expected_align || byte_rate != expected_rate {
-        return Err("inconsistent WAVE byte rate or block alignment".into());
-    }
-    let pcm_data = pcm_data.ok_or("WAVE data chunk is missing")?;
-    if pcm_data.len() % block_align as usize != 0 {
-        return Err("WAVE data ends in a partial PCM frame".into());
-    }
-    let samples = pcm_data
-        .chunks_exact(2)
-        .map(|bytes| i16::from_le_bytes([bytes[0], bytes[1]]))
-        .collect();
-    Ok(PcmWave {
-        channels: channels as u8,
-        sample_rate,
-        samples,
-    })
-}
 
 fn write_pcm16_wave(
     path: &Path,
@@ -186,7 +96,7 @@ fn run() -> Result<(), String> {
 
     let input_bytes =
         fs::read(&input_path).map_err(|error| format!("failed to read input WAV: {error}"))?;
-    let input = read_pcm16_wave(&input_bytes)?;
+    let input = read_pcm16_wave(&input_bytes).map_err(|error| error.to_string())?;
     let encoded = sqv4::encode_interleaved(
         &input.samples,
         input.channels,

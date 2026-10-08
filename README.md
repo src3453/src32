@@ -44,6 +44,65 @@ CPU の対話型モニターは次のように起動します。
 cargo run --release --bin cpt32 -- monitor
 ```
 
+## SGU Music Editor
+
+ROM・CPU・VDP を起動せず、独立した ImGui エディタで 16 チャンネルの曲を編集します。
+
+```sh
+cargo run --bin music_editor
+cargo run --bin music_editor -- path/to/song.toml
+```
+
+上部に再生／停止・テンポ・保存／Export、中央に order と instrument、下部にテキスト形式の pattern を配置しています。
+各チャンネルは **NOTE / INS / VOL / FX** の独立したカーソル位置を持ちます。横スクロールはカーソルに追従します。
+Furnace のドキュメントにあるトラッカーの操作概念を参考にした独自実装で、Furnace のコードや GUI コンポーネントは使用していません。
+
+| 操作 | キー |
+|---|---|
+| フィールド／行移動 | 左右／上下矢印 |
+| 次／前チャンネル | Tab / Shift+Tab |
+| 先頭／末尾行、16行移動 | Home / End、PageUp / PageDown |
+| 次の1行へ移動 | Enter |
+| C〜B のノート入力 | `Z S X D C V G B H N J M` |
+| 次 octave のノート入力 | `Q 2 W 3 E R 5 T 6 Y 7 U` |
+| INS / VOL / FX の値 | `0`〜`9`、`A`〜`F` を2桁入力 |
+| FX の種類 | `P` = pan、`T` = tempo、`V` = SetVolume |
+| 選択フィールドだけ消去／ノート Off | Delete / NOTE 上の Backspace |
+| 入力途中のキャンセル | Escape |
+| 再生／停止、pattern にフォーカス | F5 / F8、F6 |
+| octave／編集ステップ変更 | `[` / `]`、Ctrl+`[` / Ctrl+`]` |
+| 保存／Save As／読込 | Ctrl+S / Ctrl+Shift+S / Ctrl+O |
+
+ノートと完成した16進値の入力後は編集ステップ分だけ行を進めます。ステップ0は同じ行に留まります。
+FX tempo は `1E`〜`96`（30〜150 BPM）。VOL は独立した音量指定なので pan／tempo と同時に設定できます。
+同じ cell に VOL と FX `V` がある場合は VOL を優先します。instrument macro に値のある lane は cell の音量／pan より優先します。
+
+### 楽器と保存
+
+- Wavetable は 256 個の unsigned 8-bit sample。グラフ上でクリック／ドラッグして描画し、専用 **Wavetable Editor** で sample 値、sine／triangle／saw／square、gain・offset・phase・normalize・invert・reverse・smooth・double・quantize を編集できます。
+- PCM は mono／stereo の uncompressed 16-bit PCM WAV。相対 path は project の親 directory が基準です。Save As では参照先を保って path を書き直します。sample rate は 1〜2,097,120 Hz、全資産の合計は 1 MiB 以下。
+- Noise と、音量／半音 pitch／pan の最大256 step macro を編集できます。macro は VSYNC ごとに進み、無指定 lane は直前値を保持します。
+- 保存形式は TOML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ち、pattern は 64行×16 channel。ID は0始まりです。新規曲は120 BPM、6 ticks/row、sine instrument、repeat 有効。
+- 欠損／不正 PCM の曲も保存できますが、preview／Export はエラーになります。Export は `.sgub` と同じ directory の汎用 `sgu_music_driver.sol` を出力します。既存ファイルの置換は確認後、両方の temporary file が書き込めてから実行します。
+
+### SGUB v1 とゲスト再生
+
+SGUB header は20 byte: `SGUB`, version=1, voices=16, flags（bit0 repeat）, reserved=0、big-endian u32 の frame count / initial record count / total size。
+initial record の後に各 frame の big-endian u16 record count と record を格納します。
+record は target u8 / address u24 big-endian / value u8 の5 byte。target 0/1 は各 SGU の offset `0..8FF`、target 2 は共有 PCMRAM の offset `0..FFFFF`。
+不正 header、範囲外 address、切り詰め、余剰 byte は再生前に拒否します。VSYNC は60 Hz、tracker tick は accumulator に BPM を加え150ごとに発生します。
+
+```sh
+python3 tools/solc/solc.py compile sol/cpt32/sgu_music_driver.sol --out target/sgu_music_driver.asm
+python3 tools/asm/asm.py target/sgu_music_driver.asm -o target/sgu_music_driver.bin
+cargo run -- target/sgu_music_driver.bin --music-stream path/to/song.sgub
+cargo run --bin src32_testbench -- target/sgu_music_driver.bin --allow-running --music-stream path/to/song.sgub --frames 3 --expect-mem-u8 0x80020800=0x01 --expect-mem-u8 0x80020801=0xB8
+```
+
+Windows で Python が `python3` として見つからない場合は `py -3` を使用します。
+stream は主 RAM の `0x00200000` にロードされます。driver image は2 MiB未満、stream は `0x00E00000` byte 以下。
+driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止を扱います。`--expect-mem-u8` は複数指定でき、各 frame の IRQ0 処理後に全指定値を検査します。
+
 ## ドキュメント
 
 ### システムと CPU
