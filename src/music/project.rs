@@ -5,6 +5,7 @@ use std::path::{Component, Path, PathBuf};
 pub const FORMAT_VERSION: u16 = 1;
 pub const CHANNEL_COUNT: usize = 16;
 pub const ROW_COUNT: usize = 64;
+pub const MAX_PATTERN_ROWS: usize = 256;
 pub const MAX_ITEMS: usize = 256;
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -310,9 +311,9 @@ impl Song {
             }
         }
         for (pattern_index, pattern) in self.patterns.iter().enumerate() {
-            if pattern.rows.len() != ROW_COUNT {
+            if !(1..=MAX_PATTERN_ROWS).contains(&pattern.rows.len()) {
                 return Err(invalid(format!(
-                    "pattern {pattern_index} must have 64 rows"
+                    "pattern {pattern_index} must have 1..=256 rows"
                 )));
             }
             for (row_index, row) in pattern.rows.iter().enumerate() {

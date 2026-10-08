@@ -1,8 +1,10 @@
-use super::project::{Cell, Effect, Instrument, MacroStep, Note, Pattern, Song};
+use super::project::{
+    CHANNEL_COUNT, Cell, Effect, Instrument, MAX_PATTERN_ROWS, MacroStep, Note, Pattern, Song,
+};
 use super::stream::{MusicError, StreamPlayer, compile_song};
 use super::wavetable_editor::WavetableEditor;
 use crate::devices::sgu::s3w2::S3w2Sound;
-use imgui::{Condition, TableFlags, Ui, WindowFocusedFlags};
+use imgui::{Condition, MouseButton, Ui, WindowFocusedFlags};
 use std::cell::RefCell;
 use std::fmt::Write as _;
 use std::fs::{self, OpenOptions};
@@ -90,6 +92,10 @@ enum PathAction {
     Open,
     SaveAs,
 }
+struct NotePreview {
+    player: StreamPlayer,
+    frames_remaining: u8,
+}
 
 /// Original SGU tracker interface. Only editing concepts are informed by Furnace documentation.
 pub struct TrackerUi {
@@ -102,6 +108,7 @@ pub struct TrackerUi {
     cursor: Cursor,
     selected_instrument: usize,
     selected_macro_step: usize,
+    macro_stroke: Option<MacroStroke>,
     input_octave: u8,
     edit_step: usize,
     high_nibble: Option<u8>,
@@ -116,6 +123,7 @@ pub struct TrackerUi {
     pcm_path_input: String,
     pcm_loop_input: String,
     player: Option<StreamPlayer>,
+    note_preview: Option<NotePreview>,
     playing: bool,
     reset_sgus_pending: bool,
     frames_advanced: u32,
@@ -147,6 +155,7 @@ impl TrackerUi {
             cursor: Cursor::default(),
             selected_instrument: 0,
             selected_macro_step: 0,
+            macro_stroke: None,
             input_octave: 4,
             edit_step: 1,
             high_nibble: None,
@@ -161,6 +170,7 @@ impl TrackerUi {
             pcm_path_input: String::new(),
             pcm_loop_input: String::new(),
             player: None,
+            note_preview: None,
             playing: false,
             reset_sgus_pending: false,
             frames_advanced: 0,
@@ -186,6 +196,22 @@ impl TrackerUi {
     fn current_pattern_id(&self) -> usize {
         usize::from(self.song.orders[self.selected_order])
     }
+    fn current_pattern_len(&self) -> usize {
+        self.song.patterns[self.current_pattern_id()].rows.len()
+    }
+
+    fn set_current_pattern_length(&mut self, length: usize) {
+        let length = length.clamp(1, MAX_PATTERN_ROWS);
+        let pattern = self.current_pattern_id();
+        let rows = &mut self.song.patterns[pattern].rows;
+        if rows.len() == length {
+            return;
+        }
+        rows.resize_with(length, || vec![Cell::default(); CHANNEL_COUNT]);
+        self.cursor_moved();
+        self.mark_changed();
+    }
+
     fn selected_cell(&self) -> &Cell {
         &self.song.patterns[self.current_pattern_id()].rows[self.cursor.row][self.cursor.channel]
     }
@@ -198,17 +224,19 @@ impl TrackerUi {
         self.effect_entry = None;
     }
     fn cursor_moved(&mut self) {
+        self.cursor.row = self.cursor.row.min(self.current_pattern_len() - 1);
         self.reset_entry();
         self.scroll_cursor_requested = true;
     }
     fn advance_edit_row(&mut self) {
-        self.cursor.row = (self.cursor.row + self.edit_step) % 64;
+        self.cursor.row = (self.cursor.row + self.edit_step) % self.current_pattern_len();
         self.cursor_moved();
     }
     fn request_stop(&mut self) {
         // Do not discard this hardware reset when a replacement player is installed before VSYNC.
         self.reset_sgus_pending = true;
         self.player = None;
+        self.note_preview = None;
         self.playing = false;
         self.playing_location = None;
     }
@@ -218,6 +246,38 @@ impl TrackerUi {
             self.request_stop();
             self.status =
                 "Preview stopped because the song changed. F5 restarts with the edits.".into();
+        } else if self.note_preview.is_some() {
+            self.request_stop();
+        }
+    }
+    fn start_note_preview(&mut self, note: u8) {
+        self.request_stop();
+        let Some(instrument) = self.song.instruments.get(self.selected_instrument).cloned() else {
+            return;
+        };
+
+        let mut preview_song = Song::default();
+        preview_song.instruments = vec![instrument];
+        preview_song.tempo_bpm = 150;
+        preview_song.ticks_per_row = 1;
+        preview_song.repeat = false;
+        let voice = self.cursor.channel;
+        preview_song.patterns[0].rows[0][voice] = Cell {
+            note: Some(Note::On(note)),
+            instrument: Some(0),
+            ..Cell::default()
+        };
+        preview_song.patterns[0].rows[15][voice].note = Some(Note::Off);
+        match compile_song(&preview_song, &self.project_dir)
+            .and_then(|bytes| StreamPlayer::from_bytes(&bytes))
+        {
+            Ok(player) => {
+                self.note_preview = Some(NotePreview {
+                    player,
+                    frames_remaining: 16,
+                });
+            }
+            Err(error) => self.status = format!("Note preview failed: {error}"),
         }
     }
     fn set_note(&mut self, note: Note) {
@@ -229,6 +289,9 @@ impl TrackerUi {
             cell.instrument = instrument;
         }
         self.mark_changed();
+        if let Note::On(pitch) = note {
+            self.start_note_preview(pitch);
+        }
         self.advance_edit_row();
     }
     fn clear_field(&mut self) {
@@ -363,7 +426,9 @@ impl TrackerUi {
         let column = self.cursor.channel * 4 + self.cursor.field.index();
         match key {
             KeyCode::ArrowUp => self.cursor.row = self.cursor.row.saturating_sub(1),
-            KeyCode::ArrowDown => self.cursor.row = (self.cursor.row + 1).min(63),
+            KeyCode::ArrowDown => {
+                self.cursor.row = (self.cursor.row + 1).min(self.current_pattern_len() - 1)
+            }
             KeyCode::ArrowLeft | KeyCode::ArrowRight => {
                 let column = if key == KeyCode::ArrowLeft {
                     column.saturating_sub(1)
@@ -385,14 +450,18 @@ impl TrackerUi {
             }
             KeyCode::End => {
                 self.cursor.row = if shift {
-                    (self.cursor.row + 1).min(63)
+                    (self.cursor.row + 1).min(self.current_pattern_len() - 1)
                 } else {
-                    63
+                    self.current_pattern_len() - 1
                 }
             }
             KeyCode::PageUp => self.cursor.row = self.cursor.row.saturating_sub(16),
-            KeyCode::PageDown => self.cursor.row = (self.cursor.row + 16).min(63),
-            KeyCode::Enter | KeyCode::NumpadEnter => self.cursor.row = (self.cursor.row + 1) % 64,
+            KeyCode::PageDown => {
+                self.cursor.row = (self.cursor.row + 16).min(self.current_pattern_len() - 1)
+            }
+            KeyCode::Enter | KeyCode::NumpadEnter => {
+                self.cursor.row = (self.cursor.row + 1) % self.current_pattern_len()
+            }
             KeyCode::Delete => {
                 self.clear_field();
                 return true;
@@ -456,7 +525,7 @@ impl TrackerUi {
                 let gap = 6.0;
                 let height = (available[1] - gap * 2.0).max(3.0);
                 let transport_height = (height * 0.25).min(184.0);
-                let instruments_height = (height * 0.32).min(320.0);
+                let instruments_height = (height * 0.43).min(400.0);
                 let pattern_height = (height - transport_height - instruments_height).max(1.0);
                 ui.child_window("Transport")
                     .size([0.0, transport_height])
@@ -731,6 +800,13 @@ impl TrackerUi {
                 ui.text(format!("INSTRUMENT {:02X}", self.selected_instrument));
                 self.draw_instrument_parameters(ui);
                 self.draw_macros(ui);
+                if let Some(Instrument::Wavetable { samples, .. }) =
+                    self.song.instruments.get_mut(self.selected_instrument)
+                {
+                    if self.wavetable_editor.preview(ui, samples) {
+                        self.mark_changed();
+                    }
+                }
             });
     }
 
@@ -789,9 +865,7 @@ impl TrackerUi {
         ui.same_line();
         changed |= bounded_u8(ui, "Pan (LR nibbles)", pan, 0, 255, 65.0);
         match instrument {
-            Instrument::Wavetable { samples, .. } => {
-                changed |= self.wavetable_editor.preview(ui, samples);
-            }
+            Instrument::Wavetable { .. } => {}
             Instrument::Pcm {
                 path,
                 base_note,
@@ -854,6 +928,7 @@ impl TrackerUi {
 
     fn draw_macros(&mut self, ui: &Ui) {
         ui.separator();
+        let (base_volume, base_pan) = self.song.instruments[self.selected_instrument].volume_pan();
         let macro_data = self.song.instruments[self.selected_instrument].macro_data_mut();
         let mut changed = false;
         ui.text(format!(
@@ -885,7 +960,7 @@ impl TrackerUi {
             changed = true;
         }
         ui.same_line();
-        if ui.small_button("No loop") {
+        if ui.small_button("No loop") && macro_data.loop_start.is_some() {
             macro_data.loop_start = None;
             changed = true;
         }
@@ -896,47 +971,41 @@ impl TrackerUi {
             .build()
         {
             if loop_start == -1 {
-                macro_data.loop_start = None;
-                changed = true;
+                if macro_data.loop_start.take().is_some() {
+                    changed = true;
+                }
             } else if loop_start >= 0 && (loop_start as usize) < macro_data.steps.len() {
-                macro_data.loop_start = Some(loop_start as usize);
-                changed = true;
+                let start = loop_start as usize;
+                if macro_data.loop_start != Some(start) {
+                    macro_data.loop_start = Some(start);
+                    changed = true;
+                }
             } else {
                 self.status =
                     "Macro loop must address an existing step, or be -1 for no loop".into();
             }
         }
-        ui.text_wrapped("Enable a lane and type its value. Disabled means hold the previous value. Pitch is -48..48 semitones; pan is decimal LR nibbles.");
-        if let Some(_table) =
-            ui.begin_table_with_flags("Macro steps", 4, TableFlags::BORDERS | TableFlags::ROW_BG)
-        {
-            for title in ["Step", "Volume", "Pitch", "Pan"] {
-                ui.table_setup_column(title);
+
+        if !macro_data.steps.is_empty() {
+            self.selected_macro_step = self.selected_macro_step.min(macro_data.steps.len() - 1);
+            let mut selected = self.selected_macro_step as i32;
+            ui.set_next_item_width(70.0);
+            if ui.input_scalar("Selected step", &mut selected).build() {
+                self.selected_macro_step =
+                    selected.clamp(0, macro_data.steps.len() as i32 - 1) as usize;
             }
-            ui.table_headers_row();
-            for (index, step) in macro_data.steps.iter_mut().enumerate() {
-                let _id = ui.push_id_usize(index);
-                ui.table_next_row();
-                ui.table_next_column();
-                if ui
-                    .selectable_config(format!(
-                        "{index:02X}{}",
-                        if macro_data.loop_start == Some(index) {
-                            " LOOP"
-                        } else {
-                            ""
-                        }
-                    ))
-                    .selected(index == self.selected_macro_step)
-                    .build()
-                {
-                    self.selected_macro_step = index;
-                }
-                ui.table_next_column();
-                changed |= optional_u8(ui, "vol", &mut step.volume);
-                ui.table_next_column();
+            let step = &mut macro_data.steps[self.selected_macro_step];
+            ui.same_line();
+            ui.text("Volume");
+            ui.same_line();
+            changed |= optional_u8(ui, "selected_volume", &mut step.volume);
+            ui.same_line();
+            ui.text("Pitch");
+            ui.same_line();
+            {
+                let _id = ui.push_id("selected_pitch");
                 let mut enabled = step.pitch_semitones.is_some();
-                if ui.checkbox("##pitch_enabled", &mut enabled) {
+                if ui.checkbox("##enabled", &mut enabled) {
                     step.pitch_semitones = enabled.then_some(step.pitch_semitones.unwrap_or(0));
                     changed = true;
                 }
@@ -944,15 +1013,60 @@ impl TrackerUi {
                     ui.same_line();
                     let mut value = i32::from(step.pitch_semitones.unwrap_or(0));
                     ui.set_next_item_width(52.0);
-                    if ui.input_scalar("##pitch_value", &mut value).build() {
+                    if ui.input_scalar("##value", &mut value).build() {
                         step.pitch_semitones = Some(value.clamp(-48, 48) as i8);
                         changed = true;
                     }
                 }
-                ui.table_next_column();
-                changed |= optional_u8(ui, "pan", &mut step.pan);
             }
+            ui.same_line();
+            ui.text("Pan");
+            ui.same_line();
+            changed |= optional_u8(ui, "selected_pan", &mut step.pan);
         }
+
+        ui.text_disabled(
+            "Left-click/drag sets lane values; right-click clears a point to hold the previous value.",
+        );
+        ui.child_window("Macro plots")
+            .size([0.0, 206.0])
+            .horizontal_scrollbar(true)
+            .build(|| {
+                let viewport_width = ui.content_region_avail()[0].max(120.0);
+                let selected = &mut self.selected_macro_step;
+                let loop_start = macro_data.loop_start;
+                let stroke = &mut self.macro_stroke;
+                changed |= draw_macro_lane(
+                    ui,
+                    MacroLane::Volume,
+                    &mut macro_data.steps,
+                    selected,
+                    loop_start,
+                    stroke,
+                    i32::from(base_volume),
+                    viewport_width,
+                );
+                changed |= draw_macro_lane(
+                    ui,
+                    MacroLane::Pitch,
+                    &mut macro_data.steps,
+                    selected,
+                    loop_start,
+                    stroke,
+                    0,
+                    viewport_width,
+                );
+                changed |= draw_macro_lane(
+                    ui,
+                    MacroLane::Pan,
+                    &mut macro_data.steps,
+                    selected,
+                    loop_start,
+                    stroke,
+                    i32::from(base_pan),
+                    viewport_width,
+                );
+            });
         if changed {
             self.mark_changed();
         }
@@ -960,9 +1074,10 @@ impl TrackerUi {
 
     fn draw_pattern(&mut self, ui: &Ui) {
         ui.text(format!(
-            "PATTERN {:02X} / order {:02X} / row {:02X} / channel {:02X} / {}{}",
+            "PATTERN {:02X} / order {:02X} / {} rows / row {:02X} / channel {:02X} / {}{}",
             self.current_pattern_id(),
             self.selected_order,
+            self.current_pattern_len(),
             self.cursor.row,
             self.cursor.channel,
             self.cursor.field.name(),
@@ -972,7 +1087,16 @@ impl TrackerUi {
                 " [F6 to focus]"
             }
         ));
-        ui.text_wrapped("Arrows: fields/rows  Tab: channel  Enter: next row  Z..M/Q..U: notes  Hex: INS/VOL/FX  P/T/V: FX type  Delete: field  Backspace: OFF");
+        ui.same_line();
+        let mut pattern_len = self.current_pattern_len() as i32;
+        ui.set_next_item_width(54.0);
+        if ui.input_scalar("Rows", &mut pattern_len).build() {
+            self.set_current_pattern_length(pattern_len.clamp(1, MAX_PATTERN_ROWS as i32) as usize);
+        }
+        if ui.is_item_hovered() {
+            ui.tooltip_text("1..256 rows; reducing the length discards trailing rows.");
+        }
+        ui.text_wrapped("Rows per pattern: 1..256. Arrows: fields/rows  Tab: channel  Enter: next row  Z..M/Q..U: notes  Hex: INS/VOL/FX  P/T/V: FX type  Delete: field  Backspace: OFF");
         ui.child_window("Pattern text grid")
             .size([0.0, 0.0])
             .horizontal_scrollbar(true)
@@ -998,7 +1122,11 @@ impl TrackerUi {
         let start = ui.cursor_pos();
         let origin = ui.cursor_screen_pos();
         let viewport = ui.content_region_avail();
-        let size = [row_number_width + channel_width * 16.0, row_height * 65.0];
+        let row_count = self.current_pattern_len();
+        let size = [
+            row_number_width + channel_width * 16.0,
+            row_height * (row_count + 1) as f32,
+        ];
         if self.scroll_cursor_requested {
             let x = row_number_width
                 + channel_width * self.cursor.channel as f32
@@ -1049,7 +1177,7 @@ impl TrackerUi {
         let draw = ui.get_window_draw_list();
         let first_row = ((ui.scroll_y() / row_height) as usize)
             .saturating_sub(1)
-            .min(63);
+            .min(row_count - 1);
         let last_row = ((ui.scroll_y() + viewport[1]) / row_height) as usize;
         let first_channel = ((ui.scroll_x() - row_number_width).max(0.0) / channel_width) as usize;
         let last_channel = (((ui.scroll_x() + viewport[0]) / channel_width) as usize + 1).min(15);
@@ -1067,7 +1195,7 @@ impl TrackerUi {
                 &text,
             );
         }
-        for row in first_row..=last_row.min(63) {
+        for row in first_row..=last_row.min(row_count - 1) {
             let y = origin[1] + (row + 1) as f32 * row_height;
             let is_playing = self.playing_location == Some((self.selected_order, row));
             let color = if is_playing {
@@ -1371,7 +1499,8 @@ impl TrackerUi {
                 self.play_ticks = 0;
                 self.play_row += 1;
                 self.play_enter_row = true;
-                if self.play_row == 64 {
+                let pattern = usize::from(self.song.orders[self.play_order]);
+                if self.play_row == self.song.patterns[pattern].rows.len() {
                     self.play_row = 0;
                     self.play_order += 1;
                 }
@@ -1381,6 +1510,25 @@ impl TrackerUi {
     pub fn advance_vsync(&mut self, sgus: &[Rc<RefCell<S3w2Sound>>; 2]) {
         if std::mem::take(&mut self.reset_sgus_pending) {
             stop_sgus(sgus);
+        }
+        let note_preview_result = self.note_preview.as_mut().map(|preview| {
+            preview.player.advance_vsync(sgus).map(|()| {
+                preview.frames_remaining -= 1;
+                preview.frames_remaining == 0
+            })
+        });
+        match note_preview_result {
+            Some(Ok(true)) => {
+                self.note_preview = None;
+                stop_sgus(sgus);
+            }
+            Some(Err(error)) => {
+                self.note_preview = None;
+                stop_sgus(sgus);
+                self.reset_sgus_pending = false;
+                self.status = format!("Note preview failed: {error}");
+            }
+            _ => {}
         }
         if !self.playing {
             return;
@@ -1456,6 +1604,242 @@ fn optional_u8(ui: &Ui, id: &str, lane: &mut Option<u8>) -> bool {
             *lane = Some(value.clamp(0, 255) as u8);
             changed = true;
         }
+    }
+    changed
+}
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum MacroLane {
+    Volume,
+    Pitch,
+    Pan,
+}
+
+#[derive(Clone, Copy)]
+struct MacroStroke {
+    lane: MacroLane,
+    index: usize,
+    value: i32,
+}
+
+impl MacroLane {
+    fn name(self) -> &'static str {
+        match self {
+            Self::Volume => "Volume",
+            Self::Pitch => "Pitch",
+            Self::Pan => "Pan",
+        }
+    }
+
+    fn range(self) -> (i32, i32) {
+        match self {
+            Self::Pitch => (-48, 48),
+            Self::Volume | Self::Pan => (0, 255),
+        }
+    }
+
+    fn value(self, step: &MacroStep) -> Option<i32> {
+        match self {
+            Self::Volume => step.volume.map(i32::from),
+            Self::Pitch => step.pitch_semitones.map(i32::from),
+            Self::Pan => step.pan.map(i32::from),
+        }
+    }
+
+    fn set(self, step: &mut MacroStep, value: i32) {
+        match self {
+            Self::Volume => step.volume = Some(value.clamp(0, 255) as u8),
+            Self::Pitch => step.pitch_semitones = Some(value.clamp(-48, 48) as i8),
+            Self::Pan => step.pan = Some(value.clamp(0, 255) as u8),
+        }
+    }
+
+    fn clear(self, step: &mut MacroStep) {
+        match self {
+            Self::Volume => step.volume = None,
+            Self::Pitch => step.pitch_semitones = None,
+            Self::Pan => step.pan = None,
+        }
+    }
+
+    fn color(self) -> [f32; 4] {
+        match self {
+            Self::Volume => [0.30, 0.92, 0.10, 1.0],
+            Self::Pitch => [1.0, 0.76, 0.12, 1.0],
+            Self::Pan => [0.20, 0.78, 1.0, 1.0],
+        }
+    }
+}
+
+fn draw_macro_lane(
+    ui: &Ui,
+    lane: MacroLane,
+    steps: &mut [MacroStep],
+    selected: &mut usize,
+    loop_start: Option<usize>,
+    stroke: &mut Option<MacroStroke>,
+    initial_value: i32,
+    viewport_width: f32,
+) -> bool {
+    let _id = ui.push_id(lane.name());
+    let (min_value, max_value) = lane.range();
+    ui.text(format!("{}  {min_value}..{max_value}", lane.name()));
+    let width = viewport_width.max(steps.len().max(1) as f32 * 18.0);
+    let height = 42.0;
+    let origin = ui.cursor_screen_pos();
+    let clicked = ui.invisible_button("##plot", [width, height]);
+    let active = ui.is_item_active();
+    let hovered = ui.is_item_hovered();
+    let mut changed = false;
+
+    if !steps.is_empty() && (clicked || active) && ui.is_mouse_down(MouseButton::Left) {
+        let index = (((ui.io().mouse_pos[0] - origin[0]) / width) * steps.len() as f32)
+            .floor()
+            .clamp(0.0, (steps.len() - 1) as f32) as usize;
+        let normalized = (1.0 - (ui.io().mouse_pos[1] - origin[1]) / height).clamp(0.0, 1.0);
+        let value = (min_value as f32 + normalized * (max_value - min_value) as f32).round() as i32;
+        let current = MacroStroke { lane, index, value };
+        if let Some(previous) = *stroke {
+            if previous.lane == lane {
+                changed = paint_macro_stroke(steps, lane, previous, current);
+            } else {
+                let before = lane.value(&steps[index]);
+                lane.set(&mut steps[index], value);
+                changed = before != lane.value(&steps[index]);
+            }
+        } else {
+            let before = lane.value(&steps[index]);
+            lane.set(&mut steps[index], value);
+            changed = before != lane.value(&steps[index]);
+        }
+        *stroke = Some(current);
+        *selected = index;
+    } else if !steps.is_empty() && hovered && ui.is_mouse_clicked(MouseButton::Right) {
+        let index = (((ui.io().mouse_pos[0] - origin[0]) / width) * steps.len() as f32)
+            .floor()
+            .clamp(0.0, (steps.len() - 1) as f32) as usize;
+        changed = lane.value(&steps[index]).is_some();
+        lane.clear(&mut steps[index]);
+        *selected = index;
+        *stroke = None;
+    } else if !ui.is_mouse_down(MouseButton::Left) {
+        *stroke = None;
+    }
+
+    let draw = ui.get_window_draw_list();
+    let bottom = origin[1] + height;
+    draw.add_rect(origin, [origin[0] + width, bottom], [0.08, 0.11, 0.14, 1.0])
+        .filled(true)
+        .build();
+    for fraction in [0.0, 0.5, 1.0] {
+        let y = origin[1] + fraction * height;
+        draw.add_line(
+            [origin[0], y],
+            [origin[0] + width, y],
+            [0.25, 0.29, 0.33, 1.0],
+        )
+        .build();
+    }
+    if !steps.is_empty() {
+        let dx = width / steps.len() as f32;
+        if *selected < steps.len() {
+            let selected_x = origin[0] + *selected as f32 * dx;
+            draw.add_rect(
+                [selected_x, origin[1]],
+                [selected_x + dx, bottom],
+                [0.25, 0.55, 0.85, 0.18],
+            )
+            .filled(true)
+            .build();
+        }
+        let mut value = initial_value.clamp(min_value, max_value);
+        let mut previous_y: Option<(f32, f32)> = None;
+        for (index, step) in steps.iter().enumerate() {
+            value = lane
+                .value(step)
+                .unwrap_or(value)
+                .clamp(min_value, max_value);
+            let ratio = (value - min_value) as f32 / (max_value - min_value) as f32;
+            let y = bottom - ratio * height;
+            let x = origin[0] + index as f32 * dx;
+            let color = lane.color();
+            match lane {
+                MacroLane::Pitch => {
+                    let center_x = x + dx * 0.5;
+                    if let Some((last_x, last_y)) = previous_y {
+                        draw.add_line([last_x, last_y], [center_x, last_y], color)
+                            .thickness(2.0)
+                            .build();
+                        draw.add_line([center_x, last_y], [center_x, y], color)
+                            .thickness(2.0)
+                            .build();
+                    } else {
+                        draw.add_line([x, y], [center_x, y], color)
+                            .thickness(2.0)
+                            .build();
+                    }
+                    previous_y = Some((center_x, y));
+                }
+                MacroLane::Volume | MacroLane::Pan => {
+                    draw.add_rect([x + 1.0, y], [x + (dx - 1.0).max(2.0), bottom], color)
+                        .filled(true)
+                        .build();
+                }
+            }
+            if loop_start == Some(index) {
+                let loop_x = x + dx * 0.5;
+                draw.add_line(
+                    [loop_x, origin[1]],
+                    [loop_x, bottom],
+                    [1.0, 0.55, 0.18, 1.0],
+                )
+                .thickness(1.5)
+                .build();
+            }
+        }
+        if hovered {
+            let index = (((ui.io().mouse_pos[0] - origin[0]) / width) * steps.len() as f32)
+                .floor()
+                .clamp(0.0, (steps.len() - 1) as f32) as usize;
+            let mut value = initial_value;
+            for step in steps.iter().take(index + 1) {
+                value = lane.value(step).unwrap_or(value);
+            }
+            ui.tooltip_text(format!(
+                "Step {index}: {value}{}",
+                if lane.value(&steps[index]).is_some() {
+                    ""
+                } else {
+                    " (held)"
+                }
+            ));
+        }
+    } else {
+        ui.text_disabled("Add a step to start drawing.");
+    }
+    changed
+}
+fn paint_macro_stroke(
+    steps: &mut [MacroStep],
+    lane: MacroLane,
+    previous: MacroStroke,
+    current: MacroStroke,
+) -> bool {
+    let distance = current.index as f32 - previous.index as f32;
+    let start = previous.index.min(current.index);
+    let end = previous.index.max(current.index);
+    let mut changed = false;
+    for index in start..=end {
+        let fraction = if distance == 0.0 {
+            1.0
+        } else {
+            (index as f32 - previous.index as f32) / distance
+        };
+        let value = (previous.value as f32
+            + fraction * (current.value as f32 - previous.value as f32))
+            .round() as i32;
+        let before = lane.value(&steps[index]);
+        lane.set(&mut steps[index], value);
+        changed |= before != lane.value(&steps[index]);
     }
     changed
 }
@@ -1824,6 +2208,43 @@ mod tests {
         key(&mut tracker, KeyCode::Delete);
         assert_eq!(tracker.selected_cell().effect, None);
         assert_eq!(tracker.selected_cell().volume, Some(0x80));
+    }
+
+    #[test]
+    fn note_entry_auditions_the_selected_instrument_for_a_short_time() {
+        let mut tracker = TrackerUi::new(None);
+        tracker.edit_step = 0;
+        tracker.cursor.channel = 3;
+        if let Instrument::Wavetable { volume, .. } = &mut tracker.song.instruments[0] {
+            *volume = 127;
+        }
+        let cores = cores();
+        key(&mut tracker, KeyCode::F5);
+        assert!(tracker.playing);
+        tracker.advance_vsync(&cores);
+        key(&mut tracker, KeyCode::KeyZ);
+        assert_eq!(tracker.song.patterns[0].rows[0][3].note, Some(Note::On(60)));
+        assert_eq!(tracker.song.patterns[0].rows[0][3].instrument, Some(0));
+        assert!(tracker.note_preview.is_some());
+        assert!(!tracker.playing);
+
+        tracker.advance_vsync(&cores);
+        let base = 0x800 + 3 * 0x20;
+        assert_eq!(cores[0].borrow_mut().read_register(base + 3), 127);
+        tracker.advance_vsync(&cores);
+        let (left, right) = cores[0].borrow_mut().clock_mixed(800);
+        assert!(left.iter().chain(&right).any(|sample| *sample != 0));
+
+        for _ in 2..16 {
+            tracker.advance_vsync(&cores);
+        }
+        assert!(tracker.note_preview.is_none());
+        assert_eq!(cores[0].borrow_mut().read_register(base + 3), 0);
+
+        tracker.cursor.row = 20;
+        key(&mut tracker, KeyCode::Backspace);
+        assert_eq!(tracker.selected_cell().note, Some(Note::Off));
+        assert!(tracker.note_preview.is_none());
     }
 
     #[test]

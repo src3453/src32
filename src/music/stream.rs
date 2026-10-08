@@ -1,4 +1,4 @@
-use super::project::{Effect, Instrument, MacroStep, Note, ProjectError, ROW_COUNT, Song};
+use super::project::{Effect, Instrument, MacroStep, Note, ProjectError, Song};
 use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound};
 use crate::wav::{WaveError, read_pcm16_wave};
 use std::cell::RefCell;
@@ -570,7 +570,7 @@ pub fn compile_song(song: &Song, project_dir: &Path) -> Result<Vec<u8>, MusicErr
             if ticks_into_row == song.ticks_per_row {
                 ticks_into_row = 0;
                 row_index += 1;
-                if row_index == ROW_COUNT {
+                if row_index == song.patterns[usize::from(song.orders[order_index])].rows.len() {
                     row_index = 0;
                     order_index += 1;
                 }
