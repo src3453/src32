@@ -21,7 +21,33 @@ PeCは、ペリフェラルデバイスの管理とイベントバッファリ�
 |---------------|------|
 | 0x80040000 ~ 0x8004000F | UARTコントロールレジスタ |
 | 0x80040010 ~ 0x8004002F | 乱数生成器 (PRNG/TRNG) |
+| 0x80040030 ~ 0x8004017F | キーボード・マウス・ゲームパッド入力 |
 
+
+### キーボード・マウス・ゲームパッド入力
+
+入力MMIOは `0x80040030` から `0x8004017F` までです。レジスタオフセットはPeC基準の絶対オフセットです。UARTおよび乱数生成器の予約領域は変更しません。
+
+| アドレス | レジスタ | 説明 | 属性 |
+|----------|----------|------|------|
+| `0x80040030` | EVENT_DATA | FIFO先頭の32ビットイベント。読み出しでは消費しない。空なら0。 | R |
+| `0x80040034` | EVENT_STATUS | bit 0: FIFO非空、bit 1: FIFO overflow。bit 1をLSBへ書くとoverflowをクリア (W1C)。 | R/W |
+| `0x80040038` | EVENT_POP | big-endianで1を書き込むとFIFO先頭を1件消費。 | W |
+| `0x80040040` | MOUSE_X | ゲスト画面上のX座標 (0–639)。 | R |
+| `0x80040044` | MOUSE_Y | ゲスト画面上のY座標 (0–479)。 | R |
+| `0x80040048` | MOUSE_DX | 最新のX移動量 (符号付き32ビット、ゲスト画素)。 | R |
+| `0x8004004C` | MOUSE_DY | 最新のY移動量 (符号付き32ビット、ゲスト画素)。 | R |
+| `0x80040050` | MOUSE_WHEEL | 最新の縦ホイール量 (符号付き32ビット、120単位/lineまたは100物理pixel)。 | R |
+| `0x80040054` | MOUSE_BUTTONS | bit 0–4: 左、右、中、X1、X2。 | R |
+| `0x80040080–0x8004017F` | PAD0–PAD3 | 4スロットのゲームパッド状態 (各64バイト)。 | R |
+
+EVENT_DATAは `[31:28 type, 27:24 device, 23:16 code, 15:0 value]` です。typeは0=KEY、1=MOUSE_BUTTON、2=MOUSE_MOVE、3=MOUSE_WHEEL、4=PAD_BUTTON、5=PAD_AXIS。deviceは0=キーボード、1=マウス、2–5=ゲームパッドslot 0–3です。KEYのcodeはUSB HID keyboard usage (page 0x07)、valueは押下=1/解放=0です。マウス移動・ホイールのcode 0/1はX/縦または横、valueは符号付き16ビットです。PAD_BUTTONのcodeはボタンbit番号、valueは押下=1/解放=0です。PAD_AXISのcode 0–3は左X/Y・右X/Y、4/5はLT/RTで、stick値は符号付き16ビット、trigger値は符号なし16ビットです。Xは右向き、Yは下向きが正です。
+
+各ゲームパッドslotのレジスタは `0x80040080 + slot * 0x40` を基準にします。`+0 STATUS` (bit 0 connected、bit 1 digital、bit 2 analog)、`+4 BUTTONS` (A, B, X, Y, 上/下/左/右, Select, Start, LB, RB, 左/右stick clickがbit 0–13)、`+8/+0x0C LEFT_X/Y`、`+0x10/+0x14 RIGHT_X/Y` (符号付き16ビット値の符号拡張)、`+0x18 TRIGGERS` (LT bits 15:0、RT bits 31:16)、`+0x1C ID` (接続中はslot+1)、`+0x20 CAPS` (接続中は標準button/stick/triggerを示すbit 0–2)。未定義位置は0です。
+
+FIFO容量は256件です。満杯時は新規イベントを破棄してoverflowを設定しますが、対応する入力状態は更新します。FIFO非空はIRQC source 3をlevel assertionし、FIFOが空になると解除します。イベント読出しはpeekであり、EVENT_POPで明示的に消費します。
+
+ウィンドウ入力ではF1でマウスcaptureを切り替えます。capture中は相対移動を受け取り、絶対座標は最後のuncaptured位置を維持します。画面外の座標はゲスト画面端へclampします。ImGuiがマウスをcaptureしている間はゲストへマウスイベントを送りません。
 ## UART仕様
 通信方式: 全二重
 バス幅: 8ビット

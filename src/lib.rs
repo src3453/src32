@@ -34,6 +34,7 @@ pub mod devices {
         pub mod vpu;
     }
     pub mod pec {
+        pub mod pec;
         pub mod rng;
         pub mod serial;
         pub mod idc {

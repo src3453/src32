@@ -7,11 +7,13 @@
 
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::sync::{Arc, Mutex};
 
 use crate::devices::bmc::{Bmc, connect_bmc};
 use crate::devices::dmac::dmac::{Dmac, connect_dmac};
 use crate::devices::irqc::irqc::IrqController;
 use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
+use crate::devices::pec::pec::PeCState;
 use crate::devices::vdp::vdp::Vdp;
 
 struct DeviceMap {
@@ -39,6 +41,7 @@ pub struct Bus {
     bmc: Option<Rc<RefCell<Bmc>>>,
     dmac: Option<Rc<RefCell<Dmac>>>,
     idc: Option<Rc<RefCell<Idc>>>,
+    pec_input: Option<Arc<Mutex<PeCState>>>,
     irq_controller: Option<Rc<RefCell<IrqController>>>,
 }
 
@@ -51,6 +54,7 @@ impl Bus {
             bmc: None,
             dmac: None,
             idc: None,
+            pec_input: None,
             irq_controller: None,
         }
     }
@@ -68,6 +72,9 @@ impl Bus {
             dmac.borrow_mut().attach_idc(Rc::clone(&idc));
         }
         self.idc = Some(idc);
+    }
+    pub(crate) fn attach_pec_input(&mut self, state: Arc<Mutex<PeCState>>) {
+        self.pec_input = Some(state);
     }
 
     pub(crate) fn attach_irq_controller(&mut self, irq: Rc<RefCell<IrqController>>) {
@@ -196,10 +203,17 @@ impl Bus {
             .idc
             .as_ref()
             .is_some_and(|idc| idc.borrow().irq_asserted());
+        let pec_pending = self.pec_input.as_ref().is_some_and(|state| {
+            state
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .has_pending_events()
+        });
         if let Some(irq) = &self.irq_controller {
             let mut irq = irq.borrow_mut();
             irq.set_source(1, dmac_pending);
             irq.set_source(2, idc_pending);
+            irq.set_source(3, pec_pending);
         }
     }
 
