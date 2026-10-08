@@ -570,7 +570,11 @@ pub fn compile_song(song: &Song, project_dir: &Path) -> Result<Vec<u8>, MusicErr
             if ticks_into_row == song.ticks_per_row {
                 ticks_into_row = 0;
                 row_index += 1;
-                if row_index == song.patterns[usize::from(song.orders[order_index])].rows.len() {
+                if row_index
+                    == song.patterns[usize::from(song.orders[order_index])]
+                        .rows
+                        .len()
+                {
                     row_index = 0;
                     order_index += 1;
                 }
@@ -1156,5 +1160,33 @@ mod column_tests {
         let (left, right) = cores[0].borrow_mut().clock_mixed(800);
         assert!(left.iter().any(|sample| *sample != 0));
         assert!(right.iter().all(|sample| *sample == 0));
+    }
+    #[test]
+    fn playback_advances_by_each_patterns_actual_row_count() {
+        let mut song = Song::default();
+        song.tempo_bpm = 150;
+        song.ticks_per_row = 1;
+        song.repeat = false;
+        song.patterns
+            .push(crate::music::project::Pattern::default());
+        song.patterns[0].rows.truncate(2);
+        song.patterns[1].rows.truncate(3);
+        song.patterns[0].rows[1][0].note = Some(Note::On(69));
+        song.patterns[0].rows[1][0].instrument = Some(0);
+        song.patterns[1].rows[2][0].note = Some(Note::Off);
+        song.orders = vec![0, 1];
+
+        let bytes = compile_song(&song, Path::new(".")).unwrap();
+        assert_eq!(u32::from_be_bytes(bytes[8..12].try_into().unwrap()), 5);
+        let cores = std::array::from_fn(|_| Rc::new(RefCell::new(S3w2Sound::new())));
+        let mut player = StreamPlayer::from_bytes(&bytes).unwrap();
+        for _ in 0..2 {
+            player.advance_vsync(&cores).unwrap();
+        }
+        assert_eq!(cores[0].borrow().channels[0].volume, 255);
+        for _ in 2..5 {
+            player.advance_vsync(&cores).unwrap();
+        }
+        assert_eq!(cores[0].borrow().channels[0].volume, 0);
     }
 }

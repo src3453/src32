@@ -82,7 +82,7 @@ FX tempo は `1E`〜`96`（30〜150 BPM）。VOL は独立した音量指定な�
 - Wavetable は 256 個の unsigned 8-bit sample。グラフ上でクリック／ドラッグして描画し、専用 **Wavetable Editor** で sample 値、sine／triangle／saw／square、gain・offset・phase・normalize・invert・reverse・smooth・double・quantize を編集できます。
 - PCM は mono／stereo の uncompressed 16-bit PCM WAV。相対 path は project の親 directory が基準です。Save As では参照先を保って path を書き直します。sample rate は 1〜2,097,120 Hz、全資産の合計は 1 MiB 以下。
 - Noise と、音量／半音 pitch／pan の最大256 step macro をグラフで編集できます。左クリック／ドラッグで値を描画して step を選択し、右クリックでその step の値を消して直前の値を保持します。数値入力と loop 設定も使えます。macro は VSYNC ごとに進み、音量／pan の初期値は instrument 設定、pitch の初期値は0です。
-- 保存形式は TOML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ち、pattern は 64行×16 channel。ID は0始まりです。新規曲は120 BPM、6 ticks/row、sine instrument、repeat 有効。
+- 保存形式は TOML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ちます。pattern はそれぞれ1〜256行×16 channelで、TOML の `rows` 配列の長さが有効な行数です。旧 project は従来どおり64行で読み込み、新規 pattern も64行です。Pattern の Rows を短くすると末尾行を削除し、長くすると空行を追加します。ID は0始まりです。
 - 欠損／不正 PCM の曲も保存できますが、preview／Export はエラーになります。Export は `.sgub` と同じ directory の汎用 `sgu_music_driver.sol` を出力します。既存ファイルの置換は確認後、両方の temporary file が書き込めてから実行します。
 
 ### SGUB v1 とゲスト再生

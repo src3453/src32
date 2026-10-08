@@ -448,6 +448,7 @@ mod tests {
             (120, 6, true)
         );
         assert_eq!(song.orders, vec![0]);
+        assert_eq!(song.patterns[0].rows.len(), ROW_COUNT);
         assert!(
             song.patterns[0]
                 .rows
@@ -472,10 +473,30 @@ mod tests {
     }
 
     #[test]
+    fn pattern_lengths_accept_one_through_256_rows() {
+        let mut song = Song::default();
+        song.patterns[0].rows.truncate(1);
+        song.validate().unwrap();
+        song.patterns[0]
+            .rows
+            .resize_with(MAX_PATTERN_ROWS, || vec![Cell::default(); CHANNEL_COUNT]);
+        song.validate().unwrap();
+        song.patterns[0]
+            .rows
+            .push(vec![Cell::default(); CHANNEL_COUNT]);
+        assert!(song.validate().is_err());
+    }
+
+    #[test]
     fn toml_roundtrip_preserves_notes_effects_and_all_instrument_kinds() {
         let root = temp_dir();
         let path = root.join("song.toml");
         let mut song = Song::default();
+        song.patterns[0].rows.truncate(3);
+        let mut second_pattern = Pattern::default();
+        second_pattern.rows.truncate(1);
+        song.patterns.push(second_pattern);
+        song.orders.push(1);
         song.instruments.push(pcm("missing.wav"));
         song.instruments.push(Instrument::Noise {
             volume: 15,
@@ -527,8 +548,11 @@ mod tests {
             Box::new(|s| s.orders[0] = 1),
             Box::new(|s| s.patterns = vec![Pattern::default(); 257]),
             Box::new(|s| s.instruments = vec![Instrument::default(); 257]),
+            Box::new(|s| s.patterns[0].rows.clear()),
             Box::new(|s| {
-                s.patterns[0].rows.pop();
+                s.patterns[0].rows.resize_with(MAX_PATTERN_ROWS + 1, || {
+                    vec![Cell::default(); CHANNEL_COUNT]
+                });
             }),
             Box::new(|s| {
                 s.patterns[0].rows[0].pop();

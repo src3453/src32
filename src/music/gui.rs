@@ -381,7 +381,7 @@ impl TrackerUi {
                     return true;
                 }
                 KeyCode::NumpadMultiply | KeyCode::BracketRight | KeyCode::Equal => {
-                    self.edit_step = (self.edit_step + 1).min(64);
+                    self.edit_step = (self.edit_step + 1).min(MAX_PATTERN_ROWS);
                     return true;
                 }
                 KeyCode::NumpadDivide | KeyCode::BracketLeft | KeyCode::Minus => {
@@ -629,7 +629,7 @@ impl TrackerUi {
         let mut step = self.edit_step as i32;
         ui.set_next_item_width(42.0);
         if ui.input_scalar("Step Ctrl+[ / ]", &mut step).build() {
-            self.edit_step = step.clamp(0, 64) as usize;
+            self.edit_step = step.clamp(0, MAX_PATTERN_ROWS as i32) as usize;
         }
         ui.set_next_item_width((ui.content_region_avail()[0] - 340.0).max(80.0));
         ui.input_text("##project_path", &mut self.project_path_input)
@@ -2154,6 +2154,45 @@ mod tests {
         key(&mut tracker, KeyCode::Home);
         assert_eq!(tracker.song, before);
         assert!(!tracker.dirty);
+    }
+
+    #[test]
+    fn pattern_length_resizes_rows_and_bounds_tracker_navigation() {
+        let mut tracker = TrackerUi::new(None);
+        tracker.set_current_pattern_length(3);
+        tracker.cursor.row = 2;
+        key(&mut tracker, KeyCode::ArrowDown);
+        assert_eq!(tracker.cursor.row, 2);
+        key(&mut tracker, KeyCode::Enter);
+        assert_eq!(tracker.cursor.row, 0);
+
+        tracker.cursor.row = 2;
+        tracker.cursor.field = Field::Volume;
+        tracker.edit_step = 1;
+        key(&mut tracker, KeyCode::KeyA);
+        key(&mut tracker, KeyCode::KeyB);
+        assert_eq!(tracker.song.patterns[0].rows[2][0].volume, Some(0xab));
+        assert_eq!(tracker.cursor.row, 0);
+
+        tracker.cursor.row = 2;
+        tracker.set_current_pattern_length(2);
+        assert_eq!(tracker.current_pattern_len(), 2);
+        assert_eq!(tracker.cursor.row, 1);
+        assert_eq!(tracker.song.patterns[0].rows.len(), 2);
+        tracker.set_current_pattern_length(0);
+        assert_eq!(tracker.current_pattern_len(), 1);
+        assert_eq!(tracker.cursor.row, 0);
+        tracker.set_current_pattern_length(MAX_PATTERN_ROWS + 1);
+        assert_eq!(tracker.current_pattern_len(), MAX_PATTERN_ROWS);
+
+        tracker.song.patterns.push(Pattern::default());
+        tracker.song.patterns[1].rows.truncate(2);
+        tracker.song.orders.push(1);
+        tracker.cursor.row = 10;
+        tracker.selected_order = 1;
+        tracker.cursor_moved();
+        assert_eq!(tracker.cursor.row, 1);
+        tracker.song.validate().unwrap();
     }
 
     #[test]
