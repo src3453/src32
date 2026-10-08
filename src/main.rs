@@ -17,7 +17,7 @@ use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
 use cpt32::devices::sgu::sgu::connect_sgu;
-use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
+use cpt32::devices::vdp::vdp::{Vdp, connect_vdp};
 use cpt32::music::guest::{STREAM_BASE, read_music_stream};
 use gilrs::{
     Axis as GilrsAxis, Button as GilrsButton, EventType as GilrsEventType, GamepadId, Gilrs,
@@ -419,7 +419,6 @@ struct GuiApp {
 impl GuiApp {
     fn new(
         program_path: &str,
-        font_path: Option<&str>,
         display_handle: OwnedDisplayHandle,
         enable_debug_gui: bool,
         start_paused: bool,
@@ -436,7 +435,14 @@ impl GuiApp {
         let sgu = connect_sgu(&mut bus);
 
         load_binary_data(program_path, music_stream, &mut bus);
-        let vdp = connect_vdp_with_font(&mut bus, font_path.map(Path::new));
+        let vdp = connect_vdp(&mut bus);
+        if let Some(font_path) = pcg_font_path_from_config()
+            .unwrap_or_else(|error| panic!("Invalid PCG font configuration: {error}"))
+        {
+            vdp.borrow()
+                .load_pcg_font_from_file(&font_path)
+                .unwrap_or_else(|error| panic!("Failed to load PCG font {}: {error}", font_path.display()));
+        }
 
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
@@ -1423,10 +1429,30 @@ impl ApplicationHandler for GuiApp {
 
 struct GuiLaunchOptions {
     program_path: String,
-    font_path: Option<String>,
     enable_debug_gui: bool,
     start_paused: bool,
     music_stream: Option<PathBuf>,
+}
+
+fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
+    let config_path = Path::new("config.toml");
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
+    };
+    let root: toml::Value = toml::from_str(&contents)
+        .map_err(|error| format!("invalid TOML in {}: {error}", config_path.display()))?;
+    let Some(pcg) = root.get("pcg") else { return Ok(None) };
+    let table = pcg.as_table().ok_or("`pcg` must be a table")?;
+    let Some(font) = table.get("font") else { return Ok(None) };
+    let font = font.as_str().ok_or("`pcg.font` must be a path string")?;
+    let path = Path::new(font);
+    Ok(Some(if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        config_path.parent().unwrap_or_else(|| Path::new(".")).join(path)
+    }))
 }
 
 fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
@@ -1452,13 +1478,12 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     if positional.is_empty() {
         return Err("Missing program path".to_string());
     }
-    if positional.len() > 2 {
+    if positional.len() > 1 {
         return Err("Too many positional arguments".to_string());
     }
 
     Ok(GuiLaunchOptions {
         program_path: positional[0].clone(),
-        font_path: positional.get(1).cloned(),
         enable_debug_gui,
         start_paused,
         music_stream,
@@ -1483,13 +1508,13 @@ fn main() {
             Err(message) => {
                 eprintln!("Error: {}", message);
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [font.bin] [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [font.bin] [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
             );
         }
     }
@@ -1500,7 +1525,6 @@ fn run_gui_with_options(options: &GuiLaunchOptions) {
     let display_handle = event_loop.owned_display_handle();
     let mut app = GuiApp::new(
         &options.program_path,
-        options.font_path.as_deref(),
         display_handle,
         options.enable_debug_gui,
         options.enable_debug_gui && options.start_paused,

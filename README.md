@@ -38,6 +38,15 @@ cargo run --release --bin cpt32 -- /tmp/3d_cube.bin
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
 ```
 
+PCG の raw font file は引数ではなく、起動時の `config.toml` で指定します。`font.bin` は PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。相対 path は `config.toml` のある directory を基準にします。設定を省略した場合は内蔵フォントを使用します。
+
+```toml
+[pcg]
+font = "assets/font.bin"
+```
+
+旧来の `<program.bin> [font.bin]` 形式は使えません。
+
 CPU の対話型モニターは次のように起動します。
 
 ```sh
