@@ -7,6 +7,8 @@
 !var pcg_mode 0
 !var pcg_cursor 0
 !var pcg_vram_base 0x10000000
+!var pcg_scroll_y 0
+!var pcg_vram_row 0
 
 fn _pcg_fill (addr len val) :
     local i 0
@@ -16,19 +18,6 @@ fn _pcg_fill (addr len val) :
         val ptr stb
         i 1 add >i
         i len lt
-    end
-;
-
-fn _pcg_acopy (ptr len ptr2) :
-    local i 0
-    local addr 0
-    local addr2 0
-    while
-        ptr2 i add >addr2
-        ptr i add >addr
-        addr ldb addr2 stb
-        i 1 add >i
-        i len neq
     end
 ;
 
@@ -51,9 +40,14 @@ fn _pcg_update_cur () :
     pcg_cur_x pcg_cur_y _pcg_set_cur
 ;
 
+fn _pcg_update_vram_row () :
+    pcg_scroll_y 8 div pcg_cur_y add pcg_height mod >pcg_vram_row
+;
+
 fn locate (x y) :
     x >pcg_cur_x
     y >pcg_cur_y
+    _pcg_update_vram_row
     _pcg_update_cur
 ;
 
@@ -64,44 +58,45 @@ fn cls (color) :
 fn initPCG () :
     1 0x80000001 stb # mode
     0 0x8000f003 stb # mode
+    40 >pcg_width
+    30 >pcg_height
     0 0x8000f000 stb # enable
+    0 >pcg_scroll_y
+    0 0x8000f00c stb # scroll X low
+    0 0x8000f00d stb # scroll X high
+    0 0x8000f00e stb # scroll Y low
+    0 0x8000f00f stb # scroll Y high
+    0 >pcg_cur_x
+    0 >pcg_cur_y
+    _pcg_update_vram_row
     1 0x8000f007 stb # cursor
     10 0x8000f009 stb # cursor
-    0 0 _pcg_set_cur # cursor
+    _pcg_update_cur
 ;
 
 fn _pcg_ln () :
     0 >pcg_cur_x
     pcg_cur_y 1 add >pcg_cur_y
+    pcg_vram_row 1 add pcg_height mod >pcg_vram_row
     pcg_cur_y pcg_height ge if
-        local ptr
-        local len 
-        local ptr2
-        local ptr3
-        pcg_width pcg_vram_base add >ptr
-        pcg_width pcg_height 1 sub mul >len
-        pcg_vram_base >ptr2
-        len pcg_vram_base add >ptr3
-        ptr len ptr2 _pcg_acopy
-        ptr3 pcg_width 0x00 _pcg_fill
-        ptr 0x1000 add >ptr
-        ptr2 0x1000 add >ptr2
-        ptr3 0x1000 add >ptr3
-        ptr len ptr2 _pcg_acopy
-        ptr3 pcg_width 0x3f _pcg_fill
-        ptr 0x1000 add >ptr
-        ptr2 0x1000 add >ptr2
-        ptr3 0x1000 add >ptr3
-        ptr len ptr2 _pcg_acopy
-        ptr3 pcg_width 0x00 _pcg_fill
-        pcg_height 1 sub >pcg_cur_y 
+        # Advance the pixel scroll by one text row, wrapping the source rows.
+        pcg_scroll_y 8 add pcg_height 8 mul mod >pcg_scroll_y
+        pcg_scroll_y 0x8000f00e stb
+        pcg_height 1 sub >pcg_cur_y
+
+        # Reuse and clear only the newly exposed physical row in the VRAM ring.
+        local ptr 0
+        pcg_vram_row pcg_width mul pcg_vram_base add >ptr
+        ptr pcg_width 0x00 _pcg_fill
+        ptr 0x1000 add pcg_width 0x3f _pcg_fill
+        ptr 0x2000 add pcg_width 0x00 _pcg_fill
     end
     _pcg_update_cur
 ;
 
 fn putcscr (char) :
     local ptr
-    pcg_cur_y pcg_width mul pcg_cur_x add pcg_vram_base add >ptr
+    pcg_vram_row pcg_width mul pcg_cur_x add pcg_vram_base add >ptr
     char ptr stb
     ptr 0x1000 add >ptr
     pcg_fg_color ptr stb

@@ -484,3 +484,4 @@ fn jalrs_writes_link_jumps_and_enters_short_mode() {
     assert_eq!(cpu.instruction_mode(), cpt32::cpu::InstructionMode::Short);
     assert_eq!(cpu.read_reg(31), 12);
 }
+

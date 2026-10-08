@@ -89,6 +89,8 @@ pub enum VdpFramebuffer<'a> {
         pcg_cursor_lines: u8,
         pcg_cursor_blink_period: u8,
         pcg_cursor_blink_tick: u64,
+        pcg_scroll_x: u16,
+        pcg_scroll_y: u16,
         pcg_output_gp: u8,
         composed_pixels: OnceLock<Vec<[u8; 3]>>,
     },
@@ -104,6 +106,8 @@ pub enum VdpFramebuffer<'a> {
         cursor_lines: u8,
         cursor_blink_period: u8,
         cursor_blink_tick: u64,
+        scroll_x: u16,
+        scroll_y: u16,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
         sgc_pixels: Vec<Rgba>,
@@ -168,6 +172,10 @@ impl<'a> VdpFramebuffer<'a> {
         (r, g, b)
     }
 
+    fn scroll_coordinate(coordinate: usize, offset: u16, extent: usize) -> usize {
+        (coordinate + offset as usize) % extent
+    }
+
     fn sample_pixel(&self, x: usize, y: usize, vpu: &Vpu) -> (u8, u8, u8) {
         let base = match self {
             VdpFramebuffer::Graphics {
@@ -186,10 +194,12 @@ impl<'a> VdpFramebuffer<'a> {
                 cursor_lines,
                 cursor_blink_period,
                 cursor_blink_tick,
+                scroll_x,
+                scroll_y,
                 ..
             } => renderer.get_pixel(
-                x,
-                y,
+                Self::scroll_coordinate(x, *scroll_x, screen_mode.width()),
+                Self::scroll_coordinate(y, *scroll_y, screen_mode.height()),
                 *screen_mode,
                 *font_bank,
                 *swap_fg_bg,
@@ -231,14 +241,18 @@ impl<'a> VdpFramebuffer<'a> {
             pcg_cursor_lines,
             pcg_cursor_blink_period,
             pcg_cursor_blink_tick,
+            pcg_scroll_x,
+            pcg_scroll_y,
             pcg_output_gp,
             ..
         } = self
         {
             if x < VDP_ACTIVE_WIDTH && y < VDP_ACTIVE_HEIGHT {
+                let pcg_x = Self::scroll_coordinate(x, *pcg_scroll_x, pcg_screen_mode.width());
+                let pcg_y = Self::scroll_coordinate(y, *pcg_scroll_y, pcg_screen_mode.height());
                 let rgb = pcg.get_pixel(
-                    x,
-                    y,
+                    pcg_x,
+                    pcg_y,
                     *pcg_screen_mode,
                     *pcg_font_bank,
                     *pcg_swap_fg_bg,
@@ -337,6 +351,8 @@ impl Vdp {
                 pcg_cursor_lines: self.regs.pcg_cursor_lines,
                 pcg_cursor_blink_period: self.regs.pcg_cursor_blink_period,
                 pcg_cursor_blink_tick: self.state.pcg_cursor_blink_tick,
+                pcg_scroll_x: self.regs.pcg_scroll_x,
+                pcg_scroll_y: self.regs.pcg_scroll_y,
                 pcg_output_gp: self.regs.pcg_output_gp,
                 composed_pixels: OnceLock::new(),
             },
@@ -352,6 +368,8 @@ impl Vdp {
                 cursor_lines: self.regs.pcg_cursor_lines,
                 cursor_blink_period: self.regs.pcg_cursor_blink_period,
                 cursor_blink_tick: self.state.pcg_cursor_blink_tick,
+                scroll_x: self.regs.pcg_scroll_x,
+                scroll_y: self.regs.pcg_scroll_y,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
                 sgc_pixels,
@@ -361,6 +379,7 @@ impl Vdp {
             },
         }
     }
+
 
     /// Describes which renderers contribute to each GP in the current VDP setup.
     pub fn compositor_debug_info(&self) -> CompositorDebugInfo {
@@ -467,6 +486,10 @@ impl Vdp {
             0xF009 => self.regs.pcg_cursor_blink_period,
             0xF00A => self.regs.pcg_output_gp,
             0xF00B => self.regs.pcg_overlay_enable as u8,
+            0xF00C => self.regs.pcg_scroll_x as u8,
+            0xF00D => (self.regs.pcg_scroll_x >> 8) as u8,
+            0xF00E => self.regs.pcg_scroll_y as u8,
+            0xF00F => (self.regs.pcg_scroll_y >> 8) as u8,
             0xFFFF => 0,
             _ => 0,
         }
@@ -510,6 +533,18 @@ impl Vdp {
                 }
             }
             0xF00B => self.regs.pcg_overlay_enable = value & 1 != 0,
+            0xF00C => {
+                self.regs.pcg_scroll_x = (self.regs.pcg_scroll_x & 0xFF00) | value as u16;
+            }
+            0xF00D => {
+                self.regs.pcg_scroll_x = (self.regs.pcg_scroll_x & 0x00FF) | ((value as u16) << 8);
+            }
+            0xF00E => {
+                self.regs.pcg_scroll_y = (self.regs.pcg_scroll_y & 0xFF00) | value as u16;
+            }
+            0xF00F => {
+                self.regs.pcg_scroll_y = (self.regs.pcg_scroll_y & 0x00FF) | ((value as u16) << 8);
+            }
             0xFFFF => {
                 if value & 1 != 0 {
                     self.reset_state();

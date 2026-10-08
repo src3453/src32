@@ -1,6 +1,8 @@
+from pathlib import Path
+
 import pytest
 
-from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program, parse_number
+from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program, parse_number, to_i32
 
 
 def test_compiled_instruction_carries_opcode_profile():
@@ -508,3 +510,54 @@ def test_raw_assembly_requires_terminator_at_start_location(tmp_path):
     source_path = tmp_path / "missing.sol"
     with pytest.raises(SolVMError, match=r"missing\.sol:1:1: !asm requires terminating !end"):
         compile_program("!asm\nNOP", source_path=str(source_path))
+
+
+def test_pcg_console_scrolls_and_clears_only_reused_ring_row():
+    repo = Path(__file__).resolve().parents[2]
+    pcg_path = repo / "sol/cpt32/pcg.sol"
+    source = f'''!include "{pcg_path}"
+initPCG
+65 0x10000028 stb
+1 0x10001028 stb
+2 0x10002028 stb
+0 29 locate
+_pcg_ln
+88 putcscr
+'''
+    vm = SolVM()
+    vm.run_source(source, source_path=str(pcg_path.parent / "ring_buffer_test.sol"))
+
+    assert vm.memory[to_i32(0x8000F00E)] == 8
+    assert vm.memory[to_i32(0x8000F00F)] == 0
+    assert vm.memory[0x10000000] == 88
+    assert vm.memory[0x10000028] == 65
+
+    cleared_row = set(range(0x10000000, 0x10000028))
+    cleared_row.update(range(0x10001000, 0x10001028))
+    cleared_row.update(range(0x10002000, 0x10002028))
+    sentinels = {0x10000028, 0x10001028, 0x10002028}
+    vram_writes = {
+        address
+        for address in vm.memory
+        if 0x10000000 <= address < 0x10003000
+    }
+    assert vram_writes == cleared_row | sentinels
+
+
+def test_pcg_console_wraps_scroll_and_reuses_rows_after_full_rotation():
+    repo = Path(__file__).resolve().parents[2]
+    pcg_path = repo / "sol/cpt32/pcg.sol"
+    source = f'''!include "{pcg_path}"
+initPCG
+0 29 locate
+_pcg_ln
+88 putcscr
+'''
+    source += "_pcg_ln\n" * 29
+    source += "89 putcscr\n"
+    vm = SolVM()
+    vm.run_source(source, source_path=str(pcg_path.parent / "ring_rotation_test.sol"))
+
+    assert vm.memory[to_i32(0x8000F00E)] == 0
+    assert vm.memory[0x10000000] == 88
+    assert vm.memory[0x10000000 + 29 * 40] == 89

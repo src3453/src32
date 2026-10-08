@@ -35,7 +35,7 @@ SGCのFIFOコマンドは線分、塗りつぶし矩形、塗りつぶし三角�
 
 4bppのpattern byte数は `ceil(width * height / 2)`。行ごとにbyte境界へ丸めず、全pixelを連続してpackする。パターン開始アドレスはVRAM相対byte offsetであり、範囲がVRAM外へ出るspriteはそのsprite全体を無効にしてSGCエラーを記録する。
 
-FIFOプリミティブは不透明な単色描画とし、色はSGCの現在のCLUTを参照する。色index 0もFIFO描画では不透明色として扱う。画面外画素は捨てる。線分の端点は両端を含み、矩形は左上を含み右端・下端を含まない。三角形は頂点を結ぶ辺を含む塗りつぶしとする。同一共有辺の二重描画は許容する。
+FIFOプリミティブは不透明な単色描画とし、色はSGCの現在のCLUTを参照する。色index 0もFIFO描画では不透明色として扱う。画面外画素は捨てる。LINEの端点は両端を含み、RECTは左上を含み右端・下端を含まない。三角形は頂点を結ぶ辺を含めて塗りつぶす。SCREEN_FILLは描画plane全体を現在色で塗りつぶす。同一共有辺の二重描画は許容する。
 
 ## 4. Sprite Attribute Table
 
@@ -94,13 +94,14 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 | `0x11` | RECT | 5 words。続く4 wordは左上X、左上Y、右下排他的X、右下排他的Y |
 | `0x12` | TRIANGLE | 7 words。続く6 wordは頂点1～3それぞれのX,Y |
 | `0x13` | GLYPH | 4 words。続く3 wordはUnicode BMP code unit、X、Y |
+| `0x14` | SCREEN_FILL | 1 word。320×240の描画plane全体を現在のCLUT色で塗りつぶす |
 | `0xFF` | NOP | 1 word。予約・整列用 |
 
 `GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
 
 座標payload wordはbit31:16を0、bit15:0をsigned座標とする。三角形は各整数座標位置をsampleし、辺を含めて塗りつぶす。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。既知opcodeの不正コマンドはそのopcodeの宣言word数を消費し、後続の解釈を継続する。長さを定義していないopcodeはheader 1 wordのみを消費する。
 
-FIFOにコマンド途中までしか届いていない場合、その先頭wordと後続wordを保持し、完全なコマンドになるまで待つ。コマンド投入はSET_COLORを含めFIFO順に処理される。初版の描画コマンドは単一の現在色を使い、出力GPはOUTPUT_GP設定に従う。LINEは両端を含む整数 Bresenham 線分、RECTは左上を含み右端・下端を含まない矩形とする。
+FIFOにコマンド途中までしか届いていない場合、その先頭wordと後続wordを保持し、完全なコマンドになるまで待つ。コマンド投入はSET_COLORを含めFIFO順に処理される。描画コマンドは単一の現在色を使い、出力GPはOUTPUT_GP設定に従う。LINEは両端を含む整数 Bresenham 線分、RECTは左上を含み右端・下端を含まない矩形、SCREEN_FILLは全描画planeの不透明色塗りつぶしとする。
 
 ## 8. VRAM共有と同期
 

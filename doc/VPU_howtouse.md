@@ -115,6 +115,18 @@ fn face (a b c d rgb intensity) :
 
 実用的な回転キューブ全体は [3d_cube.sol](../3d_cube.sol) にあります。sol は固定小数点の三角関数から各フレームの Model 行列を作り、View 行列と透視 Projection 行列を設定します。キューブの頂点はオブジェクト座標のまま FIFO に送り、VPU が座標変換、深度処理、塗りつぶしを行います。各面の頂点色を同じにして、面単位のフラットシェーディングにしています。
 
+回転キューブでは、PeCのキーボードイベントで距離・回転速度・ライトの拡散色を調整できます。画面上部のSGCテキストは操作キーと現在値を表示し、状態変更時に描画し直します。
+
+| キー | 操作 | 範囲・刻み |
+|---|---|---|
+| `W` / `S` | カメラ距離を近づける / 遠ざける | 128～512、8ずつ |
+| `A` / `D` | 回転速度を下げる / 上げる | 0～12度/フレーム、1ずつ |
+| `J` / `K` | 赤を下げる / 上げる | 0～15、1ずつ |
+| `U` / `I` | 緑を下げる / 上げる | 0～15、1ずつ |
+| `N` / `M` | 青を下げる / 上げる | 0～15、1ずつ |
+
+このデモはVPUをGP6、SGCテキストを手前のGP7へ出力します。SGCの文字面をソフトリセットで透明にしてから表示値を再描画するため、3D画面を不透明な塗りつぶしで隠しません。
+
 ## 6. VPU 内で行列変換とクリッピングを行う
 
 `SET_MATRIX` はpayload 17語で、行列IDと16個のbinary32値を送ります。次の例は単位行列を1つ登録する関数です。行列を3つ登録すると `Projection × View × Model × position` の順に適用されます。
@@ -189,13 +201,13 @@ python tools/solc/solc.py compile 3d_cube.sol -o 3d_cube.a
 python tools/asm/asm.py 3d_cube.a -o 3d_cube.bin
 ```
 
-ヘッドレス実行器で動作確認する場合は、VPU を含むデバイス構成を使い、ループするデモを実行します。
+ヘッドレス実行器で動作確認する場合は、VPU・PeC入力・乱数生成器を接続したSRC32実行器でサンプルを実行します。
 
 ```powershell
-cargo run --bin src32_testbench -- 3d_cube.bin --allow-running
+cargo run --bin src32_testbench -- 3d_cube.bin --allow-running --expect-sgc-overlay --expect-gp-noise-background
 ```
 
-`--allow-running` は、フレームループが続くプログラムをサイクル上限まで実行する指定です。実行器は VPU のエラーフラグと画面内に描画画素があることを確認します。
+`3d_cube.sol` は GP0 のインデックス付きビットマップをグレースケールノイズで初期化し、CLUT の先頭64色（SGC 文字色を含む）を保持して残りの色をノイズ用に使います。VPU の CLEAR は透明色で行うため、ノイズの上に GP6 の立方体が合成されます。`--expect-gp-noise-background` は立方体の外側で GP0 のノイズが見え、中央で VPU の画素が背景を覆うことを確認するため、初期化を完了できるだけの実行サイクルを使います。`--expect-sgc-overlay` は SGC の FIFO エラーがないこと、文字 glyph が表示されること、および glyph が白であることを検査します。実機ウィンドウでは上のキーで値を変更できます。
 
 Gouraud補間とクリッピングの三角形サンプルを実行するときは、`3d_cube.sol` と出力名を `vpu_tnl_triangle.sol` と `vpu_tnl_triangle.a` / `vpu_tnl_triangle.bin` に置き換えます。
 

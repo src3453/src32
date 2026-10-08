@@ -25,6 +25,11 @@
 // 0xF007: CURSOR_ENABLE:RW (Cursor enable) (0 = disable, 1 = enable)
 // 0xF008: /CURSOR_LINES:RW (Cursor lines) (MSB: line 0, LSB: line 7; 0 = visible, 1 = invisible)
 // 0xF009: CURSOR_BLINK_PERIOD:RW (Cursor blink period) (0 = none, 1~255 = blink period in frames (in each blink state, 1 means 2 frames in total))
+// 0xF00A: PCG_OUTPUT_GP:RW (PCG output GP, 0-7)
+// 0xF00B: PCG_OVERLAY_ENABLE:RW (PCG overlay enable)
+// 0xF00C-0xF00D: SCROLL_X:RW (16-bit pixel offset; low byte at F00C)
+// 0xF00E-0xF00F: SCROLL_Y:RW (16-bit pixel offset; low byte at F00E)
+// Display samples source pixels at ((X + SCROLL_X) mod W, (Y + SCROLL_Y) mod H).
 // 0xFFFF: RESET:-W (Reset register) (write 1 to reset VDP state)
 
 use std::cell::RefCell;

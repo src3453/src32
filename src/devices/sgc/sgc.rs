@@ -28,6 +28,7 @@ const OP_LINE: u8 = 0x10;
 const OP_RECT: u8 = 0x11;
 const OP_TRIANGLE: u8 = 0x12;
 const OP_GLYPH: u8 = 0x13;
+const OP_SCREEN_FILL: u8 = 0x14;
 const OP_NOP: u8 = 0xff;
 
 pub struct Sgc {
@@ -191,7 +192,7 @@ impl Sgc {
             let Some(&header) = fifo.front() else { break };
             let opcode = (header >> 24) as u8;
             let length = match opcode {
-                OP_SET_COLOR | OP_NOP => 1,
+                OP_SET_COLOR | OP_SCREEN_FILL | OP_NOP => 1,
                 OP_LINE | OP_RECT => 5,
                 OP_TRIANGLE => 7,
                 OP_GLYPH => 4,
@@ -210,6 +211,13 @@ impl Sgc {
                         self.set_error(STATUS_FIFO_ERROR);
                     } else {
                         self.color_index.set((header & 0x3f) as u8);
+                    }
+                }
+                OP_SCREEN_FILL => {
+                    if header & 0x00ff_ffff != 0 {
+                        self.set_error(STATUS_FIFO_ERROR);
+                    } else {
+                        pixels.fill(color_rgba(&vram, self.color_index.get()));
                     }
                 }
                 OP_LINE | OP_RECT => {
@@ -548,6 +556,45 @@ mod tests {
         assert_eq!(frame[2 * 320 + 1], [240, 20, 10, 255]);
         assert_eq!(frame[3 * 320], [0, 0, 0, 0]);
         assert_eq!(sgc.render_frame()[1 * 320], [240, 20, 10, 255]);
+    }
+
+    #[test]
+    fn fifo_screen_fill_overwrites_the_entire_command_plane_with_current_color() {
+        let mut sgc = enabled_sgc();
+        push_word(&mut sgc, 0x0100_0001);
+        push_word(&mut sgc, 0x1100_0000);
+        for coordinate in [1, 1, 2, 2] {
+            push_word(&mut sgc, coordinate);
+        }
+        push_word(&mut sgc, 0x0100_0002);
+        push_word(&mut sgc, 0x1400_0000);
+
+        sgc.tick();
+
+        let frame = sgc.render_frame();
+        assert_eq!(frame.len(), FRAME_PIXELS);
+        assert!(frame.iter().all(|&pixel| pixel == [5, 200, 30, 255]));
+        assert_eq!(read_word(&sgc, 0x24), 0x0000_0100);
+        assert_eq!(read_word(&sgc, 0x08) & STATUS_FIFO_ERROR, 0);
+    }
+
+    #[test]
+    fn fifo_screen_fill_rejects_reserved_header_bits_and_continues() {
+        let mut sgc = enabled_sgc();
+        push_word(&mut sgc, 0x1400_0001);
+        push_word(&mut sgc, 0x0100_0001);
+        push_word(&mut sgc, 0x1000_0000);
+        for coordinate in [2, 3, 4, 3] {
+            push_word(&mut sgc, coordinate);
+        }
+
+        sgc.tick();
+
+        let frame = sgc.render_frame();
+        assert_ne!(read_word(&sgc, 0x08) & STATUS_FIFO_ERROR, 0);
+        assert_eq!(frame[3 * 320 + 2], [240, 20, 10, 255]);
+        assert_eq!(frame[0], [0, 0, 0, 0]);
+        assert_eq!(read_word(&sgc, 0x24), 0x0000_0100);
     }
 
     #[test]
