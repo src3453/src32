@@ -17,9 +17,19 @@ use crate::devices::pec::pec::PeCState;
 use crate::devices::vdp::vdp::Vdp;
 
 struct DeviceMap {
-    addr: u32,
-    size: u32,
+    region: BusRegion,
     device: Box<dyn Device>,
+}
+
+/// Snapshot of one registered system-bus address range.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BusRegion {
+    /// Inclusive first byte of the mapped range.
+    pub start: u32,
+    /// Number of contiguous mapped bytes from `start`.
+    pub size: u32,
+    /// Human-readable device or memory-region name.
+    pub name: &'static str,
 }
 
 pub trait Device {
@@ -250,7 +260,8 @@ impl Bus {
         error
     }
 
-    pub fn add_device(&mut self, addr: u32, device: Box<dyn Device>) {
+    /// Register a named device; its declared size determines the mapped range.
+    pub fn add_device(&mut self, addr: u32, name: &'static str, device: Box<dyn Device>) {
         let size = device.size();
         println!(
             "Bus: Adding device at 0x{:08X}-0x{:08X} (size: 0x{:X})",
@@ -265,28 +276,41 @@ impl Bus {
         let new_end = addr.checked_add(size).expect("Device range overflow");
         for mapped in &self.devices {
             let end = mapped
-                .addr
-                .checked_add(mapped.size)
+                .region
+                .start
+                .checked_add(mapped.region.size)
                 .expect("Existing device range overflow");
-            if !(new_end <= mapped.addr || addr >= end) {
+            if !(new_end <= mapped.region.start || addr >= end) {
                 panic!(
                     "Device overlap detected: new [0x{:08X}-0x{:08X}) overlaps with [0x{:08X}-0x{:08X})",
-                    addr, new_end, mapped.addr, end
+                    addr, new_end, mapped.region.start, end
                 );
             }
         }
 
-        self.devices.push(DeviceMap { addr, size, device });
+        self.devices.push(DeviceMap {
+            region: BusRegion {
+                start: addr,
+                size,
+                name,
+            },
+            device,
+        });
+    }
+    /// Iterate over mapped ranges in registration order without accessing devices.
+    pub fn memory_map(&self) -> impl Iterator<Item = BusRegion> + '_ {
+        self.devices.iter().map(|mapped| mapped.region)
     }
 
     pub fn find_device(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
         for mapped in &mut self.devices {
             let end = mapped
-                .addr
-                .checked_add(mapped.size)
+                .region
+                .start
+                .checked_add(mapped.region.size)
                 .expect("Existing device range overflow");
-            if addr >= mapped.addr && addr < end {
-                return Some((&mut *mapped.device, addr - mapped.addr));
+            if addr >= mapped.region.start && addr < end {
+                return Some((&mut *mapped.device, addr - mapped.region.start));
             }
         }
         None
@@ -295,11 +319,12 @@ impl Bus {
     pub fn find_device_mut(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
         for mapped in &mut self.devices {
             let end = mapped
-                .addr
-                .checked_add(mapped.size)
+                .region
+                .start
+                .checked_add(mapped.region.size)
                 .expect("Existing device range overflow");
-            if addr >= mapped.addr && addr < end {
-                return Some((&mut *mapped.device, addr - mapped.addr));
+            if addr >= mapped.region.start && addr < end {
+                return Some((&mut *mapped.device, addr - mapped.region.start));
             }
         }
         None

@@ -107,7 +107,7 @@ impl Device for RngDevice {
 }
 
 pub fn connect_rng(bus: &mut Bus) {
-    bus.add_device(RNG_BASE_ADDR, Box::new(RngDevice::new()));
+    bus.add_device(RNG_BASE_ADDR, "PeC RNG MMIO", Box::new(RngDevice::new()));
 }
 
 #[cfg(test)]

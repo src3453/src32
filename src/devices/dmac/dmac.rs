@@ -480,7 +480,11 @@ impl Device for DmacRegisters {
 
 pub fn connect_dmac(bus: &mut Bus, bmc: Rc<RefCell<Bmc>>) -> Rc<RefCell<Dmac>> {
     let dmac = Rc::new(RefCell::new(Dmac::new(bmc)));
-    bus.add_device(DMAC_BASE, Box::new(DmacRegisters(Rc::clone(&dmac))));
+    bus.add_device(
+        DMAC_BASE,
+        "DMAC MMIO",
+        Box::new(DmacRegisters(Rc::clone(&dmac))),
+    );
     bus.attach_dmac(Rc::clone(&dmac));
     dmac
 }

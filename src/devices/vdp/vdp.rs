@@ -783,17 +783,24 @@ pub fn connect_vdp_with_font<P: AsRef<Path>>(
     let vpu = Rc::clone(&vdp.borrow().vpu);
     bus.add_device(
         VDP_VRAM_BASE,
+        "VRAM",
         Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Vram)),
     );
     bus.add_device(
         VDP_REG_BASE,
+        "VDP MMIO",
         Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Regs)),
     );
     bus.add_device(
         SGC_MMIO_BASE,
+        "SGC MMIO",
         Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Sgc)),
     );
-    bus.add_device(VPU_MMIO_BASE, Box::new(VpuRegisterDevice::new(vpu)));
+    bus.add_device(
+        VPU_MMIO_BASE,
+        "VPU MMIO",
+        Box::new(VpuRegisterDevice::new(vpu)),
+    );
     vdp
 }
 

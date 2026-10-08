@@ -3,7 +3,7 @@
 
 // Features: SRC32-ALMSI
 
-use crate::bus::{Bus, BusAccessSource};
+use crate::bus::{Bus, BusAccessSource, BusRegion};
 use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
@@ -495,6 +495,10 @@ impl Cpu {
         let value = self.bus.read_u32_be(addr);
         self.bus.set_access_source(BusAccessSource::Cpu);
         value
+    }
+    /// Return the registered system-bus ranges without reading device memory.
+    pub fn bus_memory_map(&self) -> impl Iterator<Item = BusRegion> + '_ {
+        self.bus.memory_map()
     }
 
     pub fn write_mem_u8(&mut self, addr: u32, value: u8) {

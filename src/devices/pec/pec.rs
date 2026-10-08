@@ -314,6 +314,7 @@ pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
     bus.attach_pec_input(Arc::clone(&state));
     bus.add_device(
         PEC_INPUT_BASE,
+        "PeC Input MMIO",
         Box::new(PeCInputDevice {
             state: Arc::clone(&state),
             pop_latch: [0; 4],

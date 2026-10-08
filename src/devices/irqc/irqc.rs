@@ -130,7 +130,11 @@ pub const IRQC_BASE: u32 = 0xFFFF_0040;
 /// state object exposed through MMIO, allowing the platform to drive sources.
 pub fn connect_irqc(bus: &mut crate::bus::Bus) -> std::rc::Rc<std::cell::RefCell<IrqController>> {
     let irqc = std::rc::Rc::new(std::cell::RefCell::new(IrqController::new()));
-    bus.add_device(IRQC_BASE, Box::new(SharedIrqController(irqc.clone())));
+    bus.add_device(
+        IRQC_BASE,
+        "IRQC MMIO",
+        Box::new(SharedIrqController(irqc.clone())),
+    );
     irqc
 }
 

@@ -182,5 +182,9 @@ pub fn connect_uart(bus: &mut crate::bus::Bus) {
 }
 
 pub fn connect_uart_with_stdin(bus: &mut crate::bus::Bus, with_stdin: bool) {
-    bus.add_device(UART_BASE_ADDR, Box::new(UARTDevice::new(with_stdin)));
+    bus.add_device(
+        UART_BASE_ADDR,
+        "PeC UART MMIO",
+        Box::new(UARTDevice::new(with_stdin)),
+    );
 }

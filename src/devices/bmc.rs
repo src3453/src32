@@ -158,7 +158,11 @@ impl Device for BmcRegisters {
 
 pub fn connect_bmc(bus: &mut Bus) -> Rc<RefCell<Bmc>> {
     let bmc = Rc::new(RefCell::new(Bmc::new()));
-    bus.add_device(BMC_BASE, Box::new(BmcRegisters(Rc::clone(&bmc))));
+    bus.add_device(
+        BMC_BASE,
+        "BMC MMIO",
+        Box::new(BmcRegisters(Rc::clone(&bmc))),
+    );
     bus.attach_bmc(Rc::clone(&bmc));
     bmc
 }

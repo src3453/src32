@@ -116,6 +116,7 @@ pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegiste
     // Reset/exception vectors and IRQ vectors are separate mapped windows.
     bus.add_device(
         VECTOR_BASE,
+        "CPU Exception Vectors",
         Box::new(SharedCpuVectorDevice {
             regs: regs.clone(),
             offset: 0,
@@ -124,6 +125,7 @@ pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegiste
     );
     bus.add_device(
         INTERRUPT_VECTOR,
+        "CPU Interrupt Vectors",
         Box::new(SharedCpuVectorDevice {
             regs: regs.clone(),
             offset: 0x100,
@@ -132,6 +134,7 @@ pub fn connect_cpu_registers(bus: &mut crate::bus::Bus) -> Rc<RefCell<CpuRegiste
     );
     bus.add_device(
         CPU_REG_BASE,
+        "CPU Registers",
         Box::new(SharedCpuRegisterDevice(regs.clone())),
     );
     regs

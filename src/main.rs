@@ -20,7 +20,7 @@ use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_font};
 use gilrs::{
     Axis as GilrsAxis, Button as GilrsButton, EventType as GilrsEventType, GamepadId, Gilrs,
 };
-use imgui::{Condition, Ui};
+use imgui::{Condition, ProgressBar, TableFlags, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
@@ -681,6 +681,7 @@ enum DebugWindow {
     Controls,
     Disassembly,
     Memory,
+    BusComposition,
     Compositor,
     Performance,
 }
@@ -690,16 +691,18 @@ impl DebugWindow {
         Self::Controls,
         Self::Disassembly,
         Self::Memory,
+        Self::BusComposition,
         Self::Compositor,
         Self::Performance,
     ];
-    const COUNT: usize = 5;
+    const COUNT: usize = 6;
 
     fn label(self) -> &'static str {
         match self {
             Self::Controls => "Debug Controls",
             Self::Disassembly => "Realtime Disassembly",
             Self::Memory => "Realtime Memory Monitor",
+            Self::BusComposition => "Bus Composition View",
             Self::Compositor => "Compositor Debug",
             Self::Performance => "Performance",
         }
@@ -782,11 +785,76 @@ impl DebugUiState {
         if self.visible_windows[DebugWindow::Memory as usize] {
             self.draw_memory(ui, cpu);
         }
+        if self.visible_windows[DebugWindow::BusComposition as usize] {
+            self.draw_bus_composition(ui, cpu);
+        }
         if self.visible_windows[DebugWindow::Compositor as usize] {
             self.draw_compositor(ui, vdp);
         }
         if self.visible_windows[DebugWindow::Performance as usize] {
             self.draw_performance(ui);
+        }
+    }
+
+    fn draw_bus_composition(&self, ui: &Ui, cpu: &Cpu) {
+        let mut regions: Vec<_> = cpu.bus_memory_map().collect();
+        regions.sort_unstable_by_key(|region| region.start);
+        let largest_size = regions.iter().map(|region| region.size).max().unwrap_or(1);
+        let table_flags = TableFlags::BORDERS | TableFlags::ROW_BG;
+
+        ui.window("Bus Composition View")
+            .size([780.0, 600.0], Condition::FirstUseEver)
+            .build(|| {
+                ui.text("Registered system-bus regions (32-bit address space)");
+                ui.text("Mapped range sizes (bar width relative to the largest region)");
+                if let Some(_table) =
+                    ui.begin_table_with_flags("BusCompositionSizes", 2, table_flags)
+                {
+                    ui.table_setup_column("Region");
+                    ui.table_setup_column("Relative size");
+                    ui.table_headers_row();
+                    for region in &regions {
+                        ui.table_next_row();
+                        ui.table_next_column();
+                        ui.text(region.name);
+                        ui.table_next_column();
+                        ProgressBar::new(region.size as f32 / largest_size as f32)
+                            .size([220.0, 14.0])
+                            .build(ui);
+                    }
+                }
+
+                ui.separator();
+                ui.text("Registered device ranges (unlisted addresses are unmapped)");
+                if let Some(_table) = ui.begin_table_with_flags("BusCompositionMap", 4, table_flags)
+                {
+                    ui.table_setup_column("Region");
+                    ui.table_setup_column("Start");
+                    ui.table_setup_column("End (inclusive)");
+                    ui.table_setup_column("Size");
+                    ui.table_headers_row();
+                    for region in &regions {
+                        ui.table_next_row();
+                        ui.table_next_column();
+                        ui.text(region.name);
+                        ui.table_next_column();
+                        ui.text(format!("0x{:08X}", region.start));
+                        ui.table_next_column();
+                        ui.text(format!("0x{:08X}", region.start + region.size - 1));
+                        ui.table_next_column();
+                        ui.text(Self::format_region_size(region.size));
+                    }
+                }
+            });
+    }
+
+    fn format_region_size(size: u32) -> String {
+        if size % (1024 * 1024) == 0 {
+            format!("{} MiB", size / (1024 * 1024))
+        } else if size % 1024 == 0 {
+            format!("{} KiB", size / 1024)
+        } else {
+            format!("{} B", size)
         }
     }
 

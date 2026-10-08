@@ -809,7 +809,11 @@ pub fn connect_idc(
     drives: [Option<Drive>; 4],
 ) -> std::rc::Rc<std::cell::RefCell<Idc>> {
     let idc = std::rc::Rc::new(std::cell::RefCell::new(Idc::new(drives)));
-    bus.add_device(IDC_BASE, Box::new(IdcRegisters(std::rc::Rc::clone(&idc))));
+    bus.add_device(
+        IDC_BASE,
+        "PeC IDC MMIO",
+        Box::new(IdcRegisters(std::rc::Rc::clone(&idc))),
+    );
     bus.attach_idc(std::rc::Rc::clone(&idc));
     idc
 }

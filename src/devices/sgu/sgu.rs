@@ -68,14 +68,17 @@ pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
     ];
     bus.add_device(
         SGU_REG_BASE,
+        "SGU 0 MMIO",
         Box::new(SguDevice::new(sgus.clone(), SguPort::Regs(0))),
     );
     bus.add_device(
         SGU2_REG_BASE,
+        "SGU 1 MMIO",
         Box::new(SguDevice::new(sgus.clone(), SguPort::Regs(1))),
     );
     bus.add_device(
         PCM_RAM_BASE,
+        "PCMRAM",
         Box::new(SguDevice::new(sgus.clone(), SguPort::PcmRam)),
     );
     sgus
