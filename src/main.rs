@@ -636,6 +636,33 @@ impl GuiApp {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct PerformanceStats {
+    running_cycles: u128,
+    instructions: u128,
+    cpu_utilization_percent: f64,
+    kips: f64,
+}
+
+impl PerformanceStats {
+    fn from_deltas(running_cycles: u128, instructions: u128, elapsed: Duration) -> Self {
+        let cpu_utilization_percent =
+            running_cycles as f64 * 100.0 / f64::from(cpt32::cpu::CYCLES_PER_FRAME);
+        let kips = if elapsed.is_zero() {
+            0.0
+        } else {
+            instructions as f64 / elapsed.as_secs_f64() / 1_000.0
+        };
+
+        Self {
+            running_cycles,
+            instructions,
+            cpu_utilization_percent,
+            kips,
+        }
+    }
+}
+
 struct DebugUiState {
     running: bool,
     visible_windows: [bool; DebugWindow::COUNT],
@@ -646,6 +673,7 @@ struct DebugUiState {
     disasm_count_input: String,
     mem_base_input: String,
     mem_count_input: String,
+    performance: Option<PerformanceStats>,
 }
 
 #[derive(Clone, Copy)]
@@ -654,6 +682,7 @@ enum DebugWindow {
     Disassembly,
     Memory,
     Compositor,
+    Performance,
 }
 
 impl DebugWindow {
@@ -662,8 +691,9 @@ impl DebugWindow {
         Self::Disassembly,
         Self::Memory,
         Self::Compositor,
+        Self::Performance,
     ];
-    const COUNT: usize = 4;
+    const COUNT: usize = 5;
 
     fn label(self) -> &'static str {
         match self {
@@ -671,6 +701,7 @@ impl DebugWindow {
             Self::Disassembly => "Realtime Disassembly",
             Self::Memory => "Realtime Memory Monitor",
             Self::Compositor => "Compositor Debug",
+            Self::Performance => "Performance",
         }
     }
 }
@@ -687,6 +718,7 @@ impl DebugUiState {
             disasm_count_input: "32".to_string(),
             mem_base_input: "0x00000000".to_string(),
             mem_count_input: "256".to_string(),
+            performance: None,
         }
     }
 
@@ -753,6 +785,28 @@ impl DebugUiState {
         if self.visible_windows[DebugWindow::Compositor as usize] {
             self.draw_compositor(ui, vdp);
         }
+        if self.visible_windows[DebugWindow::Performance as usize] {
+            self.draw_performance(ui);
+        }
+    }
+
+    fn draw_performance(&self, ui: &Ui) {
+        ui.window("Performance")
+            .size([360.0, 130.0], Condition::FirstUseEver)
+            .build(|| {
+                if let Some(stats) = self.performance {
+                    ui.text(format!(
+                        "CPU utilization: {:.1}% ({} / {} running cycles per VSync)",
+                        stats.cpu_utilization_percent,
+                        stats.running_cycles,
+                        cpt32::cpu::CYCLES_PER_FRAME
+                    ));
+                    ui.text(format!("Instruction throughput: {:.1} KIPS", stats.kips));
+                    ui.text(format!("Instructions this VSync: {}", stats.instructions));
+                } else {
+                    ui.text("Waiting for the first VSync sample...");
+                }
+            });
     }
 
     fn draw_compositor(&mut self, ui: &Ui, vdp: &Rc<RefCell<Vdp>>) {
@@ -930,6 +984,7 @@ struct DebugGui {
     renderer: Renderer,
     state: DebugUiState,
     last_frame: Instant,
+    last_performance_sample: Option<(Instant, u128, u128)>,
 }
 
 impl DebugGui {
@@ -954,6 +1009,7 @@ impl DebugGui {
             renderer,
             state: DebugUiState::new(start_paused),
             last_frame: Instant::now(),
+            last_performance_sample: None,
         }
     }
 
@@ -979,6 +1035,19 @@ impl DebugGui {
         presenter: &mut render::WgpuPresenter,
     ) -> Result<(), render::FrameError> {
         self.state.execute_cpu(cpu);
+        let sample_time = Instant::now();
+        let running_cycles = cpu.running_cycles();
+        let instructions = cpu.instructions_executed();
+        if let Some((last_time, last_running_cycles, last_instructions)) =
+            self.last_performance_sample
+        {
+            self.state.performance = Some(PerformanceStats::from_deltas(
+                running_cycles.saturating_sub(last_running_cycles),
+                instructions.saturating_sub(last_instructions),
+                sample_time.duration_since(last_time),
+            ));
+        }
+        self.last_performance_sample = Some((sample_time, running_cycles, instructions));
 
         let now = Instant::now();
         self.imgui.io_mut().update_delta_time(now - self.last_frame);
@@ -1428,5 +1497,21 @@ mod input_tests {
         released_buttons.sort_unstable();
         assert_eq!(released_keys, HashSet::from([0x04, 0xE1]));
         assert_eq!(released_buttons, vec![0, 2, 4]);
+    }
+
+    #[test]
+    fn calculates_vsync_cpu_utilization_and_real_time_kips() {
+        let stats = PerformanceStats::from_deltas(400_000, 6_000, Duration::from_millis(500));
+
+        assert_eq!(stats.running_cycles, 400_000);
+        assert_eq!(stats.instructions, 6_000);
+        assert_eq!(stats.cpu_utilization_percent, 50.0);
+        assert_eq!(stats.kips, 12.0);
+    }
+
+    #[test]
+    fn zero_elapsed_time_produces_zero_kips() {
+        let stats = PerformanceStats::from_deltas(0, 100, Duration::ZERO);
+        assert_eq!(stats.kips, 0.0);
     }
 }

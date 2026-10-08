@@ -133,6 +133,8 @@ pub struct Cpu {
     running: bool,
     bus: Bus,
     cycles: u128,
+    running_cycles: u128,
+    instructions_executed: u128,
     instr_mode: InstructionMode,
     epc: u32,
     irq_return_mode: InstructionMode,
@@ -164,6 +166,8 @@ impl Cpu {
             running: true,
             bus,
             cycles: 0,
+            running_cycles: 0,
+            instructions_executed: 0,
             instr_mode: InstructionMode::Normal,
             epc: 0,
             irq_return_mode: InstructionMode::Normal,
@@ -269,6 +273,14 @@ impl Cpu {
         self.cycles
     }
 
+    pub fn running_cycles(&self) -> u128 {
+        self.running_cycles
+    }
+
+    pub fn instructions_executed(&self) -> u128 {
+        self.instructions_executed
+    }
+
     pub fn state(&self) -> CpuState {
         self.state
     }
@@ -324,6 +336,7 @@ impl Cpu {
             }
         }
         self.cycles += 1;
+        self.running_cycles += 1;
         match self.state {
             CpuState::Fetch => {
                 let raw = match self.instr_mode {
@@ -411,8 +424,14 @@ impl Cpu {
 
     fn commit_pending(&mut self) {
         match self.instruction {
-            Some(PendingInstruction::Normal(i)) => self.execute_normal(i),
-            Some(PendingInstruction::Short(i)) => self.execute_short(i),
+            Some(PendingInstruction::Normal(instruction)) => {
+                self.instructions_executed += 1;
+                self.execute_normal(instruction);
+            }
+            Some(PendingInstruction::Short(instruction)) => {
+                self.instructions_executed += 1;
+                self.execute_short(instruction);
+            }
             _ => {}
         }
     }

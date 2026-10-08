@@ -485,3 +485,21 @@ fn jalrs_writes_link_jumps_and_enters_short_mode() {
     assert_eq!(cpu.read_reg(31), 12);
 }
 
+#[test]
+fn performance_counters_count_running_cycles_and_committed_instructions() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x00, 0, 0, 0)); // NOP
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+
+    cpu.run(4);
+    assert_eq!(cpu.running_cycles(), 4);
+    assert_eq!(cpu.instructions_executed(), 1);
+
+    cpu.run(10);
+    assert_eq!(cpu.running_cycles(), 7);
+    assert_eq!(cpu.instructions_executed(), 2);
+}

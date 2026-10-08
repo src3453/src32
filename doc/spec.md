@@ -371,6 +371,8 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 - MMIOによる完全分離
 - DMAベース設計
 
+エミュレータのGUIデバッグ表示は `--debug-gui` で有効にする。ImGuiの `Windows > Performance` では、VSyncごとのCPU稼働サイクル数を800,000サイクルで割った使用率と、サンプル間隔から換算した命令実行速度（KIPS）を確認できる。
+
 ---
 
 # 10. Future Extensions
