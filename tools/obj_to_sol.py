@@ -438,7 +438,7 @@ fn sin_deg (angle) :
 ;
 
 # Orbit the camera by updating VIEW while the model stays fixed at the origin.
-fn set_view_matrix (yaw pitch) :
+fn set_view_matrix (yaw pitch distance) :
     local sy
     local cy
     local sx
@@ -460,7 +460,7 @@ fn set_view_matrix (yaw pitch) :
     1 emit_word # VIEW
     cy q10_to_f32 emit_word 0.0f emit_word sy q10_to_f32 emit_word 0.0f emit_word
     m10 q10_to_f32 emit_word cx q10_to_f32 emit_word m12 q10_to_f32 emit_word 0.0f emit_word
-    m20 q10_to_f32 emit_word sx q10_to_f32 emit_word m22 q10_to_f32 emit_word 3.5f emit_word
+    m20 q10_to_f32 emit_word sx q10_to_f32 emit_word m22 q10_to_f32 emit_word distance 1024 mul 10 div q10_to_f32 emit_word
     0.0f emit_word 0.0f emit_word 0.0f emit_word 1.0f emit_word
 ;
 
@@ -471,6 +471,184 @@ fn clear_frame () :
     1.0f emit_word
 ;
 ''' if rotate else ""
+    keyboard_helpers = '''
+fn setup_light (red green blue) :
+    0x15000011 emit_word
+    0 emit_word 1 emit_word
+    0.2f emit_word 0.2f emit_word 0.2f emit_word
+    red 68 mul q10_to_f32 emit_word green 68 mul q10_to_f32 emit_word blue 68 mul q10_to_f32 emit_word
+    0.2f emit_word 0.2f emit_word 0.2f emit_word
+    0.0f emit_word 0.0f emit_word 0.0f emit_word
+    0.0f emit_word 0.0f emit_word -100.0f emit_word
+    0x01000002 emit_word
+    1 emit_word 1 emit_word
+;
+
+fn adjust_clamped (value delta minimum maximum) :
+    local next
+    value delta add >next
+    next minimum lt if
+        minimum >next
+    end
+    next maximum gt if
+        maximum >next
+    end
+    next ret
+;
+
+fn draw_glyph (code x y) :
+    0x13000000 SGC_FIFO st
+    code SGC_FIFO st
+    x SGC_FIFO st
+    y SGC_FIFO st
+;
+
+fn draw_text (ptr x y) :
+    local i 0
+    local code 0
+    while
+        ptr i add ldb >code
+        code 0 neq if
+            code x i 8 mul add y draw_glyph
+        end
+        i 1 add >i
+        code 0 neq
+    end
+;
+
+fn draw_number2 (value x y) :
+    value 10 div 48 add x y draw_glyph
+    value 10 mod 48 add x 8 add y draw_glyph
+;
+
+fn draw_distance (value x y) :
+    value 10 div 48 add x y draw_glyph
+    46 x 8 add y draw_glyph
+    value 10 mod 48 add x 16 add y draw_glyph
+;
+
+fn draw_overlay () :
+    2 SGC_CONTROL st
+    7 SGC_OUTPUT_GP st
+    1 SGC_CONTROL st
+    0x0100003F SGC_FIFO st
+    "W/S DIST A/D SPD" 8 8 draw_text
+    "J/K R U/I G N/M B" 8 24 draw_text
+    "D:" 8 48 draw_text
+    camera_distance 24 48 draw_distance
+    "S:" 64 48 draw_text
+    rotation_speed 80 48 draw_number2
+    "R:" 112 48 draw_text
+    light_red 128 48 draw_number2
+    "G:" 160 48 draw_text
+    light_green 176 48 draw_number2
+    "B:" 208 48 draw_text
+    light_blue 224 48 draw_number2
+;
+
+fn handle_key (key) :
+    local next
+    key 26 eq if
+        camera_distance -1 5 80 adjust_clamped >next
+        next camera_distance neq if
+            next >camera_distance
+            1 >overlay_dirty
+        end
+    else
+        key 22 eq if
+            camera_distance 1 5 80 adjust_clamped >next
+            next camera_distance neq if
+                next >camera_distance
+                1 >overlay_dirty
+            end
+        else
+            key 4 eq if
+                rotation_speed -1 0 12 adjust_clamped >next
+                next rotation_speed neq if
+                    next >rotation_speed
+                    1 >overlay_dirty
+                end
+            else
+                key 7 eq if
+                    rotation_speed 1 0 12 adjust_clamped >next
+                    next rotation_speed neq if
+                        next >rotation_speed
+                        1 >overlay_dirty
+                    end
+                else
+                    key 13 eq if
+                        light_red -1 0 15 adjust_clamped >next
+                        next light_red neq if
+                            next >light_red
+                            1 >light_dirty 1 >overlay_dirty
+                        end
+                    else
+                        key 14 eq if
+                            light_red 1 0 15 adjust_clamped >next
+                            next light_red neq if
+                                next >light_red
+                                1 >light_dirty 1 >overlay_dirty
+                            end
+                        else
+                            key 24 eq if
+                                light_green -1 0 15 adjust_clamped >next
+                                next light_green neq if
+                                    next >light_green
+                                    1 >light_dirty 1 >overlay_dirty
+                                end
+                            else
+                                key 12 eq if
+                                    light_green 1 0 15 adjust_clamped >next
+                                    next light_green neq if
+                                        next >light_green
+                                        1 >light_dirty 1 >overlay_dirty
+                                    end
+                                else
+                                    key 17 eq if
+                                        light_blue -1 0 15 adjust_clamped >next
+                                        next light_blue neq if
+                                            next >light_blue
+                                            1 >light_dirty 1 >overlay_dirty
+                                        end
+                                    else
+                                        key 16 eq if
+                                            light_blue 1 0 15 adjust_clamped >next
+                                            next light_blue neq if
+                                                next >light_blue
+                                                1 >light_dirty 1 >overlay_dirty
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+;
+
+fn poll_keyboard () :
+    local event 0
+    local usage
+    while
+        PEC_EVENT_STATUS ld 1 and 0 gt if
+            PEC_EVENT_DATA ld >event
+            event 28 shr 15 and 0 eq if
+                event 24 shr 15 and 0 eq if
+                    event 16 shr 255 and >usage
+                    event 1 and 0 neq if
+                        usage handle_key
+                    end
+                end
+            end
+            1 PEC_EVENT_POP st
+        end
+        PEC_EVENT_STATUS ld 1 and 0 gt
+    end
+;
+'''
     if rotate:
         dmac_directives = '''
 !const DMAC_GLOBAL_CONTROL 0x80050004
@@ -502,15 +680,42 @@ fn submit_vpu_commands (source byte_count) :
 '''
         irq_registers = "!var IRQC_PENDING 0xFFFF0040\n!var IRQC_ENABLE 0xFFFF0044"
         irq_setup = "    1 IRQC_PENDING sth\n    1 IRQC_ENABLE sth"
+        keyboard_directives = '''
+!const VPU_OUTPUT_GP 0x80030014
+!const SGC_CONTROL 0x80010004
+!const SGC_OUTPUT_GP 0x80010018
+!const SGC_FIFO 0x80010020
+!const PEC_EVENT_DATA 0x80040030
+!const PEC_EVENT_STATUS 0x80040034
+!const PEC_EVENT_POP 0x80040038
+!var camera_distance 35
+!var rotation_speed 2
+!var light_red 12
+!var light_green 12
+!var light_blue 12
+!var overlay_dirty 1
+!var light_dirty 0
+'''
+        keyboard_init = "    6 VPU_OUTPUT_GP st\n    2 SGC_CONTROL st\n    7 SGC_OUTPUT_GP st\n    1 SGC_CONTROL st"
+        keyboard_ready = "    light_red light_green light_blue setup_light\n    draw_overlay"
         draw_loop = '''
     local yaw 25
-    local pitch 20
+    local pitch 0
     while
+        poll_keyboard
+        light_dirty 0 neq if
+            light_red light_green light_blue setup_light
+            0 >light_dirty
+        end
+        overlay_dirty 0 neq if
+            draw_overlay
+            0 >overlay_dirty
+        end
         clear_frame
-        yaw pitch set_view_matrix
+        yaw pitch camera_distance set_view_matrix
         0 draw_cached_model
-        yaw 2 add 360 mod >yaw
-        pitch 3 add 360 mod >pitch
+        yaw rotation_speed add 360 mod >yaw
+        #pitch rotation_speed add 360 mod >pitch
         halt
         0
     end'''
@@ -519,6 +724,10 @@ fn submit_vpu_commands (source byte_count) :
         dmac_helpers = ""
         irq_registers = ""
         irq_setup = ""
+        keyboard_directives = ""
+        keyboard_init = ""
+        keyboard_ready = ""
+        keyboard_helpers = ""
         draw_loop = "    MODEL_DATA_ADDR MODEL_TRIANGLE_COUNT draw_triangles"
     initial_commands = (
         "TEXTURE_BLOB_ADDR MODEL_DMA_BYTES submit_vpu_commands"
@@ -537,6 +746,7 @@ fn submit_vpu_commands (source byte_count) :
 !const VDP_BORDER 0x{VDP_BORDER:08X}
 {irq_registers}
 {dmac_directives}
+{keyboard_directives}
 !const SHADE_MODE 2 # 1=flat, 2=Gouraud
 !const TEXTURE_BLOB_ADDR 0x{data_base:08X}
 !const TEXTURE_BLOB_WORDS {len(texture_words)}
@@ -595,6 +805,7 @@ fn draw_triangles (_ptr count) :
 ;
 {rotation_helpers}
 {dmac_helpers}
+{keyboard_helpers}
 
 fn draw_cached_model (model_id) :
     0x1B000002 emit_word
@@ -606,9 +817,11 @@ fn main () :
     1 VDP_ENABLE stb
     0 VDP_MODE stb
     0 VDP_BORDER stb
+    {keyboard_init}
     {initial_commands}
+    {keyboard_ready}
 {irq_setup}
-{draw_loop}
+    {draw_loop}
 ;
 
 main
@@ -633,7 +846,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--data-base", type=lambda s: int(s, 0), default=0x00020000,
                         help="read-only data address for embedded blobs (default: 0x20000)")
     parser.add_argument("--rotate", action="store_true",
-                        help="orbit the camera and cache the model; initial commands are sent through DMAC")
+                        help="orbit and cache the model with keyboard controls: W/S distance, A/D speed, J/K/U/I/N/M light; initial commands use DMAC")
     return parser
 
 
