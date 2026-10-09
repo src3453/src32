@@ -363,6 +363,21 @@ fn use_local (a) :
     assert "LD R13, [R26 + 12]" in asm
 
 
+
+def test_compile_argument_assignment_addresses_each_frame_slot():
+    src = """
+fn update (first second) :
+    5 >first
+    7 >second
+    first second add ret
+;
+
+1 2 update
+"""
+    asm = compile_to_src32_asm(src)
+    assert "ADDI R13, R26, 8" in asm
+    assert "ADDI R13, R26, 12" in asm
+
 def test_compile_function_can_use_constant():
     src = """
 !const UART_ADDR 0x80040000

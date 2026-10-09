@@ -75,7 +75,7 @@ def _check_static_stack_safety(program: Program, stack_capacity_bytes: int) -> N
             if inst.location:
                 raise SolCompileError(f"{inst.location.format()}: {message}")
             raise SolCompileError(message)
-        if op in {"push", "arg", "local_addr", "stacksize"}:
+        if op in {"push", "arg", "arg_addr", "local_addr", "stacksize"}:
             delta, required = 1, 0
         elif op in binary_ops:
             delta, required = -1, 2
@@ -570,6 +570,21 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
         # push address of local var from the stable frame base
         assert isinstance(inst.arg, int)
         offset = 4 * (2 + inst.arg)
+        lines.append(f"    ADDI R13, R26, {offset}")
+        cache.push_from("R13")
+        return
+    if op == "arg_addr":
+        # push address of argument slot from the stable frame base
+        assert isinstance(inst.arg, int)
+        if current_func is None or functions_map is None:
+            raise SolCompileError("'arg_addr' emitted outside of function or missing functions_map")
+        meta = functions_map.get(current_func)
+        if meta is None:
+            raise SolCompileError(f"unknown function in emitter: {current_func}")
+        idx = inst.arg
+        if idx < 0 or idx >= meta["argcount"]:
+            raise SolCompileError(f"argument index out of range for {current_func}: {idx}")
+        offset = 4 * (2 + meta["n_locals"] + idx)
         lines.append(f"    ADDI R13, R26, {offset}")
         cache.push_from("R13")
         return

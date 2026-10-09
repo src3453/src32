@@ -107,7 +107,7 @@ def _opcode_profile(op: str, arg: int | str | None = None) -> OpcodeProfile:
         return OpcodeProfile(shortable=True, short_weight=3, normal_weight=4)
     if op == "stacksize":
         return OpcodeProfile(shortable=True, short_weight=3, normal_weight=3)
-    if op in {"arg", "local_addr"}:
+    if op in {"arg", "arg_addr", "local_addr"}:
         return OpcodeProfile(shortable=True, short_weight=1, normal_weight=1)
 
     if op in {"call", "ret", "retn", "jmp", "jz", "jnz", "halt", "asm"}:
@@ -454,11 +454,17 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         "halt",
     }
 
-    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, location: SourceLocation | None) -> bool:
+    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, args_list: list[str] | None, location: SourceLocation | None) -> bool:
         if locals_list is not None:
             for local_index, (local_name, _) in enumerate(locals_list):
                 if local_name == name:
                     instructions.append(Instruction("local_addr", local_index, location=location))
+                    instructions.append(Instruction("st", location=location))
+                    return True
+        if args_list is not None:
+            for arg_index, arg_name in enumerate(args_list):
+                if arg_name == name:
+                    instructions.append(Instruction("arg_addr", arg_index, location=location))
                     instructions.append(Instruction("st", location=location))
                     return True
         if name in variables:
@@ -467,7 +473,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             return True
         return False
 
-    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
+    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, args_list: list[str] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
         nonlocal next_string_addr, next_var_addr, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
         terminal_ops = {"ret", "retn", "halt"}
         i = start_index
@@ -678,7 +684,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 name = tok[1:]
                 if not LABEL_RE.match(name):
                     raise SolVMError(f"invalid variable name for store: {name}")
-                if not store_target(name, locals_list, location):
+                if not store_target(name, locals_list, args_list, location):
                     raise error(f"undefined variable: {name}")
                 i += 1
                 continue
@@ -887,7 +893,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 instructions.append(Instruction("local_addr", local_index, location=init_location))
                 instructions.append(Instruction("st", location=init_location))
 
-        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list)
+        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list, args_list=fdata["args"])
 
         if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
             instructions.append(Instruction("retn"))
@@ -1204,6 +1210,26 @@ class SolVM:
                 raise SolVMError("local used outside of function frame")
             frame = self.call_stack[-1]
             addr = frame["frame_base"] + 4 * inst.arg
+            self.stack.append(addr)
+            self.pc += 1
+            return
+
+        if op == "arg_addr":
+            # push the address of an argument slot in the current frame
+            assert isinstance(inst.arg, int)
+            if not self.call_stack:
+                raise SolVMError("argument used outside of function frame")
+            frame = self.call_stack[-1]
+            func_name = frame.get("func_name")
+            if func_name is None:
+                raise SolVMError("internal error: frame has no func_name for argument access")
+            func_meta = self.program.functions.get(func_name)
+            if func_meta is None:
+                raise SolVMError(f"unknown function metadata for {func_name}")
+            idx = inst.arg
+            if idx < 0 or idx >= func_meta["argcount"]:
+                raise SolVMError(f"argument index out of range: {idx}")
+            addr = frame["frame_base"] + 4 * (func_meta["n_locals"] + idx)
             self.stack.append(addr)
             self.pc += 1
             return

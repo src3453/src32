@@ -35,3 +35,24 @@ def test_server_initialize_diagnostics_and_tokens():
     assert receive(p.stdout)["result"] is None
     send(p.stdin, {"jsonrpc":"2.0", "method":"exit", "params":{}})
     p.wait(timeout=3)
+
+
+def test_lsp_accepts_assignment_to_function_arguments():
+    bundled_server = SERVER.parents[1] / "vscode-sol-syntax" / "server" / "sol_language_server.py"
+    source = "fn set (value) : 42 >value value ret ; 1 set"
+    for server in (SERVER, bundled_server):
+        process = subprocess.Popen([sys.executable, str(server)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        try:
+            send(process.stdin, {"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{}})
+            receive(process.stdout)
+            uri = "file:///tmp/argument-assignment.sol"
+            send(process.stdin, {"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{"textDocument":{"uri":uri,"version":1,"text":source}}})
+            published = receive(process.stdout)
+            assert published["params"]["diagnostics"] == []
+            send(process.stdin, {"jsonrpc":"2.0", "id":2, "method":"shutdown", "params":{}})
+            receive(process.stdout)
+            send(process.stdin, {"jsonrpc":"2.0", "method":"exit", "params":{}})
+            process.wait(timeout=3)
+        finally:
+            if process.poll() is None:
+                process.kill()

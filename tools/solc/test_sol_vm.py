@@ -444,6 +444,19 @@ x
     assert stack == [2, 1]
 
 
+
+def test_argument_assignments_update_only_the_current_call_frame():
+    source = """
+fn update (first second) :
+    5 >first
+    7 >second
+    first second add ret
+;
+
+99 1 2 update
+"""
+    assert SolVM().run_source(source) == [99, 12]
+
 def test_stack_size_directives_set_program_capacity_and_stacksize():
     program = compile_program("!required_stack_size 12 !force_stack_size 16 stacksize")
     assert program.required_stack_size_bytes == 12

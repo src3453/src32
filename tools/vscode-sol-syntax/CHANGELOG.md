@@ -6,4 +6,5 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [Unreleased]
 
+- Updated the bundled language server and compiler to accept assignments to function arguments.
 - Initial release
