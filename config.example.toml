@@ -1,0 +1,16 @@
+# Copy this file to config.toml and uncomment only the settings you use.
+
+[pcg]
+# Raw PCG font bank image: exactly 2 KiB (one bank) or 4 KiB (both banks).
+# Relative paths are resolved from the directory containing config.toml.
+# font = "assets/font.bin"
+
+# Connect up to four raw disk images. Relative paths are resolved from the
+# directory containing config.toml. Each configured image must already exist.
+# [[disk]]
+# slot = 0
+# type = "hdd" # "fdd" or "hdd"
+# image = "disk0.img"
+# read_only = true
+# transfer_rate_bytes_per_second = 48000000
+# access_latency_ms = 0

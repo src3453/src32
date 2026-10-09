@@ -3,6 +3,8 @@
 pub mod bus;
 pub mod cpu;
 pub mod sys;
+pub mod music;
+pub mod wav;
 pub mod devices {
     pub mod bmc;
     pub mod cpu;

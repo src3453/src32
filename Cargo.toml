@@ -2,10 +2,12 @@
 name = "cpt32"
 version = "0.1.0"
 edition = "2024"
+default-run = "cpt32"
 
 [dependencies]
 rand = "0.10.2"
 toml = "0.9"
+serde = { version = "1", features = ["derive"] }
 wgpu = "29.0.3"
 winit = "0.30.13"
 cpal = "0.18.1"

@@ -290,10 +290,6 @@ impl<'a> VdpFramebuffer<'a> {
 
 impl Vdp {
     pub fn new() -> Self {
-        Self::with_font_path(None::<&Path>)
-    }
-
-    pub fn with_font_path<P: AsRef<Path>>(font_path: Option<P>) -> Self {
         let vram = Rc::new(RefCell::new(vec![0; VDP_VRAM_SIZE as usize]));
         let vpu = Rc::new(RefCell::new(Vpu::new()));
         let sgc = Sgc::new(Rc::clone(&vram));
@@ -313,10 +309,6 @@ impl Vdp {
         };
         vdp.gp0.init_clut();
         vdp.pcg.init_clut();
-        if let Some(path) = font_path {
-            vdp.load_pcg_font_from_file(path)
-                .expect("Failed to load PCG font file");
-        }
         vdp
     }
 
@@ -772,14 +764,7 @@ mod tests {
 }
 
 pub fn connect_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
-    connect_vdp_with_font(bus, Option::<&Path>::None)
-}
-
-pub fn connect_vdp_with_font<P: AsRef<Path>>(
-    bus: &mut Bus,
-    font_path: Option<P>,
-) -> Rc<RefCell<Vdp>> {
-    let vdp = Rc::new(RefCell::new(Vdp::with_font_path(font_path)));
+    let vdp = Rc::new(RefCell::new(Vdp::new()));
     let vpu = Rc::clone(&vdp.borrow().vpu);
     bus.add_device(
         VDP_VRAM_BASE,
