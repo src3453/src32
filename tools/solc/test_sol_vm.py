@@ -170,23 +170,25 @@ def test_non_finite_and_out_of_range_float_literals_are_rejected(literal):
         parse_number(literal)
 
 
-def test_string_literal_pushes_pointer_and_loads_read_only_bytes():
+def test_string_literal_defaults_to_utf8_bytes():
     vm = SolVM()
-    stack = vm.run_source('"hi"')
+    stack = vm.run_source('"hあ"')
     assert stack == [STRING_POOL_BASE]
-    assert vm.memory[STRING_POOL_BASE] == ord("h")
-    assert vm.memory[STRING_POOL_BASE + 1] == ord("i")
-    assert vm.memory[STRING_POOL_BASE + 2] == 0
+    assert [vm.memory[STRING_POOL_BASE + i] for i in range(5)] == [0x68, 0xE3, 0x81, 0x82, 0x00]
 
 
-def test_string_literal_allows_custom_read_only_data_base():
+def test_u16_string_literal_uses_utf16be_bytes():
     vm = SolVM()
-    stack = vm.run_source('"hi"', read_only_data_base=0x30000)
-    assert stack == [0x30000]
-    assert vm.memory[0x30000] == ord("h")
-    assert vm.memory[0x30001] == ord("i")
-    assert vm.memory[0x30002] == 0
+    stack = vm.run_source('u16"hあ"')
+    assert stack == [STRING_POOL_BASE]
+    assert [vm.memory[STRING_POOL_BASE + i] for i in range(6)] == [0x00, 0x68, 0x30, 0x42, 0x00, 0x00]
 
+
+def test_u16_string_literal_allows_custom_read_only_data_base():
+    vm = SolVM()
+    stack = vm.run_source('u16"hi"', read_only_data_base=0x30000)
+    assert stack == [0x30000]
+    assert [vm.memory[0x30000 + i] for i in range(6)] == [0x00, 0x68, 0x00, 0x69, 0x00, 0x00]
 
 def test_load_store():
     vm = SolVM()

@@ -253,7 +253,7 @@ def tokenize(source: str, source_path: str | None = None) -> list[SourceToken | 
             continue
 
         if ch == '"':
-            if current:
+            if current and "".join(current) != "u16":
                 append_token("".join(current))
                 current = []
             start_token()
@@ -277,6 +277,8 @@ def tokenize(source: str, source_path: str | None = None) -> list[SourceToken | 
 
 
 def _decode_string_literal(token: str) -> str:
+    if token.startswith("u16\""):
+        token = token[3:]
     try:
         value = ast.literal_eval(token)
     except (SyntaxError, ValueError) as exc:
@@ -405,19 +407,24 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             raise SolVMError(f"{directive} address must be in range 0..0xFFFFFFFF")
         return value
 
-    string_literals: dict[str, int] = {}
+    string_literals: dict[tuple[str, str], int] = {}
     next_string_addr = read_only_data_base
     control_label_counter = 0
 
     def intern_string_literal(token: str) -> int:
         nonlocal next_string_addr
+        is_utf16 = token.startswith("u16\"")
         text = _decode_string_literal(token)
-        if text in string_literals:
-            return string_literals[text]
-        data = text.encode("utf-8") + b"\x00"
+        key = ("utf-16-be" if is_utf16 else "utf-8", text)
+        if key in string_literals:
+            return string_literals[key]
+        if is_utf16:
+            data = text.encode("utf-16-be") + b"\x00\x00"
+        else:
+            data = text.encode("utf-8") + b"\x00"
         addr = next_string_addr
         next_string_addr += len(data)
-        string_literals[text] = addr
+        string_literals[key] = addr
         read_only_data.append((addr, data))
         return addr
 
@@ -740,7 +747,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 i += 1
                 continue
 
-            if tok.startswith('"') and tok.endswith('"'):
+            if (tok.startswith('"') or tok.startswith('u16"')) and tok.endswith('"'):
                 emit("push", intern_string_literal(tok))
                 i += 1
                 continue

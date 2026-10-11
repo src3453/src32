@@ -170,6 +170,9 @@
 		},
 		"strings": {
 			"patterns": [{
+				"name": "storage.type.string.sol",
+				"match": "u16(?=\\\")"
+			}, {
 				"name": "string.quoted.double.sol",
 				"begin": "\"",
 				"end": "\"",

@@ -139,16 +139,18 @@ def test_compile_negative_literal_uses_two_complement_hex():
     assert "LDIL R13, 0xFFFF" in asm
 
 
-def test_compile_string_literal_emits_read_only_data():
-    asm = compile_to_src32_asm('"hi"')
-    assert "LDIH R13, 0x0002" in asm
-    assert "LDIL R13, 0x0000" in asm
-    assert ".ORG 0x20000" in asm
-    assert ".DB 0x68, 0x69, 0x00" in asm
+def test_compile_string_literal_defaults_to_utf8_read_only_data():
+    asm = compile_to_src32_asm('"hあ"')
+    assert ".DB 0x68, 0xE3, 0x81, 0x82, 0x00" in asm
 
 
-def test_compile_string_literal_allows_custom_read_only_data_base():
-    asm = compile_to_src32_asm('"hi"', read_only_data_base=0x30000)
+def test_compile_u16_string_literal_emits_utf16be_read_only_data():
+    asm = compile_to_src32_asm('u16"hあ"')
+    assert ".DB 0x00, 0x68, 0x30, 0x42, 0x00, 0x00" in asm
+
+
+def test_compile_u16_string_literal_allows_custom_read_only_data_base():
+    asm = compile_to_src32_asm('u16"hi"', read_only_data_base=0x30000)
     assert "LDIH R13, 0x0003" in asm
     assert "LDIL R13, 0x0000" in asm
     assert ".ORG 0x30000" in asm
