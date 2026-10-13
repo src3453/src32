@@ -1,7 +1,7 @@
 // Main entry point for the CPT32 emulator
 
 use std::cell::RefCell;
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::env;
 use std::path::Path;
 use std::path::PathBuf;
@@ -695,6 +695,7 @@ struct DebugUiState {
     mem_base_input: String,
     mem_count_input: String,
     performance: Option<PerformanceStats>,
+    cpu_utilization_history: VecDeque<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -731,6 +732,8 @@ impl DebugWindow {
 }
 
 impl DebugUiState {
+    const PERFORMANCE_HISTORY_SAMPLES: usize = 120;
+
     fn new(start_paused: bool) -> Self {
         Self {
             running: !start_paused,
@@ -743,6 +746,7 @@ impl DebugUiState {
             mem_base_input: "0x00000000".to_string(),
             mem_count_input: "256".to_string(),
             performance: None,
+            cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
         }
     }
 
@@ -881,7 +885,7 @@ impl DebugUiState {
 
     fn draw_performance(&self, ui: &Ui) {
         ui.window("Performance")
-            .size([360.0, 130.0], Condition::FirstUseEver)
+            .size([560.0, 340.0], Condition::FirstUseEver)
             .build(|| {
                 if let Some(stats) = self.performance {
                     ui.text(format!(
@@ -890,10 +894,55 @@ impl DebugUiState {
                         stats.running_cycles,
                         cpt32::cpu::CYCLES_PER_FRAME
                     ));
+                    ProgressBar::new(
+                        (stats.cpu_utilization_percent / 100.0).clamp(0.0, 1.0) as f32,
+                    )
+                    .size([450.0, 18.0])
+                    .build(ui);
+                    ui.same_line();
+                    ui.text(format!("{:.1}%", stats.cpu_utilization_percent));
                     ui.text(format!("Instruction throughput: {:.1} KIPS", stats.kips));
                     ui.text(format!("Instructions this VSync: {}", stats.instructions));
                 } else {
                     ui.text("Waiting for the first VSync sample...");
+                }
+
+                ui.separator();
+                ui.text("CPU utilization history (last 120 VSync samples, 0-100%)");
+                let size = [500.0, 150.0];
+                let origin = ui.cursor_screen_pos();
+                ui.invisible_button("CPU utilization history", size);
+                let draw = ui.get_window_draw_list();
+                let bottom = origin[1] + size[1];
+                draw.add_rect(
+                    origin,
+                    [origin[0] + size[0], bottom],
+                    [0.08, 0.11, 0.14, 1.0],
+                )
+                .filled(true)
+                .build();
+                for fraction in [0.0, 0.5, 1.0] {
+                    let y = origin[1] + fraction * size[1];
+                    draw.add_line(
+                        [origin[0], y],
+                        [origin[0] + size[0], y],
+                        [0.25, 0.29, 0.33, 1.0],
+                    )
+                    .build();
+                }
+                if self.cpu_utilization_history.len() > 1 {
+                    let last_index = self.cpu_utilization_history.len() - 1;
+                    let mut previous = None;
+                    for (index, utilization) in self.cpu_utilization_history.iter().enumerate() {
+                        let x = origin[0] + index as f32 / last_index as f32 * size[0];
+                        let y = bottom - (utilization / 100.0).clamp(0.0, 1.0) * size[1];
+                        if let Some(point) = previous {
+                            draw.add_line(point, [x, y], [0.35, 0.78, 1.0, 1.0])
+                                .thickness(2.0)
+                                .build();
+                        }
+                        previous = Some([x, y]);
+                    }
                 }
             });
     }
@@ -1130,11 +1179,19 @@ impl DebugGui {
         if let Some((last_time, last_running_cycles, last_instructions)) =
             self.last_performance_sample
         {
-            self.state.performance = Some(PerformanceStats::from_deltas(
+            let stats = PerformanceStats::from_deltas(
                 running_cycles.saturating_sub(last_running_cycles),
                 instructions.saturating_sub(last_instructions),
                 sample_time.duration_since(last_time),
-            ));
+            );
+            self.state.performance = Some(stats);
+            if self.state.cpu_utilization_history.len() == DebugUiState::PERFORMANCE_HISTORY_SAMPLES
+            {
+                self.state.cpu_utilization_history.pop_front();
+            }
+            self.state
+                .cpu_utilization_history
+                .push_back(stats.cpu_utilization_percent as f32);
         }
         self.last_performance_sample = Some((sample_time, running_cycles, instructions));
 
