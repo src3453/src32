@@ -1,5 +1,6 @@
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, CpuState};
+use cpt32::devices::pec::timing::connect_pec_timer_rtc;
 use cpt32::devices::ram::connect_ram;
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 4] {
@@ -285,6 +286,30 @@ fn halt_resumes_when_enabled_irq_arrives_and_returns_after_halt() {
 
     cpu.run(12);
     assert_eq!(cpu.read_reg(1), 42);
+    assert!(!cpu.is_running());
+}
+
+#[test]
+fn halted_cpu_resumes_on_pec_timer_irq_and_counts_system_cycles() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    connect_pec_timer_rtc(&mut bus);
+    let mut cpu = Cpu::new(bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 42)); // ADDI R1, R0, 42
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.write_mem_u32_be(0xFFFF_0110, u32::from_be_bytes(encode_iret()));
+
+    cpu.write_mem_u8(0xFFFF_0045, 1 << 4);
+    cpu.write_mem_u32_be(0x8004_0184, 1);
+    cpu.write_mem_u32_be(0x8004_0410, 7);
+    cpu.write_mem_u32_be(0x8004_0400, (1 << 2) | (1 << 3));
+    cpu.run(32);
+
+    assert_eq!(cpu.read_reg(1), 42);
+    assert_eq!(cpu.read_mem_u32_be(0x8004_0188), 1);
     assert!(!cpu.is_running());
 }
 

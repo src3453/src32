@@ -14,6 +14,7 @@ use crate::devices::dmac::dmac::{Dmac, connect_dmac};
 use crate::devices::irqc::irqc::IrqController;
 use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
 use crate::devices::pec::pec::PeCState;
+use crate::devices::pec::timing::PeCTimingState;
 use crate::devices::vdp::vdp::Vdp;
 
 struct DeviceMap {
@@ -52,6 +53,7 @@ pub struct Bus {
     dmac: Option<Rc<RefCell<Dmac>>>,
     idc: Option<Rc<RefCell<Idc>>>,
     pec_input: Option<Arc<Mutex<PeCState>>>,
+    pec_timing: Option<Rc<RefCell<PeCTimingState>>>,
     irq_controller: Option<Rc<RefCell<IrqController>>>,
 }
 
@@ -65,6 +67,7 @@ impl Bus {
             dmac: None,
             idc: None,
             pec_input: None,
+            pec_timing: None,
             irq_controller: None,
         }
     }
@@ -86,13 +89,34 @@ impl Bus {
     pub(crate) fn attach_pec_input(&mut self, state: Arc<Mutex<PeCState>>) {
         self.pec_input = Some(state);
     }
+    pub(crate) fn attach_pec_timing(&mut self, state: Rc<RefCell<PeCTimingState>>) {
+        self.pec_timing = Some(state);
+    }
+
+    fn advance_pec_timing_cycles(&mut self, cycles: u64) {
+        if let Some(state) = &self.pec_timing {
+            state.borrow_mut().advance_system_cycles(cycles);
+        }
+    }
+
+    pub(crate) fn advance_system_cycles(&mut self, cycles: u64) {
+        self.advance_pec_timing_cycles(cycles);
+        self.refresh_device_irqs();
+    }
+
+    pub(crate) fn cycles_until_pec_irq(&self) -> Option<u64> {
+        self.pec_timing
+            .as_ref()
+            .and_then(|state| state.borrow().cycles_until_irq())
+    }
 
     pub(crate) fn attach_irq_controller(&mut self, irq: Rc<RefCell<IrqController>>) {
         self.irq_controller = Some(irq);
     }
 
-    /// Advance one arbitration opportunity while the CPU clock is running.
+    /// Advance one 48 MHz system cycle and one bus arbitration opportunity.
     pub fn tick_devices(&mut self) {
+        self.advance_pec_timing_cycles(1);
         if let Some(dmac) = &self.dmac {
             dmac.borrow_mut().process_idc_abort_boundaries();
         }
@@ -219,11 +243,16 @@ impl Bus {
                 .unwrap_or_else(std::sync::PoisonError::into_inner)
                 .has_pending_events()
         });
+        let pec_timing_pending = self
+            .pec_timing
+            .as_ref()
+            .is_some_and(|state| state.borrow().irq_asserted());
         if let Some(irq) = &self.irq_controller {
             let mut irq = irq.borrow_mut();
             irq.set_source(1, dmac_pending);
             irq.set_source(2, idc_pending);
             irq.set_source(3, pec_pending);
+            irq.set_source(4, pec_timing_pending);
         }
     }
 

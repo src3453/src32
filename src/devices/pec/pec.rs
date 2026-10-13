@@ -307,8 +307,7 @@ impl Device for PeCInputDevice {
     }
 }
 
-/// Register PeC keyboard, mouse, and controller MMIO and process host input off-thread.
-/// The returned sender may be used by a non-`Send` GUI thread; CPU and Bus stay there.
+/// Register PeC input and timing MMIO and process host input off-thread.
 pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
     let state = Arc::new(Mutex::new(PeCState::default()));
     bus.attach_pec_input(Arc::clone(&state));
@@ -320,6 +319,7 @@ pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
             pop_latch: [0; 4],
         }),
     );
+    crate::devices::pec::timing::connect_pec_timer_rtc(bus);
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<HostInputEvent>();
     std::thread::Builder::new()

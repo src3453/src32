@@ -372,7 +372,6 @@ impl Vdp {
         }
     }
 
-
     /// Describes which renderers contribute to each GP in the current VDP setup.
     pub fn compositor_debug_info(&self) -> CompositorDebugInfo {
         let (width, height) = match self.regs.display_mode {

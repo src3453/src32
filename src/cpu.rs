@@ -1145,9 +1145,18 @@ impl Cpu {
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
             self.tick();
-            if !self.running {
-                if !self.bus.has_pending_dma() {
-                    self.cycles = end_cycles;
+            if !self.running && !self.bus.has_pending_dma() {
+                let remaining = end_cycles - self.cycles;
+                if remaining != 0 {
+                    let remaining = remaining.min(u128::from(u64::MAX)) as u64;
+                    let skip = self
+                        .bus
+                        .cycles_until_pec_irq()
+                        .map_or(remaining, |until_irq| remaining.min(until_irq));
+                    if skip != 0 {
+                        self.bus.advance_system_cycles(skip);
+                        self.cycles = self.cycles.saturating_add(u128::from(skip));
+                    }
                 }
             }
         }

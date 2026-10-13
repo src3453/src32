@@ -12,6 +12,8 @@ PeCは、ペリフェラルデバイスの管理とイベントバッファリ�
 - イベントバッファリング
 - DMA転送対応
 - IRQCとの連携による割り込み管理
+- 48 MHz クアッドハードウェアタイマ
+- RTC (Real-Time Clock)
 
 ## アドレスマップ
 
@@ -22,6 +24,9 @@ PeCは、ペリフェラルデバイスの管理とイベントバッファリ�
 | 0x80040000 ~ 0x8004000F | UARTコントロールレジスタ |
 | 0x80040010 ~ 0x8004002F | 乱数生成器 (PRNG/TRNG) |
 | 0x80040030 ~ 0x8004017F | キーボード・マウス・ゲームパッド入力 |
+| 0x80040180 ~ 0x8004018F | クアッドタイマ共通レジスタ |
+| 0x80040200 ~ 0x80040223 | RTC |
+| 0x80040400 ~ 0x800404FF | クアッドタイマ4チャネル |
 
 
 ### キーボード・マウス・ゲームパッド入力
@@ -48,6 +53,51 @@ EVENT_DATAは `[31:28 type, 27:24 device, 23:16 code, 15:0 value]` です。type
 FIFO容量は256件です。満杯時は新規イベントを破棄してoverflowを設定しますが、対応する入力状態は更新します。FIFO非空はIRQC source 3をlevel assertionし、FIFOが空になると解除します。イベント読出しはpeekであり、EVENT_POPで明示的に消費します。
 
 ウィンドウ入力ではF1でマウスcaptureを切り替えます。capture中は相対移動を受け取り、絶対座標は最後のuncaptured位置を維持します。画面外の座標はゲスト画面端へclampします。ImGuiがマウスをcaptureしている間はゲストへマウスイベントを送りません。
+
+## 48 MHz クアッドハードウェアタイマ
+
+PeCタイマはシステムクロック `MASTER_CLOCK = 48,000,000 Hz` を基準にします。CPU命令数ではなく、CPUが消費したシステムクロック数で進みます。各チャネルは独立した64-bitアップカウンタを持ち、`PRESCALER = P` のときカウンタ周波数は `48,000,000 / (P + 1)` Hzです。エミュレーターはstepごとに消費クロック数をデバイスへ渡し、HALT中の時間スキップでは次のタイマ／RTC IRQ期限まで進めます。
+
+入力レジスタが `0x100–0x17F` を使うため、タイマ共通レジスタは提案位置の `0x100` ではなく `0x180` に配置します。PeC基準オフセットは次のとおりです。
+
+| オフセット | レジスタ | 説明 |
+|---|---|---|
+| `0x180` | TIMER_ID | 固定値 `0x51540001` (quad timer, version 1) |
+| `0x184` | TIMER_ENABLE | bit 0–3: チャネルのグローバル実行許可。各チャネルCTRLのENABLEも必要。 |
+| `0x188` | TIMER_PENDING | bit 0–3: チャネル比較一致。IRQ enableに関係なくsticky。 |
+| `0x18C` | TIMER_ACK | bit 0–3へ1を書くと対応するTIMER_PENDINGをW1C。 |
+
+Timer 0–3のチャネル基準オフセットは `0x400 + channel * 0x40` (`0x400`, `0x440`, `0x480`, `0x4C0`) です。各レジスタは32-bit big-endian MMIOです。
+
+| 相対オフセット | レジスタ | 説明 |
+|---|---|---|
+| `0x00` | CTRL | bits 1:0 mode: 0=one-shot、1=periodic、2=free-running、3=予約。bit 2 ENABLE、bit 3 IRQ_ENABLE、bit 4 RESET (write-one)。 |
+| `0x04` | STATUS | bit 0: channel ENABLE、bit 1: sticky compare pending。 |
+| `0x08/0x0C` | COUNT_LO/HI | 64-bit counter。両ワード読書き可能。LOを読むとHIをラッチし、続くHI読出しに返す。 |
+| `0x10/0x14` | COMPARE_LO/HI | 64-bit比較期限。 |
+| `0x18/0x1C` | RELOAD_LO/HI | 64-bit周期間隔。 |
+| `0x20` | PRESCALER | 32-bit `P`。変更時に分周位相を0へ戻す。 |
+
+One-shotはカウンタがCOMPAREに達するとその値で停止します。PeriodicはCOMPAREを最初の絶対期限として使用し、期限ごとにRELOADをCOMPAREへ加算します。カウンタはリセットせず、遅延したエミュレーターstepでも期限系列の位相を保ちます。RELOADが0なら一致後に停止します。Free-runningは64-bitでラップし、COMPARE一致で一度pendingを立てます。比較値を書き直すと一致検出を再armします。RESETはカウンタ、分周位相、pendingをクリアします。比較／リロード値を書き終えてからCTRLのENABLEを設定してください。
+
+IRQ4は、IRQ有効なタイマチャネルまたはRTCアラームの共有sourceです。デバイス側のACKでpendingを消した後、IRQCのedge-latched pending bit 4もIRQCへACKしてください。複数のタイマ／RTC要因は個別のPeC pending/statusで判別します。
+
+## RTC
+
+RTCはUTC Unix epoch秒 (`1970-01-01 00:00:00 UTC`) を64-bitで保持し、サブ秒レジスタは0–999,999,999 nanosecondsです。初期値は仮想時間の0秒で、RTCは有効です。カレンダー・timezone変換はソフトウェア側で行います。
+
+| オフセット | レジスタ | 説明 |
+|---|---|---|
+| `0x200` | RTC_CTRL | bit 0 ENABLE、bit 1 SET_ENABLE、bit 2 REALTIME。初期値1。 |
+| `0x204` | RTC_STATUS | bit 0 sticky alarm pending、bit 1 alarm armed。 |
+| `0x208/0x20C` | RTC_SECONDS_LO/HI | 64-bit Unix秒。LO読出しでHIをラッチ。SET_ENABLE中に両ワードを書き終えると設定をcommitし、サブ秒を0にする。 |
+| `0x210` | RTC_SUBSEC | 現在のサブ秒 nanoseconds (read-only)。 |
+| `0x214/0x218` | RTC_ALARM_LO/HI | 64-bit Unix秒のone-shotアラーム。両ワードの書込み完了でarmし、過去／現在の時刻なら直ちに発火。 |
+| `0x21C` | RTC_IRQ_CTRL | bit 0: アラームIRQ enable。 |
+| `0x220` | RTC_ACK | bit 0へ1を書くとalarm pendingをW1C。再armにはALARMを書き直す。 |
+
+REALTIME=0では48 MHzシステムクロックに同期する決定的な仮想時刻です。REALTIME=1ではホストUTCを参照し、RTC_SECONDS書込みはホスト時計そのものではなくRTCのoffsetを設定します。時間源を切り替えると現在値を引き継ぎます。ENABLE=0では時刻を停止・保持します。RTC IRQもタイマと同じIRQC source 4へ集約します。
+
 ## UART仕様
 通信方式: 全二重
 バス幅: 8ビット

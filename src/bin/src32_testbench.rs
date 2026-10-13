@@ -4,7 +4,7 @@ use std::fs;
 
 use cpt32::bus::Bus;
 use cpt32::bus::connect_devices_with_vdp;
-use cpt32::cpu::{Cpu, CYCLES_PER_FRAME};
+use cpt32::cpu::{CYCLES_PER_FRAME, Cpu};
 
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::connect_pec_input;
@@ -16,7 +16,9 @@ use std::path::Path;
 fn integer(text: &str) -> u32 {
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         u32::from_str_radix(hex, 16).expect("invalid hexadecimal integer")
-    } else { text.parse().expect("invalid integer") }
+    } else {
+        text.parse().expect("invalid integer")
+    }
 }
 fn gp0_noise_pixel(cpu: &mut Cpu, x: usize, y: usize) -> u8 {
     let index = cpu.read_mem_u8(0x1000_0000 + (y * 320 + x) as u32);
@@ -38,19 +40,30 @@ fn main() {
             "--allow-running" => allow_running = true,
             "--expect-sgc-overlay" => expect_sgc_overlay = true,
             "--expect-gp-noise-background" => expect_gp_noise_background = true,
-            "--music-stream" => music_stream = Some(options.next().expect("--music-stream requires PATH")),
-            "--frames" => frames = Some(integer(options.next().expect("--frames requires N")) as usize),
+            "--music-stream" => {
+                music_stream = Some(options.next().expect("--music-stream requires PATH"))
+            }
+            "--frames" => {
+                frames = Some(integer(options.next().expect("--frames requires N")) as usize)
+            }
             "--expect-mem-u8" => {
-                let (address, value) = options.next().expect("--expect-mem-u8 requires ADDRESS=VALUE")
-                    .split_once('=').expect("expected ADDRESS=VALUE");
-                memory_expectations.push((integer(address), u8::try_from(integer(value)).expect("value must fit u8")));
+                let (address, value) = options
+                    .next()
+                    .expect("--expect-mem-u8 requires ADDRESS=VALUE")
+                    .split_once('=')
+                    .expect("expected ADDRESS=VALUE");
+                memory_expectations.push((
+                    integer(address),
+                    u8::try_from(integer(value)).expect("value must fit u8"),
+                ));
             }
             _ if option.starts_with('-') => panic!("unknown option: {option}"),
             _ => expected = integer(option),
         }
     }
     let image = fs::read(path).expect("failed to read program binary");
-    let stream = music_stream.map(|path| read_music_stream(Path::new(path), image.len()).expect("invalid music stream"));
+    let stream = music_stream
+        .map(|path| read_music_stream(Path::new(path), image.len()).expect("invalid music stream"));
 
     let mut bus = Bus::new();
     let _input_sender = connect_pec_input(&mut bus);
@@ -89,7 +102,11 @@ fn main() {
         cpu.pc()
     );
     if allow_running && music_stream.is_some() {
-        println!("PASS: {path} music stream; frames={frame_count}; memory checks={}; cycles={}", memory_expectations.len(), cpu.cycles());
+        println!(
+            "PASS: {path} music stream; frames={frame_count}; memory checks={}; cycles={}",
+            memory_expectations.len(),
+            cpu.cycles()
+        );
     } else if allow_running {
         let vpu_status = cpu.read_mem_u32_be(0x8003_0004);
         assert_eq!(
@@ -130,13 +147,13 @@ fn main() {
             } else {
                 (8..16).any(|x| (8..24).any(|y| framebuffer.get_pixel(x, y) != (0, 0, 0)))
             };
-            assert!(has_overlay_glyph, "SGC text overlay produced no visible glyph");
+            assert!(
+                has_overlay_glyph,
+                "SGC text overlay produced no visible glyph"
+            );
             let has_white_overlay_pixel =
                 (8..16).any(|x| (8..24).any(|y| framebuffer.get_pixel(x, y) == (255, 255, 255)));
-            assert!(
-                has_white_overlay_pixel,
-                "SGC glyph CLUT color is not white"
-            );
+            assert!(has_white_overlay_pixel, "SGC glyph CLUT color is not white");
         }
         if expect_gp_noise_background {
             let noise_pixels = [(1, 1), (318, 1), (1, 238), (318, 238)].map(|(x, y)| {
@@ -151,9 +168,7 @@ fn main() {
             );
             assert!(
                 noise_pixels.iter().any(|&(value, _)| value != 0)
-                    && noise_pixels
-                        .windows(2)
-                        .any(|pair| pair[0].0 != pair[1].0),
+                    && noise_pixels.windows(2).any(|pair| pair[0].0 != pair[1].0),
                 "GP0 bitmap has no visible noise variation: {noise_pixels:?}"
             );
             let mut has_vpu_cube_pixel = false;

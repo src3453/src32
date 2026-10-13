@@ -1,5 +1,5 @@
 use cpt32::bus::Bus;
-use cpt32::devices::vdp::vdp::{connect_vdp, VDP_REG_BASE, VDP_VRAM_BASE};
+use cpt32::devices::vdp::vdp::{VDP_REG_BASE, VDP_VRAM_BASE, connect_vdp};
 
 #[test]
 fn pcg_scroll_wraps_both_axes_and_exposes_sixteen_bit_mmio_registers() {

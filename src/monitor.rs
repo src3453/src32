@@ -5,6 +5,7 @@ use cpt32::cpu::{Cpu, InstructionMode};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
+use cpt32::devices::pec::timing::connect_pec_timer_rtc;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::sgu::connect_sgu;
 
@@ -118,6 +119,7 @@ pub fn run(program_path: Option<&str>) {
     cpt32::bus::connect_bmc_dmac(&mut bus);
     connect_idc_from_config(&mut bus)
         .unwrap_or_else(|error| panic!("Invalid disk configuration: {error}"));
+    connect_pec_timer_rtc(&mut bus);
     connect_uart_with_stdin(&mut bus, false);
     connect_rng(&mut bus);
     let _sgu = connect_sgu(&mut bus);

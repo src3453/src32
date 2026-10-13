@@ -2,8 +2,8 @@
 
 pub mod bus;
 pub mod cpu;
-pub mod sys;
 pub mod music;
+pub mod sys;
 pub mod wav;
 pub mod devices {
     pub mod bmc;
@@ -39,6 +39,7 @@ pub mod devices {
         pub mod pec;
         pub mod rng;
         pub mod serial;
+        pub mod timing;
         pub mod idc {
             pub mod idc;
         }
