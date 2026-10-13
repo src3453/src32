@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass, field
 import logging
 import math
 import os
 import re
 import struct
-from typing import NamedTuple
+from dataclasses import dataclass, field
+from typing import NamedTuple, Optional
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 FLOAT_RE = re.compile(

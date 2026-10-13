@@ -7,7 +7,6 @@ from collections import defaultdict
 
 from sol_vm import STACK_SIZE_BYTES, Instruction, Program, SolVMError, compile_program
 
-
 ENTRY_LABEL = "__solc_entry"
 STACK_CACHE_REGS = tuple(f"R{i}" for i in range(1, 13))
 SHORT_MODE_SWITCH_COST = 2

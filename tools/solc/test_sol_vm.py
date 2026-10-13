@@ -1,8 +1,14 @@
 from pathlib import Path
 
 import pytest
-
-from sol_vm import STRING_POOL_BASE, SolVM, SolVMError, compile_program, parse_number, to_i32
+from sol_vm import (
+    STRING_POOL_BASE,
+    SolVM,
+    SolVMError,
+    compile_program,
+    parse_number,
+    to_i32,
+)
 
 
 def test_compiled_instruction_carries_opcode_profile():
