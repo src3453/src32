@@ -179,13 +179,15 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 ---
 
 ## 2.10 IRQC (Interrupt Request Controller)
-- 機能:
-  - 割り込み管理
-  - 優先度制御
-  - ベクタ割り当て
-  - 16レベルの割り込み優先度
-  - 割り込みマスク機能
-  - IRQ ACK, EOI信号管理
+
+- 16個のIRQ sourceの立ち上がりedgeをpendingとして保持
+- 16-bit PENDING (W1C) と ENABLE mask
+- 最小番号sourceを選ぶ固定優先順位 (IRQ0が最優先)
+- 選択したsource番号とvalid信号をCPUへ出力
+- IRQ vector、CPU割り込み許可、`IRET`はCPU側が管理。IRQCにvector/EOIレジスタはありません。
+
+レジスタ配置とACK順序は[IRQC仕様](spec_IRQC.md)を参照。
+
 ---
 
 ## 2.11 BIOS

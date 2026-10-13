@@ -136,6 +136,8 @@ Nested interrupts are disabled in this revision. Source arbitration is not a
 CPU function: the external `IRQC` selects the lowest-numbered enabled pending
 IRQ and drives `irq_valid`/`irq_number`.
 
+IRQCのレジスタ、edge latch、pending ACK、source配線は[IRQC仕様](spec_IRQC.md)を参照してください。
+
 ### 4.2 Extension A (ALU)
 
 - `0x0C (reg)`: `AND rd, rs1, rs2`: Bitwise AND of `rs1` and `rs2`, store result in `rd`
