@@ -8,7 +8,7 @@ default-run = "cpt32"
 rand = "0.10.3"
 toml = "1.1.8+spec-1.1.0"
 serde = { version = "1.0.229", features = ["derive"] }
-wgpu = "29.0.3"
+wgpu = "29.0.3" # 30.x will raise compatibility error on imgui-wgpu
 winit = "0.30.13"
 cpal = "0.18.2"
 tokio = { version = "1.53.2", features = ["rt", "sync"] }
