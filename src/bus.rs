@@ -293,10 +293,11 @@ impl Bus {
     pub fn add_device(&mut self, addr: u32, name: &'static str, device: Box<dyn Device>) {
         let size = device.size();
         println!(
-            "Bus: Adding device at 0x{:08X}-0x{:08X} (size: 0x{:X})",
+            "Bus: Adding device at 0x{:08X}-0x{:08X} (size: 0x{:08X}, name: \"{}\")",
             addr,
-            addr.wrapping_add(size),
-            size
+            addr.wrapping_add(size).wrapping_sub(1),
+            size,
+            name
         );
         if size == 0 {
             return;
