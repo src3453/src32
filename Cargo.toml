@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2024"
 default-run = "cpt32"
 
+
+[[bin]]
+name = "cpt32-tool"
+path = "src/bin/cpt32_tool.rs"
 [dependencies]
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
@@ -18,6 +22,9 @@ imgui-winit-support = "0.13.0"
 imgui-wgpu = "0.28.0"
 wasmtime = { version = "30.0.2", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate-miniz"] }
+directories = "6.0.0"
+sha2 = "0.10.9"
+crc32c = "0.6.8"
 
 [dev-dependencies]
 wat = "1.246.2"

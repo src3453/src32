@@ -40,14 +40,15 @@ const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 
-fn load_binary_data(path: &str, music_stream: Option<&Path>, bus: &mut Bus) {
-    let data = std::fs::read(path).expect("Failed to read binary file");
-    let stream = music_stream.map(|path| {
-        read_music_stream(path, data.len()).unwrap_or_else(|error| {
-            eprintln!("Music stream startup error: {error}");
-            std::process::exit(2)
-        })
-    });
+fn load_program_data(
+    data: &[u8],
+    music_stream: Option<&Path>,
+    bus: &mut Bus,
+) -> Result<(), String> {
+    let stream = music_stream
+        .map(|path| read_music_stream(path, data.len()))
+        .transpose()
+        .map_err(|error| format!("Music stream startup error: {error}"))?;
     for (i, byte) in data.iter().enumerate() {
         bus.write_u8(i as u32, *byte);
     }
@@ -56,6 +57,125 @@ fn load_binary_data(path: &str, music_stream: Option<&Path>, bus: &mut Bus) {
             bus.write_u8(STREAM_BASE + offset as u32, value);
         }
     }
+    Ok(())
+}
+
+struct GuestMachine {
+    cpu: Cpu,
+    vdp: Rc<RefCell<Vdp>>,
+    sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
+    title: Option<String>,
+}
+
+fn is_cartridge_path(path: &Path) -> bool {
+    path.extension()
+        .and_then(|extension| extension.to_str())
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("cpt32pkg"))
+}
+
+fn build_guest_machine(
+    program_path: &Path,
+    music_stream: Option<&Path>,
+    user_data_root: Option<&Path>,
+) -> Result<GuestMachine, String> {
+    let cartridge = if is_cartridge_path(program_path) {
+        Some(cpt32::cartridge::Cartridge::load(program_path)?)
+    } else {
+        None
+    };
+    let mut bus = Bus::new();
+    let input_sender = connect_pec_input(&mut bus);
+    connect_ram(&mut bus);
+    cpt32::bus::connect_bmc_dmac(&mut bus);
+    connect_uart(&mut bus);
+    connect_rng(&mut bus);
+    if let Some(cartridge) = cartridge.as_ref() {
+        let root = if cartridge
+            .disks
+            .iter()
+            .any(|disk| disk.mode == cpt32::cartridge::CartridgeDiskMode::ReadWrite)
+        {
+            let user_data_root = match user_data_root {
+                Some(root) => root.to_path_buf(),
+                None => cpt32::cartridge::default_user_data_root()?,
+            };
+            Some(user_data_root.join(&cartridge.id))
+        } else {
+            None
+        };
+        let drives = cpt32::devices::pec::idc::idc::Idc::load_cartridge_drives(
+            &cartridge.disks,
+            root.as_deref().unwrap_or_else(|| Path::new(".")),
+        )?;
+        cpt32::devices::pec::idc::idc::connect_idc(&mut bus, drives);
+    } else {
+        connect_idc_from_config(&mut bus)?;
+    }
+    let sgu = connect_sgu(&mut bus);
+    let program = match cartridge.as_ref() {
+        Some(cartridge) => cartridge.program.as_slice(),
+        None => return build_raw_guest(program_path, music_stream, bus, input_sender, sgu),
+    };
+    load_program_data(program, music_stream, &mut bus)?;
+    let vdp = connect_vdp(&mut bus);
+    if let Some(font_path) = pcg_font_path_from_config()? {
+        vdp.borrow()
+            .load_pcg_font_from_file(&font_path)
+            .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
+    }
+    let plugins = cartridge
+        .as_ref()
+        .unwrap()
+        .plugins
+        .iter()
+        .map(|plugin| cpt32::devices::expansion::ExpansionCardPackage {
+            slot: plugin.slot,
+            label: plugin.path.clone(),
+            bytes: plugin.package.clone(),
+        })
+        .collect();
+    cpt32::devices::expansion::load_expansion_cards_from_bytes(plugins, &mut bus)?;
+    let title = cartridge
+        .as_ref()
+        .map(|cartridge| format!("CPT32 — {}", cartridge.title));
+    Ok(GuestMachine {
+        cpu: Cpu::new(bus),
+        vdp,
+        sgu,
+        input_sender,
+        title,
+    })
+}
+
+fn build_raw_guest(
+    program_path: &Path,
+    music_stream: Option<&Path>,
+    mut bus: Bus,
+    input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
+    sgu: [Rc<RefCell<S3w2Sound>>; 2],
+) -> Result<GuestMachine, String> {
+    let data = std::fs::read(program_path).map_err(|error| {
+        format!(
+            "Failed to read binary file {}: {error}",
+            program_path.display()
+        )
+    })?;
+    load_program_data(&data, music_stream, &mut bus)?;
+    let vdp = connect_vdp(&mut bus);
+    if let Some(font_path) = pcg_font_path_from_config()? {
+        vdp.borrow()
+            .load_pcg_font_from_file(&font_path)
+            .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
+    }
+    cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)?;
+    Ok(GuestMachine {
+        cpu: Cpu::new(bus),
+        vdp,
+        sgu,
+        input_sender,
+        title: None,
+    })
 }
 
 fn keyboard_hid_usage(code: KeyCode) -> Option<u8> {
@@ -417,6 +537,8 @@ struct GuiApp {
     debug_gui: Option<DebugGui>,
     enable_debug_gui: bool,
     start_paused: bool,
+    music_stream: Option<PathBuf>,
+    title: String,
     next_frame_deadline: Instant,
 }
 
@@ -427,34 +549,11 @@ impl GuiApp {
         enable_debug_gui: bool,
         start_paused: bool,
         music_stream: Option<&Path>,
-    ) -> Self {
-        let mut bus = Bus::new();
-        let input_sender = connect_pec_input(&mut bus);
-        connect_ram(&mut bus);
-        cpt32::bus::connect_bmc_dmac(&mut bus);
-        connect_uart(&mut bus);
-        connect_rng(&mut bus);
-        connect_idc_from_config(&mut bus)
-            .unwrap_or_else(|error| panic!("Invalid disk configuration: {error}"));
-        let sgu = connect_sgu(&mut bus);
-
-        load_binary_data(program_path, music_stream, &mut bus);
-        let vdp = connect_vdp(&mut bus);
-        if let Some(font_path) = pcg_font_path_from_config()
-            .unwrap_or_else(|error| panic!("Invalid PCG font configuration: {error}"))
-        {
-            vdp.borrow()
-                .load_pcg_font_from_file(&font_path)
-                .unwrap_or_else(|error| {
-                    panic!("Failed to load PCG font {}: {error}", font_path.display())
-                });
-        }
-
-        cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
-            .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
+    ) -> Result<Self, String> {
+        let machine = build_guest_machine(Path::new(program_path), music_stream, None)?;
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
-                let slots = initial_gamepad_slots(&gilrs, &input_sender);
+                let slots = initial_gamepad_slots(&gilrs, &machine.input_sender);
                 (Some(gilrs), slots)
             }
             Err(error) => {
@@ -462,22 +561,19 @@ impl GuiApp {
                 (None, [None; 4])
             }
         };
-
         let audio_host = match audio::AudioHost::new() {
             Ok(host) => Some(host),
-            Err(e) => {
-                eprintln!("Warning: Failed to initialize audio host: {}", e);
+            Err(error) => {
+                eprintln!("Warning: Failed to initialize audio host: {error}");
                 None
             }
         };
-
-        let cpu = Cpu::new(bus);
-        Self {
-            cpu,
-            vdp,
-            sgu,
+        Ok(Self {
+            cpu: machine.cpu,
+            vdp: machine.vdp,
+            sgu: machine.sgu,
             audio_host,
-            input_sender,
+            input_sender: machine.input_sender,
             held_keys: HashSet::new(),
             held_mouse_buttons: 0,
             mouse_captured: false,
@@ -490,8 +586,10 @@ impl GuiApp {
             debug_gui: None,
             enable_debug_gui,
             start_paused,
+            music_stream: music_stream.map(Path::to_path_buf),
+            title: machine.title.unwrap_or_else(|| "CPT32".to_owned()),
             next_frame_deadline: Instant::now(),
-        }
+        })
     }
     fn release_mouse_buttons(&mut self) {
         send_mouse_button_releases(&self.input_sender, &mut self.held_mouse_buttons);
@@ -503,6 +601,41 @@ impl GuiApp {
             &mut self.held_keys,
             &mut self.held_mouse_buttons,
         );
+    }
+
+    fn handle_dropped_file(&mut self, path: &Path) {
+        if !is_cartridge_path(path) {
+            return;
+        }
+        match build_guest_machine(path, self.music_stream.as_deref(), None) {
+            Ok(machine) => {
+                self.release_all_inputs();
+                self.cpu = machine.cpu;
+                self.vdp = machine.vdp;
+                self.sgu = machine.sgu;
+                self.input_sender = machine.input_sender;
+                if let Some(gilrs) = self.gilrs.as_ref() {
+                    for (slot, id) in self.gamepad_slots.iter().enumerate() {
+                        if let Some(id) = id {
+                            if let Some(gamepad) = gilrs.connected_gamepad(*id) {
+                                send_gamepad_snapshot(&self.input_sender, slot as u8, &gamepad);
+                            }
+                        }
+                    }
+                }
+                self.title = machine.title.unwrap_or_else(|| "CPT32".to_owned());
+                if let Some(window) = self.window.as_ref() {
+                    window.set_title(&self.title);
+                }
+            }
+            Err(error) => {
+                eprintln!("Error: {error}");
+                self.title = format!("CPT32 — Failed to load {}", path.display());
+                if let Some(window) = self.window.as_ref() {
+                    window.set_title(&self.title);
+                }
+            }
+        }
     }
 
     fn honor_imgui_mouse_capture(&mut self) {
@@ -1242,7 +1375,7 @@ impl ApplicationHandler for GuiApp {
         }
 
         let attributes: WindowAttributes = Window::default_attributes()
-            .with_title("CPT32")
+            .with_title(&self.title)
             .with_inner_size(LogicalSize::new(WIDTH as f64, HEIGHT as f64))
             .with_min_inner_size(LogicalSize::new(WIDTH as f64, HEIGHT as f64));
 
@@ -1271,6 +1404,10 @@ impl ApplicationHandler for GuiApp {
         window_id: winit::window::WindowId,
         event: WindowEvent,
     ) {
+        if let WindowEvent::DroppedFile(path) = &event {
+            self.handle_dropped_file(path);
+            return;
+        }
         if let (Some(window), Some(debug_gui)) = (self.window.as_ref(), self.debug_gui.as_mut()) {
             debug_gui.handle_window_event(window, window_id, &event);
         }
@@ -1278,6 +1415,7 @@ impl ApplicationHandler for GuiApp {
 
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
+            WindowEvent::DroppedFile(_) => unreachable!("handled above"),
             WindowEvent::KeyboardInput { event, .. } => {
                 if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
                     event_loop.exit();
@@ -1569,7 +1707,10 @@ fn main() {
                 if options.start_paused && !options.enable_debug_gui {
                     eprintln!("Warning: --start-paused requires --debug-gui and will be ignored.");
                 }
-                run_gui_with_options(&options)
+                if let Err(message) = run_gui_with_options(&options) {
+                    eprintln!("Error: {message}");
+                    std::process::exit(2);
+                }
             }
             Err(message) => {
                 eprintln!("Error: {}", message);
@@ -1586,8 +1727,9 @@ fn main() {
     }
 }
 
-fn run_gui_with_options(options: &GuiLaunchOptions) {
-    let event_loop = EventLoop::new().expect("Failed to create event loop");
+fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
+    let event_loop =
+        EventLoop::new().map_err(|error| format!("Failed to create event loop: {error}"))?;
     let display_handle = event_loop.owned_display_handle();
     let mut app = GuiApp::new(
         &options.program_path,
@@ -1595,15 +1737,16 @@ fn run_gui_with_options(options: &GuiLaunchOptions) {
         options.enable_debug_gui,
         options.enable_debug_gui && options.start_paused,
         options.music_stream.as_deref(),
-    );
+    )?;
     event_loop
         .run_app(&mut app)
-        .expect("Failed to run application");
+        .map_err(|error| format!("Failed to run application: {error}"))
 }
 
 #[cfg(test)]
 mod input_tests {
     use super::*;
+    use std::io::Write;
 
     #[test]
     fn maps_physical_keyboard_usage_ids_without_discriminant_casts() {
@@ -1697,5 +1840,173 @@ mod input_tests {
     fn zero_elapsed_time_produces_zero_kips() {
         let stats = PerformanceStats::from_deltas(0, 100, Duration::ZERO);
         assert_eq!(stats.kips, 0.0);
+    }
+
+    #[test]
+    fn package_guest_builder_loads_program_at_address_zero() {
+        let package_path = std::env::temp_dir().join(format!(
+            "cpt32-main-package-{}.cpt32pkg",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&package_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive.start_file("manifest.yaml", options).unwrap();
+        archive
+            .write_all(
+                b"format: cpt32pkg\nformat_version: 1\nid: 00000000-0000-4000-8000-000000000001\ntitle: Unit test\nsystem:\n  architecture: SRC32\nentrypoint:\n  type: program\n  path: program.bin\n",
+            )
+            .unwrap();
+        archive.start_file("program.bin", options).unwrap();
+        archive.write_all(&[0x12, 0x34, 0x56]).unwrap();
+        archive.finish().unwrap();
+
+        let mut machine = build_guest_machine(&package_path, None, None).unwrap();
+        assert_eq!(machine.cpu.pc(), 0);
+        assert_eq!(machine.cpu.read_mem_u8(0), 0x12);
+        assert_eq!(machine.cpu.read_mem_u8(1), 0x34);
+        drop(machine);
+        std::fs::remove_file(package_path).unwrap();
+    }
+
+    #[test]
+    fn package_guest_builder_uses_injected_data_root_lazily() {
+        const ID: &str = "00000000-0000-4000-8000-000000000001";
+        let package_path = std::env::temp_dir().join(format!(
+            "cpt32-main-injected-root-{}.cpt32pkg",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&package_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive.start_file("manifest.yaml", options).unwrap();
+        archive
+            .write_all(
+                format!(
+                    "format: cpt32pkg\nformat_version: 1\nid: {ID}\ntitle: Writable disk\nsystem:\n  architecture: SRC32\nentrypoint:\n  type: program\n  path: program.bin\ndisks:\n  - slot: 0\n    type: hdd\n    path: disk.img\n    mode: read_write\n"
+                )
+                .as_bytes(),
+            )
+            .unwrap();
+        archive.start_file("program.bin", options).unwrap();
+        archive.write_all(&[0x12]).unwrap();
+        archive.start_file("disk.img", options).unwrap();
+        archive.write_all(&[0xA6; 512]).unwrap();
+        archive.finish().unwrap();
+
+        let data_root =
+            std::env::temp_dir().join(format!("cpt32-main-data-root-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&data_root);
+        let machine = build_guest_machine(&package_path, None, Some(&data_root)).unwrap();
+        let sidecar = data_root.join(ID).join("dd0.cow");
+        assert!(!sidecar.exists());
+        assert!(!data_root.exists());
+        drop(machine);
+
+        std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
+        std::fs::write(&sidecar, b"invalid sidecar").unwrap();
+        let before = std::fs::read(&sidecar).unwrap();
+        let error = match build_guest_machine(&package_path, None, Some(&data_root)) {
+            Ok(_) => panic!("invalid injected sidecar was accepted"),
+            Err(error) => error,
+        };
+        assert!(error.contains("COW"));
+        assert_eq!(std::fs::read(&sidecar).unwrap(), before);
+
+        std::fs::remove_file(package_path).unwrap();
+        std::fs::remove_dir_all(data_root).unwrap();
+    }
+
+    #[test]
+    fn package_drop_replaces_guest_transactionally() {
+        let package_path = std::env::temp_dir().join(format!(
+            "cpt32-drop-package-{}.CPT32PKG",
+            std::process::id()
+        ));
+        let file = std::fs::File::create(&package_path).unwrap();
+        let mut archive = zip::ZipWriter::new(file);
+        let options = zip::write::SimpleFileOptions::default();
+        archive.start_file("manifest.yaml", options).unwrap();
+        archive
+            .write_all(
+                b"format: cpt32pkg\nformat_version: 1\nid: 00000000-0000-4000-8000-000000000001\ntitle: Drop test\nsystem:\n  architecture: SRC32\nentrypoint:\n  type: program\n  path: program.bin\n",
+            )
+            .unwrap();
+        archive.start_file("program.bin", options).unwrap();
+        archive.write_all(&[0x12, 0x34]).unwrap();
+        archive.finish().unwrap();
+
+        let mut old_bus = Bus::new();
+        connect_ram(&mut old_bus);
+        old_bus.write_u8(0, 0xA5);
+        let old_sgu = connect_sgu(&mut old_bus);
+        let old_vdp = connect_vdp(&mut old_bus);
+        let old_cpu = Cpu::new(old_bus);
+        let (old_sender, mut old_receiver) = tokio::sync::mpsc::unbounded_channel();
+        let mut app = GuiApp {
+            cpu: old_cpu,
+            vdp: old_vdp,
+            sgu: old_sgu,
+            audio_host: None,
+            input_sender: old_sender,
+            held_keys: HashSet::from([0x04]),
+            held_mouse_buttons: 1,
+            mouse_captured: false,
+            focused: true,
+            gilrs: None,
+            gamepad_slots: [None; 4],
+            display_handle: None,
+            window: None,
+            presenter: None,
+            debug_gui: None,
+            enable_debug_gui: true,
+            start_paused: true,
+            music_stream: None,
+            title: "CPT32".to_owned(),
+            next_frame_deadline: Instant::now(),
+        };
+
+        app.handle_dropped_file(&package_path);
+        assert_eq!(app.title, "CPT32 — Drop test");
+        assert_eq!(app.cpu.pc(), 0);
+        assert_eq!(app.cpu.read_mem_u8(0), 0x12);
+        assert!(app.held_keys.is_empty());
+        assert_eq!(app.held_mouse_buttons, 0);
+        assert!(matches!(
+            old_receiver.try_recv(),
+            Ok(HostInputEvent::Key {
+                usage: 0x04,
+                down: false
+            })
+        ));
+        assert!(matches!(
+            old_receiver.try_recv(),
+            Ok(HostInputEvent::MouseButton {
+                button: 0,
+                down: false
+            })
+        ));
+        assert!(app.enable_debug_gui);
+        assert!(app.start_paused);
+
+        let old_pc = app.cpu.pc();
+        let old_byte = app.cpu.read_mem_u8(0);
+        app.held_keys.insert(0x05);
+        let invalid_path = std::env::temp_dir().join(format!(
+            "cpt32-drop-invalid-{}.cpt32pkg",
+            std::process::id()
+        ));
+        std::fs::write(&invalid_path, b"invalid package").unwrap();
+        app.handle_dropped_file(&invalid_path);
+        assert!(app.title.contains("Failed to load"));
+        assert_eq!(app.cpu.pc(), old_pc);
+        assert_eq!(app.cpu.read_mem_u8(0), old_byte);
+        assert_eq!(app.held_keys, HashSet::from([0x05]));
+        let failure_title = app.title.clone();
+        app.handle_dropped_file(Path::new("ignored.bin"));
+        assert_eq!(app.title, failure_title);
+
+        std::fs::remove_file(package_path).unwrap();
+        std::fs::remove_file(invalid_path).unwrap();
     }
 }

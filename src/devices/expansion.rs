@@ -1,5 +1,6 @@
 mod package;
 use std::cell::Cell;
+use std::io::Cursor;
 use std::path::Path;
 use std::rc::Rc;
 
@@ -46,6 +47,21 @@ impl ExpansionRuntime {
         let (module_bytes, assets) = package::PackageAssets::load(path).map_err(context)?;
         self.load_card_components(slot, &label, &module_bytes, cycles, assets)
     }
+    pub(crate) fn load_card_package_bytes(
+        &self,
+        slot: u8,
+        label: &str,
+        bytes: Vec<u8>,
+        cycles: Rc<Cell<u64>>,
+    ) -> Result<ExpansionCard, String> {
+        let context = |message: String| format!("slot {slot} package {label}: {message}");
+        let (module_bytes, assets) = package::PackageAssets::load_reader(Box::new(Cursor::new(
+            bytes,
+        ))
+            as Box<dyn package::ReadSeek>)
+        .map_err(context)?;
+        self.load_card_components(slot, label, &module_bytes, cycles, assets)
+    }
 
     fn load_card_components(
         &self,
@@ -53,7 +69,7 @@ impl ExpansionRuntime {
         label: &str,
         bytes: &[u8],
         cycles: Rc<Cell<u64>>,
-        assets: package::PackageAssets,
+        assets: package::PackageAssets<Box<dyn package::ReadSeek>>,
     ) -> Result<ExpansionCard, String> {
         if slot >= EXPANSION_SLOT_COUNT {
             return Err(format!(
@@ -195,6 +211,54 @@ impl ExpansionRuntime {
     }
 }
 
+#[derive(Debug)]
+pub struct ExpansionCardPackage {
+    pub slot: u8,
+    pub label: String,
+    pub bytes: Vec<u8>,
+}
+
+pub fn load_expansion_cards_from_bytes(
+    packages: Vec<ExpansionCardPackage>,
+    bus: &mut crate::bus::Bus,
+) -> Result<(), String> {
+    let mut slots = [false; EXPANSION_SLOT_COUNT as usize];
+    for package in &packages {
+        if package.slot >= EXPANSION_SLOT_COUNT {
+            return Err(format!(
+                "slot {}, package {}: slot must be 0..7",
+                package.slot, package.label
+            ));
+        }
+        if slots[usize::from(package.slot)] {
+            return Err(format!(
+                "slot {}, package {}: duplicate slot",
+                package.slot, package.label
+            ));
+        }
+        slots[usize::from(package.slot)] = true;
+    }
+    if packages.is_empty() {
+        return Ok(());
+    }
+
+    let runtime = ExpansionRuntime::new()?;
+    let cycle_clock = bus.cycle_clock();
+    let mut cards = Vec::with_capacity(packages.len());
+    for package in packages {
+        let card = runtime
+            .load_card_package_bytes(
+                package.slot,
+                &package.label,
+                package.bytes,
+                Rc::clone(&cycle_clock),
+            )
+            .map_err(|error| format!("package {}: {error}", package.label))?;
+        cards.push((package.slot, card));
+    }
+    bus.install_expansion_cards(cards)
+}
+
 pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Result<(), String> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
@@ -287,7 +351,7 @@ struct HostState {
     deadline: Option<u64>,
     irq_asserted: bool,
     faulted: bool,
-    assets: package::PackageAssets,
+    assets: package::PackageAssets<Box<dyn package::ReadSeek>>,
     limits: StoreLimits,
 }
 

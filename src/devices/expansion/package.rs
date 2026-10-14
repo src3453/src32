@@ -1,10 +1,12 @@
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::Read;
+use std::io::{Read, Seek};
 use std::path::Path;
 
 use serde::Deserialize;
 use zip::{CompressionMethod, ZipArchive};
+pub(super) trait ReadSeek: Read + Seek {}
+impl<T: Read + Seek> ReadSeek for T {}
 
 const MANIFEST_PATH: &str = "manifest.yaml";
 const MANIFEST_LIMIT: u64 = 1024 * 1024;
@@ -26,17 +28,23 @@ struct ManifestAsset {
     path: String,
 }
 
-pub(super) struct PackageAssets {
-    archive: ZipArchive<File>,
+pub(super) struct PackageAssets<R: Read + Seek> {
+    archive: ZipArchive<R>,
     paths: Vec<String>,
     sizes: Vec<u64>,
     cache: Vec<Option<Vec<u8>>>,
 }
 
-impl PackageAssets {
+impl PackageAssets<Box<dyn ReadSeek>> {
     pub(super) fn load(path: &Path) -> Result<(Vec<u8>, Self), String> {
         let file = File::open(path).map_err(|error| error.to_string())?;
-        let mut archive = ZipArchive::new(file).map_err(|error| error.to_string())?;
+        Self::load_reader(Box::new(file) as Box<dyn ReadSeek>)
+    }
+}
+
+impl<R: Read + Seek> PackageAssets<R> {
+    pub(super) fn load_reader(reader: R) -> Result<(Vec<u8>, Self), String> {
+        let mut archive = ZipArchive::new(reader).map_err(|error| error.to_string())?;
         let mut entries = HashSet::with_capacity(archive.len());
         for index in 0..archive.len() {
             let entry = archive
@@ -192,8 +200,8 @@ impl PackageAssets {
     }
 }
 
-fn read_entry(
-    archive: &mut ZipArchive<File>,
+fn read_entry<R: Read + Seek>(
+    archive: &mut ZipArchive<R>,
     path: &str,
     max_size: u64,
 ) -> Result<Vec<u8>, String> {
@@ -222,7 +230,7 @@ fn read_entry(
     Ok(bytes)
 }
 
-fn entry_size(archive: &mut ZipArchive<File>, path: &str) -> Result<u64, String> {
+fn entry_size<R: Read + Seek>(archive: &mut ZipArchive<R>, path: &str) -> Result<u64, String> {
     let entry = archive
         .by_name(path)
         .map_err(|error| format!("missing ZIP entry {path:?}: {error}"))?;

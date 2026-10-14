@@ -1,6 +1,8 @@
 // Expose the main components of the CPT32 emulator as a library
 
 pub mod bus;
+pub mod cartridge;
+pub mod cow;
 pub mod cpu;
 pub mod music;
 pub mod sys;

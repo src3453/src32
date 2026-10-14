@@ -85,7 +85,7 @@ master clockは48 MHz。コマンド開始から累積転送済みbyte数`n`のs
 | `transfer_rate_bytes_per_second` | no | 正整数。省略時はtype別既定値 |
 | `access_latency_ms` | no | 非負整数。省略時はtype別既定値 |
 
-相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。rawへの書込みはimage fileに反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。
+相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。`config.yaml`で指定したlegacy raw imageへの書込みは引き続きimage file自体に反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。
 
 ```yaml
 disk:
@@ -112,3 +112,13 @@ disk:
 2. `LBA=1`, `SECTOR_COUNT=1`, `COMMAND=READ`は、正しいREAD向きDMAC設定（DATA fixed source、RAM increment destination、8-bit、512 bytes）でイメージ末尾512 bytesをRAMへ転送する。正常完了時にDONEを立て、completion IRQ有効時はIRQ source 2をassertする。
 3. `LBA=1`, `SECTOR_COUNT=2`のREADは全範囲検査でERROR_CODE=3となり、DMA開始前に停止するためRAM/mediaを変更しない。
 4. `LBA=0`, `SECTOR_COUNT=1`のWRITEはRAMの512 bytesをraw image先頭へ反映する。read-only時はERROR_CODE=4となり、image内容を保持する。
+
+## 9. CPT32PKG disk media
+
+`.cpt32pkg` launch時はmanifestに宣言されたdiskだけをIDC slotへ接続し、`config.yaml`のdisk設定でpackage slotを上書きしない。package disk imageはZIP内のimmutableなraw baseであり、通常のpackage fileは変更しない。
+
+`mode: read_only`のpackage diskはbaseをそのまま読み取り、WRITE commandは既存契約どおり`ERROR_CODE=4`で拒否する。COW sidecarは使用しない。
+
+`mode: read_write`のpackage diskは、OS user-data directory内の`CPT32/user_data/<canonical-package-uuid>/dd<slot>.cow`へCOW v1 sidecarを保存する。sidecar fileと完全なheaderはdiskを接続しただけでは作らず、最初の成功した512-byte sector commit時に作成・同期する。以後の書込みはappend-only COW recordとしてcommitされ、読み出しは最新recordとpackage baseを組み合わせる。詳細なbyte layoutは`doc/spec_COW.md`を参照。
+
+既存sidecarのheader、device parameters、またはbase SHA-256が現在のpackage imageと一致しない場合は起動を拒否し、既存sidecarとpackageを変更しない。起動後のCOW read/write/sync/rollback failureはmedia I/O failureとして`ERROR_CODE=6`に報告する。COW error時にpackage baseへ書き戻したり、writeを破棄して続行したりしない。

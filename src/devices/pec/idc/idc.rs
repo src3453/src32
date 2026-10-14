@@ -1,9 +1,11 @@
 use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 
 use crate::bus::{Bus, Device};
-
+use crate::cartridge::{CartridgeDisk, CartridgeDiskKind, CartridgeDiskMode};
+use crate::cow::{BaseImage, CowOverlay};
 pub const IDC_BASE: u32 = 0x8004_1000;
 pub const IDC_SIZE: u32 = 0x1000;
 pub const IDC_DATA_ADDRESS: u32 = IDC_BASE + 0x24;
@@ -47,10 +49,15 @@ impl DriveType {
     }
 }
 
-#[derive(Debug)]
+enum DriveImage {
+    File(File),
+    Bytes(Arc<[u8]>),
+    Cow(CowOverlay),
+}
+
 pub struct Drive {
     kind: DriveType,
-    image: File,
+    image: DriveImage,
     capacity_sectors: u32,
     read_only: bool,
     transfer_rate_bytes_per_second: u64,
@@ -59,9 +66,19 @@ pub struct Drive {
 
 impl Drive {
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8; SECTOR_SIZE]) -> std::io::Result<()> {
-        self.image
-            .seek(SeekFrom::Start(u64::from(lba) * SECTOR_SIZE as u64))?;
-        self.image.read_exact(buffer)
+        let offset = u64::from(lba) * SECTOR_SIZE as u64;
+        match &mut self.image {
+            DriveImage::File(image) => {
+                image.seek(SeekFrom::Start(offset))?;
+                image.read_exact(buffer)
+            }
+            DriveImage::Bytes(image) => {
+                let start = offset as usize;
+                buffer.copy_from_slice(&image[start..start + SECTOR_SIZE]);
+                Ok(())
+            }
+            DriveImage::Cow(image) => image.read_at(offset, buffer).map_err(cow_io_error),
+        }
     }
 
     fn write_sector(&mut self, lba: u32, buffer: &[u8; SECTOR_SIZE]) -> std::io::Result<()> {
@@ -72,30 +89,42 @@ impl Drive {
             ));
         }
         let offset = u64::from(lba) * SECTOR_SIZE as u64;
-        let mut original = [0; SECTOR_SIZE];
-        self.image.seek(SeekFrom::Start(offset))?;
-        self.image.read_exact(&mut original)?;
-        self.image.seek(SeekFrom::Start(offset))?;
-        if let Err(error) = self
-            .image
-            .write_all(buffer)
-            .and_then(|()| self.image.flush())
-        {
-            let rollback = self
-                .image
-                .seek(SeekFrom::Start(offset))
-                .and_then(|_| self.image.write_all(&original))
-                .and_then(|()| self.image.flush());
-            if let Err(rollback_error) = rollback {
-                return Err(std::io::Error::new(
-                    error.kind(),
-                    format!("{error}; restoring the uncommitted sector failed: {rollback_error}"),
-                ));
+        match &mut self.image {
+            DriveImage::File(image) => {
+                let mut original = [0; SECTOR_SIZE];
+                image.seek(SeekFrom::Start(offset))?;
+                image.read_exact(&mut original)?;
+                image.seek(SeekFrom::Start(offset))?;
+                if let Err(error) = image.write_all(buffer).and_then(|()| image.flush()) {
+                    let rollback = image
+                        .seek(SeekFrom::Start(offset))
+                        .and_then(|_| image.write_all(&original))
+                        .and_then(|()| image.flush());
+                    if let Err(rollback_error) = rollback {
+                        return Err(std::io::Error::new(
+                            error.kind(),
+                            format!(
+                                "{error}; restoring the uncommitted sector failed: {rollback_error}"
+                            ),
+                        ));
+                    }
+                    return Err(error);
+                }
+                Ok(())
             }
-            return Err(error);
+            DriveImage::Bytes(_) => Err(std::io::Error::new(
+                std::io::ErrorKind::PermissionDenied,
+                "image is read-only",
+            )),
+            DriveImage::Cow(image) => image
+                .write_block(u64::from(lba), buffer)
+                .map_err(cow_io_error),
         }
-        Ok(())
     }
+}
+
+fn cow_io_error(error: crate::cow::CowError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, error)
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -171,6 +200,64 @@ impl Idc {
             drives,
             active: None,
         }
+    }
+
+    pub fn load_cartridge_drives(
+        disks: &[CartridgeDisk],
+        data_root: &Path,
+    ) -> Result<[Option<Drive>; 4], String> {
+        let mut drives: [Option<Drive>; 4] = std::array::from_fn(|_| None);
+        for disk in disks {
+            let slot = usize::from(disk.slot);
+            let slot_error = |reason: &str| format!("disk slot {}: {reason}", disk.slot);
+            if slot >= drives.len() {
+                return Err(slot_error("slot is outside 0..=3"));
+            }
+            if drives[slot].is_some() {
+                return Err(slot_error("configured more than once"));
+            }
+            let length = disk.image.len();
+            if length == 0 || length % SECTOR_SIZE != 0 {
+                return Err(slot_error(
+                    "image must be non-empty and its length must be a multiple of 512 bytes",
+                ));
+            }
+            let capacity_sectors = u32::try_from(length / SECTOR_SIZE)
+                .map_err(|_| slot_error("image exceeds the 32-bit sector capacity"))?;
+            let kind = match disk.kind {
+                CartridgeDiskKind::Fdd => DriveType::Fdd,
+                CartridgeDiskKind::Hdd => DriveType::Hdd,
+            };
+            let (transfer_rate_bytes_per_second, access_latency_ms) = kind.defaults();
+            let (image, read_only) = match disk.mode {
+                CartridgeDiskMode::ReadOnly => (DriveImage::Bytes(Arc::clone(&disk.image)), true),
+                CartridgeDiskMode::ReadWrite => {
+                    let cow_path = data_root.join(format!("dd{}.cow", disk.slot));
+                    let overlay = CowOverlay::open(
+                        BaseImage::Bytes(Arc::clone(&disk.image)),
+                        &cow_path,
+                        1,
+                        SECTOR_SIZE as u32,
+                    )
+                    .map_err(|error| {
+                        slot_error(&format!(
+                            "cannot open COW sidecar {}: {error}",
+                            cow_path.display()
+                        ))
+                    })?;
+                    (DriveImage::Cow(overlay), false)
+                }
+            };
+            drives[slot] = Some(Drive {
+                kind,
+                image,
+                capacity_sectors,
+                read_only,
+                transfer_rate_bytes_per_second,
+                access_latency_ms,
+            });
+        }
+        Ok(drives)
     }
 
     pub fn load_drives(config_path: &Path) -> Result<[Option<Drive>; 4], String> {
@@ -335,7 +422,7 @@ impl Idc {
             })?;
             drives[slot] = Some(Drive {
                 kind,
-                image,
+                image: DriveImage::File(image),
                 capacity_sectors,
                 read_only,
                 transfer_rate_bytes_per_second,
@@ -1136,6 +1223,47 @@ mod tests {
         assert_eq!(hdd.transfer_rate_bytes_per_second, 5_000_000);
         assert_eq!(hdd.access_latency_ms, 10);
         drop((fdd, hdd));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn cartridge_drives_read_package_bytes_and_use_read_only_or_cow_writes() {
+        let root = temp_root();
+        let image: Arc<[u8]> = Arc::from(vec![0xA6; SECTOR_SIZE]);
+        let readonly_disk = CartridgeDisk {
+            slot: 0,
+            kind: CartridgeDiskKind::Fdd,
+            mode: CartridgeDiskMode::ReadOnly,
+            image: Arc::clone(&image),
+        };
+        let mut readonly = Idc::load_cartridge_drives(&[readonly_disk], &root).unwrap();
+        let drive = readonly[0].as_mut().unwrap();
+        let mut sector = [0; SECTOR_SIZE];
+        drive.read_sector(0, &mut sector).unwrap();
+        assert_eq!(sector, [0xA6; SECTOR_SIZE]);
+        assert!(drive.read_only);
+        assert_eq!(
+            drive
+                .write_sector(0, &[0x3C; SECTOR_SIZE])
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::PermissionDenied
+        );
+
+        let writable_disk = CartridgeDisk {
+            slot: 2,
+            kind: CartridgeDiskKind::Hdd,
+            mode: CartridgeDiskMode::ReadWrite,
+            image: Arc::clone(&image),
+        };
+        let mut writable = Idc::load_cartridge_drives(&[writable_disk], &root).unwrap();
+        let drive = writable[2].as_mut().unwrap();
+        assert!(!drive.read_only);
+        drive.read_sector(0, &mut sector).unwrap();
+        assert_eq!(sector, [0xA6; SECTOR_SIZE]);
+        drive.write_sector(0, &[0x3C; SECTOR_SIZE]).unwrap();
+        drive.read_sector(0, &mut sector).unwrap();
+        assert_eq!(sector, [0x3C; SECTOR_SIZE]);
+        assert!(root.join("dd2.cow").is_file());
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
