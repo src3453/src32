@@ -105,8 +105,8 @@ pub struct MacroStep {
 #[derive(Debug)]
 pub enum ProjectError {
     Io(std::io::Error),
-    Decode(toml::de::Error),
-    Encode(toml::ser::Error),
+    Decode(yaml_serde::Error),
+    Encode(yaml_serde::Error),
     Validation(String),
 }
 
@@ -114,8 +114,8 @@ impl fmt::Display for ProjectError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Io(error) => write!(f, "project I/O: {error}"),
-            Self::Decode(error) => write!(f, "invalid project TOML: {error}"),
-            Self::Encode(error) => write!(f, "cannot encode project TOML: {error}"),
+            Self::Decode(error) => write!(f, "invalid project YAML: {error}"),
+            Self::Encode(error) => write!(f, "cannot encode project YAML: {error}"),
             Self::Validation(message) => write!(f, "invalid project: {message}"),
         }
     }
@@ -234,7 +234,7 @@ impl Default for Song {
 impl Song {
     pub fn load(path: &Path) -> Result<Self, ProjectError> {
         let text = std::fs::read_to_string(path)?;
-        let song: Self = toml::from_str(&text).map_err(ProjectError::Decode)?;
+        let song: Self = yaml_serde::from_str(&text).map_err(ProjectError::Decode)?;
         song.validate()?;
         Ok(song)
     }
@@ -242,7 +242,7 @@ impl Song {
     /// Saves the model without opening PCM assets. Paths are relative to this project's directory.
     pub fn save(&self, path: &Path) -> Result<(), ProjectError> {
         self.validate()?;
-        let text = toml::to_string_pretty(self).map_err(ProjectError::Encode)?;
+        let text = yaml_serde::to_string(self).map_err(ProjectError::Encode)?;
         std::fs::write(path, text)?;
         Ok(())
     }
@@ -488,9 +488,9 @@ mod tests {
     }
 
     #[test]
-    fn toml_roundtrip_preserves_notes_effects_and_all_instrument_kinds() {
+    fn yaml_roundtrip_preserves_notes_effects_and_all_instrument_kinds() {
         let root = temp_dir();
-        let path = root.join("song.toml");
+        let path = root.join("song.yaml");
         let mut song = Song::default();
         song.patterns[0].rows.truncate(3);
         let mut second_pattern = Pattern::default();
@@ -608,7 +608,7 @@ mod tests {
         std::fs::create_dir_all(&new).unwrap();
         let mut song = Song::default();
         song.instruments.push(pcm("assets/../missing.wav"));
-        let saved = song.save_as(&new.join("song.toml"), &old).unwrap();
+        let saved = song.save_as(&new.join("song.yaml"), &old).unwrap();
         let Instrument::Pcm {
             path, loop_start, ..
         } = &saved.instruments[1]
@@ -617,7 +617,7 @@ mod tests {
         };
         assert_eq!(*path, PathBuf::from("../old/missing.wav"));
         assert_eq!(*loop_start, Some(999)); // Asset bounds are deliberately not schema validation.
-        assert_eq!(Song::load(&new.join("song.toml")).unwrap(), saved);
+        assert_eq!(Song::load(&new.join("song.yaml")).unwrap(), saved);
         let Instrument::Pcm { path, .. } = &song.instruments[1] else {
             panic!()
         };
@@ -628,11 +628,11 @@ mod tests {
     #[test]
     fn load_rejects_invalid_version_and_numeric_overflow() {
         let root = temp_dir();
-        let path = root.join("song.toml");
-        let text = toml::to_string(&Song::default()).unwrap();
+        let path = root.join("song.yaml");
+        let text = yaml_serde::to_string(&Song::default()).unwrap();
         std::fs::write(
             &path,
-            text.replace("format_version = 1", "format_version = 2"),
+            text.replace("format_version: 1", "format_version: 2"),
         )
         .unwrap();
         assert!(matches!(
@@ -641,7 +641,7 @@ mod tests {
         ));
         std::fs::write(
             &path,
-            text.replace("ticks_per_row = 6", "ticks_per_row = 256"),
+            text.replace("ticks_per_row: 6", "ticks_per_row: 256"),
         )
         .unwrap();
         assert!(matches!(Song::load(&path), Err(ProjectError::Decode(_))));

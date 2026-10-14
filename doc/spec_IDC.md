@@ -74,7 +74,7 @@ master clockは48 MHz。コマンド開始から累積転送済みbyte数`n`のs
 
 ## 7. 起動時コンフィグ
 
-起動時にカレントディレクトリの`config.toml`を読む。ファイルがない場合、または`[[disk]]`配列/sectionが省略もしくは空の場合は全slot未接続で起動する。各`[[disk]]`要素は次の項目を持つ。
+起動時にカレントディレクトリの`config.yaml`を読む。ファイルがない場合、または`disk`配列が省略もしくは空の場合は全slot未接続で起動する。各`disk`要素は次の項目を持つ。
 
 | Key | Required | Definition |
 |---|---|---|
@@ -87,20 +87,19 @@ master clockは48 MHz。コマンド開始から累積転送済みbyte数`n`のs
 
 相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。rawへの書込みはimage fileに反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。
 
-```toml
-[[disk]]
-slot = 0
-type = "fdd"
-image = "disk0.img"
-read_only = false
+```yaml
+disk:
+  - slot: 0
+    type: "fdd"
+    image: "disk0.img"
+    read_only: false
 
-[[disk]]
-slot = 1
-type = "hdd"
-image = "images/data.bin"
-read_only = true
-transfer_rate_bytes_per_second = 8000000
-access_latency_ms = 4
+  - slot: 1
+    type: "hdd"
+    image: "images/data.bin"
+    read_only: true
+    transfer_rate_bytes_per_second: 8000000
+    access_latency_ms: 4
 ```
 
 上例はslot 0をFDD既定速度で読書き可能、slot 1をHDD型のread-only媒体として8,000,000 B/s・4 msで割り当てる。`disk0.img`と`images/data.bin`はいずれも拡張子によらずraw byte列として扱う。

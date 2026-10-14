@@ -6,7 +6,7 @@ use std::path::Path;
 use serde::Deserialize;
 use zip::{CompressionMethod, ZipArchive};
 
-const MANIFEST_PATH: &str = "manifest.toml";
+const MANIFEST_PATH: &str = "manifest.yaml";
 const MANIFEST_LIMIT: u64 = 1024 * 1024;
 const ASSET_TOTAL_LIMIT: u64 = 64 * 1024 * 1024;
 
@@ -74,7 +74,7 @@ impl PackageAssets {
         let manifest_bytes = read_entry(&mut archive, MANIFEST_PATH, MANIFEST_LIMIT)?;
         let manifest_text = std::str::from_utf8(&manifest_bytes)
             .map_err(|error| format!("{MANIFEST_PATH} is not UTF-8: {error}"))?;
-        let manifest: Manifest = toml::from_str(manifest_text)
+        let manifest: Manifest = yaml_serde::from_str(manifest_text)
             .map_err(|error| format!("invalid {MANIFEST_PATH}: {error}"))?;
         if manifest.abi_version != 1 {
             return Err(format!(
@@ -84,7 +84,7 @@ impl PackageAssets {
         }
         validate_manifest_path(&manifest.module)?;
         if manifest.module == MANIFEST_PATH {
-            return Err("module path must not name manifest.toml".to_owned());
+            return Err("module path must not name manifest.yaml".to_owned());
         }
 
         let module = read_entry(&mut archive, &manifest.module, u64::MAX)

@@ -633,7 +633,7 @@ impl TrackerUi {
         }
         ui.set_next_item_width((ui.content_region_avail()[0] - 340.0).max(80.0));
         ui.input_text("##project_path", &mut self.project_path_input)
-            .hint("Project TOML path")
+            .hint("Project YAML path")
             .build();
         ui.same_line();
         if ui.button("Load [Ctrl+O]") {
@@ -1304,8 +1304,8 @@ impl TrackerUi {
             .build(|| {
                 if let Some(action) = self.path_action {
                     ui.text(match action {
-                        PathAction::Open => "Load TOML project",
-                        PathAction::SaveAs => "Save project as TOML (PCM paths are rebased)",
+                        PathAction::Open => "Load YAML project",
+                        PathAction::SaveAs => "Save project as YAML (PCM paths are rebased)",
                     });
                     if focus_path {
                         ui.set_keyboard_focus_here();

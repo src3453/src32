@@ -70,7 +70,7 @@ fn main() {
     connect_rng(&mut bus);
     let vdp = connect_devices_with_vdp(&mut bus);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
-    cpt32::devices::expansion::load_expansion_cards(Path::new("config.toml"), &mut bus)
+    cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");
     let mut cpu = Cpu::new(bus);
     cpu.load_program(0, &image);

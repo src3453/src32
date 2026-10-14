@@ -201,14 +201,14 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
         Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
     };
-    let root: toml::Value = toml::from_str(&contents)
-        .map_err(|error| format!("invalid TOML in {}: {error}", config_path.display()))?;
+    let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+        .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
     let Some(entries) = root.get("expansion_card") else {
         return Ok(());
     };
-    let entries = entries.as_array().ok_or_else(|| {
+    let entries = entries.as_sequence().ok_or_else(|| {
         format!(
-            "`expansion_card` in {} must be an array of tables",
+            "`expansion_card` in {} must be a sequence of mappings",
             config_path.display()
         )
     })?;
@@ -223,20 +223,20 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
     let mut slots = [false; EXPANSION_SLOT_COUNT as usize];
     let mut modules = Vec::with_capacity(entries.len());
     for (index, entry) in entries.iter().enumerate() {
-        let table = entry.as_table().ok_or_else(|| {
+        let table = entry.as_mapping().ok_or_else(|| {
             format!(
-                "expansion_card entry {index} in {} must be a table",
+                "expansion_card entry {index} in {} must be a mapping",
                 config_path.display()
             )
         })?;
         let package_value = table.get("package");
         let package_label = package_value
-            .and_then(toml::Value::as_str)
+            .and_then(yaml_serde::Value::as_str)
             .unwrap_or("<invalid or missing package>");
         let slot_value = table.get("slot").ok_or_else(|| {
             format!("expansion_card entry {index} has no integer slot, package {package_label}")
         })?;
-        let slot_integer = slot_value.as_integer().ok_or_else(|| {
+        let slot_integer = slot_value.as_i64().ok_or_else(|| {
             format!(
                 "expansion_card entry {index} has invalid slot {:?}, package {package_label}",
                 slot_value
@@ -250,9 +250,11 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
                     "expansion_card slot {slot_integer}, package {package_label}: slot must be 0..7"
                 )
             })?;
-        let package = package_value.and_then(toml::Value::as_str).ok_or_else(|| {
-            format!("expansion_card slot {slot}: package {package_label} must be a path string")
-        })?;
+        let package = package_value
+            .and_then(yaml_serde::Value::as_str)
+            .ok_or_else(|| {
+                format!("expansion_card slot {slot}: package {package_label} must be a path string")
+            })?;
         if slots[usize::from(slot)] {
             return Err(format!(
                 "expansion_card slot {slot}, package {package}: duplicate slot"

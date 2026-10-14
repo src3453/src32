@@ -4,17 +4,16 @@
 
 本書はCPT32 WASM拡張カードの規範ABI v1を定める。カードはWASM core moduleとして実行し、MMIO、仮想cycleイベント、IRQ level、既存DMACからのMMIO転送、およびmanifestで宣言した読み取り専用package assetを利用できる。WASI、ホストファイルアクセス、共有メモリ、任意のホスト関数、カード専用DMA APIは提供しない。
 
-各カードは`.cpt32card` ZIP archiveとして配布する。archiveはrootの`manifest.toml`、manifestが指定するWASM module、および任意のasset entryを含む。entryはZIP StoredまたはDeflate方式とし、entry単位でseek/decompressできる。起動時はmanifestとWASM moduleだけを展開し、assetはguestが初めて要求したentryだけを展開する。展開したassetはそのカードの実行期間中cacheする。1 packageは1 slot/1 WASM moduleに対応する。
+各カードは`.cpt32card` ZIP archiveとして配布する。archiveはrootの`manifest.yaml`、manifestが指定するWASM module、および任意のasset entryを含む。entryはZIP StoredまたはDeflate方式とし、entry単位でseek/decompressできる。起動時はmanifestとWASM moduleだけを展開し、assetはguestが初めて要求したentryだけを展開する。展開したassetはそのカードの実行期間中cacheする。1 packageは1 slot/1 WASM moduleに対応する。
 
-manifest v1は次のTOML形式とする。manifestの展開後サイズは1 MiB以下。asset IDは0から始まる連続した整数で、guestから参照する識別子である。archive entry pathはpackage root相対の`/`区切りpathとし、absolute path、`.`/`..` component、重複path、directory entryは許可しない。manifest/module/assetはarchive内のregular fileでなければならない。assetのuncompressed size合計は64 MiB以下とする。
+manifest v1は次のYAML形式とする。manifestの展開後サイズは1 MiB以下。asset IDは0から始まる連続した整数で、guestから参照する識別子である。archive entry pathはpackage root相対の`/`区切りpathとし、absolute path、`.`/`..` component、重複path、directory entryは許可しない。manifest/module/assetはarchive内のregular fileでなければならない。assetのuncompressed size合計は64 MiB以下とする。
 
-```toml
-abi_version = 1
-module = "wasm/card.wasm"
-
-[[asset]]
-id = 0
-path = "assets/font.bin"
+```yaml
+abi_version: 1
+module: "wasm/card.wasm"
+asset:
+  - id: 0
+    path: "assets/font.bin"
 ```
 
 実装はWasmtimeを実行engineとし、カードごとに独立したStore/Instanceを持つ。moduleのコンパイル、import/export検査、ABI version検査のいずれかに失敗した場合、そのカードを登録せず起動エラーとする。
@@ -74,18 +73,16 @@ fault発生時はカードをfault状態にし、以後guest関数を呼び出�
 
 ## 6. 起動設定
 
-設定ファイルには`[[expansion_card]]` tableを繰り返し記述する。各entryは整数`slot`と`.cpt32card` archive path文字列`package`を必須とする。未記載slotは空slot。`package`の相対pathは設定ファイルのparent directoryを基準に解決する。設定ファイルが存在しない場合、またはentryがない場合は拡張カードなしで起動する。
+設定ファイルの`expansion_card`配列にentryを記述する。各entryは整数`slot`と`.cpt32card` archive path文字列`package`を必須とする。未記載slotは空slot。`package`の相対pathは設定ファイルのparent directoryを基準に解決する。設定ファイルが存在しない場合、またはentryがない場合は拡張カードなしで起動する。
 
 例:
 
-```toml
-[[expansion_card]]
-slot = 0
-package = "plugins/timer.cpt32card"
-
-[[expansion_card]]
-slot = 7
-package = "plugins/storage.cpt32card"
+```yaml
+expansion_card:
+  - slot: 0
+    package: "plugins/timer.cpt32card"
+  - slot: 7
+    package: "plugins/storage.cpt32card"
 ```
 
 slot範囲外、重複slot、型不正、package file不在、archive/manifest/module/ABI不正は起動エラーとする。診断にはslotとpackage pathを含める。複数entryを読み込む場合は全entryをcompile/validateしてからBusへ登録し、途中失敗時に部分登録してはならない。

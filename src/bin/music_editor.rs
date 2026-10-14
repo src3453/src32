@@ -346,7 +346,7 @@ fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let project = args.next().map(PathBuf::from);
     if args.next().is_some() {
-        return Err("Usage: music_editor [project.toml]".into());
+        return Err("Usage: music_editor [project.yaml]".into());
     }
     if let Some(path) = &project {
         Song::load(path).map_err(|error| format!("Cannot open {}: {error}", path.display()))?;

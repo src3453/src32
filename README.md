@@ -39,11 +39,11 @@ cargo run --release --bin cpt32 -- /tmp/3d_cube.bin
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
 ```
 
-PCG の raw font file は引数ではなく、起動時の `config.toml` で指定します。`font.bin` は PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。相対 path は `config.toml` のある directory を基準にします。設定を省略した場合は内蔵フォントを使用します。
+PCG の raw font file は引数ではなく、起動時の `config.yaml` で指定します。`font.bin` は PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。相対 path は `config.yaml` のある directory を基準にします。設定を省略した場合は内蔵フォントを使用します。
 
-```toml
-[pcg]
-font = "assets/font.bin"
+```yaml
+pcg:
+  font: "assets/font.bin"
 ```
 
 旧来の `<program.bin> [font.bin]` 形式は使えません。
@@ -60,7 +60,7 @@ ROM・CPU・VDP を起動せず、独立した ImGui エディタで 16 チャ�
 
 ```sh
 cargo run --bin music_editor
-cargo run --bin music_editor -- path/to/song.toml
+cargo run --bin music_editor -- path/to/song.yaml
 ```
 
 上部に再生／停止・テンポ・保存／Export、中央に order と instrument、下部にテキスト形式の pattern を配置しています。
@@ -92,7 +92,7 @@ FX tempo は `1E`〜`96`（30〜150 BPM）。VOL は独立した音量指定な�
 - Wavetable は 256 個の unsigned 8-bit sample。グラフ上でクリック／ドラッグして描画し、専用 **Wavetable Editor** で sample 値、sine／triangle／saw／square、gain・offset・phase・normalize・invert・reverse・smooth・double・quantize を編集できます。
 - PCM は mono／stereo の uncompressed 16-bit PCM WAV。相対 path は project の親 directory が基準です。Save As では参照先を保って path を書き直します。sample rate は 1〜2,097,120 Hz、全資産の合計は 1 MiB 以下。
 - Noise と、音量／半音 pitch／pan の最大256 step macro をグラフで編集できます。左クリック／ドラッグで値を描画して step を選択し、右クリックでその step の値を消して直前の値を保持します。数値入力と loop 設定も使えます。macro は VSYNC ごとに進み、音量／pan の初期値は instrument 設定、pitch の初期値は0です。
-- 保存形式は TOML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ちます。pattern はそれぞれ1〜256行×16 channelで、TOML の `rows` 配列の長さが有効な行数です。旧 project は従来どおり64行で読み込み、新規 pattern も64行です。Pattern の Rows を短くすると末尾行を削除し、長くすると空行を追加します。ID は0始まりです。
+- 保存形式は YAML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ちます。pattern はそれぞれ1〜256行×16 channelで、YAML の `rows` 配列の長さが有効な行数です。旧 project は従来どおり64行で読み込み、新規 pattern も64行です。Pattern の Rows を短くすると末尾行を削除し、長くすると空行を追加します。ID は0始まりです。
 - 欠損／不正 PCM の曲も保存できますが、preview／Export はエラーになります。Export は `.sgub` と同じ directory の汎用 `sgu_music_driver.sol` を出力します。既存ファイルの置換は確認後、両方の temporary file が書き込めてから実行します。
 
 ### SGUB v1 とゲスト再生

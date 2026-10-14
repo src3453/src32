@@ -134,21 +134,21 @@ IRQ vector、CPU の割り込み enable、例外復帰の詳細は [CPU 仕様](
 
 ## 7. 実行時設定とエラー確認
 
-IDC は起動時の `config.toml` の `[[disk]]` から raw image を slot に割り当てます。例:
+IDC は起動時の `config.yaml` の `disk` 配列から raw image を slot に割り当てます。例:
 
-```toml
-[[disk]]
-slot = 0
-type = "hdd"
-image = "disk0.img"
-read_only = true
-transfer_rate_bytes_per_second = 48000000
-access_latency_ms = 0
+```yaml
+disk:
+  - slot: 0
+    type: hdd
+    image: disk0.img
+    read_only: true
+    transfer_rate_bytes_per_second: 48000000
+    access_latency_ms: 0
 ```
 
-`disk0.img` は 512 byte 以上で、全体サイズが 512 の倍数の raw data です。相対 path は `config.toml` のある directory を基準にします。実媒体を書き換えない練習では `read_only = true` にします。
+`disk0.img` は 512 byte 以上で、全体サイズが 512 の倍数の raw data です。相対 path は `config.yaml` のある directory を基準にします。実媒体を書き換えない練習では `read_only: true` にします。
 
-`idc_read.sol` を `$work` に保存し、image の先頭4 byte が `12 34 56 78` になるように `disk0.img` を用意します。次の例はリポジトリ root から実行します。作業用 directory に `idc_read.sol`、`disk0.img`、上記の `config.toml` を置くため、既存の `config.toml` は変更しません。
+`idc_read.sol` を `$work` に保存し、image の先頭4 byte が `12 34 56 78` になるように `disk0.img` を用意します。次の例はリポジトリ root から実行します。作業用 directory に `idc_read.sol`、`disk0.img`、上記の `config.yaml` を置くため、既存の `config.yaml` は変更しません。
 
 ```powershell
 $repo = (Get-Location).Path

@@ -450,7 +450,7 @@ impl GuiApp {
                 });
         }
 
-        cpt32::devices::expansion::load_expansion_cards(Path::new("config.toml"), &mut bus)
+        cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
             .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
@@ -1490,18 +1490,18 @@ struct GuiLaunchOptions {
 }
 
 fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
-    let config_path = Path::new("config.toml");
+    let config_path = Path::new("config.yaml");
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
         Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
     };
-    let root: toml::Value = toml::from_str(&contents)
-        .map_err(|error| format!("invalid TOML in {}: {error}", config_path.display()))?;
+    let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+        .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
     let Some(pcg) = root.get("pcg") else {
         return Ok(None);
     };
-    let table = pcg.as_table().ok_or("`pcg` must be a table")?;
+    let table = pcg.as_mapping().ok_or("`pcg` must be a mapping")?;
     let Some(font) = table.get("font") else {
         return Ok(None);
     };
@@ -1574,13 +1574,13 @@ fn main() {
             Err(message) => {
                 eprintln!("Error: {}", message);
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.toml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }

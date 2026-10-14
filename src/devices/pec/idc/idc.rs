@@ -184,31 +184,28 @@ impl Idc {
             }
         };
 
-        let root: toml::Value = toml::from_str(&contents)
-            .map_err(|error| format!("invalid TOML in {}: {error}", config_path.display()))?;
+        let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+            .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
         let mut drives: [Option<Drive>; 4] = std::array::from_fn(|_| None);
         let Some(disk_value) = root.get("disk") else {
             return Ok(drives);
         };
-        let disks = disk_value.as_array().ok_or_else(|| {
-            format!(
-                "{}: `disk` must be an array of [[disk]] tables",
-                config_path.display()
-            )
-        })?;
+        let disks = disk_value
+            .as_sequence()
+            .ok_or_else(|| format!("{}: `disk` must be a sequence", config_path.display()))?;
         let config_parent = config_path.parent().unwrap_or_else(|| Path::new("."));
 
         for (index, disk_value) in disks.iter().enumerate() {
-            let table = disk_value.as_table().ok_or_else(|| {
+            let table = disk_value.as_mapping().ok_or_else(|| {
                 format!(
-                    "{}: disk entry {} must be a table",
+                    "{}: disk entry {} must be a mapping",
                     config_path.display(),
                     index + 1
                 )
             })?;
             let slot = table
                 .get("slot")
-                .and_then(toml::Value::as_integer)
+                .and_then(yaml_serde::Value::as_i64)
                 .ok_or_else(|| {
                     format!(
                         "{}: disk entry {} has a missing or non-integer slot",
@@ -231,8 +228,13 @@ impl Idc {
             }
 
             for key in table.keys() {
+                let Some(key_name) = key.as_str() else {
+                    return Err(slot_error(&format!(
+                        "configuration keys must be strings, found {key:?}"
+                    )));
+                };
                 if !matches!(
-                    key.as_str(),
+                    key_name,
                     "slot"
                         | "type"
                         | "image"
@@ -240,19 +242,21 @@ impl Idc {
                         | "transfer_rate_bytes_per_second"
                         | "access_latency_ms"
                 ) {
-                    return Err(slot_error(&format!("unknown configuration key `{key}`")));
+                    return Err(slot_error(&format!(
+                        "unknown configuration key `{key_name}`"
+                    )));
                 }
             }
 
             let kind_name = table
                 .get("type")
-                .and_then(toml::Value::as_str)
+                .and_then(yaml_serde::Value::as_str)
                 .ok_or_else(|| slot_error("`type` must be `fdd` or `hdd`"))?;
             let kind = DriveType::from_config(kind_name)
                 .ok_or_else(|| slot_error(&format!("unknown drive type `{kind_name}`")))?;
             let image_name = table
                 .get("image")
-                .and_then(toml::Value::as_str)
+                .and_then(yaml_serde::Value::as_str)
                 .filter(|name| !name.is_empty())
                 .ok_or_else(|| slot_error("`image` must be a non-empty path"))?;
             let read_only = match table.get("read_only") {
@@ -265,7 +269,7 @@ impl Idc {
             let transfer_rate_bytes_per_second = match table.get("transfer_rate_bytes_per_second") {
                 None => default_rate,
                 Some(value) => {
-                    let rate = value.as_integer().ok_or_else(|| {
+                    let rate = value.as_i64().ok_or_else(|| {
                         slot_error("`transfer_rate_bytes_per_second` must be a positive integer")
                     })?;
                     if rate <= 0 {
@@ -279,7 +283,7 @@ impl Idc {
             let access_latency_ms = match table.get("access_latency_ms") {
                 None => default_latency,
                 Some(value) => {
-                    let latency = value.as_integer().ok_or_else(|| {
+                    let latency = value.as_i64().ok_or_else(|| {
                         slot_error("`access_latency_ms` must be a non-negative integer")
                     })?;
                     if latency < 0 {
@@ -821,7 +825,7 @@ pub fn connect_idc(
 pub fn connect_idc_from_config(
     bus: &mut Bus,
 ) -> Result<std::rc::Rc<std::cell::RefCell<Idc>>, String> {
-    let drives = Idc::load_drives(Path::new("config.toml"))?;
+    let drives = Idc::load_drives(Path::new("config.yaml"))?;
     Ok(connect_idc(bus, drives))
 }
 
@@ -855,11 +859,11 @@ mod tests {
         latency_ms: u64,
     ) -> PathBuf {
         fs::write(root.join("disk.img"), image).unwrap();
-        let config = root.join("config.toml");
+        let config = root.join("config.yaml");
         fs::write(
             &config,
             format!(
-                "[[disk]]\nslot = 0\ntype = \"fdd\"\nimage = \"disk.img\"\nread_only = {read_only}\ntransfer_rate_bytes_per_second = {}\naccess_latency_ms = {latency_ms}\n",
+                "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    read_only: {read_only}\n    transfer_rate_bytes_per_second: {}\n    access_latency_ms: {latency_ms}\n",
                 i64::MAX
             ),
         )
@@ -1047,10 +1051,10 @@ mod tests {
         let image_path = root.join("disk.img");
         fs::write(&image_path, [0u8; SECTOR_SIZE]).unwrap();
 
-        let duplicate = root.join("duplicate.toml");
+        let duplicate = root.join("duplicate.yaml");
         fs::write(
             &duplicate,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"disk.img\"\n[[disk]]\nslot=0\ntype=\"hdd\"\nimage=\"disk.img\"\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n  - slot: 0\n    type: hdd\n    image: disk.img\n",
         )
         .unwrap();
         assert!(
@@ -1060,10 +1064,10 @@ mod tests {
         );
 
         fs::write(&image_path, [0u8; SECTOR_SIZE + 1]).unwrap();
-        let invalid_length = root.join("invalid-length.toml");
+        let invalid_length = root.join("invalid-length.yaml");
         fs::write(
             &invalid_length,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"disk.img\"\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n",
         )
         .unwrap();
         assert!(
@@ -1073,10 +1077,10 @@ mod tests {
         );
 
         fs::write(&image_path, [0u8; SECTOR_SIZE]).unwrap();
-        let missing = root.join("missing.toml");
+        let missing = root.join("missing.yaml");
         fs::write(
             &missing,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"absent.img\"\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: absent.img\n",
         )
         .unwrap();
         assert!(
@@ -1085,10 +1089,10 @@ mod tests {
                 .contains("disk slot 0")
         );
 
-        let zero_rate = root.join("zero-rate.toml");
+        let zero_rate = root.join("zero-rate.yaml");
         fs::write(
             &zero_rate,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"disk.img\"\ntransfer_rate_bytes_per_second=0\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    transfer_rate_bytes_per_second: 0\n",
         )
         .unwrap();
         assert!(
@@ -1096,10 +1100,10 @@ mod tests {
                 .unwrap_err()
                 .contains("greater than zero")
         );
-        let negative_latency = root.join("negative-latency.toml");
+        let negative_latency = root.join("negative-latency.yaml");
         fs::write(
             &negative_latency,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"disk.img\"\naccess_latency_ms=-1\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    access_latency_ms: -1\n",
         )
         .unwrap();
         assert!(
@@ -1115,10 +1119,10 @@ mod tests {
         let root = temp_root();
         fs::write(root.join("fdd.img"), [0u8; SECTOR_SIZE]).unwrap();
         fs::write(root.join("hdd.img"), [0u8; SECTOR_SIZE]).unwrap();
-        let config = root.join("config.toml");
+        let config = root.join("config.yaml");
         fs::write(
             &config,
-            "[[disk]]\nslot=0\ntype=\"fdd\"\nimage=\"fdd.img\"\n[[disk]]\nslot=1\ntype=\"hdd\"\nimage=\"hdd.img\"\n",
+            "disk:\n  - slot: 0\n    type: fdd\n    image: fdd.img\n  - slot: 1\n    type: hdd\n    image: hdd.img\n",
         )
         .unwrap();
         let mut drives = Idc::load_drives(&config).unwrap();
@@ -1137,7 +1141,7 @@ mod tests {
     #[test]
     fn missing_config_leaves_all_slots_unconnected() {
         let root = temp_root();
-        let drives = Idc::load_drives(&root.join("config.toml")).unwrap();
+        let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
         assert!(drives.iter().all(Option::is_none));
         fs::remove_dir_all(root).unwrap();
     }

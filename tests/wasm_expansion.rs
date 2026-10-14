@@ -10,9 +10,10 @@ use std::io::{Cursor, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::rc::Rc;
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::{AtomicU64, Ordering};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
+static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 const CARD: &str = r#"
 (module
@@ -207,11 +208,8 @@ const ASSET_CARD: &str = r#"
 "#;
 
 fn temporary_directory() -> PathBuf {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let path = std::env::temp_dir().join(format!("cpt32-card-{}-{nonce}", std::process::id()));
+    let id = NEXT_TEMP_ID.fetch_add(1, Ordering::Relaxed);
+    let path = std::env::temp_dir().join(format!("cpt32-card-{}-{id}", std::process::id()));
     fs::create_dir(&path).unwrap();
     path
 }
@@ -220,15 +218,17 @@ fn write_card_package(path: &Path, module: &str, assets: &[(&str, &[u8])]) {
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let wasm = wat::parse_str(module).unwrap();
+    let asset_entries = assets
+        .iter()
+        .enumerate()
+        .map(|(id, (path, _))| format!("  - id: {id}\n    path: \"{path}\"\n"))
+        .collect::<String>();
     let manifest = format!(
-        "abi_version = 1\nmodule = \"card.wasm\"\n{}",
-        assets
-            .iter()
-            .enumerate()
-            .map(|(id, (path, _))| format!("\n[[asset]]\nid = {id}\npath = \"{path}\"\n"))
-            .collect::<String>()
+        "abi_version: 1\nmodule: card.wasm\n{}{}",
+        if assets.is_empty() { "" } else { "asset:\n" },
+        asset_entries
     );
-    archive.start_file("manifest.toml", options).unwrap();
+    archive.start_file("manifest.yaml", options).unwrap();
     archive.write_all(manifest.as_bytes()).unwrap();
     archive.start_file("card.wasm", options).unwrap();
     archive.write_all(&wasm).unwrap();
@@ -242,10 +242,10 @@ fn write_card_package(path: &Path, module: &str, assets: &[(&str, &[u8])]) {
 fn install_package(bus: &mut Bus, dir: &Path, slot: u8, module: &str, assets: &[(&str, &[u8])]) {
     let package = format!("slot-{slot}.cpt32card");
     write_card_package(&dir.join(&package), module, assets);
-    let config_path = dir.join(format!("slot-{slot}.toml"));
+    let config_path = dir.join(format!("slot-{slot}.yaml"));
     fs::write(
         &config_path,
-        format!("[[expansion_card]]\nslot = {slot}\npackage = \"{package}\"\n"),
+        format!("expansion_card:\n  - slot: {slot}\n    package: \"{package}\"\n"),
     )
     .unwrap();
     load_expansion_cards(&config_path, bus).unwrap();
@@ -256,10 +256,10 @@ fn package_assets_load_lazily_and_config_paths_are_relative() {
     let dir = temporary_directory();
     let package_path = dir.join("card.cpt32card");
     write_card_package(&package_path, ASSET_CARD, &[("assets/font.bin", &[0x5A])]);
-    let config_path = dir.join("config.toml");
+    let config_path = dir.join("config.yaml");
     fs::write(
         &config_path,
-        "[[expansion_card]]\nslot = 7\npackage = \"card.cpt32card\"\n",
+        "expansion_card:\n  - slot: 7\n    package: \"card.cpt32card\"\n",
     )
     .unwrap();
 
@@ -288,10 +288,10 @@ fn failed_package_load_does_not_register_earlier_slots() {
     let dir = temporary_directory();
     write_card_package(&dir.join("valid.cpt32card"), SIMPLE_CARD, &[]);
     fs::write(dir.join("broken.cpt32card"), b"not a ZIP archive").unwrap();
-    let config = dir.join("config.toml");
+    let config = dir.join("config.yaml");
     fs::write(
         &config,
-        "[[expansion_card]]\nslot = 0\npackage = \"valid.cpt32card\"\n\n[[expansion_card]]\nslot = 1\npackage = \"broken.cpt32card\"\n",
+        "expansion_card:\n  - slot: 0\n    package: \"valid.cpt32card\"\n  - slot: 1\n    package: \"broken.cpt32card\"\n",
     )
     .unwrap();
 
@@ -315,8 +315,8 @@ fn monitor_entrypoint_loads_card_package_from_config() {
         &[("assets/font.bin", &[0x5A])],
     );
     fs::write(
-        dir.join("config.toml"),
-        "[[expansion_card]]\nslot = 0\npackage = \"card.cpt32card\"\n",
+        dir.join("config.yaml"),
+        "expansion_card:\n  - slot: 0\n    package: \"card.cpt32card\"\n",
     )
     .unwrap();
 
@@ -351,8 +351,8 @@ fn headless_testbench_entrypoint_loads_card_package_from_config() {
     let dir = temporary_directory();
     write_card_package(&dir.join("card.cpt32card"), SIMPLE_CARD, &[]);
     fs::write(
-        dir.join("config.toml"),
-        "[[expansion_card]]\nslot = 0\npackage = \"card.cpt32card\"\n",
+        dir.join("config.yaml"),
+        "expansion_card:\n  - slot: 0\n    package: \"card.cpt32card\"\n",
     )
     .unwrap();
     let image = dir.join("halt.bin");
@@ -465,10 +465,10 @@ fn generated_card_module(
 }
 
 fn write_package_config(dir: &Path, slot: u8, package: &str) -> PathBuf {
-    let config = dir.join("config.toml");
+    let config = dir.join("config.yaml");
     fs::write(
         &config,
-        format!("[[expansion_card]]\nslot = {slot}\npackage = \"{package}\"\n"),
+        format!("expansion_card:\n  - slot: {slot}\n    package: \"{package}\"\n"),
     )
     .unwrap();
     config
@@ -528,27 +528,27 @@ fn invalid_slots_duplicate_slots_and_missing_packages_fail_before_registration()
     let cases = [
         (
             "duplicate slots",
-            "[[expansion_card]]\nslot = 0\npackage = \"first.cpt32card\"\n[[expansion_card]]\nslot = 0\npackage = \"second.cpt32card\"\n",
+            "expansion_card:\n  - slot: 0\n    package: \"first.cpt32card\"\n  - slot: 0\n    package: \"second.cpt32card\"\n",
             "duplicate slot",
         ),
         (
             "out-of-range slot",
-            "[[expansion_card]]\nslot = 8\npackage = \"missing.cpt32card\"\n",
+            "expansion_card:\n  - slot: 8\n    package: \"missing.cpt32card\"\n",
             "slot must be 0..7",
         ),
         (
             "missing package",
-            "[[expansion_card]]\nslot = 3\npackage = \"missing.cpt32card\"\n",
+            "expansion_card:\n  - slot: 3\n    package: \"missing.cpt32card\"\n",
             "missing.cpt32card",
         ),
         (
             "invalid slot type",
-            "[[expansion_card]]\nslot = \"0\"\npackage = \"bad-type.cpt32card\"\n",
+            "expansion_card:\n  - slot: \"0\"\n    package: \"bad-type.cpt32card\"\n",
             "bad-type.cpt32card",
         ),
     ];
     for (label, contents, diagnostic) in cases {
-        let config = dir.join("config.toml");
+        let config = dir.join("config.yaml");
         fs::write(&config, contents).unwrap();
         let mut bus = Bus::new();
         let error = load_expansion_cards(&config, &mut bus).unwrap_err();
@@ -723,9 +723,9 @@ fn irq_asserted_during_module_start_is_latched_when_controller_attaches() {
 fn missing_or_unconfigured_config_leaves_expansion_slots_empty() {
     let dir = temporary_directory();
     let mut bus = Bus::new();
-    load_expansion_cards(&dir.join("missing.toml"), &mut bus).unwrap();
-    fs::write(dir.join("config.toml"), "[pcg]\n").unwrap();
-    load_expansion_cards(&dir.join("config.toml"), &mut bus).unwrap();
+    load_expansion_cards(&dir.join("missing.yaml"), &mut bus).unwrap();
+    fs::write(dir.join("config.yaml"), "pcg: {}\n").unwrap();
+    load_expansion_cards(&dir.join("config.yaml"), &mut bus).unwrap();
     assert!(
         !bus.memory_map()
             .any(|region| (EXPANSION_BASE..0xB000_0000).contains(&region.start))

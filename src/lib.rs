@@ -6,9 +6,9 @@ pub mod music;
 pub mod sys;
 pub mod wav;
 pub mod devices {
-    pub mod expansion;
     pub mod bmc;
     pub mod cpu;
+    pub mod expansion;
     pub mod dmac {
         pub mod dmac;
     }
