@@ -56,3 +56,27 @@ def test_lsp_accepts_assignment_to_function_arguments():
         finally:
             if process.poll() is None:
                 process.kill()
+
+def test_lsp_accepts_namespace_blocks_and_aliased_includes(tmp_path):
+    bundled_server = SERVER.parents[1] / "vscode-sol-syntax" / "server" / "sol_language_server.py"
+    library = tmp_path / "library.sol"
+    library.write_text(
+        "fn increment (value) : value 1 add ret ;\n"
+        "fn answer () : 41 increment ret ;\n",
+        encoding="utf-8",
+    )
+    source = f'!include "{library.as_posix()}" as lib\nlib.answer'
+    analyze = (
+        "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from sol_language_server import Server; "
+        "print(json.dumps(Server().analyze(sys.argv[2],sys.argv[3])))"
+    )
+
+    for server in (SERVER, bundled_server):
+        result = subprocess.run(
+            [sys.executable, "-c", analyze, str(server.parent), "file:///tmp/namespace.sol", source],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        assert json.loads(result.stdout) == []

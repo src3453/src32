@@ -47,14 +47,22 @@ class SourceLocation(NamedTuple):
 
 
 class SourceToken(str):
-    """A token retaining the location from which the IR opcode was produced."""
+    """A token retaining source location and lexical namespace."""
 
     location: SourceLocation
+    namespace: str | None
 
-    def __new__(cls, value: str, location: SourceLocation):
+    def __new__(cls, value: str, location: SourceLocation, namespace: str | None = None):
         token = super().__new__(cls, value)
         token.location = location
+        token.namespace = namespace
         return token
+
+
+@dataclass(frozen=True)
+class NamespaceMarker:
+    namespace: str
+    entering: bool
 
 
 @dataclass(frozen=True)
@@ -341,8 +349,8 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
 
-    def expand_includes(tokens: list[str], current_base: str | None, seen: set[str]) -> list[str]:
-        out: list[str] = []
+    def expand_includes(tokens: list[str], current_base: str | None, seen: set[str]) -> list[SourceToken | RawAssemblyToken | NamespaceMarker]:
+        out: list[SourceToken | RawAssemblyToken | NamespaceMarker] = []
         i = 0
         while i < len(tokens):
             tok = tokens[i]
@@ -350,10 +358,16 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 if i + 1 >= len(tokens):
                     raise SolVMError("!include requires a filename")
                 fname_tok = tokens[i + 1]
-                if fname_tok.startswith('"') and fname_tok.endswith('"') and len(fname_tok) >= 2:
-                    fname = _decode_string_literal(fname_tok)
-                else:
-                    fname = fname_tok
+                fname = _decode_string_literal(fname_tok) if fname_tok.startswith('"') and fname_tok.endswith('"') else fname_tok
+                alias = None
+                consumed = 2
+                if i + 2 < len(tokens) and tokens[i + 2] == "as":
+                    if i + 3 >= len(tokens):
+                        raise SolVMError("!include as requires a namespace")
+                    alias = tokens[i + 3]
+                    if not LABEL_RE.fullmatch(alias):
+                        raise SolVMError(f"invalid include namespace: {alias}")
+                    consumed = 4
                 if current_base:
                     include_path = os.path.abspath(os.path.join(current_base, fname))
                 else:
@@ -363,10 +377,15 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 if not os.path.exists(include_path):
                     raise SolVMError(f"include file not found: {include_path}")
                 seen.add(include_path)
-                included_text = open(include_path, "r", encoding="utf-8").read()
+                with open(include_path, "r", encoding="utf-8") as included_file:
+                    included_text = included_file.read()
                 expanded = expand_includes(tokenize(included_text, include_path), os.path.dirname(include_path), seen)
+                if alias is not None:
+                    out.append(NamespaceMarker(alias, True))
                 out.extend(expanded)
-                i += 2
+                if alias is not None:
+                    out.append(NamespaceMarker(alias, False))
+                i += consumed
                 continue
             out.append(tok)
             i += 1
@@ -388,6 +407,20 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     functions: dict[str, dict] = {}
     irq_handlers: dict[int, str] = {}
     kept_functions: set[str] = set()
+    function_symbols: dict[tuple[str | None, str], str] = {}
+
+    def internal_function_name(namespace: str | None, name: str) -> str:
+        if namespace is None:
+            return name
+        return f"__solc_ns_{len(namespace)}_{namespace}_{len(name)}_{name}"
+
+    def resolve_function_name(name: str, namespace: str | None) -> str | None:
+        if "." in name:
+            qualifier, function_name = name.split(".", 1)
+            if not LABEL_RE.fullmatch(qualifier) or not LABEL_RE.fullmatch(function_name):
+                return None
+            return function_symbols.get((qualifier, function_name))
+        return function_symbols.get((namespace, name)) or function_symbols.get((None, name))
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
     forced_stack_size_seen = False
@@ -507,13 +540,14 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             return True
         return False
 
-    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, args_list: list[str] | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
+    def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, args_list: list[str] | None = None, namespace: str | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
         nonlocal next_string_addr, next_var_addr, stack_top, var_base, read_only_data_base, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
         terminal_ops = {"ret", "retn", "halt"}
         i = start_index
         while i < len(words):
             tok = words[i]
             location = getattr(tok, "location", None)
+            word_namespace = getattr(tok, "namespace", None) or namespace
 
             def emit(op: str, arg: int | str | None = None) -> None:
                 instructions.append(Instruction(op, arg, location=location))
@@ -540,7 +574,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             if tok == "if":
                 false_label = new_hidden_label("if_false")
                 emit("jnz", false_label)
-                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"else", "end"})
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, args_list=args_list, namespace=namespace, start_index=i + 1, stop_tokens={"else", "end"})
                 if i >= len(words):
                     raise error("if requires terminating end")
                 then_terminates = bool(instructions) and instructions[-1].op in terminal_ops
@@ -550,7 +584,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                         end_label = new_hidden_label("if_end")
                         emit("jmp", end_label)
                     labels[false_label] = len(instructions)
-                    i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                    i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, args_list=args_list, namespace=namespace, start_index=i + 1, stop_tokens={"end"})
                     if i >= len(words) or words[i] != "end":
                         raise error("else requires terminating end")
                     if end_label is not None:
@@ -566,7 +600,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             if tok == "while":
                 start_label = new_hidden_label("while_start")
                 labels[start_label] = len(instructions)
-                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, start_index=i + 1, stop_tokens={"end"})
+                i = compile_word_stream(words, current_func=current_func, locals_list=locals_list, args_list=args_list, namespace=namespace, start_index=i + 1, stop_tokens={"end"})
                 if i >= len(words) or words[i] != "end":
                     raise error("while requires terminating end")
                 emit("jz", start_label)
@@ -594,11 +628,12 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if i + 1 >= len(words):
                         raise SolVMError("!keepfn requires a function name")
                     name = words[i + 1]
-                    if not LABEL_RE.match(name):
+                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", name):
                         raise SolVMError(f"invalid function name for !keepfn: {name}")
-                    if name not in functions:
+                    function_name = resolve_function_name(name, word_namespace)
+                    if function_name is None:
                         raise error(f"unknown function for !keepfn: {name}")
-                    kept_functions.add(name)
+                    kept_functions.add(function_name)
                     i += 2
                     continue
                 setting_names = {
@@ -757,8 +792,9 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 i += 1
                 continue
 
-            if tok in functions:
-                emit("call", tok)
+            resolved_function = resolve_function_name(tok, word_namespace)
+            if resolved_function is not None:
+                emit("call", resolved_function)
                 i += 1
                 continue
 
@@ -809,12 +845,51 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     cleaned_tokens: list[str] = []
     if SOLC_DEBUG:
         print("DEBUG: entering first-pass function collection; tokens length=", len(tokens))
+    current_namespace: str | None = None
     while i < len(tokens):
         tok = tokens[i]
         if isinstance(tok, str) and tok.startswith("\\!"):
             tok = tok[1:]
         if SOLC_DEBUG and i % 50 == 0:
             print(f"DEBUG first-pass i={i} tok={tok}")
+        if isinstance(tok, NamespaceMarker):
+            if tok.entering:
+                if current_namespace is not None:
+                    raise SolVMError("namespaces cannot be nested")
+                current_namespace = tok.namespace
+            else:
+                if current_namespace != tok.namespace:
+                    raise SolVMError(f"mismatched include namespace: {tok.namespace}")
+                current_namespace = None
+            i += 1
+            continue
+        if tok == "!namespace":
+            if current_namespace is not None:
+                raise SolVMError("namespaces cannot be nested")
+            if i + 1 >= len(tokens) or not LABEL_RE.fullmatch(tokens[i + 1]):
+                raise SolVMError("!namespace requires a valid namespace name")
+            current_namespace = tokens[i + 1]
+            i += 2
+            if i < len(tokens) and tokens[i] == "-":
+                i += 1
+            continue
+        if tok == "!end" and current_namespace is not None:
+            current_namespace = None
+            i += 1
+            continue
+        if tok in {"!data", "!db"}:
+            end_index = i + 1
+            while end_index < len(tokens) and tokens[end_index] != "!end":
+                end_index += 1
+            if end_index >= len(tokens):
+                raise SolVMError(f"{tok} requires terminating !end")
+            cleaned_tokens.extend(
+                SourceToken(str(item), item.location, current_namespace)
+                if isinstance(item, SourceToken) else item
+                for item in tokens[i:end_index + 1]
+            )
+            i = end_index + 1
+            continue
         if tok == "fn":
             if i + 1 >= len(tokens):
                 raise SolVMError("fn requires a name")
@@ -877,10 +952,19 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if body_tokens[idx] == arg:
                         body_tokens[idx] = marker
 
-            if name in functions:
+            internal_name = internal_function_name(current_namespace, name)
+            symbol = (current_namespace, name)
+            if symbol in function_symbols or internal_name in functions:
                 raise SolVMError(f"duplicate function: {name}")
-            functions[name] = {"args": args, "body": body_tokens, "locals": locals_list}
-            irq_match = re.fullmatch(r"irq(\d+)", name)
+            function_symbols[symbol] = internal_name
+            functions[internal_name] = {
+                "args": args,
+                "body": body_tokens,
+                "locals": locals_list,
+                "namespace": current_namespace,
+                "source_name": name,
+            }
+            irq_match = re.fullmatch(r"irq(\d+)", name) if current_namespace is None else None
             if irq_match:
                 irq_number = int(irq_match.group(1))
                 if irq_number > 15:
@@ -893,33 +977,37 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             i = j + 1
             continue
 
+        if isinstance(tok, SourceToken):
+            tok = SourceToken(str(tok), tok.location, current_namespace)
         cleaned_tokens.append(tok)
         i += 1
+    if current_namespace is not None:
+        raise SolVMError(f"unterminated namespace: {current_namespace}")
 
     # Only emit functions reachable from the top-level program.  Function
     # bodies are compiled after the main program, so emitting every collected
     # definition would otherwise put dead code in the binary.  Expand macros
     # while walking the call graph because a macro may contain a function call.
-    def called_functions(words: list[str]) -> set[str]:
+    def called_functions(words: list[str], namespace: str | None = None) -> set[str]:
         called: set[str] = set()
 
-        def visit(word: str | RawAssemblyToken, seen_macros: set[str]) -> None:
+        def visit(word: str | RawAssemblyToken, seen_macros: set[str], word_namespace: str | None) -> None:
             if isinstance(word, RawAssemblyToken):
                 return
             if word.startswith("\\!"):
                 word = word[1:]
-            if word in functions:
-                called.add(word)
+            active_namespace = getattr(word, "namespace", None) or word_namespace
+            resolved = resolve_function_name(word, active_namespace)
+            if resolved is not None:
+                called.add(resolved)
                 return
-            if word not in macros:
-                return
-            if word in seen_macros:
+            if word not in macros or word in seen_macros:
                 return
             for part in macros[word]:
-                visit(part, seen_macros | {word})
+                visit(part, seen_macros | {word}, active_namespace)
 
         for word in words:
-            visit(word, set())
+            visit(word, set(), namespace)
         return called
 
     if remove_unused_functions:
@@ -932,12 +1020,12 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             if function_name in reachable_functions:
                 continue
             reachable_functions.add(function_name)
-            for called_name in called_functions(functions[function_name]["body"]):
+            for called_name in called_functions(functions[function_name]["body"], functions[function_name]["namespace"]):
                 if called_name not in reachable_functions:
                     pending_functions.append(called_name)
         unused_functions = set(functions) - reachable_functions
         for function_name in sorted(unused_functions):
-            logger.warning("unused function: %s", function_name)
+            logger.warning("unused function: %s", functions[function_name]["source_name"])
         functions = {
             name: data for name, data in functions.items() if name in reachable_functions
         }
@@ -962,7 +1050,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 instructions.append(Instruction("local_addr", local_index, location=init_location))
                 instructions.append(Instruction("st", location=init_location))
 
-        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list, args_list=fdata["args"])
+        compile_word_stream(body_tokens, current_func=fname, locals_list=locals_list, args_list=fdata["args"], namespace=fdata["namespace"])
 
         if len(instructions) == func_code_start or instructions[-1].op not in {"ret", "retn"}:
             instructions.append(Instruction("retn"))

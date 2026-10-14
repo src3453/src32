@@ -343,6 +343,38 @@ fn add_two (a b) :
     stack = vm.run_source(src)
     assert stack == [3]
 
+def test_namespaced_functions_resolve_qualified_and_sibling_calls():
+    source = """
+!namespace left -
+fn value () : 20 ret ;
+fn result () : value 22 add ret ;
+!end
+!namespace right -
+fn value () : 1 ret ;
+!end
+left.result right.value add
+"""
+
+    assert SolVM().run_source(source) == [43]
+
+
+def test_aliased_include_namespaces_functions_and_internal_calls(tmp_path):
+    library = tmp_path / "library.sol"
+    library.write_text(
+        "fn increment (value) : value 1 add ret ;\n"
+        "fn answer () : 41 increment ret ;\n",
+        encoding="utf-8",
+    )
+    source_path = tmp_path / "main.sol"
+    source = '!include "library.sol" as lib\nlib.answer'
+
+    assert SolVM().run_source(source, source_path=str(source_path)) == [42]
+
+
+def test_namespace_rejects_unknown_qualified_function():
+    with pytest.raises(SolVMError, match="unknown word: absent.function"):
+        compile_program("absent.function")
+
 
 def test_nested_function_calls():
     vm = SolVM()

@@ -323,6 +323,20 @@ fn add_two (a b) :
     assert "LD R13, [R26 + 8]" in asm
 
 
+def test_compile_namespaced_functions_to_internal_labels():
+    source = """
+!namespace math -
+fn sum (left right) : left right add ret ;
+!end
+1 2 math.sum
+"""
+
+    asm = compile_to_src32_asm(source)
+
+    assert "JAL __solc_ns_4_math_3_sum" in asm
+    assert "__solc_ns_4_math_3_sum:" in asm
+    Assembler().assemble(asm)
+
 def test_compile_removes_unused_functions_by_default_and_can_keep_them(caplog):
     src = """
 fn used () : 7 ret ;
