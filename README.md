@@ -140,6 +140,8 @@ driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止�
 | [SGC](doc/spec_SGC.md) | スプライトと 2D コマンド描画 |
 | [SGU](doc/spec_SGU.md) | 音源と音声出力 |
 | [PeC](doc/spec_PeC.md) | 周辺機器コントローラー |
+| [WASM expansion-card 開発ガイド](doc/WASM_expansion_card_development.md) | Rust `no_std` SDK、package 作成、host API、装着手順 |
+| [WASM Expansion Card ABI v1](doc/spec_WASM_expansion_card.md) | WASM module、host import、package、実行制限 |
 | [IDC](doc/spec_IDC.md) | ディスクコントローラー |
 
 ### チュートリアルと形式仕様

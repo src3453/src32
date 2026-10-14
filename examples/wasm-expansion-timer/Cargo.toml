@@ -1,0 +1,15 @@
+[package]
+name = "cpt32-wasm-timer-card"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+cpt32-wasm-expansion-card = { path = "../../sdk/wasm-expansion-card" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"

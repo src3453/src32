@@ -1,0 +1,9 @@
+[package]
+name = "cpt32-wasm-expansion-card"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "no_std SDK for CPT32 WASM expansion cards"
+
+[lib]
+path = "src/lib.rs"

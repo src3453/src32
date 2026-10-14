@@ -16,7 +16,7 @@ pcg:
 #     access_latency_ms: 0
 
 # WASM expansion cards use ZIP packages with a root manifest.yaml.
-# Asset entries are decompressed only when the guest first reads them.
+# Assets are decompressed only when the guest first reads them.
 # expansion_card:
 #   - slot: 0
 #     package: "plugins/timer.cpt32card"
