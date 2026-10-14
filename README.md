@@ -1,7 +1,7 @@
 # CPT32
 
 SRC32 CPU をベースにしたレトロ・モダン系ファンタジーコンソールと、その Rust 製エミュレータです。CPU と MMIO バスを中心に、VDP による画面合成、VPU による 3D 描画、SGC による 2D 描画、SGU による音声、DMA・割り込み・周辺機器などを実装しています。仕様と実装の詳細は [ドキュメント一覧](#ドキュメント) を参照してください。
-
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/src3453/src32)
 ## 主な内容
 
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
