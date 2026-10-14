@@ -450,6 +450,8 @@ impl GuiApp {
                 });
         }
 
+        cpt32::devices::expansion::load_expansion_cards(Path::new("config.toml"), &mut bus)
+            .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
                 let slots = initial_gamepad_slots(&gilrs, &input_sender);

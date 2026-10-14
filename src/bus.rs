@@ -5,12 +5,15 @@
 // Internal Bus width: 32-bit address space (4GB), 32-bit data bus (8/16/32-bit access)
 // External Bus width: 32-bit address space (4GB), 32-bit data bus (8/16/32-bit access)
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
 use crate::devices::bmc::{Bmc, connect_bmc};
 use crate::devices::dmac::dmac::{Dmac, connect_dmac};
+use crate::devices::expansion::{
+    EXPANSION_BASE, EXPANSION_SLOT_COUNT, EXPANSION_SLOT_SIZE, ExpansionCard,
+};
 use crate::devices::irqc::irqc::IrqController;
 use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
 use crate::devices::pec::pec::PeCState;
@@ -37,6 +40,17 @@ pub trait Device {
     fn read(&mut self, addr: u32) -> u8;
     fn write(&mut self, addr: u32, value: u8);
     fn size(&self) -> u32;
+    fn next_event_cycle(&self) -> Option<u64> {
+        None
+    }
+    fn run_scheduled_event(&mut self, _cycle: u64) {}
+    fn is_faulted(&self) -> bool {
+        false
+    }
+    fn irq_asserted(&self) -> bool {
+        false
+    }
+    fn reset(&mut self) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -55,6 +69,9 @@ pub struct Bus {
     pec_input: Option<Arc<Mutex<PeCState>>>,
     pec_timing: Option<Rc<RefCell<PeCTimingState>>>,
     irq_controller: Option<Rc<RefCell<IrqController>>>,
+    system_cycles: u64,
+    cycle_clock: Rc<Cell<u64>>,
+    expansion_devices: [Option<usize>; 8],
 }
 
 impl Bus {
@@ -69,7 +86,18 @@ impl Bus {
             pec_input: None,
             pec_timing: None,
             irq_controller: None,
+            system_cycles: 0,
+            cycle_clock: Rc::new(Cell::new(0)),
+            expansion_devices: [None; 8],
         }
+    }
+
+    pub(crate) fn cycle_clock(&self) -> Rc<Cell<u64>> {
+        Rc::clone(&self.cycle_clock)
+    }
+
+    pub fn system_cycles(&self) -> u64 {
+        self.system_cycles
     }
 
     pub(crate) fn attach_bmc(&mut self, bmc: Rc<RefCell<Bmc>>) {
@@ -99,9 +127,29 @@ impl Bus {
         }
     }
 
-    pub(crate) fn advance_system_cycles(&mut self, cycles: u64) {
-        self.advance_pec_timing_cycles(cycles);
+    pub fn advance_system_cycles(&mut self, cycles: u64) {
+        let target = self.system_cycles.saturating_add(cycles);
+        self.run_due_expansion_events();
         self.refresh_device_irqs();
+        while self.system_cycles < target {
+            let now = self.system_cycles;
+            let mut next_cycle = target;
+            if let Some(until_irq) = self.cycles_until_pec_irq() {
+                next_cycle = next_cycle.min(now.saturating_add(until_irq.max(1)));
+            }
+            if let Some(deadline) = self
+                .next_expansion_event_cycle()
+                .filter(|&cycle| cycle > now)
+            {
+                next_cycle = next_cycle.min(deadline);
+            }
+            let elapsed = next_cycle - now;
+            self.advance_pec_timing_cycles(elapsed);
+            self.system_cycles = next_cycle;
+            self.cycle_clock.set(next_cycle);
+            self.run_due_expansion_events();
+            self.refresh_device_irqs();
+        }
     }
 
     pub(crate) fn cycles_until_pec_irq(&self) -> Option<u64> {
@@ -110,13 +158,97 @@ impl Bus {
             .and_then(|state| state.borrow().cycles_until_irq())
     }
 
-    pub(crate) fn attach_irq_controller(&mut self, irq: Rc<RefCell<IrqController>>) {
+    pub fn cycles_until_next_event(&self) -> Option<u64> {
+        let now = self.system_cycles;
+        let card_cycles = self
+            .next_expansion_event_cycle()
+            .map(|deadline| deadline.saturating_sub(now));
+        match (self.cycles_until_pec_irq(), card_cycles) {
+            (Some(pec), Some(card)) => Some(pec.min(card)),
+            (Some(pec), None) => Some(pec),
+            (None, Some(card)) => Some(card),
+            (None, None) => None,
+        }
+    }
+
+    fn next_expansion_event_cycle(&self) -> Option<u64> {
+        self.expansion_devices
+            .iter()
+            .flatten()
+            .filter_map(|&index| self.devices[index].device.next_event_cycle())
+            .min()
+    }
+
+    fn run_due_expansion_events(&mut self) {
+        let cycle = self.system_cycles;
+        for slot in 0..usize::from(EXPANSION_SLOT_COUNT) {
+            if let Some(index) = self.expansion_devices[slot] {
+                let device = &mut self.devices[index].device;
+                if device
+                    .next_event_cycle()
+                    .is_some_and(|deadline| deadline <= cycle)
+                {
+                    device.run_scheduled_event(cycle);
+                }
+            }
+        }
+    }
+
+    pub fn reset_expansion_cards(&mut self) {
+        for index in self.expansion_devices.iter().flatten().copied() {
+            self.devices[index].device.reset();
+        }
+        self.refresh_device_irqs();
+    }
+
+    pub(crate) fn install_expansion_cards(
+        &mut self,
+        mut cards: Vec<(u8, ExpansionCard)>,
+    ) -> Result<(), String> {
+        let mut slots = [false; EXPANSION_SLOT_COUNT as usize];
+        for (slot, card) in &cards {
+            if *slot >= EXPANSION_SLOT_COUNT || card.slot() != *slot {
+                return Err(format!(
+                    "expansion card slot mismatch: requested {slot}, card slot {}",
+                    card.slot()
+                ));
+            }
+            let slot_index = usize::from(*slot);
+            if slots[slot_index] || self.expansion_devices[slot_index].is_some() {
+                return Err(format!("expansion slot {slot} is already occupied"));
+            }
+            slots[slot_index] = true;
+            let address = EXPANSION_BASE + u32::from(*slot) * EXPANSION_SLOT_SIZE;
+            let end = address + EXPANSION_SLOT_SIZE;
+            for mapped in &self.devices {
+                let mapped_end = mapped.region.start + mapped.region.size;
+                if !(end <= mapped.region.start || address >= mapped_end) {
+                    return Err(format!(
+                        "expansion slot {slot} overlaps mapped device {}",
+                        mapped.region.name
+                    ));
+                }
+            }
+        }
+
+        cards.sort_unstable_by_key(|(slot, _)| *slot);
+        for (slot, card) in cards {
+            let address = EXPANSION_BASE + u32::from(slot) * EXPANSION_SLOT_SIZE;
+            self.add_device(address, "WASM expansion card", Box::new(card));
+            self.expansion_devices[usize::from(slot)] = Some(self.devices.len() - 1);
+        }
+        self.refresh_device_irqs();
+        Ok(())
+    }
+
+    pub fn attach_irq_controller(&mut self, irq: Rc<RefCell<IrqController>>) {
         self.irq_controller = Some(irq);
+        self.refresh_device_irqs();
     }
 
     /// Advance one 48 MHz system cycle and one bus arbitration opportunity.
     pub fn tick_devices(&mut self) {
-        self.advance_pec_timing_cycles(1);
+        self.advance_system_cycles(1);
         if let Some(dmac) = &self.dmac {
             dmac.borrow_mut().process_idc_abort_boundaries();
         }
@@ -175,6 +307,16 @@ impl Bus {
         Some(selected)
     }
 
+    fn expansion_slot_for_beat(address: u32, end: u32) -> Option<usize> {
+        let aperture_end = EXPANSION_BASE + u32::from(EXPANSION_SLOT_COUNT) * EXPANSION_SLOT_SIZE;
+        if !(EXPANSION_BASE..aperture_end).contains(&address) {
+            return None;
+        }
+        let slot = ((address - EXPANSION_BASE) / EXPANSION_SLOT_SIZE) as usize;
+        let slot_end = EXPANSION_BASE + (slot as u32 + 1) * EXPANSION_SLOT_SIZE;
+        (end <= slot_end).then_some(slot)
+    }
+
     fn execute_dma_op(
         &mut self,
         op: crate::devices::dmac::dmac::DmaOp,
@@ -195,12 +337,20 @@ impl Bus {
         }
 
         let end = op.address.checked_add(u32::from(op.width))?;
+        let expansion_slot = Self::expansion_slot_for_beat(op.address, end);
         let allowed = (op.address < 0x0100_0000 && end <= 0x0100_0000)
             || (op.address >= 0x1000_0000 && end <= 0x1040_0000)
             || (op.address >= 0x1800_0000 && end <= 0x1810_0000)
-            || (op.write && op.width == 4 && op.address == 0x8003_002C);
+            || (op.write && op.width == 4 && op.address == 0x8003_002C)
+            || expansion_slot.is_some();
         if !allowed || op.address % u32::from(op.width) != 0 {
             return None;
+        }
+        if let Some(slot) = expansion_slot {
+            let index = self.expansion_devices[slot]?;
+            if self.devices[index].device.is_faulted() {
+                return None;
+            }
         }
 
         if op.write {
@@ -212,7 +362,13 @@ impl Bus {
                 else {
                     return None;
                 };
+                if device.is_faulted() {
+                    return None;
+                }
                 device.write(offset, byte);
+                if device.is_faulted() {
+                    return None;
+                }
             }
             Some(op.value)
         } else {
@@ -222,7 +378,11 @@ impl Bus {
                 else {
                     return None;
                 };
-                value = (value << 8) | u32::from(device.read(offset));
+                let byte = device.read(offset);
+                if device.is_faulted() {
+                    return None;
+                }
+                value = (value << 8) | u32::from(byte);
             }
             Some(value)
         }
@@ -247,12 +407,19 @@ impl Bus {
             .pec_timing
             .as_ref()
             .is_some_and(|state| state.borrow().irq_asserted());
+        let expansion_pending: [bool; 8] = std::array::from_fn(|slot| {
+            self.expansion_devices[slot]
+                .is_some_and(|index| self.devices[index].device.irq_asserted())
+        });
         if let Some(irq) = &self.irq_controller {
             let mut irq = irq.borrow_mut();
             irq.set_source(1, dmac_pending);
             irq.set_source(2, idc_pending);
             irq.set_source(3, pec_pending);
             irq.set_source(4, pec_timing_pending);
+            for (slot, asserted) in expansion_pending.into_iter().enumerate() {
+                irq.set_source((slot + 5) as u8, asserted);
+            }
         }
     }
 
@@ -327,6 +494,7 @@ impl Bus {
             device,
         });
     }
+
     /// Iterate over mapped ranges in registration order without accessing devices.
     pub fn memory_map(&self) -> impl Iterator<Item = BusRegion> + '_ {
         self.devices.iter().map(|mapped| mapped.region)
@@ -364,6 +532,10 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device(addr) {
             let value = device.read(offset);
+            if device.is_faulted() {
+                self.bus_error = true;
+            }
+            self.refresh_device_irqs();
             self.release_cpu_access();
             return value;
         }
@@ -381,7 +553,13 @@ impl Bus {
             return self.idc.as_ref().map(|idc| idc.borrow().peek_data_byte());
         }
         if let Some((device, offset)) = self.find_device(addr) {
-            return Some(device.read(offset));
+            let value = device.read(offset);
+            let faulted = device.is_faulted();
+            if faulted {
+                self.bus_error = true;
+            }
+            self.refresh_device_irqs();
+            return Some(value);
         }
         self.bus_error = true;
         Some(0).filter(|_| self.access_source != BusAccessSource::Debugger)
@@ -391,6 +569,9 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device_mut(addr) {
             device.write(offset, value);
+            if device.is_faulted() {
+                self.bus_error = true;
+            }
             self.refresh_device_irqs();
             self.release_cpu_access();
             return;
@@ -452,4 +633,27 @@ pub fn connect_devices_with_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
 pub fn connect_bmc_dmac(bus: &mut Bus) {
     let bmc = connect_bmc(bus);
     let _dmac = connect_dmac(bus, bmc);
+}
+
+#[cfg(test)]
+mod expansion_dma_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn dma_beat_must_remain_inside_one_slot_window() {
+        let slot0_end = EXPANSION_BASE + EXPANSION_SLOT_SIZE;
+        assert_eq!(
+            Bus::expansion_slot_for_beat(slot0_end - 2, slot0_end),
+            Some(0)
+        );
+        assert_eq!(
+            Bus::expansion_slot_for_beat(slot0_end - 1, slot0_end),
+            Some(0)
+        );
+        assert_eq!(
+            Bus::expansion_slot_for_beat(slot0_end - 1, slot0_end + 1),
+            None
+        );
+        assert_eq!(Bus::expansion_slot_for_beat(0xB000_0000, 0xB000_0001), None);
+    }
 }

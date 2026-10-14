@@ -57,8 +57,9 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 - 1チャネルの転送長は1～`0xFFFFFFFF` byte。0 byteは開始エラー。
 - 転送幅は8/16/32-bitから選び、byte countは転送幅の倍数とする。source/destinationは転送幅に整列させる。
 - sourceとdestinationはそれぞれ固定または転送幅分のincrementを選択できる。初版ではdecrement、2D/stride、scatter-gather、chainingはサポートしない。
-- メモリ転送対象はMain RAM、VRAM、PCMRAM。MMIOは通常の転送先として不許可だが、既存の32-bit固定destination例外としてVPUの`FIFO_DATA` (`0x8003002C`)を許可する。加えてIDC仕様で定める場合に限り、唯一の追加MMIO endpoint `0x80041024` (PeC IDC `DATA`) を8-bit転送で使用できる。その他のMMIO、ROM、未定義領域は不許可とし、違反は当該チャネルのADDR_ERRORで停止する。
+- メモリ転送対象はMain RAM、VRAM、PCMRAM。MMIOは通常の転送先として不許可だが、既存の32-bit固定destination例外としてVPUの`FIFO_DATA` (`0x8003002C`)を許可する。加えてIDC仕様で定める場合に限り、唯一の追加MMIO endpoint `0x80041024` (PeC IDC `DATA`) を8-bit転送で使用できる。WASMカードendpointは次項に限り許可し、その他のMMIO、ROM、未定義領域は不許可とする。違反は当該チャネルのADDR_ERRORで停止する。
 - IDC endpoint例外の向きはIDC operationで固定する。READはsource=`0x80041024` fixed、destination=許可されたRAM increment、WRITEはsource=許可されたRAM increment、destination=`0x80041024` fixed。幅は8-bitのみ、byte countはactiveなIDC READ/WRITEの`SECTOR_COUNT × 512`と完全一致させる。VPU例外は既存どおり32-bit fixed destinationに限り、通常メモリDMA制約は変わらない。IDC endpointをこの形式以外で使う設定は開始時の設定エラー（`ERROR_CODE=1`）とする。
+- WASM拡張カードは装着slotのapertureをDMA endpointとして使用できる。beatの先頭byteから最終byteまでが同じ装着slot内に収まる場合に限り許可し、空slot、slot境界越え、fault状態cardへのアクセスはADDR_ERRORとする。転送はBMC仲裁と既存DMAC経路を通り、各byteはCPUと同じカードMMIO read/write exportへ届く。既存のVPU/IDC endpoint例外条件は変わらない。
 - 読み出しbeat完了後に書き込みbeatを発行する。途中エラー時は残りを中止し、既に書き込んだデータはロールバックしない。
 - sourceとdestinationが重なる場合の動作は逐次コピーと同じで、memmove相当の逆方向コピーは行わない。
 - 完了時にDONEを立てる。IRQ_ENABLEの該当チャネルbitが1なら共有IRQ1を要求する。IRQ_STATUSとDONEはソフトウェアがクリアする。

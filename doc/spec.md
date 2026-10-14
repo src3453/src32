@@ -225,6 +225,9 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 | 0x80040000 - 0x8004FFFF | 64KB | PeC (UART / RNG / input / quad timer / RTC / IDC) | RWS |
 | 0x80050000 - 0x8005FFFF | 64KB | DMAC | RWS |
 | 0x80060000 - 0x8006FFFF | 64KB | BMC | RWS |
+| 0xA0000000 - 0xAFFFFFFF | 256MB | WASM expansion card aperture (8 fixed slots; empty slots unmapped) | RWS |
+
+WASM拡張カードはslot `n`（`0..7`）ごとに`0xA0000000 + n * 0x02000000`をbaseとする32 MiB窓を占有します。WASM module ABI、package manifest、IRQ/DMA接続は[拡張カード仕様](spec_WASM_expansion_card.md)を参照してください。
 
 PeCのMMIOはUART、RNG、入力、クアッドタイマ、RTC、IDCの各領域を含む。タイマ／RTC詳細は[`spec_PeC.md`](spec_PeC.md)、IDC詳細は[`spec_IDC.md`](spec_IDC.md)を参照。
 

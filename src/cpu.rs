@@ -209,6 +209,7 @@ impl Cpu {
         self.state = CpuState::Fetch;
         self.instruction = None;
         self.cycles_left = 0;
+        self.bus.reset_expansion_cards();
         self.sync_register_block();
     }
 
@@ -1151,7 +1152,7 @@ impl Cpu {
                     let remaining = remaining.min(u128::from(u64::MAX)) as u64;
                     let skip = self
                         .bus
-                        .cycles_until_pec_irq()
+                        .cycles_until_next_event()
                         .map_or(remaining, |until_irq| remaining.min(until_irq));
                     if skip != 0 {
                         self.bus.advance_system_cycles(skip);

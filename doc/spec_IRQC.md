@@ -81,7 +81,15 @@ IRQC出力がhighのまま選択番号だけ変わった場合、CPU入力には
 | 2 | IDC | IDCのIRQ asserted状態。IDC内部のIRQ enableで通知を制御します。 |
 | 3 | PeC input | 入力イベントFIFOが非空の間high。FIFOが空になるとlowになります。 |
 | 4 | PeC quad timer / RTC | IRQ有効なタイマpendingまたはRTC alarm pendingがある間high。要因はPeC status/pendingで識別します。 |
-| 5–15 | 未割り当て | 現在の標準エミュレーター経路では未使用。 |
+| 5 | WASM expansion card slot 0 | slot 0 IRQ level。 |
+| 6 | WASM expansion card slot 1 | slot 1 IRQ level。 |
+| 7 | WASM expansion card slot 2 | slot 2 IRQ level。 |
+| 8 | WASM expansion card slot 3 | slot 3 IRQ level。 |
+| 9 | WASM expansion card slot 4 | slot 4 IRQ level。 |
+| 10 | WASM expansion card slot 5 | slot 5 IRQ level。 |
+| 11 | WASM expansion card slot 6 | slot 6 IRQ level。 |
+| 12 | WASM expansion card slot 7 | slot 7 IRQ level。 |
+| 13–15 | 未割り当て | 現在の標準エミュレーター経路では未使用。 |
 
 この割り当てはプラットフォームのsource配線です。IRQC自体は全16 sourceを受け付けます。
 

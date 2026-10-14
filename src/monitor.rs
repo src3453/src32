@@ -1,4 +1,5 @@
 use std::io::{self, Write};
+use std::path::Path;
 
 use cpt32::bus::Bus;
 use cpt32::cpu::{Cpu, InstructionMode};
@@ -123,6 +124,8 @@ pub fn run(program_path: Option<&str>) {
     connect_uart_with_stdin(&mut bus, false);
     connect_rng(&mut bus);
     let _sgu = connect_sgu(&mut bus);
+    cpt32::devices::expansion::load_expansion_cards(Path::new("config.toml"), &mut bus)
+        .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
     let mut cpu = Cpu::new(bus);
 
     if let Some(path) = program_path {
