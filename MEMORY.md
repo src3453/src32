@@ -210,3 +210,61 @@
   tests/tinybasic.rs と同条件) を常設化。`cargo test --bin cpt32` (GUI
   スキャフォールド 11 件) も通る。lib 単体テストは sqv4 golden 欠落の
   既知 issue で不可 (本件と無関係)。
+- TinyBASIC 構造化フロントエンド (`tinybasic.sol` 全面書き換え):
+  LEXER (行テキスト→`TB_TOK_BUF` の (type,value) 8B トークン列) +
+  PARSER (トークン列→20B AST ノード) + INTERPRETER (AST ツリーウォーク)。
+  行テキスト保管・番地 (`TB_LINE_BASE` 等 A-Z/`@(n)`/GOSUB/FOR 域) は旧来通り、
+  新規域は TOK 0x001B1000/行内文字列 0x001B2000/行ディレクトリ 0x001C0000
+  (lineNo,astRoot の 8B×1024)/AST ヒープ 0x00500000-0x00540000/文字列プール
+  0x00540000-0x00580000。RUN 時に全文を lex/parse して行ディレクトリを構築
+  し、直接モードも同一 lex/parse/exec 経路 (tb_pc=-1) で実行する。AST を歩く
+  `tb_emit_program/stmt/expr` が将来のコンパイラ backend の拡張点 (走査順序が契約)。
+  検証は `solc compile`→`asm.py`→`cargo test --test tinybasic
+  --test tinybasic_load_disk --test pipeline_guest_boot` +
+  `--test strek_micro` + `--test strek_verify` (Star Trek 実ゲームで
+  LOAD/FOR/GOSUB/配列/INPUT を網羅、約4分)。`probe_strek_tron` は別マシン絶対
+  パス参照の既存環境失敗で本件と無関係。
+- 構造化 TB 実装で踏んだ sol の落とし穴 (再発防止):
+  1. 条件結合の `and`/`or` 取り違えは即死級: OR 結合に `or` を使うと AND 判定に
+     なり、空白スキップも NUL/EOF 停止も function せず字句解析がトークン上限
+     (96) まで暴走する。OR→`and`、AND→`or` を機械的に確認すること
+     (grep で `eq (or|and)$` 等の全件監査が有効)。
+  2. AST ヒープ bump は直接モードのパースより前に初期化すること
+     (tb_repl 先頭で `TB_AST_BASE`/`TB_STR_POOL` 設定)。未初期化 (0) のまま
+     alloc するとゲスト 0 番地 (プログラム先頭) を破壊する。
+  3. LOAD/SAVE の命令コード (IDC 転送の 1/2) と SYS 文コード (7/8) を混同しない。
+     `tb_exec_disk` の分岐は `TB_SYS_LOAD` 等の名前付き const で書く。
+  4. `tb_store_input_line` は先頭空白を飛ばし、数字なし行は旧実装同様に黙って
+     無視する (strek-tb.bas は全行インデント付き。飛ばさないと全行 LINE RANGE)。
+  5. `ps_builtin` の ASC 分岐だけが VM/実機とも失敗する現象に遭遇
+     (同型の最小再現では正常動作するため solc の if/else 生成 quirk 疑い・未確定)。
+     回避策: ネスト if/else をやめ連続 flat-if＋早期 ret (旧 tb_primary と同形)
+     に書き換えたら解消。以降この種の分岐は flat-if を優先し、解消しない場合は
+     solc の if/else 生成 quirk (上記) を疑うこと。
+- sol ゲストの高速単体検証法: 対象関数を正規表現で抜き出し、const/!var を付けて
+  `SolVM().run_source` に流す (tools/solc の VM は sparse memory のため絶対番地
+  可、halt 不要)。字句→構文→評価の 27 ケースを秒単位で回してから実機テストに
+  進むと効率的。`remove_unused_functions` が未到達関数を消すため、到達不能な
+  参照があると `unknown word` で落ちる点に注意。
+- PeC keyboard hang after LOAD の診断: `EVENT_STATUS` (`0x80040034`) bit0=FIFO nonempty,
+  bit1=overflow; `0x03` はFIFOが非空かつoverflow sticky。`MousePosition` は1イベント
+  あたりdx/dyの2イベントをFIFOに積むため、マウス移動バーストが256枠を消費する。
+  guest `tb_read_line` はキー以外もFIFOからpopする。調査時の一時注入では status=3 を
+  scalar/pipeline両方で再現し、FIFO排出後にキー逐次入力→RUN→次コマンドまで成功。
+  `CPT32_PEC_TRACE=1` を起動前に設定すると GUI key mapping/send、PeC key FIFO push/pop/
+  overflow、高水位、およびIRQC source3 level/enable/pending clearを `[PEC-DBG]` で追跡可。
+  現象が続く環境ではCPU pause/fetch停止、またはFIFOが継続的に再充填されるかを別途
+  確認する。Backquote HID usage 53 は `tb_key_ascii` がASCII 96 (`) として出力し、
+  GUI `KeyCode::Backquote` もusage 53に割当済みなので、日本語半角/全角キーが
+  ` とSyntax Errorになるのは現行US-HID変換の既知動作。CPU選択は起動時
+  `--cpu scalar|pipeline` で上書き可能。 
+- TinyBASIC の LOAD 後入力回帰では、単に `LOADED` を表示するだけでなく、
+  LOAD→RUN→ロード済み `INPUT` 文へのキー入力→`PRINT` 出力まで実 CPU で確認する。
+  REPL への次コマンド入力と、プログラム実行中の `INPUT` は別経路なので両方を
+  個別に検証する。
+- `doc/cpt32-architecture.d2` is the architecture diagram source; `doc/cpt32-architecture.svg`
+  is its checked-in render embedded by `doc/cpt32-architecture.html`. Regenerate with D2 0.9:
+  `d2 --theme=200 doc/cpt32-architecture.d2 doc/cpt32-architecture.svg`. Nested graph references
+  must use full IDs (for example `emulator.core.cpu`); an abbreviated nonexistent path creates
+  an unintended D2 node and distorts the layout. D2 CLI was introduced with
+  `winget install --id Terrastruct.D2 --exact`.

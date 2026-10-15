@@ -1,6 +1,25 @@
 # TinyBASIC for CPT32, implemented in sol.
+#
+# Structured frontend: LEXER (source text -> token array) + PARSER
+# (token array -> AST nodes) + INTERPRETER (tree-walk over the AST).
+# The AST layer is also the extension point for a future compiler
+# backend: tb_emit_program / tb_emit_stmt / tb_emit_expr walk the same
+# nodes a code generator would consume (see CODEGEN HOOK section).
+#
 # Interactive PCG console; keyboard input comes from the PeC event FIFO.
-# Program lines are stored as plain source text (not tokenized).
+# Program lines are kept as plain source text (LIST / LOAD / SAVE work on
+# text), and RUN first builds a line directory of AST roots, then executes
+# the AST. Direct (line-number-less) input is lexed/parsed/executed the
+# same way, one line at a time.
+#
+# BASIC truth values are 1 (true) / 0 (false). Do not confuse them with
+# the sol convention (comparison true = 0, `if`/`while` run on 0).
+#
+# Edge semantics kept from the previous interpreter: FOR executes its
+# body at least once (the exit test lives in NEXT); LOAD/SAVE default to
+# 128 sectors with LBA 0; LOAD clamps to the disk capacity; LOAD or NEW
+# typed inside a running program stops it (the AST under execution would
+# otherwise go stale); BYE/QUIT halt the CPU.
 !include "sol/cpt32/pcg.sol"
 !include "sol/cpt32/pec_rng.sol"
 !include "sol/cpt32/irqc.sol"
@@ -21,10 +40,25 @@
 !const TB_INPUT_BASE 0x001B0000
 !const TB_WORD_BASE 0x001B0100
 !const TB_TEMP_BASE 0x001B0200
+# Lexer output: token array, 8 bytes per entry (type, value).
+!const TB_TOK_BUF 0x001B1000
+!const TB_TOK_MAX 96
+# Lexer scratch for the NUL-terminated bytes of one line's strings.
+!const TB_STR_BUF 0x001B2000
+# Line directory: 8 bytes per entry (lineNo, astRoot).
+!const TB_LINE_DIR 0x001C0000
+!const TB_DIR_MAX 1024
+# AST heap: 20-byte nodes (kind, value, a, b, c).
+!const TB_AST_BASE 0x00500000
+!const TB_AST_LIMIT 0x00540000
+# Persistent string pool for AST string literals (lexer scratch is per line).
+!const TB_STR_POOL 0x00540000
+!const TB_STR_POOL_LIMIT 0x00580000
 !const TB_DISK_BASE 0x00400000
 !const TB_MAX_LINE 9999
 !const TB_MAX_TEXT 120
 !const TB_ARRAY_SIZE 1000
+# Token types. Single-character operators keep their ASCII codes.
 !const TB_TOKEN_EOF 0
 !const TB_TOKEN_NUMBER 1
 !const TB_TOKEN_STRING 2
@@ -66,231 +100,201 @@
 !const TB_TOKEN_SAVE 290
 !const TB_TOKEN_TRON 291
 !const TB_TOKEN_TROFF 292
+# AST node kinds (expressions).
+!const TB_N_NUM 1
+!const TB_N_STR 2
+!const TB_N_VAR 3
+!const TB_N_ARR 4
+!const TB_N_BINOP 5
+!const TB_N_UNOP 6
+!const TB_N_CALL 7
+# AST node kinds (statements and print items; c links same-line siblings).
+!const TB_S_PRINT 11
+!const TB_PI_STR 12
+!const TB_PI_EXPR 13
+!const TB_PI_SEP 14
+!const TB_S_LET 16
+!const TB_S_ARRLET 17
+!const TB_S_INPUT 18
+!const TB_S_GOTO 19
+!const TB_S_GOSUB 20
+!const TB_S_RETURN 21
+!const TB_S_IF 22
+!const TB_S_FOR 23
+!const TB_S_NEXT 24
+!const TB_S_SYS 25
+# Binary operator codes.
+!const TB_OP_ADD 1
+!const TB_OP_SUB 2
+!const TB_OP_MUL 3
+!const TB_OP_DIV 4
+!const TB_OP_IDIV 5
+!const TB_OP_MOD 6
+!const TB_OP_POW 7
+!const TB_OP_EQ 8
+!const TB_OP_LT 9
+!const TB_OP_GT 10
+!const TB_OP_LE 11
+!const TB_OP_GE 12
+!const TB_OP_NE 13
+!const TB_OP_AND 14
+!const TB_OP_OR 15
+# Unary operator codes and builtin function ids.
+!const TB_U_NEG 1
+!const TB_U_NOT 2
+!const TB_F_ABS 1
+!const TB_F_SGN 2
+!const TB_F_ASC 3
+!const TB_F_RND 4
+# System statement codes (RUN/LIST/.../BYE).
+!const TB_SYS_RUN 1
+!const TB_SYS_LIST 2
+!const TB_SYS_NEW 3
+!const TB_SYS_CLEAR 4
+!const TB_SYS_CLS 5
+!const TB_SYS_HELP 6
+!const TB_SYS_LOAD 7
+!const TB_SYS_SAVE 8
+!const TB_SYS_TRON 9
+!const TB_SYS_TROFF 10
+!const TB_SYS_END 11
+!const TB_SYS_BYE 12
 
-# Shared lexer and interpreter state.
-!var tb_src 0
-!var tb_pos 0
-!var tb_tok_start 0
-!var tb_tok_end 0
-!var tb_tok 0
-!var tb_num 0
-!var tb_word_len 0
-!var tb_string 0
-!var tb_line 0
-!var tb_next_line 0
-!var tb_running 0
-!var tb_direct 0
+# Lexer state.
+!var tb_ntok 0
+!var tb_str_used 0
+# Parser state (token cursor).
+!var ps_pos 0
+# AST allocators.
+!var tb_ast_bump 0
+!var tb_str_pool 0
+# Program: line directory (#entries), execution cursor, control flags.
+!var tb_nlines 0
+!var tb_pc 0
+!var tb_cur 0
 !var tb_stop 0
 !var tb_jump 0
+!var tb_line 0
 !var tb_error 0
-!var tb_shift 0
-!var tb_caps 0
 !var tb_trace 0
 !var tb_gsp 0
 !var tb_fsp 0
-!var tb_seed 1
+!var tb_shift 0
+!var tb_caps 0
 !var tb_disk_pos 0
 !var tb_disk_limit 0
 
-fn tb_src_byte (offset) :
-    tb_src offset add ldb ret
+# ---------------- line text storage ----------------
+
+fn tb_line_addr (line) :
+    TB_LINE_BASE line TB_LINE_STRIDE mul add ret
 ;
 
-fn tb_word_byte (offset) :
-    TB_WORD_BASE offset add ldb ret
-;
-
-# Return 0 when the current lowercase identifier equals the supplied string.
-fn tb_word_is (text) :
+fn tb_copy_line (source destination) :
     local i 0
-    local a 0
-    local b 0
+    local ch 0
     while
-        i tb_word_byte >a
-        text i add ldb >b
-        a b eq
+        source i add ldb >ch
+        ch 0 neq i TB_MAX_TEXT lt or
         if
-            a 0 eq
-            if
-                0 ret
-            end
+            ch destination i add stb
             i 1 add >i
             0
         else
             1
         end
     end
-    1 ret
+    0 destination i add stb
 ;
 
-fn tb_skip_space () :
+# Parse the leading line number of TB_INPUT_BASE and store/delete the
+# remainder as program text. No lexer state is used here.
+fn tb_store_input_line () :
+    local line 0
+    local pos 0
     local ch 0
     while
-        tb_pos tb_src_byte >ch
-        ch 32 eq
+        TB_INPUT_BASE pos add ldb >ch
+        ch 32 eq ch 9 eq and
+        if pos 1 add >pos 0 else 1 end
+    end
+    ch 48 lt ch 57 gt and if retn end
+    while
+        TB_INPUT_BASE pos add ldb >ch
+        ch 48 ge ch 57 le or
         if
-            tb_pos 1 add >tb_pos
+            line 10 mul ch 48 sub add >line
+            pos 1 add >pos
             0
         else
-            ch 9 eq
-            if
-                tb_pos 1 add >tb_pos
-                0
-            else
-                1
-            end
+            1
         end
     end
-;
-
-fn tb_next () :
-    local ch 0
-    local value 0
-    local digit 0
-    local addr 0
-    tb_skip_space
-    tb_pos >tb_tok_start
-    tb_pos tb_src_byte >ch
-    ch >tb_tok
+    line 1 lt line TB_MAX_LINE gt and if
+        "LINE RANGE" tb_print_string tb_newline
+        retn
+    end
+    while
+        TB_INPUT_BASE pos add ldb >ch
+        ch 32 eq ch 9 eq and
+        if pos 1 add >pos 0 else 1 end
+    end
     ch 0 eq if
-        TB_TOKEN_EOF >tb_tok
-        tb_pos >tb_tok_end
-        retn
-    end
-    ch 39 eq if
-        TB_TOKEN_EOF >tb_tok
-        retn
-    end
-    ch 34 eq if
-        tb_pos 1 add >tb_pos
-        0 >value
-        while
-            tb_pos tb_src_byte >ch
-            ch 0 neq
-            if
-                ch 34 neq
-                if
-                    ch TB_TEMP_BASE value add stb
-                    value 1 add >value
-                    tb_pos 1 add >tb_pos
-                    0
-                else
-                    1
-                end
-            else
-                1
-            end
-        end
-        0 TB_TEMP_BASE value add stb
-        TB_TEMP_BASE >tb_string
-        tb_pos >tb_tok_end
-        tb_pos 1 add >tb_pos
-        TB_TOKEN_STRING >tb_tok
-        retn
-    end
-    ch 48 ge ch 57 le or if
-        0 >value
-        while
-            tb_pos tb_src_byte >ch
-            ch 48 ge ch 57 le or
-            if
-                ch 48 sub >digit
-                value 10 mul digit add >value
-                tb_pos 1 add >tb_pos
-                0
-            else
-                1
-            end
-        end
-        value >tb_num
-        TB_TOKEN_NUMBER >tb_tok
-        tb_pos >tb_tok_end
-        retn
-    end
-    ch 65 ge ch 90 le or
-    ch 97 ge ch 122 le or and if
-        0 >tb_word_len
-        while
-            tb_pos tb_src_byte >ch
-            ch 65 ge ch 90 le or
-            ch 97 ge ch 122 le or and
-            ch 48 ge ch 57 le or and
-            if
-                ch 65 ge ch 90 le or if
-                    ch 32 add >ch
-                end
-                TB_WORD_BASE tb_word_len add >addr
-                ch addr stb
-                tb_word_len 1 add >tb_word_len
-                tb_pos 1 add >tb_pos
-                0
-            else
-                1
-            end
-        end
-        0 TB_WORD_BASE tb_word_len add stb
-        TB_TOKEN_IDENT >tb_tok
-        # Translate the language keywords to dedicated token codes.
-        "and" tb_word_is 0 eq if TB_TOKEN_AND >tb_tok end
-        "or" tb_word_is 0 eq if TB_TOKEN_OR >tb_tok end
-        "not" tb_word_is 0 eq if TB_TOKEN_NOT >tb_tok end
-        "mod" tb_word_is 0 eq if TB_TOKEN_MOD >tb_tok end
-        "abs" tb_word_is 0 eq if TB_TOKEN_ABS >tb_tok end
-        "asc" tb_word_is 0 eq if TB_TOKEN_ASC >tb_tok end
-        "rnd" tb_word_is 0 eq if TB_TOKEN_RND >tb_tok end
-        "irnd" tb_word_is 0 eq if TB_TOKEN_RND >tb_tok end
-        "sgn" tb_word_is 0 eq if TB_TOKEN_SGN >tb_tok end
-        "let" tb_word_is 0 eq if TB_TOKEN_LET >tb_tok end
-        "print" tb_word_is 0 eq if TB_TOKEN_PRINT >tb_tok end
-        "input" tb_word_is 0 eq if TB_TOKEN_INPUT >tb_tok end
-        "if" tb_word_is 0 eq if TB_TOKEN_IF >tb_tok end
-        "then" tb_word_is 0 eq if TB_TOKEN_THEN >tb_tok end
-        "goto" tb_word_is 0 eq if TB_TOKEN_GOTO >tb_tok end
-        "gosub" tb_word_is 0 eq if TB_TOKEN_GOSUB >tb_tok end
-        "return" tb_word_is 0 eq if TB_TOKEN_RETURN >tb_tok end
-        "for" tb_word_is 0 eq if TB_TOKEN_FOR >tb_tok end
-        "to" tb_word_is 0 eq if TB_TOKEN_TO >tb_tok end
-        "next" tb_word_is 0 eq if TB_TOKEN_NEXT >tb_tok end
-        "run" tb_word_is 0 eq if TB_TOKEN_RUN >tb_tok end
-        "list" tb_word_is 0 eq if TB_TOKEN_LIST >tb_tok end
-        "new" tb_word_is 0 eq if TB_TOKEN_NEW >tb_tok end
-        "clear" tb_word_is 0 eq if TB_TOKEN_CLEAR >tb_tok end
-        "cls" tb_word_is 0 eq if TB_TOKEN_CLS >tb_tok end
-        "end" tb_word_is 0 eq if TB_TOKEN_END >tb_tok end
-        "stop" tb_word_is 0 eq if TB_TOKEN_STOP >tb_tok end
-        "rem" tb_word_is 0 eq if TB_TOKEN_REM >tb_tok end
-        "help" tb_word_is 0 eq if TB_TOKEN_HELP >tb_tok end
-        "quit" tb_word_is 0 eq if TB_TOKEN_QUIT >tb_tok end
-        "bye" tb_word_is 0 eq if TB_TOKEN_BYE >tb_tok end
-        "load" tb_word_is 0 eq if TB_TOKEN_LOAD >tb_tok end
-        "save" tb_word_is 0 eq if TB_TOKEN_SAVE >tb_tok end
-        "tron" tb_word_is 0 eq if TB_TOKEN_TRON >tb_tok end
-        "troff" tb_word_is 0 eq if TB_TOKEN_TROFF >tb_tok end
-        tb_pos >tb_tok_end
-        retn
-    end
-    tb_pos 1 add >tb_pos
-    ch 60 eq if
-        tb_pos tb_src_byte >value
-        value 61 eq if 264 >tb_tok tb_pos 1 add >tb_pos end
-        value 62 eq if 266 >tb_tok tb_pos 1 add >tb_pos end
+        0 line tb_line_addr stb
     else
-        ch 62 eq if
-            tb_pos tb_src_byte >value
-            value 61 eq if 265 >tb_tok tb_pos 1 add >tb_pos end
+        TB_INPUT_BASE pos add line tb_line_addr tb_copy_line
+    end
+;
+
+fn tb_clear_program () :
+    local line 1
+    local addr 0
+    while
+        line TB_MAX_LINE le
+        if
+            line tb_line_addr >addr
+            addr 0 stb
+            line 1 add >line
+            0
+        else
+            1
         end
     end
-    tb_pos >tb_tok_end
+    0 >tb_nlines
 ;
 
-fn tb_expect (token) :
-    tb_tok token eq if
-        tb_next
-        0 ret
+fn tb_list_program () :
+    local line 1
+    local addr 0
+    while
+        line TB_MAX_LINE le
+        if
+            line tb_line_addr >addr
+            addr ldb 0 neq
+            if
+                line tb_print_number
+                32 tb_putc
+                addr tb_print_string
+                tb_newline
+            end
+            line 1 add >line
+            0
+        else
+            1
+        end
     end
-    1 ret
 ;
 
+fn tb_help () :
+    "TinyBASIC: LET, PRINT, INPUT, IF/THEN, GOTO, GOSUB/RETURN," tb_print_string tb_newline
+    "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" tb_print_string tb_newline
+    "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," tb_print_string tb_newline
+    "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." tb_print_string tb_newline
+    "PRINT: , tab, ; no newline, #N right-justifies next number." tb_print_string tb_newline
+    "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." tb_print_string tb_newline
+;
+
+# ---------------- variables ----------------
 
 fn tb_get_var (index) :
     TB_VAR_BASE index 2 shl add ld ret
@@ -305,175 +309,61 @@ fn tb_array_store (index value) :
     value TB_ARRAY_BASE index 2 shl add st
 ;
 
-fn tb_precedence (token) :
-    token TB_TOKEN_OR eq if 1 ret end
-    token TB_TOKEN_AND eq if 2 ret end
-    token 61 eq if 4 ret end
-    token 60 eq if 4 ret end
-    token 62 eq if 4 ret end
-    token 264 eq if 4 ret end
-    token 265 eq if 4 ret end
-    token 266 eq if 4 ret end
-    token 43 eq if 5 ret end
-    token 45 eq if 5 ret end
-    token 42 eq if 6 ret end
-    token 47 eq if 6 ret end
-    token 92 eq if 6 ret end
-    token TB_TOKEN_MOD eq if 6 ret end
-    token 94 eq if 8 ret end
-    0 ret
-;
-
-# Evaluate a primary, function call, or unary expression.
-fn tb_primary () :
-    local value 0
-    local index 0
-    local ch 0
-    tb_tok TB_TOKEN_NUMBER eq if
-        tb_num >value
-        tb_next
-        value ret
-    end
-    tb_tok 45 eq if
-        tb_next
-        7 tb_expression neg ret
-    end
-    tb_tok 43 eq if
-        tb_next
-        7 tb_expression ret
-    end
-    tb_tok TB_TOKEN_NOT eq if
-        tb_next
-        3 tb_expression >value
-        value 0 eq if 1 ret else 0 ret end
-    end
-    tb_tok 40 eq if
-        tb_next
-        0 tb_expression >value
-        41 tb_expect drop
-        value ret
-    end
-    tb_tok 64 eq if
-        tb_next
-        40 tb_expect drop
-        0 tb_expression >index
-        41 tb_expect drop
-        index 0 lt if 0 ret end
-        index TB_ARRAY_SIZE ge if 0 ret end
-        TB_ARRAY_BASE index 2 shl add ld ret
-    end
-    tb_tok TB_TOKEN_ABS eq if
-        tb_next 40 tb_expect drop
-        0 tb_expression >value
-        41 tb_expect drop
-        value 0 lt if value neg >value end
-        value ret
-    end
-    tb_tok TB_TOKEN_SGN eq if
-        tb_next 40 tb_expect drop
-        0 tb_expression >value
-        41 tb_expect drop
-        value 0 gt if 1 ret end
-        value 0 lt if -1 ret end
-        0 ret
-    end
-    tb_tok TB_TOKEN_ASC eq if
-        tb_next 40 tb_expect drop
-        tb_tok TB_TOKEN_STRING eq if
-            tb_string ldb >value
-            tb_next
-        else
-            0 tb_expression >value
-        end
-        41 tb_expect drop
-        value ret
-    end
-    tb_tok TB_TOKEN_RND eq if
-        tb_next 40 tb_expect drop
-        0 tb_expression >value
-        41 tb_expect drop
-        value 0 le if 0 ret end
-        rand value mod 1 add ret
-    end
-    tb_tok TB_TOKEN_IDENT eq if
-        0 tb_word_byte >ch
-        ch 97 sub >index
-        tb_next
-        index 0 ge index 26 lt or if
-            index tb_get_var ret
-        end
-        0 ret
-    end
-    1 >tb_error
-    tb_next
-    0 ret
-;
-
-fn tb_power (base exponent) :
-    local result 1
-    local factor 0
-    local power 0
-    base >factor
-    exponent >power
-    power 0 lt if 0 ret end
+fn tb_clear_variables () :
+    local i 0
     while
-        power 0 gt
+        i 26 lt
         if
-            power 1 and 0 neq if result factor mul >result end
-            factor factor mul >factor
-            power 1 shr >power
+            0 TB_VAR_BASE i 2 shl add st
+            i 1 add >i
             0
         else
             1
         end
     end
-    result ret
-;
-# Precedence-climbing integer expression parser. BASIC comparisons yield 1/0.
-fn tb_expression (minimum) :
-    local lhs 0
-    local rhs 0
-    local op 0
-    local prec 0
-    local done 0
-    tb_primary >lhs
-    0 >done
+    0 >i
     while
-        tb_tok tb_precedence >prec
-        prec 0 gt prec minimum ge or if
-            tb_tok tb_precedence >prec
-            tb_tok >op
-            tb_next
-            prec 8 eq if
-                prec tb_expression >rhs
-            else
-                prec 1 add tb_expression >rhs
-            end
-            op 43 eq if lhs rhs add >lhs end
-            op 45 eq if lhs rhs sub >lhs end
-            op 42 eq if lhs rhs mul >lhs end
-            op 47 eq op 92 eq and if
-                rhs 0 eq if 1 >tb_error 0 >lhs else lhs rhs div >lhs end
-            end
-            op TB_TOKEN_MOD eq if
-                rhs 0 eq if 1 >tb_error 0 >lhs else lhs rhs mod >lhs end
-            end
-            op 94 eq if lhs rhs tb_power >lhs end
-            op 61 eq if lhs rhs eq if 1 >lhs else 0 >lhs end end
-            op 60 eq if lhs rhs lt if 1 >lhs else 0 >lhs end end
-            op 62 eq if lhs rhs gt if 1 >lhs else 0 >lhs end end
-            op 264 eq if lhs rhs le if 1 >lhs else 0 >lhs end end
-            op 265 eq if lhs rhs ge if 1 >lhs else 0 >lhs end end
-            op 266 eq if lhs rhs neq if 1 >lhs else 0 >lhs end end
-            op TB_TOKEN_AND eq if lhs rhs and >lhs end
-            op TB_TOKEN_OR eq if lhs rhs or >lhs end
+        i TB_ARRAY_SIZE lt
+        if
+            0 TB_ARRAY_BASE i 2 shl add st
+            i 1 add >i
             0
         else
             1
         end
     end
-    lhs ret
 ;
+
+fn tb_input_value () :
+    local pos 0
+    local sign 1
+    local value 0
+    local ch 0
+    TB_INPUT_BASE ldb >ch
+    ch 45 eq if
+        -1 >sign
+        1 >pos
+    else
+        ch 43 eq if 1 >pos end
+    end
+    while
+        TB_INPUT_BASE pos add ldb >ch
+        ch 48 ge ch 57 le or
+        if
+            value 10 mul ch 48 sub add >value
+            pos 1 add >pos
+            0
+        else
+            1
+        end
+    end
+    pos 0 eq if
+        TB_INPUT_BASE ldb >value
+    end
+    value sign mul ret
+;
+
+# ---------------- console output ----------------
 
 fn tb_putc (char) :
     char 13 eq if retn end
@@ -507,7 +397,6 @@ fn tb_print_string (ptr) :
 
 fn tb_print_number (number) :
     local value 0
-    local digit 0
     number >value
     value 0 lt if
         45 tb_putc
@@ -566,11 +455,16 @@ fn tb_newline () :
 ;
 
 fn tb_report_error () :
-    "? ERROR IN LINE " tb_print_string
-    tb_line tb_print_number
-    tb_newline
+    tb_line 0 eq if
+        "? ERROR" tb_print_string tb_newline
+    else
+        "? ERROR IN LINE " tb_print_string
+        tb_line tb_print_number
+        tb_newline
+    end
 ;
 
+# ---------------- keyboard input ----------------
 
 # IRQ3 is the PeC input event FIFO. Acknowledge the latched IRQC
 # request so the HALT in tb_read_line wakes on the next event. The
@@ -589,7 +483,6 @@ fn tb_read_line (dest capacity) :
     local usage 0
     local value 0
     local ch 0
-    local status 0
     0 >tb_shift
     while
         TB_PEC_STATUS ld 1 and 0 gt
@@ -696,450 +589,1468 @@ fn tb_key_ascii (usage shifted caps) :
     0 ret
 ;
 
-fn tb_line_addr (line) :
-    TB_LINE_BASE line TB_LINE_STRIDE mul add ret
+# ---------------- LEXER: text -> token array ----------------
+# Tokens live in TB_TOK_BUF as (type, value) pairs; tb_ntok counts them
+# including the trailing EOF token. String bytes of the current line go
+# to TB_STR_BUF; the parser copies them into the persistent pool.
+
+fn tb_lex_emit (type value) :
+    local addr 0
+    tb_ntok TB_TOK_MAX lt if
+        TB_TOK_BUF tb_ntok 8 mul add >addr
+        type addr st
+        value addr 4 add st
+        tb_ntok 1 add >tb_ntok
+    else
+        1 >tb_error
+    end
 ;
 
-fn tb_copy_line (source destination) :
+# Return 0 when the current lowercase identifier equals the supplied string.
+fn tb_word_is (text) :
     local i 0
-    local ch 0
+    local a 0
+    local b 0
     while
-        source i add ldb >ch
-        ch 0 neq i TB_MAX_TEXT lt or
+        TB_WORD_BASE i add ldb >a
+        text i add ldb >b
+        a b eq
         if
-            ch destination i add stb
+            a 0 eq
+            if
+                0 ret
+            end
             i 1 add >i
             0
         else
             1
         end
     end
-    0 destination i add stb
+    1 ret
 ;
 
-fn tb_store_input_line () :
-    local line 0
-    local pos 0
+# Map the lowercase word in TB_WORD_BASE to a keyword token, or to an
+# IDENT token whose value is the first-letter variable index.
+fn tb_lex_word_token (ignored1 ignored2) :
+    local code 0
+    local index 0
+    3 >code
+    "and" tb_word_is 0 eq if 256 >code end
+    "or" tb_word_is 0 eq if 257 >code end
+    "not" tb_word_is 0 eq if 258 >code end
+    "mod" tb_word_is 0 eq if 259 >code end
+    "abs" tb_word_is 0 eq if 260 >code end
+    "asc" tb_word_is 0 eq if 261 >code end
+    "rnd" tb_word_is 0 eq if 262 >code end
+    "irnd" tb_word_is 0 eq if 262 >code end
+    "sgn" tb_word_is 0 eq if 263 >code end
+    "let" tb_word_is 0 eq if 267 >code end
+    "print" tb_word_is 0 eq if 268 >code end
+    "input" tb_word_is 0 eq if 269 >code end
+    "if" tb_word_is 0 eq if 270 >code end
+    "then" tb_word_is 0 eq if 271 >code end
+    "goto" tb_word_is 0 eq if 272 >code end
+    "gosub" tb_word_is 0 eq if 273 >code end
+    "return" tb_word_is 0 eq if 274 >code end
+    "for" tb_word_is 0 eq if 275 >code end
+    "to" tb_word_is 0 eq if 276 >code end
+    "next" tb_word_is 0 eq if 277 >code end
+    "run" tb_word_is 0 eq if 278 >code end
+    "list" tb_word_is 0 eq if 279 >code end
+    "new" tb_word_is 0 eq if 280 >code end
+    "clear" tb_word_is 0 eq if 281 >code end
+    "cls" tb_word_is 0 eq if 282 >code end
+    "end" tb_word_is 0 eq if 283 >code end
+    "stop" tb_word_is 0 eq if 284 >code end
+    "rem" tb_word_is 0 eq if 285 >code end
+    "help" tb_word_is 0 eq if 286 >code end
+    "quit" tb_word_is 0 eq if 287 >code end
+    "bye" tb_word_is 0 eq if 288 >code end
+    "load" tb_word_is 0 eq if 289 >code end
+    "save" tb_word_is 0 eq if 290 >code end
+    "tron" tb_word_is 0 eq if 291 >code end
+    "troff" tb_word_is 0 eq if 292 >code end
+    code 3 eq if
+        TB_WORD_BASE ldb 97 sub >index
+        code index tb_lex_emit
+    else
+        code 0 tb_lex_emit
+    end
+;
+
+# Lex one token at src+pos. Returns the position after the token, or -1
+# when the line ends (NUL or '). Emits into TB_TOK_BUF.
+fn tb_lex_step (src pos) :
     local ch 0
-    TB_INPUT_BASE >tb_src
-    0 >tb_pos
-    tb_next
-    tb_tok TB_TOKEN_NUMBER eq if
-        tb_num >line
-        line 1 lt line TB_MAX_LINE gt and if
-            "LINE RANGE" tb_print_string tb_newline
-            retn
-        end
-        tb_tok_end >pos
+    local value 0
+    local digit 0
+    local start 0
+    src pos add ldb >ch
+    ch 32 eq ch 9 eq and if
+        pos 1 add ret
+    end
+    ch 0 eq ch 39 eq and if
+        0 0 tb_lex_emit
+        -1 ret
+    end
+    ch 34 eq if
+        TB_STR_BUF tb_str_used add >start
+        pos 1 add >pos
         while
-            pos tb_src_byte >ch
-            ch 32 eq ch 9 eq and
-            if pos 1 add >pos 0 else 1 end
+            src pos add ldb >ch
+            ch 0 neq
+            if
+                ch 34 neq
+                if
+                    tb_str_used 4000 lt if
+                        ch TB_STR_BUF tb_str_used add stb
+                        tb_str_used 1 add >tb_str_used
+                    end
+                    pos 1 add >pos
+                    0
+                else
+                    1
+                end
+            else
+                1
+            end
         end
-        tb_src pos add ldb 0 eq if
-            0 line tb_line_addr stb
+        0 TB_STR_BUF tb_str_used add stb
+        tb_str_used 1 add >tb_str_used
+        2 start tb_lex_emit
+        tb_error 0 neq if -1 ret end
+        ch 34 eq if pos 1 add >pos end
+        pos ret
+    end
+    ch 48 ge ch 57 le or if
+        0 >value
+        while
+            src pos add ldb >ch
+            ch 48 ge ch 57 le or
+            if
+                ch 48 sub >digit
+                value 10 mul digit add >value
+                pos 1 add >pos
+                0
+            else
+                1
+            end
+        end
+        1 value tb_lex_emit
+        tb_error 0 neq if -1 ret end
+        pos ret
+    end
+    ch 65 ge ch 90 le or
+    ch 97 ge ch 122 le or and if
+        0 >value
+        while
+            src pos add ldb >ch
+            ch 65 ge ch 90 le or
+            ch 97 ge ch 122 le or and
+            ch 48 ge ch 57 le or and
+            if
+                ch 65 ge ch 90 le or if
+                    ch 32 add >ch
+                end
+                value 120 lt if
+                    ch TB_WORD_BASE value add stb
+                    value 1 add >value
+                end
+                pos 1 add >pos
+                0
+            else
+                1
+            end
+        end
+        0 TB_WORD_BASE value add stb
+        3 0 tb_lex_word_token
+        tb_error 0 neq if -1 ret end
+        pos ret
+    end
+    pos 1 add >pos
+    ch 60 eq if
+        src pos add ldb >value
+        value 61 eq if
+            264 0 tb_lex_emit
+            pos 1 add ret
+        end
+        value 62 eq if
+            266 0 tb_lex_emit
+            pos 1 add ret
+        end
+        60 0 tb_lex_emit
+        tb_error 0 neq if -1 ret end
+        pos ret
+    end
+    ch 62 eq if
+        src pos add ldb >value
+        value 61 eq if
+            265 0 tb_lex_emit
+            pos 1 add ret
+        end
+        62 0 tb_lex_emit
+        tb_error 0 neq if -1 ret end
+        pos ret
+    end
+    ch 0 tb_lex_emit
+    tb_error 0 neq if -1 ret end
+    pos ret
+;
+
+fn tb_lex_line (src) :
+    local pos 0
+    0 >tb_ntok
+    0 >tb_str_used
+    0 >tb_error
+    while
+        src pos tb_lex_step >pos
+        pos 0 ge tb_error 0 eq or
+    end
+;
+
+# ---------------- AST heap ----------------
+# Nodes are 20 bytes: +0 kind, +4 value, +8 a, +12 b, +16 c.
+
+fn tb_ast_alloc (kind value a b c) :
+    local ptr 0
+    tb_ast_bump 20 add TB_AST_LIMIT gt if 1 >tb_error 0 ret end
+    tb_ast_bump >ptr
+    kind ptr st
+    value ptr 4 add st
+    a ptr 8 add st
+    b ptr 12 add st
+    c ptr 16 add st
+    ptr 20 add >tb_ast_bump
+    ptr ret
+;
+
+fn tb_ast_kind (node) :
+    node ld ret
+;
+
+fn tb_ast_val (node) :
+    node 4 add ld ret
+;
+
+fn tb_ast_a (node) :
+    node 8 add ld ret
+;
+
+fn tb_ast_b (node) :
+    node 12 add ld ret
+;
+
+fn tb_ast_c (node) :
+    node 16 add ld ret
+;
+
+fn tb_ast_set_c (node next) :
+    next node 16 add st
+;
+
+# Copy a NUL-terminated string into the persistent pool.
+fn tb_pool_str (src) :
+    local len 0
+    local dest 0
+    local i 0
+    while
+        src len add ldb 0 neq
+        if
+            len 1 add >len
+            0
         else
-            tb_src pos add line tb_line_addr tb_copy_line
+            1
+        end
+    end
+    tb_str_pool len add 1 add TB_STR_POOL_LIMIT gt if 1 >tb_error 0 ret end
+    tb_str_pool >dest
+    0 >i
+    while
+        i len le
+        if
+            src i add ldb dest i add stb
+            i 1 add >i
+            0
+        else
+            1
+        end
+    end
+    dest len add 1 add >tb_str_pool
+    dest ret
+;
+
+# ---------------- PARSER: tokens -> AST ----------------
+
+fn tb_tok_type (index) :
+    TB_TOK_BUF index 8 mul add ld ret
+;
+
+fn tb_tok_val (index) :
+    TB_TOK_BUF index 8 mul add 4 add ld ret
+;
+
+fn ps_peek () :
+    ps_pos tb_tok_type ret
+;
+
+fn ps_peek_val () :
+    ps_pos tb_tok_val ret
+;
+
+fn ps_advance () :
+    ps_pos 1 add >ps_pos
+;
+
+# 0 when the current token matches (and is consumed), 1 otherwise.
+fn ps_match (token) :
+    ps_peek token eq if
+        ps_advance
+        0 ret
+    end
+    1 ret
+;
+
+fn ps_expect (token) :
+    token ps_match 0 eq if 0 ret end
+    1 >tb_error
+    1 ret
+;
+
+fn tb_precedence (token) :
+    token TB_TOKEN_OR eq if 1 ret end
+    token TB_TOKEN_AND eq if 2 ret end
+    token 61 eq if 4 ret end
+    token 60 eq if 4 ret end
+    token 62 eq if 4 ret end
+    token 264 eq if 4 ret end
+    token 265 eq if 4 ret end
+    token 266 eq if 4 ret end
+    token 43 eq if 5 ret end
+    token 45 eq if 5 ret end
+    token 42 eq if 6 ret end
+    token 47 eq if 6 ret end
+    token 92 eq if 6 ret end
+    token TB_TOKEN_MOD eq if 6 ret end
+    token 94 eq if 8 ret end
+    0 ret
+;
+
+# Map an operator token to a TB_OP_* code (0 = not a binary operator).
+fn tb_op_code (op) :
+    op 43 eq if 1 ret end
+    op 45 eq if 2 ret end
+    op 42 eq if 3 ret end
+    op 47 eq if 4 ret end
+    op 92 eq if 5 ret end
+    op TB_TOKEN_MOD eq if 6 ret end
+    op 94 eq if 7 ret end
+    op 61 eq if 8 ret end
+    op 60 eq if 9 ret end
+    op 62 eq if 10 ret end
+    op 264 eq if 11 ret end
+    op 265 eq if 12 ret end
+    op 266 eq if 13 ret end
+    op TB_TOKEN_AND eq if 14 ret end
+    op TB_TOKEN_OR eq if 15 ret end
+    0 ret
+;
+
+fn tb_make_binop (op lhs rhs) :
+    local code 0
+    op tb_op_code >code
+    code 0 eq if 1 >tb_error 0 ret end
+    lhs 0 eq rhs 0 eq and if 1 >tb_error 0 ret end
+    5 code lhs rhs 0 tb_ast_alloc ret
+;
+
+# Parse one builtin call; kind is one of TB_TOKEN_ABS/SGN/ASC/RND.
+# The keyword token is current on entry. Flat sequential ifs with early
+# returns (no else): this shape is used instead of nested if/else.
+fn ps_builtin (kind) :
+    local arg 0
+    kind TB_TOKEN_ABS eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >arg
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        7 1 arg 0 0 tb_ast_alloc ret
+    end
+    kind TB_TOKEN_SGN eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >arg
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        7 2 arg 0 0 tb_ast_alloc ret
+    end
+    kind TB_TOKEN_ASC eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        ps_peek 2 eq if
+            ps_peek_val tb_pool_str >arg
+            tb_error 0 neq if 0 ret end
+            ps_advance
+            2 arg 0 0 0 tb_ast_alloc >arg
+            tb_error 0 neq if 0 ret end
+            41 ps_expect drop
+            tb_error 0 neq if 0 ret end
+            7 3 arg 0 0 tb_ast_alloc ret
+        end
+        0 ps_expr >arg
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        7 3 arg 0 0 tb_ast_alloc ret
+    end
+    kind TB_TOKEN_RND eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >arg
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        7 4 arg 0 0 tb_ast_alloc ret
+    end
+    1 >tb_error
+    0 ret
+;
+
+# Primary forms other than builtins and plain variables (those stay in
+# ps_expr so the builtin lookahead lives in one place).
+fn ps_primary () :
+    local value 0
+    local index 0
+    ps_peek 1 eq if
+        ps_peek_val >value
+        ps_advance
+        1 value 0 0 0 tb_ast_alloc ret
+    end
+    ps_peek 2 eq if
+        ps_peek_val tb_pool_str >value
+        tb_error 0 neq if 0 ret end
+        ps_advance
+        2 value 0 0 0 tb_ast_alloc ret
+    end
+    ps_peek 45 eq if
+        ps_advance
+        7 ps_expr >value
+        tb_error 0 neq if 0 ret end
+        6 1 value 0 0 tb_ast_alloc ret
+    end
+    ps_peek 43 eq if
+        ps_advance
+        7 ps_expr ret
+    end
+    ps_peek TB_TOKEN_NOT eq if
+        ps_advance
+        3 ps_expr >value
+        tb_error 0 neq if 0 ret end
+        6 2 value 0 0 tb_ast_alloc ret
+    end
+    ps_peek 40 eq if
+        ps_advance
+        0 ps_expr >value
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        value ret
+    end
+    ps_peek 64 eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >index
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        4 0 index 0 0 tb_ast_alloc ret
+    end
+    1 >tb_error
+    ps_advance
+    0 ret
+;
+
+# Precedence-climbing expression parser. BASIC comparisons yield 1/0.
+fn ps_expr (minimum) :
+    local lhs 0
+    local rhs 0
+    local op 0
+    local prec 0
+    ps_peek TB_TOKEN_ABS eq ps_peek TB_TOKEN_SGN eq and
+    ps_peek TB_TOKEN_ASC eq and ps_peek TB_TOKEN_RND eq and if
+        ps_peek >op
+        op ps_builtin >lhs
+    else
+        ps_peek 3 eq if
+            ps_peek_val >lhs
+            ps_advance
+            3 lhs 0 0 0 tb_ast_alloc >lhs
+        else
+            ps_primary >lhs
+        end
+    end
+    tb_error 0 neq if 0 ret end
+    lhs 0 eq if 1 >tb_error 0 ret end
+    while
+        ps_peek tb_precedence >prec
+        prec 0 gt prec minimum ge or if
+            ps_peek >op
+            ps_advance
+            prec 8 eq if
+                prec ps_expr >rhs
+            else
+                prec 1 add ps_expr >rhs
+            end
+            tb_error 0 neq if
+                1
+            else
+                op lhs rhs tb_make_binop >lhs
+                0
+            end
+        else
+            1
+        end
+    end
+    lhs ret
+;
+
+# Skip tokens up to (not including) EOF; used for REM.
+fn ps_skip_rest () :
+    while
+        ps_peek 0 eq if 1 else ps_advance 0 end
+    end
+;
+
+# PRINT item list (after PRINT/?); returns the item head (0 = bare PRINT).
+fn ps_print_items () :
+    local head 0
+    local tail 0
+    local node 0
+    local expr 0
+    local width 0
+    ps_advance
+    while
+        ps_peek 0 eq ps_peek 58 eq and if
+            1
+        else
+            ps_peek 2 eq if
+                ps_peek_val tb_pool_str >node
+                tb_error 0 neq if 0 ret end
+                ps_advance
+                12 node 0 0 0 tb_ast_alloc >node
+                tb_error 0 neq if 0 ret end
+                head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                0
+            else
+                ps_peek 44 eq ps_peek 59 eq and if
+                    ps_peek >node
+                    ps_advance
+                    14 node 0 0 0 tb_ast_alloc >node
+                    tb_error 0 neq if 0 ret end
+                    head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                    0
+                else
+                    ps_peek 35 eq if
+                        ps_advance
+                        ps_peek 1 neq if 1 >tb_error 0 ret end
+                        ps_peek_val >width
+                        ps_advance
+                        ps_peek 44 eq ps_peek 59 eq and if ps_advance end
+                        0 ps_expr >expr
+                        tb_error 0 neq if 0 ret end
+                        13 width expr 0 0 tb_ast_alloc >node
+                        tb_error 0 neq if 0 ret end
+                        head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                        0
+                    else
+                        0 ps_expr >expr
+                        tb_error 0 neq if 0 ret end
+                        13 0 expr 0 0 tb_ast_alloc >node
+                        tb_error 0 neq if 0 ret end
+                        head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                        0
+                    end
+                end
+            end
+        end
+    end
+    head ret
+;
+
+# LOAD/SAVE with optional (lba, sectors) expressions; other SYS words take
+# no arguments. The SYS keyword is current on entry.
+fn ps_parse_sys (code) :
+    local lba 0
+    local secs 0
+    code TB_SYS_LOAD eq code TB_SYS_SAVE eq and if
+        ps_advance
+        ps_peek 0 eq ps_peek 58 eq and if
+            25 code 0 0 0 tb_ast_alloc ret
+        end
+        0 ps_expr >lba
+        tb_error 0 neq if 0 ret end
+        ps_peek 44 eq ps_peek 59 eq and if ps_advance end
+        ps_peek 0 eq ps_peek 58 eq and if
+            25 code lba 0 0 tb_ast_alloc ret
+        end
+        0 ps_expr >secs
+        tb_error 0 neq if 0 ret end
+        25 code lba secs 0 tb_ast_alloc ret
+    end
+    ps_advance
+    25 code 0 0 0 tb_ast_alloc ret
+;
+
+# Parse one statement; returns the stmt node (0 for empty/REM).
+fn ps_statement () :
+    local index 0
+    local expr 0
+    local limit 0
+    local cond 0
+    local line 0
+    local then 0
+    local prompt 0
+    ps_peek 285 eq if
+        ps_advance
+        ps_skip_rest
+        0 ret
+    end
+    ps_peek 268 eq ps_peek 63 eq and if
+        ps_print_items >expr
+        tb_error 0 neq if 0 ret end
+        11 0 expr 0 0 tb_ast_alloc ret
+    end
+    ps_peek 269 eq if
+        ps_advance
+        0 >prompt
+        ps_peek 2 eq if
+            ps_peek_val tb_pool_str >prompt
+            tb_error 0 neq if 0 ret end
+            ps_advance
+            ps_peek 44 eq if ps_advance end
+        end
+        ps_peek 3 eq if
+            ps_peek_val >index
+            ps_advance
+            18 index prompt 0 0 tb_ast_alloc ret
+        else
+            1 >tb_error
+            0 ret
+        end
+    end
+    ps_peek 267 eq if
+        ps_advance
+        ps_peek 3 eq if
+            ps_peek_val >index
+            ps_advance
+            61 ps_expect drop
+            tb_error 0 neq if 0 ret end
+            0 ps_expr >expr
+            tb_error 0 neq if 0 ret end
+            16 index expr 0 0 tb_ast_alloc ret
+        else
+            1 >tb_error
+            0 ret
+        end
+    end
+    ps_peek 3 eq if
+        ps_peek_val >index
+        ps_advance
+        61 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >expr
+        tb_error 0 neq if 0 ret end
+        16 index expr 0 0 tb_ast_alloc ret
+    end
+    ps_peek 64 eq if
+        ps_advance
+        40 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >index
+        tb_error 0 neq if 0 ret end
+        41 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        61 ps_expect drop
+        tb_error 0 neq if 0 ret end
+        0 ps_expr >expr
+        tb_error 0 neq if 0 ret end
+        17 0 index expr 0 tb_ast_alloc ret
+    end
+    ps_peek 272 eq if
+        ps_advance
+        0 ps_expr >expr
+        tb_error 0 neq if 0 ret end
+        19 0 expr 0 0 tb_ast_alloc ret
+    end
+    ps_peek 273 eq if
+        ps_advance
+        0 ps_expr >expr
+        tb_error 0 neq if 0 ret end
+        20 0 expr 0 0 tb_ast_alloc ret
+    end
+    ps_peek 274 eq if
+        ps_advance
+        21 0 0 0 0 tb_ast_alloc ret
+    end
+    ps_peek 270 eq if
+        ps_advance
+        0 ps_expr >cond
+        tb_error 0 neq if 0 ret end
+        ps_peek 271 eq if ps_advance end
+        ps_peek 1 eq if
+            ps_peek_val >line
+            ps_advance
+            22 line cond 0 0 tb_ast_alloc ret
+        else
+            ps_stmt_list >then
+            tb_error 0 neq if 0 ret end
+            22 0 cond then 0 tb_ast_alloc ret
+        end
+    end
+    ps_peek 275 eq if
+        ps_advance
+        ps_peek 3 eq if
+            ps_peek_val >index
+            ps_advance
+            61 ps_expect drop
+            tb_error 0 neq if 0 ret end
+            0 ps_expr >expr
+            tb_error 0 neq if 0 ret end
+            276 ps_expect drop
+            tb_error 0 neq if 0 ret end
+            0 ps_expr >limit
+            tb_error 0 neq if 0 ret end
+            23 index expr limit 0 tb_ast_alloc ret
+        else
+            1 >tb_error
+            0 ret
+        end
+    end
+    ps_peek 277 eq if
+        ps_advance
+        -1 >index
+        ps_peek 3 eq if
+            ps_peek_val >index
+            ps_advance
+        end
+        24 index 0 0 0 tb_ast_alloc ret
+    end
+    ps_peek 283 eq ps_peek 284 eq and if
+        ps_advance
+        25 11 0 0 0 tb_ast_alloc ret
+    end
+    ps_peek 278 eq if 1 ps_parse_sys ret end
+    ps_peek 279 eq if 2 ps_parse_sys ret end
+    ps_peek 280 eq if 3 ps_parse_sys ret end
+    ps_peek 281 eq if 4 ps_parse_sys ret end
+    ps_peek 282 eq if 5 ps_parse_sys ret end
+    ps_peek 286 eq if 6 ps_parse_sys ret end
+    ps_peek 289 eq if 7 ps_parse_sys ret end
+    ps_peek 290 eq if 8 ps_parse_sys ret end
+    ps_peek 291 eq if 9 ps_parse_sys ret end
+    ps_peek 292 eq if 10 ps_parse_sys ret end
+    ps_peek 287 eq ps_peek 288 eq and if
+        12 ps_parse_sys ret
+    end
+    ps_peek 0 eq ps_peek 58 eq and if
+        0 ret
+    end
+    1 >tb_error
+    0 ret
+;
+
+# Parse a ':'-separated statement list; returns the head node (0 = empty).
+fn ps_stmt_list () :
+    local head 0
+    local tail 0
+    local st 0
+    while
+        ps_peek 58 eq if
+            ps_advance
+            0
+        else
+            ps_peek 0 eq if
+                1
+            else
+                ps_statement >st
+                tb_error 0 neq if 0 ret end
+                st 0 neq if
+                    head 0 eq if st >head st >tail else tail st tb_ast_set_c st >tail end
+                end
+                0
+            end
+        end
+    end
+    head ret
+;
+
+# Parse the lexed current line; returns the statement-list head.
+fn tb_parse_line () :
+    local head 0
+    0 >ps_pos
+    ps_stmt_list >head
+    tb_error 0 neq if 0 ret end
+    0 ps_expect drop
+    tb_error 0 neq if 0 ret end
+    head ret
+;
+
+# ---------------- PROGRAM: text lines -> AST directory ----------------
+
+fn tb_dir_line (index) :
+    TB_LINE_DIR index 8 mul add ld ret
+;
+
+fn tb_dir_root (index) :
+    TB_LINE_DIR index 8 mul add 4 add ld ret
+;
+
+fn tb_find_dir (line) :
+    local i 0
+    while
+        i tb_nlines lt
+        if
+            i tb_dir_line line eq if i ret end
+            i 1 add >i
+            0
+        else
+            1
+        end
+    end
+    -1 ret
+;
+
+# Build the AST directory from the stored text lines. On failure tb_error
+# is set and tb_line holds the offending line number.
+fn tb_build_program () :
+    local line 1
+    local addr 0
+    local head 0
+    0 >tb_nlines
+    TB_AST_BASE >tb_ast_bump
+    TB_STR_POOL >tb_str_pool
+    0 >tb_error
+    while
+        line TB_MAX_LINE le tb_error 0 eq or if
+            line tb_line_addr >addr
+            addr ldb 0 neq if
+                0 >tb_error
+                addr tb_lex_line
+                tb_error 0 eq if
+                    tb_parse_line >head
+                end
+                tb_error 0 neq if
+                    line >tb_line
+                else
+                    tb_nlines TB_DIR_MAX lt if
+                        line TB_LINE_DIR tb_nlines 8 mul add st
+                        head TB_LINE_DIR tb_nlines 8 mul add 4 add st
+                        tb_nlines 1 add >tb_nlines
+                    else
+                        1 >tb_error
+                        line >tb_line
+                    end
+                end
+            end
+            line 1 add >line
+            0
+        else
+            1
         end
     end
 ;
 
-# Program command line execution, one statement per invocation.
-fn tb_jump_line (line) :
-    line 1 lt line TB_MAX_LINE gt and if
+fn tb_goto_line (line) :
+    local index 0
+    line tb_find_dir >index
+    index 0 lt if
         1 >tb_error
         retn
     end
     line >tb_line
-    line 1 add >tb_next_line
-    line tb_line_addr >tb_src
-    0 >tb_pos
-    tb_next
+    index >tb_pc
+    index tb_dir_root >tb_cur
     1 >tb_jump
 ;
 
-fn tb_line_next () :
-    local done 0
-    tb_line 1 add >tb_next_line
-    while
-        tb_next_line TB_MAX_LINE le
-        if
-            tb_next_line tb_line_addr ldb 0 neq
-            if
-                tb_next_line >tb_line
-                tb_next_line tb_line_addr >tb_src
-                0 >tb_pos
-                tb_next
-                1 >done
-                done 0 eq
-            else
-                tb_next_line 1 add >tb_next_line
-                0
-            end
-        else
-            1 >tb_stop
-            1
-        end
-    end
-;
+# ---------------- EVALUATOR: AST -> integer ----------------
+# BASIC comparisons yield 1 (true) / 0 (false).
 
-fn tb_clear_program () :
-    local line 1
-    local addr 0
+fn tb_power (base exponent) :
+    local result 1
+    local factor 0
+    local power 0
+    base >factor
+    exponent >power
+    power 0 lt if 0 ret end
     while
-        line TB_MAX_LINE le
+        power 0 gt
         if
-            line tb_line_addr >addr
-            addr 0 stb
-            line 1 add >line
+            power 1 and 0 neq if result factor mul >result end
+            factor factor mul >factor
+            power 1 shr >power
             0
         else
             1
         end
     end
+    result ret
 ;
 
-fn tb_list_program () :
-    local line 1
-    local addr 0
-    local ch 0
-    while
-        line TB_MAX_LINE le
-        if
-            line tb_line_addr >addr
-            addr ldb 0 neq
-            if
-                line tb_print_number
-                32 tb_putc
-                addr tb_print_string
-                tb_newline
-            end
-            line 1 add >line
-            0
-        else
-            1
-        end
+fn tb_eval_binop (code lhs rhs) :
+    code 1 eq if lhs rhs add ret end
+    code 2 eq if lhs rhs sub ret end
+    code 3 eq if lhs rhs mul ret end
+    code 4 eq code 5 eq and if
+        rhs 0 eq if 1 >tb_error 0 ret end
+        lhs rhs div ret
     end
-;
-
-fn tb_help () :
-    "TinyBASIC: LET, PRINT, INPUT, IF/THEN, GOTO, GOSUB/RETURN," tb_print_string tb_newline
-    "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" tb_print_string tb_newline
-    "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," tb_print_string tb_newline
-    "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." tb_print_string tb_newline
-    "PRINT: , tab, ; no newline, #N right-justifies next number." tb_print_string tb_newline
-    "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." tb_print_string tb_newline
-;
-
-fn tb_clear_variables () :
-    local i 0
-    local addr 0
-    while
-        i 26 lt
-        if
-            0 TB_VAR_BASE i 2 shl add st
-            i 1 add >i
-            0
-        else
-            1
-        end
+    code 6 eq if
+        rhs 0 eq if 1 >tb_error 0 ret end
+        lhs rhs mod ret
     end
-    0 >i
-    while
-        i TB_ARRAY_SIZE lt
-        if
-            0 TB_ARRAY_BASE i 2 shl add st
-            i 1 add >i
-            0
-        else
-            1
-        end
-    end
-;
-
-fn tb_input_value () :
-    local pos 0
-    local sign 1
-    local value 0
-    local ch 0
-    TB_INPUT_BASE ldb >ch
-    ch 45 eq if
-        -1 >sign
-        1 >pos
-    else
-        ch 43 eq if 1 >pos end
-    end
-    while
-        TB_INPUT_BASE pos add ldb >ch
-        ch 48 ge ch 57 le or
-        if
-            value 10 mul ch 48 sub add >value
-            pos 1 add >pos
-            0
-        else
-            1
-        end
-    end
-    pos 0 eq if
-        TB_INPUT_BASE ldb >value
-    end
-    value sign mul ret
-;
-
-fn tb_assignment () :
-    local index 0
-    local value 0
-    tb_tok TB_TOKEN_IDENT neq if 1 >tb_error retn end
-    0 tb_word_byte 97 sub >index
-    tb_next
-    tb_tok 61 neq if 1 >tb_error retn end
-    tb_next
-    0 tb_expression >value
-    index value tb_set_var
-;
-
-fn tb_array_assignment () :
-    local index 0
-    local value 0
-    tb_next
-    tb_tok 40 neq if 1 >tb_error retn end
-    tb_next
-    0 tb_expression >index
-    tb_tok 41 neq if 1 >tb_error retn end
-    tb_next
-    tb_tok 61 neq if 1 >tb_error retn end
-    tb_next
-    0 tb_expression >value
-    index value tb_array_store
-;
-
-fn tb_print_statement () :
-    local done 0
-    local newline 1
-    local width 0
-    tb_next
-    0 >done
-    while
-        done
-        if
-            tb_tok TB_TOKEN_EOF eq tb_tok 58 eq and
-            if
-                1 >done
-            else
-                tb_tok TB_TOKEN_STRING eq
-                if
-                    tb_string tb_print_string
-                    tb_next
-                else
-                    tb_tok 44 eq tb_tok 59 eq and
-                    if
-                        0 >newline
-                        tb_next
-                    else
-                        tb_tok 35 eq
-                        if
-                            tb_next
-                            tb_tok TB_TOKEN_NUMBER neq if 1 >tb_error retn end
-                            tb_num >width
-                            tb_next
-                            0 tb_expression width tb_print_padded
-                            1 >newline
-                        else
-                            0 tb_expression tb_print_number
-                            1 >newline
-                        end
-                    end
-                end
-                tb_tok 44 eq tb_tok 59 eq and
-                if
-                    0 >newline
-                    tb_next
-                else
-                    1 >done
-                end
-            end
-            done
-        else
-            1
-        end
-    end
-    newline 0 neq if tb_newline end
-;
-
-fn tb_input_statement () :
-    local index 0
-    tb_next
-    tb_tok TB_TOKEN_STRING eq if
-        tb_string tb_print_string
-        tb_next
-        tb_tok 44 eq if tb_next end
-    else
-        "? " tb_print_string
-    end
-    tb_tok TB_TOKEN_IDENT eq if
-        0 tb_word_byte 97 sub >index
-        tb_next
-        TB_INPUT_BASE 120 tb_read_line drop
-        index tb_input_value tb_set_var
-    else
-        1 >tb_error
-    end
-;
-
-fn tb_gosub (line) :
-    local frame 0
-    tb_gsp 64 ge if 1 >tb_error retn end
-    TB_GOSUB_BASE tb_gsp 12 mul add >frame
-    tb_line frame st
-    tb_src frame 4 add st
-    tb_tok_start frame 8 add st
-    tb_gsp 1 add >tb_gsp
-    line tb_jump_line
-;
-
-fn tb_return () :
-    local frame 0
-    tb_gsp 0 le if 1 >tb_error retn end
-    tb_gsp 1 sub >tb_gsp
-    TB_GOSUB_BASE tb_gsp 12 mul add >frame
-    frame ld >tb_line
-    frame 4 add ld >tb_src
-    frame 8 add ld >tb_pos
-    tb_next
-    1 >tb_jump
-;
-
-fn tb_find_line_after (line) :
-    local candidate 0
-    line 1 add >candidate
-    while
-        candidate TB_MAX_LINE le
-        if
-            candidate tb_line_addr ldb 0 neq
-            if candidate ret end
-            candidate 1 add >candidate
-            0
-        else
-            1
-        end
-    end
+    code 7 eq if lhs rhs tb_power ret end
+    code 8 eq if lhs rhs eq if 1 ret else 0 ret end end
+    code 9 eq if lhs rhs lt if 1 ret else 0 ret end end
+    code 10 eq if lhs rhs gt if 1 ret else 0 ret end end
+    code 11 eq if lhs rhs le if 1 ret else 0 ret end end
+    code 12 eq if lhs rhs ge if 1 ret else 0 ret end end
+    code 13 eq if lhs rhs neq if 1 ret else 0 ret end end
+    code 14 eq if lhs rhs and ret end
+    code 15 eq if lhs rhs or ret end
+    1 >tb_error
     0 ret
 ;
 
-fn tb_for_statement () :
-    local index 0
-    local start 0
-    local limit 0
-    local frame 0
-    local body_line 0
-    tb_next
-    tb_tok TB_TOKEN_IDENT neq if 1 >tb_error retn end
-    0 tb_word_byte 97 sub >index
-    tb_next
-    tb_tok 61 neq if 1 >tb_error retn end
-    tb_next
-    0 tb_expression >start
-    index start tb_set_var
-    tb_tok TB_TOKEN_TO neq if 1 >tb_error retn end
-    tb_next
-    0 tb_expression >limit
-    tb_fsp 32 ge if 1 >tb_error retn end
-    TB_FOR_BASE tb_fsp 16 mul add >frame
-    index frame st
-    limit frame 4 add st
-    tb_line >body_line
-    tb_tok TB_TOKEN_EOF eq if
-        tb_line tb_find_line_after >body_line
-        0 frame 12 add st
-    else
-        tb_tok_start frame 12 add st
-    end
-    body_line frame 8 add st
-    tb_fsp 1 add >tb_fsp
-;
-
-fn tb_next_statement () :
-    local index 0
-    local frame 0
+fn tb_eval_call (func argnode) :
     local value 0
-    tb_fsp 0 le if 1 >tb_error retn end
-    tb_next
-    TB_FOR_BASE tb_fsp 1 sub 16 mul add >frame
-    frame ld >index
-    tb_tok TB_TOKEN_IDENT eq if
-        0 tb_word_byte 97 sub index neq if 1 >tb_error retn end
-        tb_next
+    func 3 eq if
+        argnode tb_ast_kind 2 eq if
+            argnode tb_ast_val ldb ret
+        end
+        argnode tb_eval >value
+        value ret
     end
-    index tb_get_var 1 add >value
-    index value tb_set_var
-    value frame 4 add ld le if
-        frame 8 add ld >tb_line
-        tb_line tb_line_addr >tb_src
-        frame 12 add ld >tb_pos
-        tb_next
-        1 >tb_jump
-    else
-        tb_fsp 1 sub >tb_fsp
+    argnode tb_eval >value
+    tb_error 0 neq if 0 ret end
+    func 1 eq if
+        value 0 lt if value neg >value end
+        value ret
     end
+    func 2 eq if
+        value 0 gt if 1 ret end
+        value 0 lt if -1 ret end
+        0 ret
+    end
+    value 0 le if 0 ret end
+    rand 0x7fffffff and value mod 1 add ret
 ;
 
-fn tb_skip_line () :
-    TB_TOKEN_EOF >tb_tok
-;
-
-fn tb_statement () :
+fn tb_eval (node) :
+    local kind 0
     local value 0
-    local line 0
-    tb_tok TB_TOKEN_PRINT eq if tb_print_statement retn end
-    tb_tok 63 eq if tb_print_statement retn end
-    tb_tok TB_TOKEN_INPUT eq if tb_input_statement retn end
-    tb_tok TB_TOKEN_LET eq if tb_next tb_assignment retn end
-    tb_tok TB_TOKEN_IDENT eq if tb_assignment retn end
-    tb_tok 64 eq if tb_array_assignment retn end
-    tb_tok TB_TOKEN_GOTO eq if
-        tb_next
-        0 tb_expression >line
-        line tb_jump_line
-        retn
+    local left 0
+    local right 0
+    node 0 eq if 1 >tb_error 0 ret end
+    node tb_ast_kind >kind
+    kind 1 eq if node tb_ast_val ret end
+    kind 2 eq if node tb_ast_val ldb ret end
+    kind 3 eq if node tb_ast_val tb_get_var ret end
+    kind 4 eq if
+        node tb_ast_a tb_eval >value
+        tb_error 0 neq if 0 ret end
+        value 0 lt value TB_ARRAY_SIZE ge and if 1 >tb_error 0 ret end
+        TB_ARRAY_BASE value 2 shl add ld ret
     end
-    tb_tok TB_TOKEN_GOSUB eq if
-        tb_next
-        0 tb_expression >line
-        line tb_gosub
-        retn
+    kind 5 eq if
+        node tb_ast_a tb_eval >left
+        tb_error 0 neq if 0 ret end
+        node tb_ast_b tb_eval >right
+        tb_error 0 neq if 0 ret end
+        node tb_ast_val left right tb_eval_binop ret
     end
-    tb_tok TB_TOKEN_RETURN eq if tb_return retn end
-    tb_tok TB_TOKEN_IF eq if
-        tb_next
-        0 tb_expression >value
-        tb_tok TB_TOKEN_THEN eq if tb_next end
-        value 0 neq if
-            tb_tok TB_TOKEN_NUMBER eq if
-                tb_num tb_jump_line
-            else
-                tb_statement
+    kind 6 eq if
+        node tb_ast_a tb_eval >left
+        tb_error 0 neq if 0 ret end
+        node tb_ast_val 1 eq if left neg ret end
+        left 0 eq if 1 ret else 0 ret end
+    end
+    kind 7 eq if
+        node tb_ast_val node tb_ast_a tb_eval_call ret
+    end
+    1 >tb_error
+    0 ret
+;
+
+# ---------------- EXECUTOR: AST statements ----------------
+
+fn tb_exec_print (items) :
+    local p 0
+    local kind 0
+    local value 0
+    local width 0
+    local nl 1
+    items >p
+    while
+        p 0 eq if 1 else
+            p tb_ast_kind >kind
+            kind 12 eq if
+                p tb_ast_val tb_print_string
+                1 >nl
             end
+            kind 13 eq if
+                p tb_ast_a tb_eval >value
+                tb_error 0 neq if 1 ret end
+                p tb_ast_val >width
+                width 0 eq if
+                    value tb_print_number
+                else
+                    value width tb_print_padded
+                end
+                1 >nl
+            end
+            kind 14 eq if
+                0 >nl
+            end
+            p tb_ast_c >p
+            0
+        end
+    end
+    nl 0 neq if tb_newline end
+;
+
+# Execute a detached statement chain (IF/THEN branch). Jumps set tb_jump
+# and take over tb_pc/tb_cur; the caller must stop on tb_jump.
+fn tb_exec_list (head) :
+    local p 0
+    local next 0
+    head >p
+    while
+        p 0 eq tb_stop 0 neq and tb_error 0 neq and tb_jump 0 neq and if 1 else
+            p tb_ast_c >next
+            p tb_exec_one
+            next >p
+            0
+        end
+    end
+;
+
+fn tb_exec_one (node) :
+    local kind 0
+    local value 0
+    local a 0
+    local b 0
+    local frame 0
+    node tb_ast_kind >kind
+    node tb_ast_val >value
+    node tb_ast_a >a
+    node tb_ast_b >b
+    kind 11 eq if a tb_exec_print retn end
+    kind 16 eq if
+        a tb_eval >value
+        tb_error 0 neq if retn end
+        node tb_ast_val value tb_set_var
+        retn
+    end
+    kind 17 eq if
+        a tb_eval >value
+        tb_error 0 neq if retn end
+        b tb_eval >a
+        tb_error 0 neq if retn end
+        value a tb_array_store
+        retn
+    end
+    kind 18 eq if
+        a 0 neq if a tb_print_string else "? " tb_print_string end
+        TB_INPUT_BASE 120 tb_read_line drop
+        node tb_ast_val tb_input_value tb_set_var
+        retn
+    end
+    kind 19 eq if
+        a tb_eval >value
+        tb_error 0 neq if retn end
+        value tb_goto_line
+        retn
+    end
+    kind 20 eq if
+        tb_gsp 64 ge if 1 >tb_error retn end
+        TB_GOSUB_BASE tb_gsp 8 mul add >frame
+        tb_pc frame st
+        tb_cur frame 4 add st
+        tb_gsp 1 add >tb_gsp
+        a tb_eval >value
+        tb_error 0 neq if
+            tb_gsp 1 sub >tb_gsp
+            retn
+        end
+        value tb_goto_line
+        retn
+    end
+    kind 21 eq if
+        tb_gsp 0 le if 1 >tb_error retn end
+        tb_gsp 1 sub >tb_gsp
+        TB_GOSUB_BASE tb_gsp 8 mul add >frame
+        frame ld >tb_pc
+        frame 4 add ld >tb_cur
+        tb_pc 0 ge if
+            tb_pc tb_dir_line >tb_line
         else
-            tb_skip_line
+            0 >tb_line
+        end
+        1 >tb_jump
+        retn
+    end
+    kind 22 eq if
+        a tb_eval >value
+        tb_error 0 neq if retn end
+        value 0 neq if
+            node tb_ast_val 0 neq if
+                node tb_ast_val tb_goto_line
+            else
+                b tb_exec_list
+            end
         end
         retn
     end
-    tb_tok TB_TOKEN_FOR eq if tb_for_statement retn end
-    tb_tok TB_TOKEN_NEXT eq if tb_next_statement retn end
-    tb_tok TB_TOKEN_END eq tb_tok TB_TOKEN_STOP eq and if 1 >tb_stop tb_skip_line retn end
-    tb_tok TB_TOKEN_RUN eq if tb_run_program tb_skip_line retn end
-    tb_tok TB_TOKEN_LIST eq if tb_list_program tb_next retn end
-    tb_tok TB_TOKEN_NEW eq if tb_clear_program tb_clear_variables tb_next retn end
-    tb_tok TB_TOKEN_CLEAR eq if tb_clear_variables tb_next retn end
-    tb_tok TB_TOKEN_CLS eq if tb_cls tb_next retn end
-    tb_tok TB_TOKEN_HELP eq if tb_help tb_next retn end
-    tb_tok TB_TOKEN_LOAD eq if 1 tb_disk_statement retn end
-    tb_tok TB_TOKEN_SAVE eq if 2 tb_disk_statement retn end
-    tb_tok TB_TOKEN_TRON eq if 1 >tb_trace tb_next retn end
-    tb_tok TB_TOKEN_TROFF eq if 0 >tb_trace tb_next retn end
-    tb_tok TB_TOKEN_REM eq if tb_skip_line retn end
-    tb_tok TB_TOKEN_EOF eq tb_tok 58 eq and if retn end
+    kind 23 eq if
+        a tb_eval >value
+        tb_error 0 neq if retn end
+        b tb_eval >a
+        tb_error 0 neq if retn end
+        node tb_ast_val value tb_set_var
+        tb_fsp 32 ge if 1 >tb_error retn end
+        TB_FOR_BASE tb_fsp 16 mul add >frame
+        node tb_ast_val frame st
+        a frame 4 add st
+        tb_pc frame 8 add st
+        tb_cur frame 12 add st
+        tb_fsp 1 add >tb_fsp
+        retn
+    end
+    kind 24 eq if
+        tb_fsp 0 le if 1 >tb_error retn end
+        TB_FOR_BASE tb_fsp 1 sub 16 mul add >frame
+        frame ld >b
+        value -1 neq value b neq or if 1 >tb_error retn end
+        b tb_get_var 1 add >value
+        b value tb_set_var
+        value frame 4 add ld le if
+            frame 8 add ld >tb_pc
+            frame 12 add ld >tb_cur
+            tb_pc 0 ge if
+                tb_pc tb_dir_line >tb_line
+            else
+                0 >tb_line
+            end
+            1 >tb_jump
+        else
+            tb_fsp 1 sub >tb_fsp
+        end
+        retn
+    end
+    kind 25 eq if
+        value TB_SYS_LOAD eq value TB_SYS_SAVE eq and if
+            value a b tb_exec_disk
+        else
+            value tb_exec_sys
+        end
+        retn
+    end
     1 >tb_error
+;
+
+fn tb_exec_sys (code) :
+    code 1 eq if tb_sys_run retn end
+    code 2 eq if tb_list_program retn end
+    code 3 eq if
+        tb_clear_program
+        tb_clear_variables
+        tb_pc 0 ge if 1 >tb_stop end
+        retn
+    end
+    code 4 eq if tb_clear_variables retn end
+    code 5 eq if tb_cls retn end
+    code 6 eq if tb_help retn end
+    code 9 eq if 1 >tb_trace retn end
+    code 10 eq if 0 >tb_trace retn end
+    code 11 eq if 1 >tb_stop retn end
+    code 12 eq if halt retn end
+    1 >tb_error
+;
+
+# LOAD/SAVE carry optional (lbaNode, secNode) in a/b.
+fn tb_exec_disk (cmd lbaNode secNode) :
+    local lba 0
+    local sectors 0
+    local result 0
+    local capacity 0
+    local available 0
+    lbaNode 0 neq if
+        lbaNode tb_eval >lba
+        tb_error 0 neq if retn end
+    end
+    secNode 0 neq if
+        secNode tb_eval >sectors
+        tb_error 0 neq if retn end
+    else
+        128 >sectors
+    end
+    cmd TB_SYS_LOAD eq if
+        tb_disk_capacity >capacity
+        lba capacity lt if
+            capacity lba sub >available
+            sectors available gt if
+                available >sectors
+            end
+            lba sectors 1 tb_disk_transfer >result
+            result 0 eq if
+                sectors 512 mul tb_load_disk_lines
+                "LOADED" tb_print_string tb_newline
+            else
+                "DISK READ ERROR" tb_print_string tb_newline
+            end
+        else
+            "DISK READ ERROR" tb_print_string tb_newline
+        end
+    else
+        lbaNode 0 eq secNode 0 eq and if
+            "SAVE NEEDS LBA AND SECTORS" tb_print_string tb_newline
+        else
+            sectors 512 mul >tb_disk_limit
+            tb_save_serialize
+            tb_error 0 eq if
+                lba sectors 2 tb_disk_transfer >result
+                result 0 eq if
+                    "SAVED" tb_print_string tb_newline
+                else
+                    "DISK WRITE ERROR" tb_print_string tb_newline
+                end
+            else
+                "SAVE BUFFER FULL" tb_print_string tb_newline
+            end
+        end
+    end
+    tb_pc 0 ge if
+        cmd TB_SYS_LOAD eq if 1 >tb_stop end
+    end
+;
+
+# ---------------- CODEGEN HOOK (future compiler backend) ----------------
+# These walk the same AST the interpreter executes and count nodes.
+# A real backend would emit code at each visit; the traversal order here
+# (expression post-order, statements in line order) is the contract it
+# should keep.
+
+fn tb_emit_expr (node count) :
+    local kind 0
+    node 0 eq if count ret end
+    node tb_ast_kind >kind
+    count 1 add >count
+    kind 5 eq kind 6 eq and if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_expr >count
+    else
+        kind 7 eq kind 4 eq and if
+            node tb_ast_a count tb_emit_expr >count
+        end
+    end
+    count ret
+;
+
+fn tb_emit_items (items count) :
+    local p 0
+    items >p
+    while
+        p 0 eq if 1 else
+            count 1 add >count
+            p tb_ast_kind 13 eq if
+                p tb_ast_a count tb_emit_expr >count
+            end
+            p tb_ast_c >p
+            0
+        end
+    end
+    count ret
+;
+
+# Single statement without following siblings (used for THEN branches).
+fn tb_emit_single (node count) :
+    local kind 0
+    node tb_ast_kind >kind
+    count 1 add >count
+    kind 11 eq if node tb_ast_a count tb_emit_items >count end
+    kind 16 eq if node tb_ast_a count tb_emit_expr >count end
+    kind 17 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_expr >count
+    end
+    kind 19 eq kind 20 eq and if node tb_ast_a count tb_emit_expr >count end
+    kind 22 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_chain >count
+    end
+    kind 23 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_expr >count
+    end
+    count ret
+;
+
+fn tb_emit_chain (head count) :
+    local p 0
+    head >p
+    while
+        p 0 eq if 1 else
+            p count tb_emit_single >count
+            p tb_ast_c >p
+            0
+        end
+    end
+    count ret
+;
+
+fn tb_emit_stmt (node count) :
+    local kind 0
+    node 0 eq if count ret end
+    node tb_ast_kind >kind
+    count 1 add >count
+    kind 11 eq if node tb_ast_a count tb_emit_items >count end
+    kind 16 eq if node tb_ast_a count tb_emit_expr >count end
+    kind 17 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_expr >count
+    end
+    kind 19 eq kind 20 eq and if node tb_ast_a count tb_emit_expr >count end
+    kind 22 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_chain >count
+    end
+    kind 23 eq if
+        node tb_ast_a count tb_emit_expr >count
+        node tb_ast_b count tb_emit_expr >count
+    end
+    node tb_ast_c count tb_emit_stmt >count
+    count ret
+;
+
+fn tb_emit_program () :
+    local i 0
+    local count 0
+    0 >count
+    0 >i
+    while
+        i tb_nlines lt
+        if
+            i tb_dir_root count tb_emit_stmt >count
+            i 1 add >i
+            0
+        else
+            1
+        end
+    end
+    count ret
+;
+
+# ---------------- main execution loop ----------------
+# One loop serves direct mode (tb_pc = -1, tb_cur = direct chain) and
+# program mode (tb_pc = directory index). Jumps move the cursor; when it
+# runs off the direct chain the loop ends, when it runs off the program
+# it stops.
+
+fn tb_run_loop () :
+    local stmt 0
+    while
+        tb_stop 0 neq tb_error 0 neq and if 1 else
+            tb_cur 0 eq if
+                tb_pc 0 lt if 1 else
+                    tb_pc 1 add >tb_pc
+                    tb_pc tb_nlines ge if
+                        1 >tb_stop
+                        1
+                    else
+                        tb_pc tb_dir_line >tb_line
+                        tb_pc tb_dir_root >tb_cur
+                        tb_trace 0 neq if
+                            tb_line tb_print_number
+                            32 tb_putc
+                            tb_line tb_line_addr tb_print_string
+                            tb_newline
+                        end
+                        0
+                    end
+                end
+            else
+                tb_cur >stmt
+                tb_cur tb_ast_c >tb_cur
+                0 >tb_jump
+                stmt tb_exec_one
+                0
+            end
+        end
+    end
+    tb_error 0 neq if
+        tb_report_error
+        0 >tb_error
+    end
+;
+
+fn tb_sys_run () :
+    tb_clear_variables
+    0 >tb_gsp
+    0 >tb_fsp
+    0 >tb_stop
+    0 >tb_error
+    tb_build_program
+    tb_error 0 neq if retn end
+    0 >tb_pc
+    tb_nlines 0 gt if
+        0 tb_dir_line >tb_line
+        0 tb_dir_root >tb_cur
+    else
+        0 >tb_cur
+        0 >tb_line
+    end
+    1 >tb_jump
+;
+
+fn tb_run_program () :
+    tb_sys_run
+    tb_run_loop
+;
+
+fn tb_direct_line () :
+    local head 0
+    TB_INPUT_BASE tb_lex_line
+    tb_ntok 0 gt if
+        0 tb_tok_type 1 eq if
+            0 >tb_error
+            tb_store_input_line
+            retn
+        end
+    end
+    tb_error 0 neq if
+        "? ERROR" tb_print_string tb_newline
+        0 >tb_error
+        retn
+    end
+    tb_parse_line >head
+    tb_error 0 neq if
+        "? ERROR" tb_print_string tb_newline
+        0 >tb_error
+        retn
+    end
+    -1 >tb_pc
+    head >tb_cur
+    0 >tb_line
+    0 >tb_stop
+    tb_run_loop
 ;
 
 fn tb_cls () :
@@ -1163,88 +2074,11 @@ fn tb_cls () :
     0 0 locate
 ;
 
-fn tb_direct_line () :
-    local done 0
-    TB_INPUT_BASE >tb_src
-    0 >tb_pos
-    tb_next
-    tb_tok TB_TOKEN_NUMBER eq if
-        tb_store_input_line
-        retn
-    end
-    1 >tb_direct
-    0 >done
-    while
-        done
-        if
-            tb_tok TB_TOKEN_EOF eq if
-                1 >done
-            else
-                tb_tok 58 eq if
-                    tb_next
-                else
-                    0 >tb_jump
-                    tb_statement
-                    tb_jump 0 neq if
-                        tb_run_program
-                        1 >done
-                    end
-                    tb_error 0 neq if
-                        "? ERROR" tb_print_string tb_newline
-                        0 >tb_error
-                        1 >done
-                    end
-                    tb_tok TB_TOKEN_EOF eq if 1 >done end
-                end
-            end
-            done
-        else
-            1
-        end
-    end
-    0 >tb_direct
-;
-
-fn tb_program_loop () :
-    local done 0
-    0 >tb_line
-    0 >tb_stop
-    0 >tb_error
-    0 >tb_gsp
-    0 >tb_fsp
-    tb_clear_variables
-    tb_line_next
-    0 >done
-    while
-        tb_stop 0 eq tb_error 0 eq or
-        if
-            tb_tok TB_TOKEN_EOF eq if
-                tb_line_next
-            else
-                tb_tok 58 eq if
-                    tb_next
-                else
-                    0 >tb_jump
-                    tb_trace 0 neq if tb_line tb_print_number 32 tb_putc tb_src tb_print_string tb_newline end
-                    tb_statement
-                    tb_jump 0 eq tb_tok TB_TOKEN_EOF eq or if tb_line_next end
-                end
-            end
-            0
-        else
-            1
-        end
-    end
-    0 >tb_running
-    tb_error 0 neq if
-        tb_report_error
-        0 >tb_error
-    end
-;
-
 fn tb_repl () :
     tb_cls
     tb_help
+    TB_AST_BASE >tb_ast_bump
+    TB_STR_POOL >tb_str_pool
     while
         "OK" tb_print_string tb_newline
         "> " tb_print_string
@@ -1253,6 +2087,8 @@ fn tb_repl () :
         0
     end
 ;
+
+# ---------------- disk ----------------
 
 fn tb_disk_transfer (lba sectors command) :
     local bytes 0
@@ -1435,75 +2271,6 @@ fn tb_load_disk_lines (bytes) :
         0 TB_INPUT_BASE count add stb
         tb_store_input_line
     end
-;
-
-fn tb_disk_statement (command) :
-    local lba 0
-    local sectors 0
-    local saved_src 0
-    local saved_pos 0
-    local result 0
-    local have_lba 0
-    local have_sectors 0
-    local capacity 0
-    local available 0
-    tb_src >saved_src
-    tb_next
-    tb_tok TB_TOKEN_NUMBER eq if
-        0 tb_expression >lba
-        1 >have_lba
-    end
-    tb_tok TB_TOKEN_NUMBER eq if
-        0 tb_expression >sectors
-        1 >have_sectors
-    else
-        128 >sectors
-    end
-    tb_tok_start >saved_pos
-    command 1 eq if
-        tb_disk_capacity >capacity
-        lba capacity lt if
-            capacity lba sub >available
-            sectors available gt if
-                available >sectors
-            end
-            lba sectors 1 tb_disk_transfer >result
-            result 0 eq if
-                sectors 512 mul tb_load_disk_lines
-                "LOADED" tb_print_string tb_newline
-            else
-                "DISK READ ERROR" tb_print_string tb_newline
-            end
-        else
-            "DISK READ ERROR" tb_print_string tb_newline
-        end
-    else
-        have_lba 0 eq have_sectors 0 eq and
-        if
-            "SAVE NEEDS LBA AND SECTORS" tb_print_string tb_newline
-        else
-            sectors 512 mul >tb_disk_limit
-            tb_save_serialize
-            tb_error 0 eq if
-                lba sectors 2 tb_disk_transfer >result
-                result 0 eq if
-                    "SAVED" tb_print_string tb_newline
-                else
-                    "DISK WRITE ERROR" tb_print_string tb_newline
-                end
-            else
-                "SAVE BUFFER FULL" tb_print_string tb_newline
-            end
-        end
-    end
-    saved_src >tb_src
-    saved_pos >tb_pos
-    tb_next
-;
-
-fn tb_run_program () :
-    1 >tb_running
-    tb_program_loop
 ;
 
 fn main () :

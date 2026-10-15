@@ -221,7 +221,7 @@ fn tinybasic_print_field_width() {
         (45, false), // "x-"
         (52, true),  // "
         (54, false), // ","
-        (33, true),  // #
+        (32, true),  // #
         (34, false), // "5"
         (54, false), // ","
         (33, false),

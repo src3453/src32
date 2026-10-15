@@ -12,7 +12,7 @@ use cpt32::bus::Bus;
 use cpt32::cpu::InstructionMode;
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
-use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
+use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input, pec_trace_enabled};
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
@@ -1577,16 +1577,42 @@ impl ApplicationHandler for GuiApp {
                         }
                     } else if let Some(usage) = keyboard_hid_usage(code) {
                         let down = event.state == ElementState::Pressed;
+                        if pec_trace_enabled() {
+                            tracing::info!(
+                                target: "pec_debug",
+                                "[PEC-DBG] GUI key physical={code:?} usage=0x{usage:02X} down={down} repeat={}",
+                                event.repeat
+                            );
+                        }
                         if down {
                             self.held_keys.insert(usage);
                         } else {
                             self.held_keys.remove(&usage);
                         }
-                        let _ = self.input_sender.send(HostInputEvent::Key { usage, down });
+                        let send_result =
+                            self.input_sender.send(HostInputEvent::Key { usage, down });
+                        if pec_trace_enabled() {
+                            tracing::info!(
+                                target: "pec_debug",
+                                "[PEC-DBG] GUI send key usage=0x{usage:02X} down={down} queued={}",
+                                send_result.is_ok()
+                            );
+                        }
+                    } else if pec_trace_enabled() && event.state == ElementState::Pressed {
+                        tracing::info!(
+                            target: "pec_debug",
+                            "[PEC-DBG] GUI key unmapped physical={code:?}"
+                        );
                     }
                 }
             }
             WindowEvent::Focused(focused) => {
+                if pec_trace_enabled() {
+                    tracing::info!(
+                        target: "pec_debug",
+                        "[PEC-DBG] GUI focus focused={focused}"
+                    );
+                }
                 self.focused = focused;
                 if !focused {
                     if let Some(window) = self.window.as_ref() {

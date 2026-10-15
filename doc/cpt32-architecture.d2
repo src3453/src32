@@ -1,0 +1,181 @@
+# Source for cpt32-architecture.html; regenerate the bundled SVG with:
+# d2 --theme=200 doc/cpt32-architecture.d2 doc/cpt32-architecture.svg
+
+direction: down
+
+classes: {
+  tool: {
+    style: {
+      fill: "#1e293b"
+      stroke: "#94a3b8"
+      font-color: "#f8fafc"
+    }
+  }
+  device: {
+    style: {
+      fill: "#064e3b"
+      stroke: "#34d399"
+      font-color: "#f8fafc"
+    }
+  }
+  bus: {
+    style: {
+      fill: "#7c2d12"
+      stroke: "#fb923c"
+      font-color: "#f8fafc"
+    }
+  }
+  memory: {
+    style: {
+      fill: "#4c1d95"
+      stroke: "#a78bfa"
+      font-color: "#f8fafc"
+    }
+  }
+  expansion: {
+    style: {
+      fill: "#78350f"
+      stroke: "#fbbf24"
+      font-color: "#f8fafc"
+    }
+  }
+  loader: {
+    style: {
+      fill: "#881337"
+      stroke: "#fb7185"
+      font-color: "#f8fafc"
+    }
+  }
+  host: {
+    style: {
+      fill: "#083344"
+      stroke: "#22d3ee"
+      font-color: "#f8fafc"
+    }
+  }
+}
+
+guest: "GUEST TOOLCHAIN + MEDIA (host-side tools)" {
+  direction: right
+  grid-rows: 2
+  sol: "sol toolchain\nsolc compiler / VM / REPL\nLSP / softfloat binary32\nsolstd / VS Code extension\ntools/solc + vscode-sol-syntax" {
+    class: tool
+  }
+  asm: "asm / disasm\nSRC32 assembler\nsrc32_testbench\ntools/asm" {
+    class: tool
+  }
+  package: "CPT32PKG / Cartridge\nZIP + YAML manifest\nprogram + music stream\nspec_CPT32PKG / archive.rs" {
+    class: tool
+  }
+  wasm: "WASM card package\nSDK package.py + manifest\nno_std Card + export_card!\nsdk/wasm-expansion-card" {
+    class: tool
+  }
+  music: "Music / SGU tools\nmusic_editor / sqv4_convert\nsqueezvox / SGU project YAML\nsrc/music + src/bin" {
+    class: tool
+  }
+}
+
+emulator: "CPT32 EMULATOR PROCESS (Rust: cpt32 lib + bin)\n48 MHz / 60 Hz frame loop; VSync -> IRQ0" {
+  direction: down
+  core: "CPU / BUS / INTERRUPTS" {
+    direction: right
+    cpu: "SRC32 CPU\n32-bit RISC / MMIO\nvector table / BIOS\ncpu.rs / spec_CPU" {
+      class: device
+    }
+    bus: "BUS (single 32-bit, 4 GB)\nBMC arbiter + DMAC\nMMIO routing; masters: CPU, DMAC, IDC, Expansion, VPU-DMA\nbus error / priority slots / cycle clock\nbus.rs / bmc.rs / dmac.rs / spec_BMC_DMAC" {
+      class: bus
+    }
+    irqc: "IRQC\nVSync IRQ0 + devices\nirqc.rs / spec_IRQC" {
+      class: device
+    }
+  }
+  memory: "MEMORY" {
+    direction: right
+    ram: "Main RAM 16 MB\nprogram / data / work\nram.rs" {
+      class: memory
+    }
+    vram: "VRAM 4 MB\nFB / Z-buffer / texture / tile\nvdp/* + VPU target" {
+      class: memory
+    }
+    pcmram: "PCMRAM / CHR-ROM\nwave table / font ROM\nsgu / chr_rom.rs" {
+      class: memory
+    }
+  }
+  io: "VIDEO / SOUND / PERIPHERALS" {
+    direction: right
+    grid-rows: 2
+    vpu: "VPU (Vector Unit)\nfixed Gouraud/Phong pipeline\nFIFO + DMA commands -> VRAM\nvpu.rs / spec_VPU" {
+      class: device
+    }
+    vdp: "VDP (Video Display Processor)\nPCG tiles (scroll X/Y, wrap) + GP bitmap\nSGC text/cmd plane + shared CLUT (64 + special)\ncompositor + regs + SCREEN_FILL\nframe-loop VSync; IRQ not CPU-cycle based\nvdp.rs gp/pcg/sgc/clut/compositor / spec_VDP+SGC" {
+      class: device
+    }
+    sgu: "SGU (Sound Unit)\nS3W2 x2 + SQV4 cores\nmodulation -> cpal\nsgu.rs / spec_SGU" {
+      class: device
+    }
+    pec: "PeC (Peripheral Ctrl)\nkeyboard / mouse / gamepad input\nquad timer / RTC / UART / RNG\npec.rs timing/serial/rng / spec_PeC" {
+      class: device
+    }
+    idc: "IDC (Disk Ctrl)\nIDE media slots\nDMA + sector staging\nconfig + audio simulation\nidc.rs audio.rs / spec_IDC" {
+      class: device
+    }
+    misc: "COW / Misc\ncopy-on-write\nWAV / render helpers\ncow.rs wav.rs render.rs" {
+      class: device
+    }
+  }
+  expansion: "WASM EXPANSION SLOTS x8\n0xA000_0000, 32 MB / slot\nwasmtime + 10M fuel + 64 MB memory limit + ABI export\ntemplates/wasm-expansion-card / examples/wasm-expansion-timer\nexpansion.rs package.rs / spec_WASM_expansion_card" {
+    class: expansion
+  }
+  loader: "CPT32PKG loader (secure)\nZIP without extraction; path / size verification\nraw central-directory duplicate check; manifest\ncartridge/archive.rs manifest.rs" {
+    class: loader
+  }
+}
+
+host: "HOST BACKEND (main.rs event loop + monitor + audio/input)" {
+  direction: right
+  grid-rows: 2
+  render: "winit + wgpu render\nPRESENT_W/H, 60 Hz frame\nVDP compositor -> screen\nrender.rs monitor.rs" {
+    class: host
+  }
+  audio: "cpal audio output\nSGU + IDC audio mix\naudio.rs" {
+    class: host
+  }
+  input: "gilrs + tokio input\ngamepad -> PeC queue\nkeyboard / mouse via winit\nHostInputEvent channel" {
+    class: host
+  }
+  monitor: "imgui monitor\ndebugger / music GUI\nwavetable editor\nmonitor.rs music/gui.rs" {
+    class: host
+  }
+  cli: "cpt32-tool\ntracing / config YAML\ntestbench / sqv4\nbin/*.rs sys.rs" {
+    class: tool
+  }
+}
+
+guest.sol -> guest.asm: "compile"
+guest.asm -> emulator.core.cpu: "assembled binary"
+guest.package -> emulator.loader: "CPT32PKG"
+emulator.loader -> emulator.core.cpu: "validated program"
+guest.wasm -> emulator.expansion: "WASM card package"
+guest.music -> emulator.io.sgu: "music / project data"
+
+emulator.core.cpu -> emulator.core.bus: "MMIO / bus master"
+emulator.core.bus -> emulator.memory: "memory access"
+emulator.core.bus -> emulator.io: "MMIO / DMA"
+emulator.core.bus -> emulator.expansion: "mapped slots"
+emulator.core.bus -> emulator.loader: "cartridge access"
+emulator.core.irqc -> emulator.core.cpu: "interrupt"
+emulator.io.vdp -> emulator.core.irqc: "VSync"
+emulator.io.pec -> emulator.core.irqc: "device IRQ"
+emulator.io.idc -> emulator.core.irqc: "device IRQ"
+emulator.io.vpu -> emulator.memory.vram: "DMA / render"
+emulator.io.vdp -> host.render: "composited frame"
+emulator.io.sgu -> host.audio: "audio samples"
+emulator.io.idc -> host.audio: "audio mix"
+host.input -> emulator.io.pec: "input events"
+host.render -> emulator.core.irqc: "60 Hz frame loop"
+host.monitor -> emulator.core.cpu: "debug / music tools"
+
+legend: "Legend\nGreen: MMIO device\nOrange: bus / DMA\nViolet: memory / media\nCyan: host backend\nAmber: expansion / process\nSlate: toolchain / CLI"
+legend.style.fill: "#0f172a"
+legend.style.stroke: "#64748b"
+legend.style.font-color: "#cbd5e1"

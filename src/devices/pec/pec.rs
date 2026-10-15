@@ -1,4 +1,4 @@
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::mpsc::{self, UnboundedSender};
 
@@ -19,6 +19,16 @@ const MOUSE_WHEEL: u32 = 0x50;
 const MOUSE_BUTTONS: u32 = 0x54;
 const PAD_BASE: u32 = 0x80;
 const PAD_STRIDE: u32 = 0x40;
+
+static PEC_TRACE_ENABLED: OnceLock<bool> = OnceLock::new();
+
+/// Enable temporary PeC host/FIFO/IRQ diagnostics with `CPT32_PEC_TRACE=1`.
+pub fn pec_trace_enabled() -> bool {
+    *PEC_TRACE_ENABLED.get_or_init(|| {
+        std::env::var("CPT32_PEC_TRACE")
+            .is_ok_and(|value| value == "1" || value.eq_ignore_ascii_case("true"))
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HostInputEvent {
@@ -79,7 +89,15 @@ impl Default for PeCState {
 impl PeCState {
     fn push_event(&mut self, kind: u8, device: u8, code: u8, value: u16) {
         if self.event_len == EVENT_CAPACITY {
+            let first_overflow = !self.overflow;
             self.overflow = true;
+            if first_overflow && pec_trace_enabled() {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] FIFO OVERFLOW drop kind={kind} device={device} code={code} value=0x{value:04X} len={}",
+                    self.event_len
+                );
+            }
             return;
         }
         let tail = (self.event_head + self.event_len) % EVENT_CAPACITY;
@@ -88,13 +106,34 @@ impl PeCState {
             | (u32::from(code) << 16)
             | u32::from(value);
         self.event_len += 1;
+        if pec_trace_enabled() {
+            if kind == 0 {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] FIFO push KEY usage={code} down={} len={} overflow={}",
+                    value & 1 != 0,
+                    self.event_len,
+                    self.overflow
+                );
+            } else if self.event_len >= EVENT_CAPACITY - 16 && self.event_len % 16 == 0 {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] FIFO high-water kind={kind} device={device} code={code} len={} overflow={}",
+                    self.event_len,
+                    self.overflow
+                );
+            }
+        }
     }
 
-    fn pop_event(&mut self) {
-        if self.event_len != 0 {
-            self.event_head = (self.event_head + 1) % EVENT_CAPACITY;
-            self.event_len -= 1;
+    fn pop_event(&mut self) -> Option<u32> {
+        if self.event_len == 0 {
+            return None;
         }
+        let event = self.events[self.event_head];
+        self.event_head = (self.event_head + 1) % EVENT_CAPACITY;
+        self.event_len -= 1;
+        Some(event)
     }
 
     pub fn has_pending_events(&self) -> bool {
@@ -289,13 +328,40 @@ impl Device for PeCInputDevice {
     fn write(&mut self, addr: u32, value: u8) {
         let offset = addr + 0x30;
         if offset == EVENT_STATUS + 3 && value & 2 != 0 {
-            lock_state(&self.state).overflow = false;
+            let mut state = lock_state(&self.state);
+            let was_overflowed = state.overflow;
+            state.overflow = false;
+            if was_overflowed && pec_trace_enabled() {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] FIFO overflow flag cleared len={}",
+                    state.event_len
+                );
+            }
         }
         if (EVENT_POP..EVENT_POP + 4).contains(&offset) {
             self.pop_latch[(offset - EVENT_POP) as usize] = value;
             if offset == EVENT_POP + 3 {
                 if u32::from_be_bytes(self.pop_latch) == 1 {
-                    lock_state(&self.state).pop_event();
+                    let mut state = lock_state(&self.state);
+                    let event = state.pop_event();
+                    if pec_trace_enabled() {
+                        if let Some(event) = event {
+                            let kind = (event >> 28) as u8;
+                            if kind == 0 || state.event_len == 0 {
+                                tracing::info!(
+                                    target: "pec_debug",
+                                    "[PEC-DBG] FIFO pop kind={} device={} code={} value=0x{:04X} remaining={} overflow={}",
+                                    kind,
+                                    (event >> 24) as u8 & 0x0F,
+                                    (event >> 16) as u8 & 0xFF,
+                                    event as u16,
+                                    state.event_len,
+                                    state.overflow
+                                );
+                            }
+                        }
+                    }
                 }
                 self.pop_latch = [0; 4];
             }

@@ -5,6 +5,7 @@
 //! edge detection at its input and for interrupt entry/return.
 
 use crate::bus::Device;
+use crate::devices::pec::pec::pec_trace_enabled;
 
 pub const IRQC_MMIO_SIZE: u32 = 0x10;
 pub const REG_PENDING: u32 = 0x00;
@@ -59,7 +60,8 @@ impl IrqController {
             return;
         }
         let bit = 1u16 << number;
-        if level && self.source_level & bit == 0 {
+        let old_level = self.source_level & bit != 0;
+        if level && !old_level {
             self.pending |= bit;
         }
         if level {
@@ -67,10 +69,30 @@ impl IrqController {
         } else {
             self.source_level &= !bit;
         }
+        if number == 3 && level != old_level && pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] IRQC source3 level {} -> {} pending=0x{:04X} enable=0x{:04X}",
+                old_level,
+                level,
+                self.pending,
+                self.enable
+            );
+        }
     }
 
     pub fn clear_pending(&mut self, mask: u16) {
+        let old_pending = self.pending;
         self.pending &= !(mask & SOURCE_MASK);
+        if mask & (1 << 3) != 0 && pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] IRQC clear source3 pending=0x{:04X} -> 0x{:04X} source_level={}",
+                old_pending,
+                self.pending,
+                self.source_level & (1 << 3) != 0
+            );
+        }
     }
 
     pub fn irq_output(&self) -> IrqOutput {
@@ -110,12 +132,22 @@ impl Device for IrqController {
     }
 
     fn write(&mut self, addr: u32, value: u8) {
+        let old_enable = self.enable;
         match addr {
             0x00 => self.clear_pending(u16::from(value) << 8),
             0x01 => self.clear_pending(u16::from(value)),
             0x04 => self.enable = (self.enable & 0x00FF) | (u16::from(value) << 8),
             0x05 => self.enable = (self.enable & 0xFF00) | u16::from(value),
             _ => {}
+        }
+        if (old_enable ^ self.enable) & (1 << 3) != 0 && pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] IRQC enable source3 {} -> {} mask=0x{:04X}",
+                old_enable & (1 << 3) != 0,
+                self.enable & (1 << 3) != 0,
+                self.enable
+            );
         }
     }
 
