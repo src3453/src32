@@ -44,6 +44,7 @@ pub mod devices {
         pub mod serial;
         pub mod timing;
         pub mod idc {
+            pub mod audio;
             pub mod idc;
         }
     }

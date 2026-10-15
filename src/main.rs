@@ -71,6 +71,7 @@ struct GuestMachine {
     cpu: Cpu,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     title: Option<String>,
 }
@@ -97,7 +98,7 @@ fn build_guest_machine(
     cpt32::bus::connect_bmc_dmac(&mut bus);
     connect_uart(&mut bus);
     connect_rng(&mut bus);
-    if let Some(cartridge) = cartridge.as_ref() {
+    let idc = if let Some(cartridge) = cartridge.as_ref() {
         let root = if cartridge
             .disks
             .iter()
@@ -115,14 +116,23 @@ fn build_guest_machine(
             &cartridge.disks,
             root.as_deref().unwrap_or_else(|| Path::new(".")),
         )?;
-        cpt32::devices::pec::idc::idc::connect_idc(&mut bus, drives);
+        let idc = cpt32::devices::pec::idc::idc::connect_idc(&mut bus, drives);
+        // Cartridge disks carry no sound assignment, so only the kind
+        // defaults apply. A broken sound setup only warns, never fails boot.
+        match cpt32::devices::pec::idc::idc::Idc::load_sound_config(Path::new("config.yaml")) {
+            Ok(sound) => idc.borrow_mut().apply_sound_config(&sound),
+            Err(error) => tracing::warn!(%error, "IDC audio: ignoring sound configuration"),
+        }
+        idc
     } else {
-        connect_idc_from_config(&mut bus)?;
-    }
+        connect_idc_from_config(&mut bus)?
+    };
     let sgu = connect_sgu(&mut bus);
     let program = match cartridge.as_ref() {
         Some(cartridge) => cartridge.program.as_slice(),
-        None => return build_raw_guest(program_path, music_stream, bus, input_sender, sgu),
+        None => {
+            return build_raw_guest(program_path, music_stream, bus, input_sender, sgu, idc);
+        }
     };
     load_program_data(program, music_stream, &mut bus)?;
     let vdp = connect_vdp(&mut bus);
@@ -150,6 +160,7 @@ fn build_guest_machine(
         cpu: Cpu::new(bus),
         vdp,
         sgu,
+        idc: Some(idc),
         input_sender,
         title,
     })
@@ -161,6 +172,7 @@ fn build_raw_guest(
     mut bus: Bus,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    idc: Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>,
 ) -> Result<GuestMachine, String> {
     let data = std::fs::read(program_path).map_err(|error| {
         format!(
@@ -180,6 +192,7 @@ fn build_raw_guest(
         cpu: Cpu::new(bus),
         vdp,
         sgu,
+        idc: Some(idc),
         input_sender,
         title: None,
     })
@@ -530,6 +543,7 @@ struct GuiApp {
     cpu: Cpu,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
     audio_host: Option<audio::AudioHost>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     held_keys: HashSet<u8>,
@@ -579,6 +593,7 @@ impl GuiApp {
             cpu: machine.cpu,
             vdp: machine.vdp,
             sgu: machine.sgu,
+            idc: machine.idc,
             audio_host,
             input_sender: machine.input_sender,
             held_keys: HashSet::new(),
@@ -620,6 +635,7 @@ impl GuiApp {
                 self.cpu = machine.cpu;
                 self.vdp = machine.vdp;
                 self.sgu = machine.sgu;
+                self.idc = machine.idc;
                 self.input_sender = machine.input_sender;
                 if let Some(gilrs) = self.gilrs.as_ref() {
                     for (slot, id) in self.gamepad_slots.iter().enumerate() {
@@ -829,6 +845,10 @@ impl PerformanceStats {
 struct DebugUiState {
     running: bool,
     visible_windows: [bool; DebugWindow::COUNT],
+    monitor_input: String,
+    monitor_output: VecDeque<String>,
+    monitor_scroll_to_bottom: bool,
+    monitor_input_reclaim_focus: bool,
     cycles_per_frame_input: String,
     queued_steps: usize,
     disasm_follow_pc: bool,
@@ -848,6 +868,7 @@ enum DebugWindow {
     BusComposition,
     Compositor,
     Performance,
+    MonitorConsole,
 }
 
 impl DebugWindow {
@@ -858,8 +879,9 @@ impl DebugWindow {
         Self::BusComposition,
         Self::Compositor,
         Self::Performance,
+        Self::MonitorConsole,
     ];
-    const COUNT: usize = 6;
+    const COUNT: usize = 7;
 
     fn label(self) -> &'static str {
         match self {
@@ -869,6 +891,7 @@ impl DebugWindow {
             Self::BusComposition => "Bus Composition View",
             Self::Compositor => "Compositor Debug",
             Self::Performance => "Performance",
+            Self::MonitorConsole => "src32 Debug Monitor Console",
         }
     }
 }
@@ -880,6 +903,12 @@ impl DebugUiState {
         Self {
             running: !start_paused,
             visible_windows: [false; DebugWindow::COUNT],
+            monitor_input: String::new(),
+            monitor_output: VecDeque::from([
+                "Type help for monitor commands. Use pause/continue to control emulation.".into(),
+            ]),
+            monitor_scroll_to_bottom: true,
+            monitor_input_reclaim_focus: false,
             cycles_per_frame_input: cpt32::cpu::CYCLES_PER_FRAME.to_string(),
             queued_steps: 0,
             disasm_follow_pc: true,
@@ -961,6 +990,70 @@ impl DebugUiState {
         if self.visible_windows[DebugWindow::Performance as usize] {
             self.draw_performance(ui);
         }
+        if self.visible_windows[DebugWindow::MonitorConsole as usize] {
+            self.draw_monitor_console(ui, cpu);
+        }
+    }
+
+    fn draw_monitor_console(&mut self, ui: &Ui, cpu: &mut Cpu) {
+        ui.window(DebugWindow::MonitorConsole.label())
+            .size([720.0, 480.0], Condition::FirstUseEver)
+            .build(|| {
+                ui.child_window("Monitor output")
+                    .size([0.0, -35.0])
+                    .border(true)
+                    .build(|| {
+                        for line in &self.monitor_output {
+                            ui.text(line);
+                        }
+                        if self.monitor_scroll_to_bottom {
+                            ui.set_scroll_here_y_with_ratio(1.0);
+                            self.monitor_scroll_to_bottom = false;
+                        }
+                    });
+                if self.monitor_input_reclaim_focus {
+                    ui.set_keyboard_focus_here();
+                    self.monitor_input_reclaim_focus = false;
+                }
+                let submitted = ui
+                    .input_text("src32>", &mut self.monitor_input)
+                    .enter_returns_true(true)
+                    .build();
+                if submitted {
+                    self.execute_monitor_command(cpu);
+                    self.monitor_input_reclaim_focus = true;
+                }
+            });
+    }
+
+    fn execute_monitor_command(&mut self, cpu: &mut Cpu) {
+        let command = self.monitor_input.trim().to_owned();
+        self.monitor_input.clear();
+        if command.is_empty() {
+            return;
+        }
+        self.monitor_output.push_back(format!("src32> {command}"));
+        match command.split_whitespace().next().unwrap_or_default() {
+            "pause" => {
+                self.running = false;
+                self.monitor_output.push_back("Emulation paused.".into());
+            }
+            "continue" | "c" => {
+                self.running = true;
+                self.monitor_output.push_back("Emulation running.".into());
+            }
+            command_name => {
+                if matches!(command_name, "step" | "s" | "run" | "r") {
+                    self.running = false;
+                }
+                let result = monitor::execute_command(cpu, &command);
+                self.monitor_output.extend(result.lines);
+            }
+        }
+        while self.monitor_output.len() > 500 {
+            self.monitor_output.pop_front();
+        }
+        self.monitor_scroll_to_bottom = true;
     }
 
     fn draw_bus_composition(&self, ui: &Ui, cpu: &Cpu) {
@@ -1550,20 +1643,27 @@ impl ApplicationHandler for GuiApp {
                     };
 
                     if let Some(audio_host) = self.audio_host.as_ref() {
-                        let sample_count =
-                            (audio_host.sample_rate() / cpt32::sys::FRAME_RATE) as usize;
+                        let sample_rate = audio_host.sample_rate();
+                        let sample_count = (sample_rate / cpt32::sys::FRAME_RATE) as usize;
                         let (left0, right0) = self.sgu[0].borrow_mut().clock_mixed(sample_count);
                         let (left1, right1) = self.sgu[1].borrow_mut().clock_mixed(sample_count);
-                        let left: Vec<i16> = left0
+                        let mut left: Vec<i16> = left0
                             .into_iter()
                             .zip(left1)
                             .map(|(a, b)| a.saturating_add(b))
                             .collect();
-                        let right: Vec<i16> = right0
+                        let mut right: Vec<i16> = right0
                             .into_iter()
                             .zip(right1)
                             .map(|(a, b)| a.saturating_add(b))
                             .collect();
+                        // Layer IDC disk operation sounds (spindle hum and
+                        // seek clicks from the user-supplied asset pack).
+                        // Silent when no sound profile is assigned.
+                        if let Some(idc) = self.idc.as_ref() {
+                            idc.borrow_mut()
+                                .render_audio(sample_rate, &mut left, &mut right);
+                        }
                         audio_host.push_samples_i16(&left, &right);
                     }
 
@@ -1956,6 +2056,7 @@ mod input_tests {
             cpu: old_cpu,
             vdp: old_vdp,
             sgu: old_sgu,
+            idc: None,
             audio_host: None,
             input_sender: old_sender,
             held_keys: HashSet::from([0x04]),

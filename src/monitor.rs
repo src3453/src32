@@ -114,6 +114,256 @@ fn print_memory(cpu: &mut Cpu, mut addr: u32, count: usize) {
     println!();
 }
 
+#[derive(Default)]
+pub struct CommandOutput {
+    pub lines: Vec<String>,
+}
+
+pub fn execute_command(cpu: &mut Cpu, command_line: &str) -> CommandOutput {
+    let mut output = CommandOutput::default();
+    let mut parts = command_line.split_whitespace();
+    let Some(command) = parts.next() else {
+        return output;
+    };
+    let push_state = |cpu: &mut Cpu, output: &mut CommandOutput| {
+        output.lines.push(cpu.return_state_text());
+        let decoded = cpu.decode_at(cpu.pc(), cpu.instruction_mode());
+        output.lines.push(format!("next: {}", decoded.text));
+    };
+    match command {
+        "help" | "h" | "?" => output.lines.extend([
+            "Commands:".to_string(),
+            "  help(h|?)               show this help".to_string(),
+            "  load(l) <path> [addr]   load a binary image into memory".to_string(),
+            "  step(s) [n]             execute n instructions (default 1)".to_string(),
+            "  run(r) [n]              execute n instructions (default 1000)".to_string(),
+            "  regs(state)(rs)         print CPU state".to_string(),
+            "  setr(sr) <reg> <value>  set register to value".to_string(),
+            "  goto(setpc|g) <addr>    set PC to addr".to_string(),
+            "  disasm(u) [addr] [n]    show n decoded instructions".to_string(),
+            "  mem(x) <addr> [n]       dump n bytes from memory".to_string(),
+            "  poke(p) <addr> <value>  write one byte to memory".to_string(),
+            "  reset(rst) [pc]         reset CPU and set PC".to_string(),
+            "  pause / continue       control real-time emulation in the debug GUI".to_string(),
+            "  quit(exit|q)            unavailable in the embedded monitor".to_string(),
+        ]),
+        "load" | "l" => {
+            let Some(path) = parts.next() else {
+                output.lines.push("Usage: load <path> [addr]".into());
+                return output;
+            };
+            let addr = match parts.next().map(parse_u32).transpose() {
+                Ok(Some(addr)) => addr,
+                Ok(None) => 0,
+                Err(error) => {
+                    output.lines.push(format!("Invalid address: {error}"));
+                    return output;
+                }
+            };
+            match std::fs::read(path) {
+                Ok(data) => {
+                    cpu.load_program(addr, &data);
+                    output
+                        .lines
+                        .push(format!("Loaded {} bytes at 0x{:08X}", data.len(), addr));
+                }
+                Err(error) => output.lines.push(format!("Failed to read {path}: {error}")),
+            }
+        }
+        "step" | "s" | "run" | "r" => {
+            let default_count = if matches!(command, "run" | "r") {
+                1000
+            } else {
+                1
+            };
+            let count = match parts.next().map(str::parse::<usize>).transpose() {
+                Ok(Some(count)) => count,
+                Ok(None) => default_count,
+                Err(error) => {
+                    output.lines.push(format!("Invalid step count: {error}"));
+                    return output;
+                }
+            };
+            for _ in 0..count {
+                if !cpu.step_once() {
+                    output.lines.push("CPU halted.".into());
+                    break;
+                }
+            }
+            push_state(cpu, &mut output);
+        }
+        "regs" | "state" | "rs" => push_state(cpu, &mut output),
+        "disasm" | "u" => {
+            let addr = match parts.next().map(parse_u32).transpose() {
+                Ok(Some(addr)) => addr,
+                Ok(None) => cpu.pc(),
+                Err(error) => {
+                    output.lines.push(format!("Invalid address: {error}"));
+                    return output;
+                }
+            };
+            let count = match parts.next().map(str::parse::<usize>).transpose() {
+                Ok(Some(count)) => count,
+                Ok(None) => 8,
+                Err(error) => {
+                    output.lines.push(format!("Invalid count: {error}"));
+                    return output;
+                }
+            };
+            let mut addr = addr;
+            let mut mode = if addr == cpu.pc() {
+                cpu.instruction_mode()
+            } else {
+                InstructionMode::Normal
+            };
+            for _ in 0..count {
+                let marker = if addr == cpu.pc() { "=>" } else { "  " };
+                let decoded = cpu.decode_at(addr, mode);
+                let raw = if decoded.size == 2 {
+                    format!("{:04X}     ", cpu.read_u16_be(addr))
+                } else {
+                    format!("{:08X} ", cpu.read_u32(addr))
+                };
+                output.lines.push(format!(
+                    "{} 0x{:08X}: {} [{:?}] {}",
+                    marker, addr, raw, mode, decoded.text
+                ));
+                addr = addr.wrapping_add(decoded.size as u32);
+                mode = decoded.next_mode;
+            }
+        }
+        "mem" | "x" => {
+            let addr = match parts.next().map(parse_u32).transpose() {
+                Ok(Some(addr)) => addr,
+                Ok(None) => cpu.pc(),
+                Err(error) => {
+                    output.lines.push(format!("Invalid address: {error}"));
+                    return output;
+                }
+            };
+            let count = match parts.next().map(str::parse::<usize>).transpose() {
+                Ok(Some(count)) => count,
+                Ok(None) => 64,
+                Err(error) => {
+                    output.lines.push(format!("Invalid count: {error}"));
+                    return output;
+                }
+            };
+            let mut addr = addr;
+            for row_start in (0..count).step_by(16) {
+                let row_count = (count - row_start).min(16);
+                let mut hex = String::new();
+                let mut ascii = String::new();
+                for _ in 0..row_count {
+                    let byte = cpu.read_mem_u8(addr);
+                    hex.push_str(&format!("{:02X} ", byte));
+                    ascii.push(if byte.is_ascii_graphic() || byte == b' ' {
+                        byte as char
+                    } else {
+                        '.'
+                    });
+                    addr = addr.wrapping_add(1);
+                }
+                output.lines.push(format!(
+                    "0x{:08X}: {}|{}|",
+                    addr.wrapping_sub(row_count as u32),
+                    hex,
+                    ascii
+                ));
+            }
+        }
+        "poke" | "p" => {
+            let (Some(addr_token), Some(value_token)) = (parts.next(), parts.next()) else {
+                output.lines.push("Usage: poke <addr> <value>".into());
+                return output;
+            };
+            let addr = match parse_u32(addr_token) {
+                Ok(addr) => addr,
+                Err(error) => {
+                    output.lines.push(format!("Invalid address: {error}"));
+                    return output;
+                }
+            };
+            let value = match parse_u32(value_token) {
+                Ok(value) => value as u8,
+                Err(error) => {
+                    output.lines.push(format!("Invalid value: {error}"));
+                    return output;
+                }
+            };
+            cpu.write_mem_u8(addr, value);
+            output
+                .lines
+                .push(format!("Wrote 0x{:02X} to 0x{:08X}", value, addr));
+        }
+        "reset" | "rst" => {
+            let pc = match parts.next().map(parse_u32).transpose() {
+                Ok(Some(pc)) => pc,
+                Ok(None) => 0,
+                Err(error) => {
+                    output.lines.push(format!("Invalid PC: {error}"));
+                    return output;
+                }
+            };
+            cpu.reset(pc);
+            push_state(cpu, &mut output);
+        }
+        "setr" | "sr" => {
+            let (Some(reg_token), Some(value_token)) = (parts.next(), parts.next()) else {
+                output.lines.push("Usage: setr <reg> <value>".into());
+                return output;
+            };
+            let reg = match parse_u32(reg_token) {
+                Ok(reg) => reg as usize,
+                Err(error) => {
+                    output.lines.push(format!("Invalid register: {error}"));
+                    return output;
+                }
+            };
+            if reg >= 32 {
+                output
+                    .lines
+                    .push("Register index out of range (0-31)".into());
+                return output;
+            }
+            let value = match parse_u32(value_token) {
+                Ok(value) => value,
+                Err(error) => {
+                    output.lines.push(format!("Invalid value: {error}"));
+                    return output;
+                }
+            };
+            let message = cpu.write_reg(reg, value);
+            output
+                .lines
+                .push(format!("Set R{} to 0x{:08X}", reg, value));
+            match message {
+                Ok(message) if !message.is_empty() => output.lines.push(message),
+                Err(error) => output.lines.push(format!("Error: {error}")),
+                _ => {}
+            }
+        }
+        "goto" | "setpc" | "g" => {
+            let Some(addr_token) = parts.next() else {
+                output.lines.push(format!("Usage: {} <addr>", command));
+                return output;
+            };
+            match parse_u32(addr_token) {
+                Ok(addr) => {
+                    cpu.set_pc(addr);
+                    output.lines.push(format!("Set PC to 0x{:08X}", addr));
+                }
+                Err(error) => output.lines.push(format!("Invalid address: {error}")),
+            }
+        }
+        "quit" | "exit" | "q" => output
+            .lines
+            .push("quit is unavailable in the embedded monitor".into()),
+        other => output.lines.push(format!("Unknown command: {other}")),
+    }
+    output
+}
+
 pub fn run(program_path: Option<&str>) {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
@@ -345,5 +595,25 @@ pub fn run(program_path: Option<&str>) {
             "quit" | "exit" | "q" => break,
             other => println!("Unknown command: {}", other),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::execute_command;
+    use cpt32::bus::Bus;
+    use cpt32::cpu::Cpu;
+    use cpt32::devices::ram::connect_ram;
+
+    #[test]
+    fn console_set_register_command_updates_cpu_and_returns_feedback() {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        let mut cpu = Cpu::new(bus);
+
+        let output = execute_command(&mut cpu, "setr 1 0x1234");
+
+        assert_eq!(cpu.read_reg(1), 0x1234);
+        assert!(output.lines.iter().any(|line| line.contains("Set R1")));
     }
 }

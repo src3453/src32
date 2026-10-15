@@ -18,6 +18,22 @@ pcg:
 #     read_only: true
 #     transfer_rate_bytes_per_second: 48000000
 #     access_latency_ms: 0
+#     # Operation sound profile (internal_name from the asset pack below).
+#     # Omit to keep the slot silent.
+#     sound_profile: "Seagate_ST3120A_3211RPM"
+
+# Disk operation sounds (spindle hum + seek clicks). Sound samples are NOT
+# bundled: because of their licenses, check out
+# https://github.com/86Box/assets yourself and point asset_root at the
+# directory containing its sounds/ folder (it also provides
+# sounds/hdd/hdd_audio_profiles.cfg and sounds/fdd/fdd_audio_profiles.cfg).
+# Without an asset pack (or without sound_profile assignments) the emulator
+# stays silent; a broken sound setup only warns and never fails to boot.
+# disk_sound:
+#   asset_root: "assets-86box"
+#   volume: 1.0 # global gain, 0.0 (muted) .. 4.0
+#   default_fdd_profile: "panasonic_ju4755_40t"
+#   default_hdd_profile: "Seagate_ST3120A_3211RPM"
 
 # WASM expansion cards use ZIP packages with a root manifest.yaml.
 # Assets are decompressed only when the guest first reads them.

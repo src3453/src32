@@ -84,8 +84,9 @@ master clockは48 MHz。コマンド開始から累積転送済みbyte数`n`のs
 | `read_only` | no | boolean、default `false` |
 | `transfer_rate_bytes_per_second` | no | 正整数。省略時はtype別既定値 |
 | `access_latency_ms` | no | 非負整数。省略時はtype別既定値 |
+| `sound_profile` | no | 動作音profileの`internal_name`。省略時は無音 |
 
-相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。`config.yaml`で指定したlegacy raw imageへの書込みは引き続きimage file自体に反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。
+相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。`config.yaml`で指定したlegacy raw imageへの書込みは引き続きimage file自体に反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。`sound_profile`の未知名や音資産の欠落は警告のみで、起動を妨げない。
 
 ```yaml
 disk:
@@ -104,7 +105,30 @@ disk:
 
 上例はslot 0をFDD既定速度で読書き可能、slot 1をHDD型のread-only媒体として8,000,000 B/s・4 msで割り当てる。`disk0.img`と`images/data.bin`はいずれも拡張子によらずraw byte列として扱う。
 
-## 8. 契約例
+## 8. 動作音シミュレーション
+
+IDCはREAD/WRITEの動作音（スピンドル hum と seek click）をSGU音声に重ねて再生できる。音の合成方式と資産layoutは86Box（`src/disk/hdd_audio.c`、`src/floppy/fdd_audio.c`）に倣う。すなわちslot毎のspindle状態機械（stopped → starting → running → stopping → stopped）、running中のloop再生、最大4 voiceのpolyphonicなone-shot seek click、profile config由来のper-sample volumeである。86Boxが48 kHz出力を仮定してresampleしないのに対し、こちらはWAVのrateを保持してhost出力rateへ線形補間で合わせる。
+
+FDDは距離別のseek sample（`seek_up/down_<N>track_file`）を使い、LBA差を`ceil(sectors / 8)`でtrack距離へ概算して選択する。HDDは単一の`seek_track_file`を使う。seek triggerはcommand受理時とsector ready毎（READ stage / WRITE commit）で、同一driveの再triggerは2 ms以上空ける。
+
+サウンド資産はlicenseの関係で同梱しない。ユーザーが別途 https://github.com/86Box/assets を用意し、`disk_sound.asset_root` にその`sounds/`を含むdirectoryを指定する。同repoの `sounds/hdd/hdd_audio_profiles.cfg` と `sounds/fdd/fdd_audio_profiles.cfg`（`[Profile "N"]` sectionと16-bit PCM WAV参照）をそのまま読む。資産もprofile割当も無いslotは無音であり、設定不備は警告に留めて起動を妨げない。
+
+```yaml
+disk_sound:
+  asset_root: "assets-86box" # sounds/ を含むdirectory。config相対も可
+  volume: 1.0                 # 全体gain、0.0（無音）～4.0
+  default_fdd_profile: "panasonic_ju4755_40t"     # 種別既定（省略可）
+  default_hdd_profile: "Seagate_ST3120A_3211RPM"  # 種別既定（省略可）
+disk:
+  - slot: 0
+    type: "hdd"
+    image: "disk0.img"
+    sound_profile: "Seagate_ST3120A_3211RPM" # disk毎指定が最優先
+```
+
+`sound_profile`（disk毎）と種別既定のいずれも無いslotは無音のままである。`.cpt32pkg` のpackage diskは音割当を持たないため種別既定だけが適用される。
+
+## 9. 契約例
 
 2-sector (1024-byte) raw imageをslot 0に接続した場合:
 
@@ -113,7 +137,7 @@ disk:
 3. `LBA=1`, `SECTOR_COUNT=2`のREADは全範囲検査でERROR_CODE=3となり、DMA開始前に停止するためRAM/mediaを変更しない。
 4. `LBA=0`, `SECTOR_COUNT=1`のWRITEはRAMの512 bytesをraw image先頭へ反映する。read-only時はERROR_CODE=4となり、image内容を保持する。
 
-## 9. CPT32PKG disk media
+## 10. CPT32PKG disk media
 
 `.cpt32pkg` launch時はmanifestに宣言されたdiskだけをIDC slotへ接続し、`config.yaml`のdisk設定でpackage slotを上書きしない。package disk imageはZIP内のimmutableなraw baseであり、通常のpackage fileは変更しない。
 

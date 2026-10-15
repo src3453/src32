@@ -1112,6 +1112,17 @@ impl Cpu {
             "PC=0x{:08X} MODE={:?} OP={}\n",
             pc, self.instr_mode, decoded.text
         );
+        txt.push_str(&format!(
+            "EPC=0x{:08X} CAUSE=0x{:02X} STATUS=0x{:08X} (IRQ {})\n",
+            self.epc,
+            self.cause,
+            u32::from(self.irq_enable),
+            if self.irq_enable {
+                "enabled"
+            } else {
+                "disabled"
+            },
+        ));
         for i in 0..32 {
             txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));
             if i % 4 == 3 {

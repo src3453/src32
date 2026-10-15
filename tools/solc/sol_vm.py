@@ -963,6 +963,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 "locals": locals_list,
                 "namespace": current_namespace,
                 "source_name": name,
+                "location": getattr(name, "location", None),
             }
             irq_match = re.fullmatch(r"irq(\d+)", name) if current_namespace is None else None
             if irq_match:
@@ -1025,7 +1026,16 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     pending_functions.append(called_name)
         unused_functions = set(functions) - reachable_functions
         for function_name in sorted(unused_functions):
-            logger.warning("unused function: %s", functions[function_name]["source_name"])
+            function_data = functions[function_name]
+            location = function_data["location"]
+            if location is None:
+                logger.warning("unused function: %s", function_data["source_name"])
+            else:
+                logger.warning(
+                    "%s: unused function: %s",
+                    location.format(),
+                    function_data["source_name"],
+                )
         functions = {
             name: data for name, data in functions.items() if name in reachable_functions
         }

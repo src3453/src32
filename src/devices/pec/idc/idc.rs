@@ -6,6 +6,8 @@ use std::sync::Arc;
 use crate::bus::{Bus, Device};
 use crate::cartridge::{CartridgeDisk, CartridgeDiskKind, CartridgeDiskMode};
 use crate::cow::{BaseImage, CowOverlay};
+
+use super::audio::IdcAudio;
 pub const IDC_BASE: u32 = 0x8004_1000;
 pub const IDC_SIZE: u32 = 0x1000;
 pub const IDC_DATA_ADDRESS: u32 = IDC_BASE + 0x24;
@@ -127,6 +129,39 @@ fn cow_io_error(error: crate::cow::CowError) -> std::io::Error {
     std::io::Error::new(std::io::ErrorKind::Other, error)
 }
 
+#[derive(Clone, Debug)]
+pub struct IdcSoundConfig {
+    /// Asset-pack search roots in priority order. Each root is a directory
+    /// containing `sounds/` (i.e. a checkout of
+    /// <https://github.com/86Box/assets>).
+    pub asset_roots: Vec<PathBuf>,
+    /// Global gain for disk operation sounds (0.0 = muted).
+    pub volume: f32,
+    /// Explicit per-slot profile names (`internal_name` from the asset-pack
+    /// profile configs).
+    pub slots: [Option<String>; 4],
+    /// Fallback profile for FDD / HDD slots without an explicit name.
+    /// Used for cartridge disks, which carry no sound assignment.
+    pub default_fdd_profile: Option<String>,
+    pub default_hdd_profile: Option<String>,
+}
+
+impl IdcSoundConfig {
+    pub fn with_roots(asset_roots: Vec<PathBuf>) -> Self {
+        Self {
+            asset_roots,
+            volume: 1.0,
+            slots: std::array::from_fn(|_| None),
+            default_fdd_profile: None,
+            default_hdd_profile: None,
+        }
+    }
+
+    pub fn muted() -> Self {
+        Self::with_roots(Vec::new())
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DmaDirection {
     DeviceToMemory,
@@ -177,6 +212,7 @@ pub struct Idc {
     cycle: u128,
     drives: [Option<Drive>; 4],
     active: Option<ActiveCommand>,
+    audio: IdcAudio,
 }
 
 impl Idc {
@@ -199,7 +235,26 @@ impl Idc {
             cycle: 0,
             drives,
             active: None,
+            audio: IdcAudio::new(),
         }
+    }
+
+    /// Additively mix this frame's disk operation sounds into stereo buffers.
+    /// Silent when no sound profile is assigned or no audio asset is loaded.
+    pub fn render_audio(&mut self, sample_rate: u32, left: &mut [i16], right: &mut [i16]) {
+        self.audio.render_into(sample_rate, left, right);
+    }
+
+    /// Human-readable sound status per slot, for diagnostics and the UI.
+    pub fn sound_status(&self) -> [Option<(String, String)>; 4] {
+        std::array::from_fn(|slot| {
+            let index = self.audio.slot_profile(slot)?;
+            self.audio
+                .profile_names()
+                .get(index)
+                .cloned()
+                .map(|(internal_name, name)| (internal_name, name))
+        })
     }
 
     pub fn load_cartridge_drives(
@@ -328,6 +383,7 @@ impl Idc {
                         | "read_only"
                         | "transfer_rate_bytes_per_second"
                         | "access_latency_ms"
+                        | "sound_profile"
                 ) {
                     return Err(slot_error(&format!(
                         "unknown configuration key `{key_name}`"
@@ -432,6 +488,183 @@ impl Idc {
         Ok(drives)
     }
 
+    /// Parse the optional `disk_sound` section and per-disk `sound_profile`
+    /// names from a config file. Never fails the boot on its own: callers
+    /// downgrade errors to warnings so a broken sound setup stays silent
+    /// instead of refusing to start the machine.
+    pub fn load_sound_config(config_path: &Path) -> Result<IdcSoundConfig, String> {
+        let config_parent = config_path.parent().unwrap_or_else(|| Path::new("."));
+        let contents = match fs::read_to_string(config_path) {
+            Ok(contents) => contents,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(IdcSoundConfig::with_roots(vec![
+                    config_parent.to_path_buf(),
+                    PathBuf::from("."),
+                ]));
+            }
+            Err(error) => {
+                return Err(format!("cannot read {}: {error}", config_path.display()));
+            }
+        };
+        let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+            .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
+        let mut config =
+            IdcSoundConfig::with_roots(vec![config_parent.to_path_buf(), PathBuf::from(".")]);
+        if let Some(sound) = root.get("disk_sound") {
+            let table = sound.as_mapping().ok_or_else(|| {
+                format!("{}: `disk_sound` must be a mapping", config_path.display())
+            })?;
+            for key in table.keys() {
+                let Some(key_name) = key.as_str() else {
+                    return Err(format!(
+                        "{}: `disk_sound` keys must be strings",
+                        config_path.display()
+                    ));
+                };
+                if !matches!(
+                    key_name,
+                    "asset_root" | "volume" | "default_fdd_profile" | "default_hdd_profile"
+                ) {
+                    return Err(format!(
+                        "{}: unknown `disk_sound` key `{key_name}`",
+                        config_path.display()
+                    ));
+                }
+            }
+            if let Some(root_value) = table.get("asset_root") {
+                let root_name = root_value.as_str().ok_or_else(|| {
+                    format!(
+                        "{}: `disk_sound.asset_root` must be a path string",
+                        config_path.display()
+                    )
+                })?;
+                let root_path = PathBuf::from(root_name);
+                let root_path = if root_path.is_absolute() {
+                    root_path
+                } else {
+                    config_parent.join(root_path)
+                };
+                config.asset_roots.insert(0, root_path);
+            }
+            if let Some(volume_value) = table.get("volume") {
+                let volume = volume_value
+                    .as_f64()
+                    .or_else(|| volume_value.as_i64().map(|v| v as f64))
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: `disk_sound.volume` must be a number",
+                            config_path.display()
+                        )
+                    })?;
+                if !volume.is_finite() || volume < 0.0 || volume > 4.0 {
+                    return Err(format!(
+                        "{}: `disk_sound.volume` must be within 0.0..=4.0",
+                        config_path.display()
+                    ));
+                }
+                config.volume = volume as f32;
+            }
+            for (key, target) in [
+                ("default_fdd_profile", &mut config.default_fdd_profile),
+                ("default_hdd_profile", &mut config.default_hdd_profile),
+            ] {
+                if let Some(value) = table.get(key) {
+                    let name = value
+                        .as_str()
+                        .filter(|name| !name.is_empty())
+                        .ok_or_else(|| {
+                            format!(
+                                "{}: `disk_sound.{key}` must be a non-empty profile name",
+                                config_path.display()
+                            )
+                        })?;
+                    *target = Some(name.to_string());
+                }
+            }
+        }
+        let Some(disk_value) = root.get("disk") else {
+            return Ok(config);
+        };
+        let disks = disk_value
+            .as_sequence()
+            .ok_or_else(|| format!("{}: `disk` must be a sequence", config_path.display()))?;
+        for (index, disk_value) in disks.iter().enumerate() {
+            let Some(table) = disk_value.as_mapping() else {
+                continue;
+            };
+            let Some(slot_value) = table.get("slot") else {
+                continue;
+            };
+            let Some(slot) = slot_value.as_i64().filter(|slot| (0..=3).contains(slot)) else {
+                continue;
+            };
+            if let Some(profile_value) = table.get("sound_profile") {
+                let name = profile_value
+                    .as_str()
+                    .filter(|name| !name.is_empty())
+                    .ok_or_else(|| {
+                        format!(
+                            "{}: disk entry {} `sound_profile` must be a non-empty profile name",
+                            config_path.display(),
+                            index + 1
+                        )
+                    })?;
+                config.slots[slot as usize] = Some(name.to_string());
+            }
+        }
+        Ok(config)
+    }
+
+    /// Load user-supplied 86Box-compatible sound assets and assign profiles
+    /// to slots. Explicit per-disk `sound_profile` names win; otherwise the
+    /// kind defaults apply. Unknown names or missing assets only warn.
+    pub fn apply_sound_config(&mut self, config: &IdcSoundConfig) {
+        self.audio.set_volume(config.volume);
+        let mut found_root = None;
+        for root in &config.asset_roots {
+            self.audio.load_from_asset_root(root);
+            if self.audio.profile_count() > 0 {
+                found_root = Some(root.clone());
+                break;
+            }
+        }
+        let Some(found_root) = found_root else {
+            tracing::info!("IDC audio: no sound asset pack found; disk operation sounds are muted");
+            return;
+        };
+        tracing::info!(
+            path = %found_root.display(),
+            profiles = self.audio.profile_count(),
+            "IDC audio: loaded disk sound profiles",
+        );
+        for slot in 0..4 {
+            let requested = config.slots[slot].clone().or_else(|| {
+                let kind = self.drives[slot].as_ref().map(|drive| drive.kind)?;
+                match kind {
+                    DriveType::Fdd => config.default_fdd_profile.clone(),
+                    DriveType::Hdd => config.default_hdd_profile.clone(),
+                }
+            });
+            let Some(name) = requested else {
+                continue;
+            };
+            if self.drives[slot].is_none() {
+                continue;
+            }
+            match self.audio.find_profile(&name) {
+                Some(index) => self.audio.set_slot_profile(slot, Some(index)),
+                None => {
+                    tracing::warn!(
+                        slot,
+                        profile = %name,
+                        "IDC audio: unknown sound profile; slot stays muted",
+                    );
+                    self.audio.set_slot_profile(slot, None);
+                }
+            }
+        }
+    }
+
     pub(crate) fn tick(&mut self) -> Option<usize> {
         self.cycle = self.cycle.saturating_add(1);
         let Some(active) = self.active.as_ref() else {
@@ -474,6 +707,7 @@ impl Idc {
                 let active = self.active.as_mut().expect("active IDC command");
                 active.cursor = 0;
                 active.read_ready = true;
+                self.audio.notify_sector_tick(slot, lba, self.cycle);
             }
         } else {
             let should_commit = self
@@ -505,6 +739,7 @@ impl Idc {
                     active.buffer.fill(0);
                     active.completed_sectors == active.sector_count
                 };
+                self.audio.notify_sector_tick(slot, lba, self.cycle);
                 if complete {
                     self.finish_success();
                 }
@@ -760,6 +995,11 @@ impl Idc {
             dma_channel: None,
             abort_requested: false,
         });
+        let start_lba = self.lba;
+        let sector_count = self.sector_count;
+        let cycle = self.cycle;
+        self.audio
+            .notify_transfer_start(slot, start_lba, sector_count, cycle);
     }
 
     fn identify(&mut self) {
@@ -912,8 +1152,15 @@ pub fn connect_idc(
 pub fn connect_idc_from_config(
     bus: &mut Bus,
 ) -> Result<std::rc::Rc<std::cell::RefCell<Idc>>, String> {
-    let drives = Idc::load_drives(Path::new("config.yaml"))?;
-    Ok(connect_idc(bus, drives))
+    let config_path = Path::new("config.yaml");
+    let drives = Idc::load_drives(config_path)?;
+    let idc = connect_idc(bus, drives);
+    // Sound must never break the boot: a broken sound setup only warns.
+    match Idc::load_sound_config(config_path) {
+        Ok(sound) => idc.borrow_mut().apply_sound_config(&sound),
+        Err(error) => tracing::warn!(%error, "IDC audio: ignoring sound configuration"),
+    }
+    Ok(idc)
 }
 
 #[cfg(test)]
@@ -933,6 +1180,15 @@ mod tests {
         let root = std::env::temp_dir().join(format!("cpt32-idc-{}-{id}", std::process::id()));
         fs::create_dir_all(&root).unwrap();
         root
+    }
+
+    /// `Drive` intentionally has no `Debug` impl (it owns open files), so
+    /// error-path assertions go through `Result::err` instead of
+    /// `unwrap_err`, which would require `T: Debug`.
+    fn load_drives_err(config: &Path) -> String {
+        Idc::load_drives(config)
+            .err()
+            .expect("expected a drive configuration error")
     }
 
     fn fixture_config(root: &Path, image: &[u8], read_only: bool) -> PathBuf {
@@ -1144,11 +1400,7 @@ mod tests {
             "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n  - slot: 0\n    type: hdd\n    image: disk.img\n",
         )
         .unwrap();
-        assert!(
-            Idc::load_drives(&duplicate)
-                .unwrap_err()
-                .contains("disk slot 0")
-        );
+        assert!(load_drives_err(&duplicate).contains("disk slot 0"));
 
         fs::write(&image_path, [0u8; SECTOR_SIZE + 1]).unwrap();
         let invalid_length = root.join("invalid-length.yaml");
@@ -1157,11 +1409,7 @@ mod tests {
             "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n",
         )
         .unwrap();
-        assert!(
-            Idc::load_drives(&invalid_length)
-                .unwrap_err()
-                .contains("multiple of 512")
-        );
+        assert!(load_drives_err(&invalid_length).contains("multiple of 512"));
 
         fs::write(&image_path, [0u8; SECTOR_SIZE]).unwrap();
         let missing = root.join("missing.yaml");
@@ -1170,11 +1418,7 @@ mod tests {
             "disk:\n  - slot: 0\n    type: fdd\n    image: absent.img\n",
         )
         .unwrap();
-        assert!(
-            Idc::load_drives(&missing)
-                .unwrap_err()
-                .contains("disk slot 0")
-        );
+        assert!(load_drives_err(&missing).contains("disk slot 0"));
 
         let zero_rate = root.join("zero-rate.yaml");
         fs::write(
@@ -1182,22 +1426,14 @@ mod tests {
             "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    transfer_rate_bytes_per_second: 0\n",
         )
         .unwrap();
-        assert!(
-            Idc::load_drives(&zero_rate)
-                .unwrap_err()
-                .contains("greater than zero")
-        );
+        assert!(load_drives_err(&zero_rate).contains("greater than zero"));
         let negative_latency = root.join("negative-latency.yaml");
         fs::write(
             &negative_latency,
             "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    access_latency_ms: -1\n",
         )
         .unwrap();
-        assert!(
-            Idc::load_drives(&negative_latency)
-                .unwrap_err()
-                .contains("must not be negative")
-        );
+        assert!(load_drives_err(&negative_latency).contains("must not be negative"));
         fs::remove_dir_all(root).unwrap();
     }
 
