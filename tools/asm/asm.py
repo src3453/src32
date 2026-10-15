@@ -244,6 +244,10 @@ class Assembler:
         # Omit zero padding before the first emitted byte (for ROM images).
         # Gaps between emitted sections are still padded.
         self.strip = strip
+        # Branch instructions recorded during pass1 for far-jump analysis.
+        self.branch_records: list[dict] = []
+        # Monotonic counter for generated trampoline labels.
+        self.far_counter = 0
 
     def load(self, text: str) -> None:
         self.lines = [SourceLine(i + 1, line) for i, line in enumerate(text.splitlines())]
@@ -466,7 +470,9 @@ class Assembler:
 
     def pass1(self) -> None:
         self.pc = 0
-        for entry in self.lines:
+        self.symbols = {}
+        self.branch_records = []
+        for entry_index, entry in enumerate(self.lines):
             line = strip_comment(entry.text)
             if not line:
                 continue
@@ -516,10 +522,92 @@ class Assembler:
             if op not in OP_INFO:
                 raise ValueError(f"line {entry.lineno}: unknown instruction '{op}'")
             _, kind = OP_INFO[op]
+            if kind in {"B", "J"}:
+                # Normal-mode branch: remember it for far-jump analysis.
+                # Operand layout: B = op rs1 rs2 target; J = op target.
+                target_token = tokens[3] if kind == "B" else tokens[1]
+                if not target_token.startswith("R!"):
+                    self.branch_records.append({
+                        "index": entry_index,
+                        "op": op,
+                        "kind": kind,
+                        "target": target_token,
+                        "pc": self.pc,
+                        "size": INSN_SIZE,
+                    })
             if kind in {"SR2", "SR3", "SI8S", "SI8U", "SB8", "SJ12", "SR1", "S0"}:
                 self.pc += SHORT_INSN_SIZE
             else:
                 self.pc += INSN_SIZE
+
+    def _find_far_branches(self) -> list[dict]:
+        """Label-targeted branches whose relative offset exceeds the
+        encoding range. Short-mode branches (S.BZ/S.BNZ/S.JAL) are emitted
+        by the compiler only inside small short blocks, so they keep their
+        existing range check and are never rewritten here."""
+        far: list[dict] = []
+        for rec in self.branch_records:
+            target = rec["target"]
+            if target in self.symbols:
+                addr = self.symbols[target]
+            else:
+                try:
+                    addr = parse_number(target)
+                except ValueError:
+                    continue
+            offset = addr - (rec["pc"] + rec["size"])
+            if not -32768 <= offset <= 32767:
+                far.append(rec)
+        return far
+
+    def _rewrite_branch(self, text: str, tag: str) -> str:
+        stripped = strip_comment(text)
+        tokens = tokenize(stripped)
+        tokens[-1] = tag
+        indent = text[:len(text) - len(text.lstrip())]
+        return indent + " ".join(tokens)
+
+    def _insert_trampolines(self, far: list[dict]) -> None:
+        """Rewrite each far branch to jump to a trampoline placed
+        immediately after it. The trampoline loads the absolute target
+        address into R14 and jumps through it. R14 is dead at every
+        branch site because the compiler flushes its stack cache before
+        emitting JMP/JAL/BEQ/BNE. Conditional branches get a skip JMP so
+        the not-taken path falls through past the trampoline."""
+        far_by_index = {rec["index"]: rec for rec in far}
+        new_lines: list[SourceLine] = []
+        for index, entry in enumerate(self.lines):
+            rec = far_by_index.get(index)
+            if rec is None:
+                new_lines.append(entry)
+                continue
+            kind = rec["kind"]
+            op = rec["op"]
+            target = rec["target"]
+            conditional = kind == "B"
+            link = op == "JAL"
+            self.far_counter += 1
+            tag = f"__solc_far_tramp_{self.far_counter}"
+            end_tag = f"{tag}_end"
+            new_lines.append(SourceLine(
+                entry.lineno, self._rewrite_branch(entry.text, tag), entry.source))
+            if conditional:
+                new_lines.append(SourceLine(entry.lineno, f"    JMP {end_tag}", entry.source))
+            new_lines.append(SourceLine(entry.lineno, f"{tag}:", entry.source))
+            if target in self.symbols:
+                new_lines.append(SourceLine(entry.lineno, f"    LDIH R14, {target}", entry.source))
+                new_lines.append(SourceLine(entry.lineno, f"    LDIL R14, {target}", entry.source))
+            else:
+                value = parse_number(target) & 0xFFFFFFFF
+                new_lines.append(SourceLine(
+                    entry.lineno, f"    LDIH R14, 0x{(value >> 16) & 0xFFFF:04X}", entry.source))
+                new_lines.append(SourceLine(
+                    entry.lineno, f"    LDIL R14, 0x{value & 0xFFFF:04X}", entry.source))
+            new_lines.append(SourceLine(
+                entry.lineno, f"    {'JALR' if link else 'JR'} R14", entry.source))
+            if conditional:
+                new_lines.append(SourceLine(entry.lineno, f"{end_tag}:", entry.source))
+        self.lines = new_lines
 
     def emit8(self, value: int) -> None:
         self.output.append(value & 0xFF)
@@ -752,7 +840,16 @@ class Assembler:
         self.symbols.clear()
         root_dir = base_dir or os.getcwd()
         self.lines = self._preprocess_text(text, source, root_dir)
-        self.pass1()
+        # Far branches are rewritten to nearby trampolines. Each pass can
+        # push other branches out of range, so iterate to a fixed point.
+        for _ in range(1 + len(self.lines)):
+            self.pass1()
+            far = self._find_far_branches()
+            if not far:
+                break
+            self._insert_trampolines(far)
+        else:
+            raise ValueError("far-branch trampoline iteration did not converge")
         self.pass2()
         return bytes(self.output)
 
