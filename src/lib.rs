@@ -4,6 +4,8 @@ pub mod bus;
 pub mod cartridge;
 pub mod cow;
 pub mod cpu;
+pub mod cpu_pipeline;
+pub mod cpu_select;
 pub mod music;
 pub mod sys;
 pub mod wav;

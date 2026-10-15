@@ -9,10 +9,10 @@
 //! here is also deliberately not a multiple of 512 bytes,
 //! so the `incomplete_sector_policy: pad` config path is
 //! exercised too.
-use cpt32::bus::{connect_devices_with_vdp, Bus};
-use cpt32::cpu::{Cpu, CYCLES_PER_FRAME};
-use cpt32::devices::pec::idc::idc::{connect_idc, Idc};
-use cpt32::devices::pec::pec::{connect_pec_input, HostInputEvent};
+use cpt32::bus::{Bus, connect_devices_with_vdp};
+use cpt32::cpu::{CYCLES_PER_FRAME, Cpu};
+use cpt32::devices::pec::idc::idc::{Idc, connect_idc};
+use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::vdp::vdp::VDP_VRAM_BASE;
 use tokio::sync::mpsc::UnboundedSender;
@@ -61,9 +61,8 @@ fn tinybasic_load_from_small_nonaligned_image() {
     connect_idc(&mut bus, drives);
 
     let mut cpu = Cpu::new(bus);
-    let image =
-        std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-            .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
+        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
     cpu.load_program(0, &image);
 
     // HID: letters a..z are 4..29, Enter is 40.
@@ -84,10 +83,7 @@ fn tinybasic_load_from_small_nonaligned_image() {
         !text.contains("DISK READ ERROR"),
         "LOAD reported a disk error:\n{text}"
     );
-    assert!(
-        text.contains("HELLO"),
-        "loaded program not listed:\n{text}"
-    );
+    assert!(text.contains("HELLO"), "loaded program not listed:\n{text}");
 
     std::fs::remove_dir_all(&root).unwrap();
 }

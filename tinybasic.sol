@@ -519,8 +519,56 @@ fn tb_print_number (number) :
     value 10 mod 48 add tb_putc
 ;
 
+# Decimal digit count of a number, including a leading minus sign.
+fn tb_number_width (number) :
+    local value 0
+    local digits 0
+    number >value
+    value 0 lt if
+        value neg >value
+        1 >digits
+    end
+    value 0 eq if 1 ret end
+    while
+        value 0 gt
+        if
+            digits 1 add >digits
+            value 10 div >value
+            0
+        else
+            1
+        end
+    end
+    digits ret
+;
+
+# Print a number right-justified in a fixed-width field.
+fn tb_print_padded (number width) :
+    local pad 0
+    local digits 0
+    number tb_number_width >digits
+    width digits sub >pad
+    while
+        pad 0 gt
+        if
+            32 tb_putc
+            pad 1 sub >pad
+            0
+        else
+            1
+        end
+    end
+    number tb_print_number
+;
+
 fn tb_newline () :
     10 tb_putc
+;
+
+fn tb_report_error () :
+    "? ERROR IN LINE " tb_print_string
+    tb_line tb_print_number
+    tb_newline
 ;
 
 
@@ -779,6 +827,7 @@ fn tb_help () :
     "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" tb_print_string tb_newline
     "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," tb_print_string tb_newline
     "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." tb_print_string tb_newline
+    "PRINT: , tab, ; no newline, #N right-justifies next number." tb_print_string tb_newline
     "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." tb_print_string tb_newline
 ;
 
@@ -867,6 +916,7 @@ fn tb_array_assignment () :
 fn tb_print_statement () :
     local done 0
     local newline 1
+    local width 0
     tb_next
     0 >done
     while
@@ -886,8 +936,18 @@ fn tb_print_statement () :
                         0 >newline
                         tb_next
                     else
-                        0 tb_expression tb_print_number
-                        1 >newline
+                        tb_tok 35 eq
+                        if
+                            tb_next
+                            tb_tok TB_TOKEN_NUMBER neq if 1 >tb_error retn end
+                            tb_num >width
+                            tb_next
+                            0 tb_expression width tb_print_padded
+                            1 >newline
+                        else
+                            0 tb_expression tb_print_number
+                            1 >newline
+                        end
                     end
                 end
                 tb_tok 44 eq tb_tok 59 eq and
@@ -1130,7 +1190,7 @@ fn tb_direct_line () :
                         1 >done
                     end
                     tb_error 0 neq if
-                        "? SYNTAX/LINE ERROR" tb_print_string tb_newline
+                        "? ERROR" tb_print_string tb_newline
                         0 >tb_error
                         1 >done
                     end
@@ -1177,7 +1237,7 @@ fn tb_program_loop () :
     end
     0 >tb_running
     tb_error 0 neq if
-        "? SYNTAX/LINE ERROR" tb_print_string tb_newline
+        tb_report_error
         0 >tb_error
     end
 ;

@@ -2,7 +2,8 @@ use std::io::{self, Write};
 use std::path::Path;
 
 use cpt32::bus::Bus;
-use cpt32::cpu::{Cpu, InstructionMode};
+use cpt32::cpu::InstructionMode;
+use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
@@ -10,7 +11,7 @@ use cpt32::devices::pec::timing::connect_pec_timer_rtc;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::sgu::sgu::connect_sgu;
 
-fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
+fn load_binary_data(path: &str, cpu: &mut AnyCpu, base: u32) {
     let data = std::fs::read(path).expect("Failed to read binary file");
     if cpt32::wax::is_wax(&data) {
         let img = cpt32::wax::parse(&data).expect("Invalid WAX file");
@@ -51,7 +52,7 @@ fn print_help() {
     println!("  quit(exit|q)            exit the monitor");
 }
 
-fn print_state(cpu: &mut Cpu) {
+fn print_state(cpu: &mut AnyCpu) {
     let state = cpu.return_state_text();
     println!("{}", state);
     let mode = cpu.instruction_mode();
@@ -59,7 +60,7 @@ fn print_state(cpu: &mut Cpu) {
     println!("next: {}", disasm.text);
 }
 
-fn print_disassembly(cpu: &mut Cpu, mut addr: u32, count: usize) {
+fn print_disassembly(cpu: &mut AnyCpu, mut addr: u32, count: usize) {
     let mut mode = if addr == cpu.pc() {
         cpu.instruction_mode()
     } else {
@@ -87,7 +88,7 @@ fn print_disassembly(cpu: &mut Cpu, mut addr: u32, count: usize) {
     }
 }
 
-fn step_cpu(cpu: &mut Cpu, count: usize) {
+fn step_cpu(cpu: &mut AnyCpu, count: usize) {
     for _ in 0..count {
         if !cpu.step_once() {
             println!("CPU halted.");
@@ -97,7 +98,7 @@ fn step_cpu(cpu: &mut Cpu, count: usize) {
     print_state(cpu);
 }
 
-fn print_memory(cpu: &mut Cpu, mut addr: u32, count: usize) {
+fn print_memory(cpu: &mut AnyCpu, mut addr: u32, count: usize) {
     for i in 0..count {
         if i % 16 == 0 {
             print!("0x{:08X}: ", addr);
@@ -127,13 +128,13 @@ pub struct CommandOutput {
     pub lines: Vec<String>,
 }
 
-pub fn execute_command(cpu: &mut Cpu, command_line: &str) -> CommandOutput {
+pub fn execute_command(cpu: &mut AnyCpu, command_line: &str) -> CommandOutput {
     let mut output = CommandOutput::default();
     let mut parts = command_line.split_whitespace();
     let Some(command) = parts.next() else {
         return output;
     };
-    let push_state = |cpu: &mut Cpu, output: &mut CommandOutput| {
+    let push_state = |cpu: &mut AnyCpu, output: &mut CommandOutput| {
         output.lines.push(cpu.return_state_text());
         let decoded = cpu.decode_at(cpu.pc(), cpu.instruction_mode());
         output.lines.push(format!("next: {}", decoded.text));
@@ -394,7 +395,10 @@ pub fn execute_command(cpu: &mut Cpu, command_line: &str) -> CommandOutput {
     output
 }
 
-pub fn run(program_path: Option<&str>) {
+pub fn run(program_path: Option<&str>, cli_cpu: Option<CpuKind>) {
+    let cpu_kind = resolve_cpu_kind(cli_cpu, Path::new("config.yaml"))
+        .unwrap_or_else(|error| panic!("Invalid CPU configuration: {error}"));
+    println!("CPU micro-architecture: {}", cpu_kind.as_str());
     let mut bus = Bus::new();
     connect_ram(&mut bus);
     cpt32::bus::connect_bmc_dmac(&mut bus);
@@ -408,7 +412,7 @@ pub fn run(program_path: Option<&str>) {
         .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
     let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
         .unwrap_or_else(|error| panic!("Invalid BIOS configuration: {error}"));
-    let mut cpu = Cpu::new(bus);
+    let mut cpu = AnyCpu::new(cpu_kind, bus);
 
     if let Some(path) = program_path {
         load_binary_data(path, &mut cpu, 0);
@@ -660,18 +664,20 @@ pub fn run(program_path: Option<&str>) {
 mod tests {
     use super::execute_command;
     use cpt32::bus::Bus;
-    use cpt32::cpu::Cpu;
+    use cpt32::cpu_select::{AnyCpu, CpuKind};
     use cpt32::devices::ram::connect_ram;
 
     #[test]
     fn console_set_register_command_updates_cpu_and_returns_feedback() {
-        let mut bus = Bus::new();
-        connect_ram(&mut bus);
-        let mut cpu = Cpu::new(bus);
+        for kind in [CpuKind::Scalar, CpuKind::Pipelined] {
+            let mut bus = Bus::new();
+            connect_ram(&mut bus);
+            let mut cpu = AnyCpu::new(kind, bus);
 
-        let output = execute_command(&mut cpu, "setr 1 0x1234");
+            let output = execute_command(&mut cpu, "setr 1 0x1234");
 
-        assert_eq!(cpu.read_reg(1), 0x1234);
-        assert!(output.lines.iter().any(|line| line.contains("Set R1")));
+            assert_eq!(cpu.read_reg(1), 0x1234);
+            assert!(output.lines.iter().any(|line| line.contains("Set R1")));
+        }
     }
 }

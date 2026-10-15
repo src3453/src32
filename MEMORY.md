@@ -152,3 +152,61 @@
   （pad policy の非 512 倍数 image で LOAD→LIST）。
   再現・修正確認は tinybasic.sol を編集→
   solc compile→asm.py→cargo test --test の順。
+- **TinyBASIC エラーに行番号表示** (tinybasic.sol):
+  実行中の `tb_line` は常に現在行を指す（`tb_jump_line`
+  はエラー時に tb_line を更新しないため GOTO 飛び先
+  不正でも発生元の行が残る）。`tb_report_error` を追加
+  し program 実行のエラーは "? ERROR IN LINE <n>"、
+  直接モード（行番号を持たない・tb_line は前回 RUN の
+  残留値）は "? ERROR" とした。旧メッセージ
+  "? SYNTAX/LINE ERROR" は廃止。検証は
+  tests/tinybasic.rs の tinybasic_error_reports_line_number
+  （"10 print 1/0" + run → テキストプレーンに
+  "? ERROR IN LINE 10" が描画されることを確認）。
+  再現・修正確認は tinybasic.sol 編集→
+  `python3 tools/solc/solc.py compile tinybasic.sol -o
+  tinybasic.sol.a` → `python3 tools/asm/asm.py
+  tinybasic.sol.a -o tinybasic.bin` →
+  `cargo test --test tinybasic`。
+- SRC32 Extension p (小文字=パイプライン、大文字 P=Protection と区別。
+  定数は `EXT_P_SMALL = 0x80`)。`src/cpu_pipeline.rs` に 5 段
+  IF/ID/EX/MEM/WB のインオーダーパイプラインを実装。ISA 変更なし。
+  パイプライン CPU は CPUID bit7 を立て `CPU_FEATURES=0xBF`、スカラー
+  `Cpu` は参照モデルとして `0x3F` のまま残す。仕様は `doc/spec_CPU_p.md`、
+  テストは `tests/cpu_pipeline.rs` (12 件、スカラーとの差分比較含む)。
+- パイプライン実装の 3 つの落とし穴 (いずれもテストで検出):
+  1. tick 内では旧パイプラインレジスタを全段同時読みすること。
+     WB コミット直後に `mem_wb` を無効化すると同 tick の EX が
+     MEM/WB フォワーディング元を失う (ADD 連鎖が古い値を計算)。
+  2. ロードユース停滞では ID/EX にバブルを入れ、ロード自体は
+     EX→MEM へ進めること。ID/EX にロードを保持するとハザードが
+     永遠に解消せず無限ストールする。
+  3. ID でサンプルしたレジスタ値を EX でそのまま使わないこと。
+     MUL/DIV の複数サイクル遅延中に生産者がコミットするとサンプルが
+     陳腐化する。フォワーディング不発時はライブのレジスタファイルを
+     読む (インオーダー確定なので若い命令の値を見る心配はない)。
+- HALT はコミット時にパイプラインをフラッシュし、EPC には投機フェッチ
+  ポインタではなく `retire_pc` (最終コミット命令の次アドレス) を使うこと。
+  そうしないと HALT を越えて先取りした命令が IRQ 復帰後に二重実行・
+  または消失し、スカラーとずれる。割り込みはコミット境界でのみ受理。
+- `cargo fmt -- src/cpu_pipeline.rs tests/cpu_pipeline.rs` で自ファイルのみ
+  整形 (全体 `cargo fmt --check` は未変更部の差分で失敗するため対象外)。
+  検証は `cargo test --test cpu --test cpu_pipeline` (+ bus_memory_map,
+  bios_rom)。フル `cargo test` は sqv4 の親側 golden 欠落で失敗する既知 issue。
+- エミュレータ既定のパイプライン化 (Extension p rollout):
+  `src/cpu_select.rs` に `CpuKind::{Scalar,Pipelined}` (既定 pipeline)、
+  `resolve_cpu_kind(CLI > config.yaml cpu.microarchitecture > 既定)`、
+  `split_cpu_arg`、`AnyCpu` (Scalar(Cpu)/Pipelined(PipelineCpu) の委譲
+  enum) を追加。GUI/monitor/testbench は `AnyCpu` に統一し、スカラー
+  `Cpu` は参照のまま。`--cpu scalar|pipeline` (`--cpu=` 形式も可) を
+  GUI/monitor/testbench に追加。`config.example.yaml` と README に記録。
+  `PipelineCpu` にデバッガ用 API (`decode_at/read_u32/read_u16_be/
+  read_debug_mem_u8/return_state_text`) を追加 (表示用 format は
+  cpu.rs を触らず複製)。`bus_memory_map` の `impl Iterator` は enum 越境
+  できないため `AnyCpu` 側は `Box<dyn Iterator>` で返す。
+- tests/wasm_expansion の testbench サブプロセス呼び出しは config 無しで
+  動くため、そのままパイプライン既定のスモークになる。実ゲスト検証は
+  `tests/pipeline_guest_boot.rs` (tinybasic.bin 起動→banner/OK描画、
+  tests/tinybasic.rs と同条件) を常設化。`cargo test --bin cpt32` (GUI
+  スキャフォールド 11 件) も通る。lib 単体テストは sqv4 golden 欠落の
+  既知 issue で不可 (本件と無関係)。

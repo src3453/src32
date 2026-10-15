@@ -1,5 +1,11 @@
 # Copy this file to config.yaml and uncomment only the settings you use.
 
+# CPU micro-architecture (Extension p rollout). The emulator boots on the
+# pipelined CPU by default; set scalar to use the reference single-step CPU.
+# The --cpu CLI flag overrides this key.
+#cpu:
+#  microarchitecture: "pipeline" # "pipeline" (default) or "scalar"
+
 # Log verbosity: trace, debug, info, warn, error, or off (default: info).
 # logging:
 #   level: debug

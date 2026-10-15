@@ -38,6 +38,9 @@ cargo run --release --bin cpt32 -- /tmp/3d_cube.bin
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
 ```
+
+エミュレータは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU に切り替えるには `--cpu scalar` を指定します（`--cpu pipeline` で明示も可）。`config.yaml` の `cpu.microarchitecture` でも既定値を変えられます（CLI が優先）。
+
 ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
 
 ```sh
@@ -56,7 +59,7 @@ pcg:
 CPU の対話型モニターは次のように起動します。
 
 ```sh
-cargo run --release --bin cpt32 -- monitor
+cargo run --release --bin cpt32 -- monitor [program.bin] [--cpu scalar|pipeline]
 ```
 
 ## SGU Music Editor

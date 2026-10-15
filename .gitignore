@@ -17,3 +17,4 @@ node_modules/
 tools/vscode-sol-syntax/out/
 .omp/
 config.yaml
+tmp.*

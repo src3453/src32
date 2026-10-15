@@ -1,7 +1,11 @@
 # SRC32 Specification
-Revision 2.3 (2026-09-17)
+Revision 2.4 (2026-10-15)
 
 # Changelog
+- 2.4 (2026-10-15): Added Extension p (lowercase, Pipelining) as a
+  micro-architectural extension; see `doc/spec_CPU_p.md`. No ISA change.
+  Pipelined CPUs report `CPU_FEATURES` bit 7 (`0xBF`); the scalar CPU still
+  reports `0x3F`.
 - 2.3 (2026-09-17): Aligned CPUID, interrupt vectors, implemented extensions, and CPU-reserved MMIO with the Rust CPU.
 - 2.2 (2026-09-17): Added Extension F definitions as a future extension; the current CPU does not implement F.
 - 2.1 (2026-08-09): Added Extension S (Shortened Instructions Format).
@@ -357,7 +361,7 @@ Planning extensions:
 V: Virtual Memory, MMU, TLB
 C: L1 Cache
 P: Protection/Privilege Levels (depends on I extension)
-p: Pipelining
+p: Pipelining (implemented as Extension p, see doc/spec_CPU_p.md)
 v: Vector instructions, SIMD
 F: Floating-point instructions, FPU
 a: Atomic instructions, memory barriers, SMT

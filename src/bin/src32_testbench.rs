@@ -4,7 +4,8 @@ use std::fs;
 
 use cpt32::bus::Bus;
 use cpt32::bus::connect_devices_with_vdp;
-use cpt32::cpu::{CYCLES_PER_FRAME, Cpu};
+use cpt32::cpu::CYCLES_PER_FRAME;
+use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::connect_pec_input;
@@ -20,7 +21,7 @@ fn integer(text: &str) -> u32 {
         text.parse().expect("invalid integer")
     }
 }
-fn gp0_noise_pixel(cpu: &mut Cpu, x: usize, y: usize) -> u8 {
+fn gp0_noise_pixel(cpu: &mut AnyCpu, x: usize, y: usize) -> u8 {
     let index = cpu.read_mem_u8(0x1000_0000 + (y * 320 + x) as u32);
     cpu.read_mem_u8(0x1001_2C00 + u32::from(index) * 3)
 }
@@ -28,7 +29,14 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|pipeline]");
+    let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
+    let cpu_kind =
+        resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
+    eprintln!(
+        "src32_testbench: CPU micro-architecture: {}",
+        cpu_kind.as_str()
+    );
     let mut allow_running = false;
     let mut expect_sgc_overlay = false;
     let mut expect_gp_noise_background = false;
@@ -76,7 +84,7 @@ fn main() {
         .expect("Invalid expansion-card configuration");
     let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
         .expect("Invalid BIOS configuration");
-    let mut cpu = Cpu::new(bus);
+    let mut cpu = AnyCpu::new(cpu_kind, bus);
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
         assert!(!img.is_lib, ".wal library is not runnable");

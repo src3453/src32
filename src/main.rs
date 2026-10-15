@@ -9,7 +9,8 @@ use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use cpt32::bus::Bus;
-use cpt32::cpu::{Cpu, InstructionMode};
+use cpt32::cpu::InstructionMode;
+use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
 use cpt32::devices::pec::rng::connect_rng;
@@ -66,7 +67,7 @@ fn load_program_data(
 }
 
 struct GuestMachine {
-    cpu: Cpu,
+    cpu: AnyCpu,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
@@ -84,6 +85,7 @@ fn build_guest_machine(
     program_path: &Path,
     music_stream: Option<&Path>,
     user_data_root: Option<&Path>,
+    cpu_kind: CpuKind,
 ) -> Result<GuestMachine, String> {
     let cartridge = if is_cartridge_path(program_path) {
         Some(cpt32::cartridge::Cartridge::load(program_path)?)
@@ -129,7 +131,15 @@ fn build_guest_machine(
     let program = match cartridge.as_ref() {
         Some(cartridge) => cartridge.program.as_slice(),
         None => {
-            return build_raw_guest(program_path, music_stream, bus, input_sender, sgu, idc);
+            return build_raw_guest(
+                program_path,
+                music_stream,
+                bus,
+                input_sender,
+                sgu,
+                idc,
+                cpu_kind,
+            );
         }
     };
     let entry = load_program_data(program, music_stream, &mut bus)?;
@@ -158,7 +168,7 @@ fn build_guest_machine(
     let title = cartridge
         .as_ref()
         .map(|cartridge| format!("CPT32 — {}", cartridge.title));
-    let mut cpu = Cpu::new(bus);
+    let mut cpu = AnyCpu::new(cpu_kind, bus);
     cpu.set_pc(entry);
     Ok(GuestMachine {
         cpu,
@@ -177,6 +187,7 @@ fn build_raw_guest(
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
     idc: Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>,
+    cpu_kind: CpuKind,
 ) -> Result<GuestMachine, String> {
     let data = std::fs::read(program_path).map_err(|error| {
         format!(
@@ -196,7 +207,7 @@ fn build_raw_guest(
         Some(bios_entry) => bios_entry,
         None => entry,
     };
-    let mut cpu = Cpu::new(bus);
+    let mut cpu = AnyCpu::new(cpu_kind, bus);
     cpu.set_pc(entry);
     Ok(GuestMachine {
         cpu,
@@ -552,7 +563,7 @@ fn set_mouse_capture(captured: &mut bool, window: &Window, enable: bool) {
 }
 
 struct GuiApp {
-    cpu: Cpu,
+    cpu: AnyCpu,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
@@ -568,6 +579,7 @@ struct GuiApp {
     window: Option<Window>,
     presenter: Option<render::WgpuPresenter>,
     debug_gui: Option<DebugGui>,
+    cpu_kind: CpuKind,
     enable_debug_gui: bool,
     start_paused: bool,
     music_stream: Option<PathBuf>,
@@ -582,8 +594,9 @@ impl GuiApp {
         enable_debug_gui: bool,
         start_paused: bool,
         music_stream: Option<&Path>,
+        cpu_kind: CpuKind,
     ) -> Result<Self, String> {
-        let machine = build_guest_machine(Path::new(program_path), music_stream, None)?;
+        let machine = build_guest_machine(Path::new(program_path), music_stream, None, cpu_kind)?;
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
                 let slots = initial_gamepad_slots(&gilrs, &machine.input_sender);
@@ -618,6 +631,7 @@ impl GuiApp {
             window: None,
             presenter: None,
             debug_gui: None,
+            cpu_kind,
             enable_debug_gui,
             start_paused,
             music_stream: music_stream.map(Path::to_path_buf),
@@ -641,7 +655,7 @@ impl GuiApp {
         if !is_cartridge_path(path) {
             return;
         }
-        match build_guest_machine(path, self.music_stream.as_deref(), None) {
+        match build_guest_machine(path, self.music_stream.as_deref(), None, self.cpu_kind) {
             Ok(machine) => {
                 self.release_all_inputs();
                 self.cpu = machine.cpu;
@@ -949,7 +963,7 @@ impl DebugUiState {
         parsed.clamp(1, max)
     }
 
-    fn execute_cpu(&mut self, cpu: &mut Cpu) {
+    fn execute_cpu(&mut self, cpu: &mut AnyCpu) {
         if self.running {
             let cycles = Self::parse_usize(
                 &self.cycles_per_frame_input,
@@ -967,7 +981,7 @@ impl DebugUiState {
         }
     }
 
-    fn draw_windows(&mut self, ui: &Ui, cpu: &mut Cpu, vdp: &Rc<RefCell<Vdp>>) {
+    fn draw_windows(&mut self, ui: &Ui, cpu: &mut AnyCpu, vdp: &Rc<RefCell<Vdp>>) {
         ui.main_menu_bar(|| {
             ui.menu("Windows", || {
                 for window in DebugWindow::ALL {
@@ -1007,7 +1021,7 @@ impl DebugUiState {
         }
     }
 
-    fn draw_monitor_console(&mut self, ui: &Ui, cpu: &mut Cpu) {
+    fn draw_monitor_console(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
         ui.window(DebugWindow::MonitorConsole.label())
             .size([720.0, 480.0], Condition::FirstUseEver)
             .build(|| {
@@ -1038,7 +1052,7 @@ impl DebugUiState {
             });
     }
 
-    fn execute_monitor_command(&mut self, cpu: &mut Cpu) {
+    fn execute_monitor_command(&mut self, cpu: &mut AnyCpu) {
         let command = self.monitor_input.trim().to_owned();
         self.monitor_input.clear();
         if command.is_empty() {
@@ -1068,7 +1082,7 @@ impl DebugUiState {
         self.monitor_scroll_to_bottom = true;
     }
 
-    fn draw_bus_composition(&self, ui: &Ui, cpu: &Cpu) {
+    fn draw_bus_composition(&self, ui: &Ui, cpu: &AnyCpu) {
         let mut regions: Vec<_> = cpu.bus_memory_map().collect();
         regions.sort_unstable_by_key(|region| region.start);
         let largest_size = regions.iter().map(|region| region.size).max().unwrap_or(1);
@@ -1222,7 +1236,7 @@ impl DebugUiState {
             });
     }
 
-    fn draw_controls(&mut self, ui: &Ui, cpu: &mut Cpu) {
+    fn draw_controls(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
         ui.window("Debug Controls")
             .size([520.0, 360.0], Condition::FirstUseEver)
             .build(|| {
@@ -1272,7 +1286,7 @@ impl DebugUiState {
             });
     }
 
-    fn draw_disassembly(&mut self, ui: &Ui, cpu: &mut Cpu) {
+    fn draw_disassembly(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
         ui.window("Realtime Disassembly")
             .size([780.0, 420.0], Condition::FirstUseEver)
             .build(|| {
@@ -1317,7 +1331,7 @@ impl DebugUiState {
             });
     }
 
-    fn draw_memory(&mut self, ui: &Ui, cpu: &mut Cpu) {
+    fn draw_memory(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
         ui.window("Realtime Memory Monitor")
             .size([780.0, 320.0], Condition::FirstUseEver)
             .build(|| {
@@ -1421,7 +1435,7 @@ impl DebugGui {
     fn render_frame(
         &mut self,
         window: &Window,
-        cpu: &mut Cpu,
+        cpu: &mut AnyCpu,
         vdp: &Rc<RefCell<Vdp>>,
         presenter: &mut render::WgpuPresenter,
     ) -> Result<(), render::FrameError> {
@@ -1762,6 +1776,7 @@ struct GuiLaunchOptions {
     enable_debug_gui: bool,
     start_paused: bool,
     music_stream: Option<PathBuf>,
+    cpu: Option<CpuKind>,
 }
 
 fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
@@ -1798,6 +1813,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     let mut start_paused = false;
 
     let mut music_stream = None;
+    let mut cpu: Option<CpuKind> = None;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -1810,6 +1826,22 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 music_stream = Some(PathBuf::from(
                     args.next().ok_or("--music-stream requires a path")?,
                 ));
+            }
+            "--cpu" => {
+                if cpu.is_some() {
+                    return Err("Duplicate --cpu".into());
+                }
+                cpu = Some(
+                    args.next()
+                        .ok_or("--cpu requires 'scalar' or 'pipeline'")?
+                        .parse::<CpuKind>()?,
+                );
+            }
+            _ if arg.starts_with("--cpu=") => {
+                if cpu.is_some() {
+                    return Err("Duplicate --cpu".into());
+                }
+                cpu = Some(arg["--cpu=".len()..].parse::<CpuKind>()?);
             }
             _ if arg.starts_with('-') => return Err(format!("Unknown option: {arg}")),
             _ => positional.push(arg.clone()),
@@ -1828,6 +1860,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
         enable_debug_gui,
         start_paused,
         music_stream,
+        cpu,
     })
 }
 
@@ -1838,9 +1871,15 @@ fn main() {
     let first = args.first().map(String::as_str);
 
     match first {
-        Some("monitor") | Some("-m") | Some("--monitor") => {
-            monitor::run(args.get(1).map(String::as_str));
-        }
+        Some("monitor") | Some("-m") | Some("--monitor") => match split_cpu_arg(&args[1..]) {
+            Ok((rest, cpu)) => {
+                monitor::run(rest.first().map(String::as_str), cpu);
+            }
+            Err(message) => {
+                tracing::error!(%message, "Invalid command line");
+                std::process::exit(2);
+            }
+        },
         Some(_) => match parse_gui_args(&args) {
             Ok(options) => {
                 if options.start_paused && !options.enable_debug_gui {
@@ -1854,13 +1893,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }
@@ -1869,6 +1908,8 @@ fn main() {
 fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("Failed to create event loop: {error}"))?;
+    let cpu_kind = resolve_cpu_kind(options.cpu, Path::new("config.yaml"))?;
+    tracing::info!(cpu = cpu_kind.as_str(), "CPU micro-architecture selected");
     let display_handle = event_loop.owned_display_handle();
     let mut app = GuiApp::new(
         &options.program_path,
@@ -1876,6 +1917,7 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
         options.enable_debug_gui,
         options.enable_debug_gui && options.start_paused,
         options.music_stream.as_deref(),
+        cpu_kind,
     )?;
     event_loop
         .run_app(&mut app)
@@ -2022,7 +2064,7 @@ mod input_tests {
         archive.write_all(&[0x12, 0x34, 0x56]).unwrap();
         archive.finish().unwrap();
 
-        let mut machine = build_guest_machine(&package_path, None, None).unwrap();
+        let mut machine = build_guest_machine(&package_path, None, None, CpuKind::Scalar).unwrap();
         assert_eq!(machine.cpu.pc(), 0);
         assert_eq!(machine.cpu.read_mem_u8(0), 0x12);
         assert_eq!(machine.cpu.read_mem_u8(1), 0x34);
@@ -2058,7 +2100,8 @@ mod input_tests {
         let data_root =
             std::env::temp_dir().join(format!("cpt32-main-data-root-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&data_root);
-        let machine = build_guest_machine(&package_path, None, Some(&data_root)).unwrap();
+        let machine =
+            build_guest_machine(&package_path, None, Some(&data_root), CpuKind::Scalar).unwrap();
         let sidecar = data_root.join(ID).join("dd0.cow");
         assert!(!sidecar.exists());
         assert!(!data_root.exists());
@@ -2067,10 +2110,11 @@ mod input_tests {
         std::fs::create_dir_all(sidecar.parent().unwrap()).unwrap();
         std::fs::write(&sidecar, b"invalid sidecar").unwrap();
         let before = std::fs::read(&sidecar).unwrap();
-        let error = match build_guest_machine(&package_path, None, Some(&data_root)) {
-            Ok(_) => panic!("invalid injected sidecar was accepted"),
-            Err(error) => error,
-        };
+        let error =
+            match build_guest_machine(&package_path, None, Some(&data_root), CpuKind::Scalar) {
+                Ok(_) => panic!("invalid injected sidecar was accepted"),
+                Err(error) => error,
+            };
         assert!(error.contains("COW"));
         assert_eq!(std::fs::read(&sidecar).unwrap(), before);
 
@@ -2102,7 +2146,7 @@ mod input_tests {
         old_bus.write_u8(0, 0xA5);
         let old_sgu = connect_sgu(&mut old_bus);
         let old_vdp = connect_vdp(&mut old_bus);
-        let old_cpu = Cpu::new(old_bus);
+        let old_cpu = AnyCpu::new(CpuKind::Scalar, old_bus);
         let (old_sender, mut old_receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = GuiApp {
             cpu: old_cpu,
@@ -2121,6 +2165,7 @@ mod input_tests {
             window: None,
             presenter: None,
             debug_gui: None,
+            cpu_kind: CpuKind::Scalar,
             enable_debug_gui: true,
             start_paused: true,
             music_stream: None,
