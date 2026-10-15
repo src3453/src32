@@ -23,6 +23,26 @@ pub const PRESENT_WIDTH: u32 = FRAME_WIDTH + BORDER_SIZE * 2;
 pub const PRESENT_HEIGHT: u32 = FRAME_HEIGHT + BORDER_SIZE * 2;
 pub const BORDER_SIZE: u32 = 8;
 
+/// Game viewport geometry within a window of `size`, reserving
+/// `top_reserve_px` physical pixels (debug menu bar) above the content.
+/// Returns `(scale, viewport_x, viewport_y)` in physical pixels.
+pub fn game_viewport(size: PhysicalSize<u32>, top_reserve_px: f64) -> (f64, f64, f64) {
+    if size.width == 0 || size.height == 0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let available_height = (f64::from(size.height) - top_reserve_px).max(1.0);
+    let scale = (f64::from(size.width) / f64::from(PRESENT_WIDTH))
+        .min(available_height / f64::from(PRESENT_HEIGHT));
+    if scale <= 0.0 {
+        return (0.0, 0.0, 0.0);
+    }
+    let viewport_width = f64::from(PRESENT_WIDTH) * scale;
+    let viewport_height = f64::from(PRESENT_HEIGHT) * scale;
+    let viewport_x = (f64::from(size.width) - viewport_width) * 0.5;
+    let viewport_y = top_reserve_px + (available_height - viewport_height) * 0.5;
+    (scale, viewport_x, viewport_y)
+}
+
 const SHADER: &str = r#"
 struct VsOut {
     @builtin(position) position: vec4<f32>,
@@ -393,10 +413,6 @@ impl WgpuPresenter {
         self.surface.configure(&self.device, &self.config);
     }
 
-    pub fn render(&mut self, vdp: &Rc<RefCell<Vdp>>) -> Result<(), FrameError> {
-        self.render_with_overlay(vdp, |_, _, _, _| Ok(()))
-    }
-
     pub fn device(&self) -> &wgpu::Device {
         &self.device
     }
@@ -412,6 +428,28 @@ impl WgpuPresenter {
     pub fn render_with_overlay<F>(
         &mut self,
         vdp: &Rc<RefCell<Vdp>>,
+        top_reserve_px: f64,
+        overlay: F,
+    ) -> Result<(), FrameError>
+    where
+        F: FnMut(
+            &wgpu::Device,
+            &wgpu::Queue,
+            &mut wgpu::CommandEncoder,
+            &TextureView,
+        ) -> Result<(), FrameError>,
+    {
+        self.render_with_overlay_inner(vdp, top_reserve_px, overlay)
+    }
+
+    pub fn render(&mut self, vdp: &Rc<RefCell<Vdp>>) -> Result<(), FrameError> {
+        self.render_with_overlay_inner(vdp, 0.0, |_, _, _, _| Ok(()))
+    }
+
+    fn render_with_overlay_inner<F>(
+        &mut self,
+        vdp: &Rc<RefCell<Vdp>>,
+        top_reserve_px: f64,
         mut overlay: F,
     ) -> Result<(), FrameError>
     where
@@ -531,13 +569,9 @@ impl WgpuPresenter {
             present_pass.set_bind_group(0, &self.nearest_bind_group, &[]);
             present_pass.draw(0..3, 0..1);
         }
-        let scale_x = self.size.width as f32 / PRESENT_WIDTH as f32;
-        let scale_y = self.size.height as f32 / PRESENT_HEIGHT as f32;
-        let scale = scale_x.min(scale_y);
-        let viewport_width = PRESENT_WIDTH as f32 * scale;
-        let viewport_height = PRESENT_HEIGHT as f32 * scale;
-        let viewport_x = (self.size.width as f32 - viewport_width) * 0.5;
-        let viewport_y = (self.size.height as f32 - viewport_height) * 0.5;
+        let (scale, viewport_x, viewport_y) = game_viewport(self.size, top_reserve_px);
+        let viewport_width = PRESENT_WIDTH as f64 * scale;
+        let viewport_height = PRESENT_HEIGHT as f64 * scale;
 
         {
             let mut render_pass = encoder.begin_render_pass(&RenderPassDescriptor {
@@ -559,10 +593,10 @@ impl WgpuPresenter {
 
             render_pass.set_pipeline(&self.pipeline);
             render_pass.set_viewport(
-                viewport_x,
-                viewport_y,
-                viewport_width,
-                viewport_height,
+                viewport_x as f32,
+                viewport_y as f32,
+                viewport_width as f32,
+                viewport_height as f32,
                 0.0,
                 1.0,
             );

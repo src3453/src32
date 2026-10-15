@@ -8,7 +8,6 @@
 # Build it with: sol/bios.sol header commands -> assets/bios.rom.
 # Relative paths are resolved from the directory containing config.yaml.
 # Omit this section to boot the guest program straight from RAM at 0x0.
-# NOTE: the ROM loader is not implemented yet; nothing reads this key.
 #bios:
 #  image: "assets/bios.rom"
 

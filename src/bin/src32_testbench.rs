@@ -74,6 +74,8 @@ fn main() {
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");
+    let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
+        .expect("Invalid BIOS configuration");
     let mut cpu = Cpu::new(bus);
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
@@ -83,6 +85,9 @@ fn main() {
         cpu.set_pc(img.entry);
     } else {
         cpu.load_program(0, &image);
+    }
+    if let Some(entry) = bios_entry {
+        cpu.set_pc(entry);
     }
     if let Some(stream) = stream {
         cpu.load_program(STREAM_BASE, &stream);

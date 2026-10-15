@@ -406,11 +406,17 @@ pub fn run(program_path: Option<&str>) {
     let _sgu = connect_sgu(&mut bus);
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
+    let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
+        .unwrap_or_else(|error| panic!("Invalid BIOS configuration: {error}"));
     let mut cpu = Cpu::new(bus);
 
     if let Some(path) = program_path {
         load_binary_data(path, &mut cpu, 0);
         println!("Loaded {} at 0x00000000", path);
+    }
+    if let Some(entry) = bios_entry {
+        cpu.set_pc(entry);
+        println!("BIOS ROM configured: booting from 0x{entry:08X}");
     }
     println!("-------------------------");
     println!("CPT32 Debug Monitor");

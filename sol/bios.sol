@@ -21,6 +21,19 @@
 
 !var fails 0
 !var tmp 0
+!var frames 0
+
+!const IRQC_PENDING 0xFFFF0040
+!const IRQC_ENABLE 0xFFFF0044
+!const POST_HOLD_FRAMES 120
+
+# VBlank counter: acknowledge IRQ0 so the next host frame latches a new
+# edge, then count the frame. Fires on every VSync while IRQ0 is enabled.
+fn irq0 () :
+    1 IRQC_PENDING sth
+    frames 1 add >frames
+    retn
+;
 
 fn prnhexch (n) :
     n 10 lt if
@@ -87,7 +100,7 @@ fn sgutest (base) :
 ;
 
 initPCG col40
-0xc colorfg "CPT32 BIOS v0.2 POST+IPL" prnlnscr
+0xc colorfg "CPT32 BIOS v0.3 POST+IPL" prnlnscr
 0x3f colorfg "CPU: SRC32 @48MHz" prnlnscr
 "MEM: RAM16M VRAM4M PCM1M" prnlnscr
 
@@ -187,6 +200,21 @@ while
 end
 0 colorbg
 0x3f colorfg
+
+"IPL: hold POST 120 frames..." prnlnscr
+# One host frame runs the whole POST+IPL, so without waiting the survey
+# above is never rendered. HALT sleeps until the next enabled IRQ, hence
+# each loop iteration spans one VBlank (~1/60s) on the emulator and on
+# src32_testbench, which both pulse IRQ0 once per frame.
+1 IRQC_PENDING sth
+0 >frames
+1 IRQC_ENABLE sth
+while
+    halt
+    frames POST_HOLD_FRAMES lt
+end
+0 IRQC_ENABLE sth
+1 IRQC_PENDING sth
 
 "IPL: boot from 0x00000000..." prnlnscr
 # Far jump via register: JMP encodes a 16-bit PC-relative offset and

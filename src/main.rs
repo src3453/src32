@@ -151,6 +151,10 @@ fn build_guest_machine(
         })
         .collect();
     cpt32::devices::expansion::load_expansion_cards_from_bytes(plugins, &mut bus)?;
+    let entry = match cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)? {
+        Some(bios_entry) => bios_entry,
+        None => entry,
+    };
     let title = cartridge
         .as_ref()
         .map(|cartridge| format!("CPT32 — {}", cartridge.title));
@@ -188,6 +192,10 @@ fn build_raw_guest(
             .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
     }
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)?;
+    let entry = match cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)? {
+        Some(bios_entry) => bios_entry,
+        None => entry,
+    };
     let mut cpu = Cpu::new(bus);
     cpu.set_pc(entry);
     Ok(GuestMachine {
@@ -357,21 +365,23 @@ fn keyboard_hid_usage(code: KeyCode) -> Option<u8> {
     })
 }
 
-fn viewport_scale(size: PhysicalSize<u32>) -> f64 {
-    if size.width == 0 || size.height == 0 {
-        return 0.0;
-    }
-    (f64::from(size.width) / f64::from(render::PRESENT_WIDTH))
-        .min(f64::from(size.height) / f64::from(render::PRESENT_HEIGHT))
+fn debug_menu_reserve_px(gui: Option<&DebugGui>) -> f64 {
+    gui.map(|gui| {
+        let scale = f64::from(gui.imgui.io().display_framebuffer_scale[1]);
+        (f64::from(gui.last_menu_bar_height()) * scale).max(0.0)
+    })
+    .unwrap_or(0.0)
 }
 
-fn mouse_position_to_guest(position: PhysicalPosition<f64>, size: PhysicalSize<u32>) -> (u16, u16) {
-    let scale = viewport_scale(size);
+fn mouse_position_to_guest(
+    position: PhysicalPosition<f64>,
+    size: PhysicalSize<u32>,
+    top_reserve_px: f64,
+) -> (u16, u16) {
+    let (scale, viewport_x, viewport_y) = render::game_viewport(size, top_reserve_px);
     if scale == 0.0 {
         return (0, 0);
     }
-    let viewport_x = (f64::from(size.width) - f64::from(render::PRESENT_WIDTH) * scale) * 0.5;
-    let viewport_y = (f64::from(size.height) - f64::from(render::PRESENT_HEIGHT) * scale) * 0.5;
     let x = ((position.x - viewport_x) / scale - f64::from(render::BORDER_SIZE))
         .floor()
         .clamp(0.0, f64::from(render::FRAME_WIDTH - 1)) as u16;
@@ -1360,6 +1370,7 @@ struct DebugGui {
     state: DebugUiState,
     last_frame: Instant,
     last_performance_sample: Option<(Instant, u128, u128)>,
+    menu_bar_height: f32,
 }
 
 impl DebugGui {
@@ -1385,7 +1396,12 @@ impl DebugGui {
             state: DebugUiState::new(start_paused),
             last_frame: Instant::now(),
             last_performance_sample: None,
+            menu_bar_height: 0.0,
         }
+    }
+
+    fn last_menu_bar_height(&self) -> f32 {
+        self.menu_bar_height
     }
 
     fn handle_window_event(
@@ -1442,31 +1458,40 @@ impl DebugGui {
             })?;
 
         let ui = self.imgui.frame();
+        self.menu_bar_height = ui.frame_height();
         self.state.draw_windows(ui, cpu, vdp);
         self.platform.prepare_render(ui, window);
+        let framebuffer_scale = f64::from(self.imgui.io().display_framebuffer_scale[1]);
+        let top_reserve_px = (f64::from(self.menu_bar_height) * framebuffer_scale).max(0.0);
         let draw_data = self.imgui.render();
 
-        presenter.render_with_overlay(vdp, |device, queue, encoder, surface_view| {
-            let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                label: Some("CPT32 ImGui Overlay Pass"),
-                color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: surface_view,
-                    depth_slice: None,
-                    resolve_target: None,
-                    ops: wgpu::Operations {
-                        load: wgpu::LoadOp::Load,
-                        store: wgpu::StoreOp::Store,
-                    },
-                })],
-                depth_stencil_attachment: None,
-                occlusion_query_set: None,
-                timestamp_writes: None,
-                multiview_mask: None,
-            });
-            self.renderer
-                .render(draw_data, queue, device, &mut render_pass)
-                .map_err(|err| render::FrameError::Overlay(format!("ImGui render failed: {err}")))
-        })
+        presenter.render_with_overlay(
+            vdp,
+            top_reserve_px,
+            |device, queue, encoder, surface_view| {
+                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                    label: Some("CPT32 ImGui Overlay Pass"),
+                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                        view: surface_view,
+                        depth_slice: None,
+                        resolve_target: None,
+                        ops: wgpu::Operations {
+                            load: wgpu::LoadOp::Load,
+                            store: wgpu::StoreOp::Store,
+                        },
+                    })],
+                    depth_stencil_attachment: None,
+                    occlusion_query_set: None,
+                    timestamp_writes: None,
+                    multiview_mask: None,
+                });
+                self.renderer
+                    .render(draw_data, queue, device, &mut render_pass)
+                    .map_err(|err| {
+                        render::FrameError::Overlay(format!("ImGui render failed: {err}"))
+                    })
+            },
+        )
     }
 }
 
@@ -1591,7 +1616,9 @@ impl ApplicationHandler for GuiApp {
                     .is_some_and(|gui| gui.imgui.io().want_capture_mouse);
                 if self.focused && !self.mouse_captured && !imgui_captures {
                     if let Some(window) = self.window.as_ref() {
-                        let (x, y) = mouse_position_to_guest(position, window.inner_size());
+                        let top_reserve_px = debug_menu_reserve_px(self.debug_gui.as_ref());
+                        let (x, y) =
+                            mouse_position_to_guest(position, window.inner_size(), top_reserve_px);
                         let _ = self
                             .input_sender
                             .send(HostInputEvent::MousePosition { x, y });
@@ -1698,7 +1725,8 @@ impl ApplicationHandler for GuiApp {
         if let DeviceEvent::MouseMotion { delta } = event {
             if self.mouse_captured && self.focused {
                 if let Some(window) = self.window.as_ref() {
-                    let scale = viewport_scale(window.inner_size());
+                    let top_reserve_px = debug_menu_reserve_px(self.debug_gui.as_ref());
+                    let (scale, _, _) = render::game_viewport(window.inner_size(), top_reserve_px);
                     if scale > 0.0 {
                         let dx = (delta.0 / scale)
                             .round()
@@ -1876,24 +1904,46 @@ mod input_tests {
     fn maps_mouse_coordinates_through_centered_viewport_and_clamps() {
         let size = PhysicalSize::new(render::PRESENT_WIDTH * 2, render::PRESENT_HEIGHT * 2);
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(16.0, 16.0), size),
+            mouse_position_to_guest(PhysicalPosition::new(16.0, 16.0), size, 0.0),
             (0, 0)
         );
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(1294.0, 974.0), size),
+            mouse_position_to_guest(PhysicalPosition::new(1294.0, 974.0), size, 0.0),
             (639, 479)
         );
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(-100.0, 4000.0), size),
+            mouse_position_to_guest(PhysicalPosition::new(-100.0, 4000.0), size, 0.0),
             (0, 479)
         );
 
         let wide = PhysicalSize::new(2000, 600);
-        let scale = viewport_scale(wide);
-        let viewport_y = (600.0 - f64::from(render::PRESENT_HEIGHT) * scale) * 0.5;
+        let (scale, _, viewport_y) = render::game_viewport(wide, 0.0);
         let content_top = viewport_y + f64::from(render::BORDER_SIZE) * scale;
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(1000.0, content_top), wide).1,
+            mouse_position_to_guest(PhysicalPosition::new(1000.0, content_top), wide, 0.0).1,
+            0
+        );
+    }
+
+    #[test]
+    fn reserves_debug_menu_bar_above_centered_viewport() {
+        let size = PhysicalSize::new(800, 600);
+        let reserve = 24.0;
+        let (scale, viewport_x, viewport_y) = render::game_viewport(size, reserve);
+        assert!(scale > 0.0);
+        assert!(viewport_y >= reserve);
+        let content_top = viewport_y + f64::from(render::BORDER_SIZE) * scale;
+        assert_eq!(
+            mouse_position_to_guest(
+                PhysicalPosition::new(viewport_x, content_top),
+                size,
+                reserve
+            )
+            .1,
+            0
+        );
+        assert_eq!(
+            mouse_position_to_guest(PhysicalPosition::new(viewport_x, 0.0), size, reserve).1,
             0
         );
     }
