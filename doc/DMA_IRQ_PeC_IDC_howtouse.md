@@ -146,7 +146,7 @@ disk:
     access_latency_ms: 0
 ```
 
-`disk0.img` は 512 byte 以上で、全体サイズが 512 の倍数の raw data です。相対 path は `config.yaml` のある directory を基準にします。実媒体を書き換えない練習では `read_only: true` にします。
+`disk0.img` は 512 byte 以上の raw data です。全体サイズが 512 の倍数でない場合、disk 要素の `incomplete_sector_policy` で `reject`（既定。起動時エラー）/`pad`（端数を0埋めの最終sectorとして扱う。書き込みは有効な端数 prefix だけを commit し image を延長しない）/`truncate`（端数を無視）を選べます。相対 path は `config.yaml` のある directory を基準にします。実媒体を書き換えない練習では `read_only: true` にします。
 
 `idc_read.sol` を `$work` に保存し、image の先頭4 byte が `12 34 56 78` になるように `disk0.img` を用意します。次の例はリポジトリ root から実行します。作業用 directory に `idc_read.sol`、`disk0.img`、上記の `config.yaml` を置くため、既存の `config.yaml` は変更しません。
 

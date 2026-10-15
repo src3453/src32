@@ -51,6 +51,32 @@ impl DriveType {
     }
 }
 
+/// Policy for an image whose length is not a multiple of 512 bytes.
+/// Applies only to the trailing bytes of the final sector.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IncompleteSectorPolicy {
+    /// Refuse the image at load time (default; legacy behavior).
+    Reject,
+    /// Count the trailing bytes as one extra zero-padded sector.
+    /// Reads of that sector return the tail bytes followed by zeros;
+    /// writes commit only the valid tail prefix and never extend the
+    /// image.
+    Pad,
+    /// Ignore the trailing bytes; capacity covers whole sectors only.
+    Truncate,
+}
+
+impl IncompleteSectorPolicy {
+    fn from_config(value: &str) -> Option<Self> {
+        match value {
+            "reject" => Some(Self::Reject),
+            "pad" => Some(Self::Pad),
+            "truncate" => Some(Self::Truncate),
+            _ => None,
+        }
+    }
+}
+
 enum DriveImage {
     File(File),
     Bytes(Arc<[u8]>),
@@ -61,28 +87,50 @@ pub struct Drive {
     kind: DriveType,
     image: DriveImage,
     capacity_sectors: u32,
+    /// Byte length of the trailing partial sector (pad policy only).
+    trailing_bytes: usize,
     read_only: bool,
     transfer_rate_bytes_per_second: u64,
     access_latency_ms: u64,
 }
 
 impl Drive {
+    /// Length of the zero-padded final sector for `lba`, when this
+    /// drive carries a partial trailing sector and `lba` is that
+    /// last sector.
+    fn partial_tail(&self, lba: u32) -> Option<usize> {
+        (self.trailing_bytes > 0 && u64::from(lba) + 1 == u64::from(self.capacity_sectors))
+            .then_some(self.trailing_bytes)
+    }
+
     fn read_sector(&mut self, lba: u32, buffer: &mut [u8; SECTOR_SIZE]) -> std::io::Result<()> {
         let offset = u64::from(lba) * SECTOR_SIZE as u64;
+        let tail = self.partial_tail(lba);
         match &mut self.image {
             DriveImage::File(image) => {
                 image.seek(SeekFrom::Start(offset))?;
-                image.read_exact(buffer)
+                match tail {
+                    None => image.read_exact(buffer),
+                    Some(tail) => {
+                        buffer.fill(0);
+                        image.read_exact(&mut buffer[..tail])
+                    }
+                }
             }
             DriveImage::Bytes(image) => {
                 let start = offset as usize;
-                buffer.copy_from_slice(&image[start..start + SECTOR_SIZE]);
+                match tail {
+                    None => buffer.copy_from_slice(&image[start..start + SECTOR_SIZE]),
+                    Some(tail) => {
+                        buffer.fill(0);
+                        buffer[..tail].copy_from_slice(&image[start..start + tail]);
+                    }
+                }
                 Ok(())
             }
             DriveImage::Cow(image) => image.read_at(offset, buffer).map_err(cow_io_error),
         }
     }
-
     fn write_sector(&mut self, lba: u32, buffer: &[u8; SECTOR_SIZE]) -> std::io::Result<()> {
         if self.read_only {
             return Err(std::io::Error::new(
@@ -91,16 +139,22 @@ impl Drive {
             ));
         }
         let offset = u64::from(lba) * SECTOR_SIZE as u64;
+        // A padded final sector commits only its valid tail prefix,
+        // so writes never extend the image beyond its loaded length.
+        let committed = self.partial_tail(lba).unwrap_or(SECTOR_SIZE);
         match &mut self.image {
             DriveImage::File(image) => {
                 let mut original = [0; SECTOR_SIZE];
                 image.seek(SeekFrom::Start(offset))?;
-                image.read_exact(&mut original)?;
+                image.read_exact(&mut original[..committed])?;
                 image.seek(SeekFrom::Start(offset))?;
-                if let Err(error) = image.write_all(buffer).and_then(|()| image.flush()) {
+                if let Err(error) = image
+                    .write_all(&buffer[..committed])
+                    .and_then(|()| image.flush())
+                {
                     let rollback = image
                         .seek(SeekFrom::Start(offset))
-                        .and_then(|_| image.write_all(&original))
+                        .and_then(|_| image.write_all(&original[..committed]))
                         .and_then(|()| image.flush());
                     if let Err(rollback_error) = rollback {
                         return Err(std::io::Error::new(
@@ -307,6 +361,7 @@ impl Idc {
                 kind,
                 image,
                 capacity_sectors,
+                trailing_bytes: 0,
                 read_only,
                 transfer_rate_bytes_per_second,
                 access_latency_ms,
@@ -383,6 +438,7 @@ impl Idc {
                         | "read_only"
                         | "transfer_rate_bytes_per_second"
                         | "access_latency_ms"
+                        | "incomplete_sector_policy"
                         | "sound_profile"
                 ) {
                     return Err(slot_error(&format!(
@@ -435,6 +491,17 @@ impl Idc {
                     latency as u64
                 }
             };
+            let incomplete_sector_policy = match table.get("incomplete_sector_policy") {
+                None => IncompleteSectorPolicy::Reject,
+                Some(value) => {
+                    let name = value
+                        .as_str()
+                        .ok_or_else(|| slot_error("`incomplete_sector_policy` must be a string"))?;
+                    IncompleteSectorPolicy::from_config(name).ok_or_else(|| {
+                        slot_error(&format!("unknown `incomplete_sector_policy` `{name}`"))
+                    })?
+                }
+            };
 
             let image_path = PathBuf::from(image_name);
             let image_path = if image_path.is_absolute() {
@@ -463,13 +530,33 @@ impl Idc {
                 )));
             }
             let length = metadata.len();
-            if length == 0 || length % SECTOR_SIZE as u64 != 0 {
+            if length == 0 {
                 return Err(slot_error(&format!(
                     "image {} must be non-empty and its length must be a multiple of 512 bytes",
                     image_path.display()
                 )));
             }
-            let capacity = length / SECTOR_SIZE as u64;
+            let full_sectors = length / SECTOR_SIZE as u64;
+            let tail = (length % SECTOR_SIZE as u64) as usize;
+            let (capacity, trailing_bytes) = match incomplete_sector_policy {
+                IncompleteSectorPolicy::Reject => {
+                    if tail != 0 {
+                        return Err(slot_error(&format!(
+                            "image {} must be non-empty and its length must be a multiple of 512 bytes",
+                            image_path.display()
+                        )));
+                    }
+                    (full_sectors, 0)
+                }
+                IncompleteSectorPolicy::Truncate => (full_sectors, 0),
+                IncompleteSectorPolicy::Pad => (full_sectors + u64::from(tail != 0), tail),
+            };
+            if capacity == 0 {
+                return Err(slot_error(&format!(
+                    "image {} has no complete 512-byte sectors",
+                    image_path.display()
+                )));
+            }
             let capacity_sectors = u32::try_from(capacity).map_err(|_| {
                 slot_error(&format!(
                     "image {} exceeds the 32-bit sector capacity",
@@ -480,6 +567,7 @@ impl Idc {
                 kind,
                 image: DriveImage::File(image),
                 capacity_sectors,
+                trailing_bytes,
                 read_only,
                 transfer_rate_bytes_per_second,
                 access_latency_ms,
@@ -1434,6 +1522,153 @@ mod tests {
         )
         .unwrap();
         assert!(load_drives_err(&negative_latency).contains("must not be negative"));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_sector_policy_pad_reads_zero_padded_tail_and_writes_prefix() {
+        let root = temp_root();
+        let mut image = vec![0x5A; SECTOR_SIZE];
+        image.extend(vec![0xB7; 100]);
+        fs::write(root.join("disk.img"), &image).unwrap();
+        let config = root.join("config.yaml");
+        fs::write(
+            &config,
+            format!(
+                "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    transfer_rate_bytes_per_second: {}\n    access_latency_ms: 0\n    incomplete_sector_policy: pad\n",
+                i64::MAX
+            ),
+        )
+        .unwrap();
+        let mut bus = test_bus(&config);
+        bus.write_u32_be(IDC_BASE + 0x014, 0);
+        bus.write_u32_be(IDC_BASE + 0x018, 3);
+        assert_eq!(bus.read_u32_be(IDC_BASE + 0x030), 2);
+
+        bus.write_u32_be(IDC_BASE + 0x01C, 1);
+        bus.write_u32_be(IDC_BASE + 0x020, 1);
+        bus.write_u32_be(IDC_BASE + 0x018, 1);
+        configure_dma(&mut bus, true, 0x2000, SECTOR_SIZE as u32);
+        run_ticks(&mut bus, 2048);
+        for index in 0..100 {
+            assert_eq!(bus.read_u8(0x2000 + index as u32), 0xB7);
+        }
+        for index in 100..SECTOR_SIZE {
+            assert_eq!(bus.read_u8(0x2000 + index as u32), 0);
+        }
+        assert_ne!(bus.read_u32_be(IDC_BASE + 0x008) & STATUS_DONE, 0);
+
+        for index in 0..SECTOR_SIZE {
+            bus.write_u8(0x3000 + index as u32, (index % 199) as u8);
+        }
+        bus.write_u32_be(IDC_BASE + 0x01C, 1);
+        bus.write_u32_be(IDC_BASE + 0x020, 1);
+        bus.write_u32_be(IDC_BASE + 0x018, 2);
+        configure_dma(&mut bus, false, 0x3000, SECTOR_SIZE as u32);
+        run_ticks(&mut bus, 2048);
+        assert_eq!(bus.read_u32_be(IDC_BASE + 0x038), 0);
+        assert_ne!(bus.read_u32_be(IDC_BASE + 0x008) & STATUS_DONE, 0);
+        drop(bus);
+        let written = fs::read(root.join("disk.img")).unwrap();
+        assert_eq!(written.len(), image.len());
+        assert_eq!(&written[..SECTOR_SIZE], &image[..SECTOR_SIZE]);
+        assert_eq!(
+            &written[SECTOR_SIZE..],
+            &(0..100)
+                .map(|index| (index % 199) as u8)
+                .collect::<Vec<_>>()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_sector_policy_truncate_ignores_trailing_bytes() {
+        let root = temp_root();
+        let mut image = vec![0x5A; SECTOR_SIZE];
+        image.extend(vec![0xB7; 100]);
+        fs::write(root.join("disk.img"), &image).unwrap();
+        let config = root.join("config.yaml");
+        fs::write(
+            &config,
+            format!(
+                "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    transfer_rate_bytes_per_second: {}\n    access_latency_ms: 0\n    incomplete_sector_policy: truncate\n",
+                i64::MAX
+            ),
+        )
+        .unwrap();
+        let mut bus = test_bus(&config);
+        bus.write_u32_be(IDC_BASE + 0x014, 0);
+        bus.write_u32_be(IDC_BASE + 0x018, 3);
+        assert_eq!(bus.read_u32_be(IDC_BASE + 0x030), 1);
+
+        bus.write_u32_be(IDC_BASE + 0x01C, 0);
+        bus.write_u32_be(IDC_BASE + 0x020, 1);
+        bus.write_u32_be(IDC_BASE + 0x018, 1);
+        configure_dma(&mut bus, true, 0x2000, SECTOR_SIZE as u32);
+        run_ticks(&mut bus, 2048);
+        for index in 0..SECTOR_SIZE {
+            assert_eq!(bus.read_u8(0x2000 + index as u32), 0x5A);
+        }
+
+        bus.write_u32_be(IDC_BASE + 0x01C, 1);
+        bus.write_u32_be(IDC_BASE + 0x020, 1);
+        bus.write_u32_be(IDC_BASE + 0x018, 1);
+        assert_eq!(bus.read_u32_be(IDC_BASE + 0x038), 3);
+        drop(bus);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn incomplete_sector_policy_validates_names_and_default_rejects() {
+        let root = temp_root();
+        let image_path = root.join("disk.img");
+        fs::write(&image_path, [0u8; SECTOR_SIZE]).unwrap();
+
+        let unknown = root.join("unknown-policy.yaml");
+        fs::write(
+            &unknown,
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    incomplete_sector_policy: zero-fill\n",
+        )
+        .unwrap();
+        assert!(load_drives_err(&unknown).contains("unknown `incomplete_sector_policy`"));
+
+        let not_string = root.join("not-string.yaml");
+        fs::write(
+            &not_string,
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    incomplete_sector_policy: 1\n",
+        )
+        .unwrap();
+        assert!(
+            load_drives_err(&not_string).contains("`incomplete_sector_policy` must be a string")
+        );
+
+        fs::write(&image_path, [0u8; SECTOR_SIZE + 3]).unwrap();
+        let default_rejects = root.join("default.yaml");
+        fs::write(
+            &default_rejects,
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n",
+        )
+        .unwrap();
+        assert!(load_drives_err(&default_rejects).contains("multiple of 512"));
+
+        let pad_accepts = root.join("pad.yaml");
+        fs::write(
+            &pad_accepts,
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    incomplete_sector_policy: pad\n",
+        )
+        .unwrap();
+        let drives = Idc::load_drives(&pad_accepts).unwrap();
+        assert_eq!(drives[0].as_ref().unwrap().capacity_sectors, 2);
+        assert_eq!(drives[0].as_ref().unwrap().trailing_bytes, 3);
+
+        fs::write(&image_path, [0u8; 100]).unwrap();
+        let no_sectors = root.join("no-sectors.yaml");
+        fs::write(
+            &no_sectors,
+            "disk:\n  - slot: 0\n    type: fdd\n    image: disk.img\n    incomplete_sector_policy: truncate\n",
+        )
+        .unwrap();
+        assert!(load_drives_err(&no_sectors).contains("no complete 512-byte sectors"));
         fs::remove_dir_all(root).unwrap();
     }
 

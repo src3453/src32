@@ -32,7 +32,13 @@ Error codes: 0 none, 1 invalid command/configuration, 2 no media, 3 LBA range, 4
 
 ## 3. 媒体とスロット
 
-slot 0～3はそれぞれ未接続、またはFDD/HDDを1台だけ持つ。イメージは拡張子で判別しないraw byte列であり、ヘッダやコンテナ形式を持たない。sector sizeは常に512 bytes、capacityは`image_length / 512` sectors。イメージは空でなく、長さが512の倍数であり、sector countが32-bit unsigned値に収まらなければならない。これらに反する媒体は起動時構成エラーである。
+slot 0～3はそれぞれ未接続、またはFDD/HDDを1台だけ持つ。イメージは拡張子で判別しないraw byte列であり、ヘッダやコンテナ形式を持たない。sector sizeは常に512 bytesである。イメージは空でなく、sector countが32-bit unsigned値に収まらなければならない。長さが512の倍数でないimageの末尾端数byteは、disk要素の`incomplete_sector_policy`で次のいずれかに従う（省略時は`reject`）。いずれの場合もguestからはsectorは常に512 bytesとして見え、DMAC転送byte数は`SECTOR_COUNT × 512`のまま変わらない。
+
+- `reject`: 長さが512の倍数でないimageは起動時構成エラーとする（既存契約）。
+- `pad`: 端数byteを1つの追加sectorとしてcapacityに含める（capacityは`ceil(image_length / 512)`）。READでは実在する末尾byteの後に0を埋めた512 bytesを返し、WRITEでは有効な末尾byte prefixだけをcommitし、imageを延長しない。
+- `truncate`: 末尾端数byteを無視し、capacityは`floor(image_length / 512)` sectorsとする。
+
+`truncate`で完全なsectorが0個になるimage（512 bytes未満）や、どのpolicyでも空のimageは起動時構成エラーである。
 
 LBAは32-bit unsignedで、sector範囲は`[LBA, LBA + SECTOR_COUNT)`。加算はオーバーフローしない幅で検査し、範囲末尾がcapacity以下の場合だけ有効とする。READ/WRITE全体のcountとLBA範囲を転送開始前に検査する。無効範囲では媒体もRAMも変更せず、ERROR_CODE=3で終了する。SECTOR_COUNTの最大値8,388,607は`count × 512`が32-bit DMAC byte countに収まる上限である。
 
@@ -84,9 +90,10 @@ master clockは48 MHz。コマンド開始から累積転送済みbyte数`n`のs
 | `read_only` | no | boolean、default `false` |
 | `transfer_rate_bytes_per_second` | no | 正整数。省略時はtype別既定値 |
 | `access_latency_ms` | no | 非負整数。省略時はtype別既定値 |
+| `incomplete_sector_policy` | no | `"reject"`（default）/`"pad"`/`"truncate"`。512の倍数でないimageの末尾端数byteの扱い。詳細は§3 |
 | `sound_profile` | no | 動作音profileの`internal_name`。省略時は無音 |
 
-相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。`config.yaml`で指定したlegacy raw imageへの書込みは引き続きimage file自体に反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、不正な長さ、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。`sound_profile`の未知名や音資産の欠落は警告のみで、起動を妨げない。
+相対image pathはconfig fileの親directoryを基準とする。絶対pathも許可する。`config.yaml`で指定したlegacy raw imageへの書込みは引き続きimage file自体に反映する。既存configの構文/値エラー、重複または範囲外slot、不明type、存在しない/読めないimage、空のimage、`reject`時の512の倍数でない長さ、`truncate`時に完全sectorが0個になる長さ、不明な`incomplete_sector_policy`値、rate=0、負の遅延は起動時エラーとし、対象slotと原因を示す。`sound_profile`の未知名や音資産の欠落は警告のみで、起動を妨げない。
 
 ```yaml
 disk:

@@ -37,7 +37,11 @@ fn col80 () :
 ;
 
 fn _pcg_update_cur () :
-    pcg_cur_x pcg_cur_y _pcg_set_cur
+    # CURSOR_POS registers are tilemap coordinates: the display samples
+    # (screen + scroll), so writing the logical row pcg_cur_y would
+    # drift by scroll_y/8 rows. pcg_vram_row is the physical ring row
+    # backing the logical line, i.e. the tilemap coordinate to display.
+    pcg_cur_x pcg_vram_row _pcg_set_cur
 ;
 
 fn _pcg_update_vram_row () :

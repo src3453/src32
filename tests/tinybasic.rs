@@ -12,6 +12,7 @@ use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::vdp::vdp::{Vdp, VDP_VRAM_BASE};
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 /// Read the legacy PCG text plane (40x30 cells, one byte per cell)
@@ -140,4 +141,61 @@ fn tinybasic_runs_program_from_keyboard_input() {
         text.contains("1024"),
         "program output 2^10=1024 not rendered:\n{text}"
     );
+}
+
+#[test]
+fn tinybasic_halts_until_input_irq() {
+    let mut bus = Bus::new();
+    let input = connect_pec_input(&mut bus);
+    connect_rng(&mut bus);
+    let vdp = connect_devices_with_vdp(&mut bus);
+
+    let mut cpu = Cpu::new(bus);
+    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
+        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    cpu.load_program(0, &image);
+
+    // Boot until the REPL reaches its prompt. tb_read_line must
+    // then stop the CPU (HALT) instead of busy-polling the PeC
+    // event FIFO.
+    let mut halted = false;
+    for _ in 0..8 {
+        vdp.borrow_mut().tick();
+        cpu.run(CYCLES_PER_FRAME as usize);
+        if !cpu.is_running() {
+            halted = true;
+            break;
+        }
+    }
+    assert!(halted, "CPU did not halt while waiting for keyboard input");
+    let text = read_text_plane(&mut cpu);
+    assert!(text.contains("TinyBASIC"), "help banner missing:\n{text}");
+    assert!(text.contains("OK"), "REPL prompt missing:\n{text}");
+
+    // While halted with no events, HALT consumes clock cycles but
+    // no instructions retire.
+    let idle = cpu.instructions_executed();
+    for _ in 0..4 {
+        vdp.borrow_mut().tick();
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
+    assert_eq!(
+        cpu.instructions_executed(),
+        idle,
+        "CPU retired instructions while waiting for input"
+    );
+
+    // A PeC key event must wake the CPU through IRQ3. The PeC
+    // input thread polls its channel with a millisecond sleep, so
+    // keep running frames until the wake lands.
+    type_key(&input, 40);
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while cpu.instructions_executed() == idle {
+        assert!(
+            Instant::now() < deadline,
+            "PeC IRQ did not wake the halted CPU"
+        );
+        vdp.borrow_mut().tick();
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
 }

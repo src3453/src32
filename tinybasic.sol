@@ -3,6 +3,7 @@
 # Program lines are stored as plain source text (not tokenized).
 !include "sol/cpt32/pcg.sol"
 !include "sol/cpt32/pec_rng.sol"
+!include "sol/cpt32/irqc.sol"
 
 !const TB_PEC_DATA 0x80040030
 !const TB_PEC_STATUS 0x80040034
@@ -523,6 +524,16 @@ fn tb_newline () :
 ;
 
 
+# IRQ3 is the PeC input event FIFO. Acknowledge the latched IRQC
+# request so the HALT in tb_read_line wakes on the next event. The
+# REPL drains the FIFO after IRET, which drops the source level;
+# clearing IRQC pending here keeps the line low so the next event
+# latches a fresh rising edge at the CPU input.
+fn irq3 () :
+    8 IRQC_PENDING sth
+    retn
+;
+
 # Consume PeC keyboard events until Enter. HID shift/caps are tracked locally.
 fn tb_read_line (dest capacity) :
     local count 0
@@ -573,6 +584,12 @@ fn tb_read_line (dest capacity) :
                 end
             end
             1 TB_PEC_POP st
+        else
+            # No event yet: stop the CPU until the PeC input
+            # IRQ (IRQC source 3) wakes it. irq3 acknowledges
+            # IRQC; draining the FIFO above drops the source
+            # level so the next key latches a fresh edge.
+            halt
         end
         0
     end
@@ -762,7 +779,7 @@ fn tb_help () :
     "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" tb_print_string tb_newline
     "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," tb_print_string tb_newline
     "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." tb_print_string tb_newline
-    "LOAD/SAVE use slot 0: command followed by LBA and sector count." tb_print_string tb_newline
+    "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." tb_print_string tb_newline
 ;
 
 fn tb_clear_variables () :
@@ -1224,6 +1241,25 @@ fn tb_disk_transfer (lba sectors command) :
     0 ret
 ;
 
+fn tb_disk_capacity () :
+    local status 0
+    while
+        TB_IDC 8 add ld 1 and 0 neq
+        if 0 else 1 end
+    end
+    6 TB_IDC 8 add st
+    0 TB_IDC 20 add st
+    3 TB_IDC 24 add st
+    while
+        TB_IDC 8 add ld 1 and 0 neq
+        if 0 else 1 end
+    end
+    TB_IDC 8 add ld >status
+    status 4 and 0 neq if 0 ret end
+    TB_IDC 48 add ld
+    ret
+;
+
 fn tb_buffer_byte (byte) :
     tb_disk_pos tb_disk_limit lt if
         byte TB_DISK_BASE tb_disk_pos add stb
@@ -1349,6 +1385,8 @@ fn tb_disk_statement (command) :
     local result 0
     local have_lba 0
     local have_sectors 0
+    local capacity 0
+    local available 0
     tb_src >saved_src
     tb_next
     tb_tok TB_TOKEN_NUMBER eq if
@@ -1363,10 +1401,19 @@ fn tb_disk_statement (command) :
     end
     tb_tok_start >saved_pos
     command 1 eq if
-        lba sectors 1 tb_disk_transfer >result
-        result 0 eq if
-            sectors 512 mul tb_load_disk_lines
-            "LOADED" tb_print_string tb_newline
+        tb_disk_capacity >capacity
+        lba capacity lt if
+            capacity lba sub >available
+            sectors available gt if
+                available >sectors
+            end
+            lba sectors 1 tb_disk_transfer >result
+            result 0 eq if
+                sectors 512 mul tb_load_disk_lines
+                "LOADED" tb_print_string tb_newline
+            else
+                "DISK READ ERROR" tb_print_string tb_newline
+            end
         else
             "DISK READ ERROR" tb_print_string tb_newline
         end
@@ -1403,6 +1450,9 @@ fn main () :
     1 0x80000000 stb
     initPCG
     initPRNG
+    col80
+    8 IRQC_PENDING sth
+    8 IRQC_ENABLE sth
     tb_repl
 ;
 

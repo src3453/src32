@@ -94,3 +94,61 @@
     `!var_base` で定数・変数・スタック先頭・グローバル変数ベースを指定。
   - **同一スコープで同名の local 変数は禁止**、`irq0`〜`irq15` という名前の
     引数なし関数は IRQ ハンドラとして扱われ R30 が予約される。
+- **PCG カーソルはタイルマップ座標** (pcg.sol の改行カーソルずれ):
+  CURSOR_POS_X/Y (0xF005/0xF006) はスクロール後のタイルマップ座標。
+  表示は画面 (X,Y) から ((X+dX) mod W, (Y+dY) mod H) を読み、カーソルも
+  その座標系で描画される (doc/spec_VDP.md、src/devices/vdp/vdp.rs の
+  合成パス)。したがってスクロール後に論理スクリーン行 pcg_cur_y を書くと
+  カーソルが scroll_y/8 行だけ上にずれる。正しい値はリング物理行
+  pcg_vram_row = (scroll_y/8 + cur_y) mod height。`_pcg_update_cur` は
+  pcg_vram_row を書く。検証は sol VM で MMIO シャドウ (0x8000F00E/F,
+  0x8000F005/6) を読み、表示行 (cursor_y - scroll_y/8) mod 30 が論理行
+  と一致することを確認する (test_sol_vm.py の
+  test_pcg_cursor_register_follows_tilemap_row_when_scrolled)。
+- **入力待ちは HALT、IRQ3 は PeC** (tinybasic.sol):
+  tb_read_line はイベントなし時に `halt` で CPU 停止。PeC キー
+  ボードは IRQC source 3。IRQC の PENDING/ENABLE は 16-bit レ
+  ジスタを BE の 2 バイト lane に分割するため、source 0-7 は
+  `mask IRQC_PENDING sth` (W1C) / `mask IRQC_ENABLE sth` (許可)
+  で操作する (bios.sol / mouse_cursor.sol / sgu_music_driver.sol
+  と同様)。irq handler は必ず IRQC pending を W1C で消すこと:
+  消さないと IRET 後も irqc_line が high のままになり、FIFO を
+  使い切って source level が下がった後も CPU の立ち上がり edge
+  検出が働かず、HALT から永遠に復帰できない (deadlock)。irqN
+  handler があれば起動コードが全 16 vector に `JR R30` を書き、
+  dispatcher が CAUSE で番号判定→全レジスタ保存→handler 呼出→
+  IRET。handler が無い番号 (例: IRQ0 VSync) も save/restore して
+  無害に復帰する。なお sol VM の halt は IRQ モデルが無いため単
+  なるプログラム終了であり、VM ベースのテストは tb_read_line
+  に到達してはならない (tests/tinybasic.rs は実 CPU で検証)。
+- **IDC `incomplete_sector_policy`** (src/devices/pec/idc/idc.rs):
+  disk 要素に `incomplete_sector_policy: reject|pad|truncate`
+  を追加し、512 の倍数でない image の末尾端数byteの扱いを
+  変えられるようにした。`reject` が既定で既存契約（起動時
+  エラー）を維持。`pad` は capacity を ceil にし、最終
+  sector の READ は端数の後に0埋め、WRITE は端数 prefix の
+  み commit して image を延長しない（`Drive::partial_tail`
+  と `trailing_bytes` で実装）。`truncate` は端数を無視して
+  capacity を floor にする（完全 sector が 0 個なら起動時
+  エラー）。guest には常に 512B sector として見え、DMAC
+  転送量や deadline 式は変わらない。cartridge パッケージ
+   image は従来通り 512 の倍数のみ許可。テストは
+  `cargo test --lib idc::`（s3w2_core golden 欠落環境では
+  一時 stub を ../s3w2_core/tests に置いて実行し直後に削除）。
+  仕様は doc/spec_IDC.md §3/§7、使用ガイドは
+  doc/DMA_IRQ_PeC_IDC_howtouse.md。
+- **TinyBASIC LOAD は capacity までクランプ** (tinybasic.sol):
+  LOAD/SAVE の sector count 既定値は 128（64 KiB）な
+  ため、小さい .bas image を disk 0 に直接アタッチ
+  して `LOAD` を実行すると IDC の LBA 範囲検査
+  （ERROR_CODE=3）で "DISK READ ERROR" になって
+  いた。修正は `tb_disk_capacity`（IDENTIFY コマンド
+  で CAPACITY_SECTORS = TB_IDC+0x30 を読む。事前に
+  STATUS の sticky DONE/ERROR を 6 で W1C 消去する
+  こと）を追加し、LOAD の sector count を
+  `capacity - lba` までクランプする。lba >= capacity
+  の場合も DISK READ ERROR。SAVE は既定値のまま
+  （明示指定が前提）。検証は tests/tinybasic_load_disk.rs
+  （pad policy の非 512 倍数 image で LOAD→LIST）。
+  再現・修正確認は tinybasic.sol を編集→
+  solc compile→asm.py→cargo test --test の順。

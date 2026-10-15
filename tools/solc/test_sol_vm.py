@@ -614,3 +614,27 @@ _pcg_ln
     assert vm.memory[to_i32(0x8000F00E)] == 0
     assert vm.memory[0x10000000] == 88
     assert vm.memory[0x10000000 + 29 * 40] == 89
+
+
+def test_pcg_cursor_register_follows_tilemap_row_when_scrolled():
+    repo = Path(__file__).resolve().parents[2]
+    pcg_path = repo / "sol/cpt32/pcg.sol"
+    source = f'''!include "{pcg_path}"
+initPCG
+'''
+    # 33 newlines wrap three times: scroll_y advances to 32 pixels (4 rows)
+    # while the logical cursor stays on the bottom row.
+    source += "_pcg_ln\n" * 33
+    source += "12 15 locate\n"
+    vm = SolVM()
+    vm.run_source(source, source_path=str(pcg_path.parent / "cursor_tilemap_test.sol"))
+
+    scroll_y = vm.memory[to_i32(0x8000F00E)] | (vm.memory[to_i32(0x8000F00F)] << 8)
+    cursor_x = vm.memory[to_i32(0x8000F005)]
+    cursor_y = vm.memory[to_i32(0x8000F006)]
+    # CURSOR_POS holds tilemap coordinates; the display samples
+    # (screen + scroll), so the visible row is (cursor_y - scroll_y/8).
+    assert scroll_y == 32
+    assert cursor_x == 12
+    assert cursor_y == 19
+    assert (cursor_y - scroll_y // 8) % 30 == 15
