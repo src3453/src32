@@ -364,8 +364,10 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
+    cpt32::init_logging();
+
     if let Err(error) = run() {
-        eprintln!("Music Editor: {error}");
+        tracing::error!(%error, "Music Editor failed");
         std::process::exit(1);
     }
 }

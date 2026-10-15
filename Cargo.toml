@@ -25,6 +25,8 @@ zip = { version = "2.4.2", default-features = false, features = ["deflate-miniz"
 directories = "6.0.0"
 sha2 = "0.10.9"
 crc32c = "0.6.8"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
 
 [dev-dependencies]
 wat = "1.246.2"

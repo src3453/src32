@@ -326,7 +326,7 @@ pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
         .name("pec-input".to_string())
         .spawn(move || {
             let Ok(runtime) = tokio::runtime::Builder::new_current_thread().build() else {
-                eprintln!("Warning: Failed to create PeC input runtime");
+                tracing::error!("Failed to create PeC input runtime");
                 return;
             };
             runtime.block_on(async move {

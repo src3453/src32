@@ -1,5 +1,9 @@
 # Copy this file to config.yaml and uncomment only the settings you use.
 
+# Log verbosity: trace, debug, info, warn, error, or off (default: info).
+# logging:
+#   level: debug
+
 pcg:
   # Raw PCG font bank image: exactly 2 KiB (one bank) or 4 KiB (both banks).
   # Relative paths are resolved from the directory containing config.yaml.

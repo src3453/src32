@@ -504,7 +504,7 @@ fn set_mouse_capture(captured: &mut bool, window: &Window, enable: bool) {
                 window.set_cursor_visible(false);
             }
             Err(error) => {
-                eprintln!("Warning: Failed to capture mouse cursor: {error}");
+                tracing::warn!(%error, "Failed to capture mouse cursor");
                 *captured = false;
                 let _ = window.set_cursor_grab(CursorGrabMode::None);
                 window.set_cursor_visible(true);
@@ -557,14 +557,14 @@ impl GuiApp {
                 (Some(gilrs), slots)
             }
             Err(error) => {
-                eprintln!("Warning: Failed to initialize gamepad input: {error}");
+                tracing::warn!(%error, "Failed to initialize gamepad input");
                 (None, [None; 4])
             }
         };
         let audio_host = match audio::AudioHost::new() {
             Ok(host) => Some(host),
             Err(error) => {
-                eprintln!("Warning: Failed to initialize audio host: {error}");
+                tracing::warn!(%error, "Failed to initialize audio host");
                 None
             }
         };
@@ -629,7 +629,7 @@ impl GuiApp {
                 }
             }
             Err(error) => {
-                eprintln!("Error: {error}");
+                tracing::error!(%error, "Failed to load dropped cartridge");
                 self.title = format!("CPT32 — Failed to load {}", path.display());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&self.title);
@@ -1567,10 +1567,10 @@ impl ApplicationHandler for GuiApp {
                         }
                         Err(render::FrameError::Timeout) | Err(render::FrameError::Occluded) => {}
                         Err(render::FrameError::Validation) => {
-                            eprintln!("Render validation error")
+                            tracing::error!("Render validation error");
                         }
                         Err(render::FrameError::Overlay(message)) => {
-                            eprintln!("{}", message)
+                            tracing::error!(message = %message, "Render overlay error");
                         }
                     }
                 }
@@ -1695,6 +1695,8 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
 }
 
 fn main() {
+    cpt32::init_logging();
+
     let args: Vec<String> = env::args().skip(1).collect();
     let first = args.first().map(String::as_str);
 
@@ -1705,15 +1707,15 @@ fn main() {
         Some(_) => match parse_gui_args(&args) {
             Ok(options) => {
                 if options.start_paused && !options.enable_debug_gui {
-                    eprintln!("Warning: --start-paused requires --debug-gui and will be ignored.");
+                    tracing::warn!("--start-paused requires --debug-gui and will be ignored");
                 }
                 if let Err(message) = run_gui_with_options(&options) {
-                    eprintln!("Error: {message}");
+                    tracing::error!(%message, "Failed to start emulator");
                     std::process::exit(2);
                 }
             }
             Err(message) => {
-                eprintln!("Error: {}", message);
+                tracing::error!(%message, "Invalid command line");
                 eprintln!(
                     "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] | cargo run -- [-m|--monitor] [program.bin]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );

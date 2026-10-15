@@ -342,6 +342,7 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
             .load_card_package(slot, &path, Rc::clone(&cycle_clock))
             .map_err(|error| format!("slot {slot} package {label}: {error}"))?;
         cards.push((slot, card));
+        tracing::info!(slot, package = %label, path = %path.display(), "Loaded expansion card");
     }
     bus.install_expansion_cards(cards)
 }
@@ -436,10 +437,7 @@ impl ExpansionCard {
         state.faulted = true;
         state.deadline = None;
         state.irq_asserted = false;
-        eprintln!(
-            "WASM expansion card slot {} ({}) faulted: {}",
-            self.slot, self.label, reason
-        );
+        tracing::error!(slot = self.slot, label = %self.label, %reason, "WASM expansion card faulted");
     }
 }
 

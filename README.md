@@ -38,6 +38,11 @@ cargo run --release --bin cpt32 -- /tmp/3d_cube.bin
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
 ```
+ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
+
+```sh
+RUST_LOG=debug cargo run --release --bin cpt32 -- path/to/program.bin
+```
 
 PCG の raw font file は引数ではなく、起動時の `config.yaml` で指定します。`font.bin` は PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。相対 path は `config.yaml` のある directory を基準にします。設定を省略した場合は内蔵フォントを使用します。
 

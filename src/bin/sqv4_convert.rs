@@ -125,8 +125,10 @@ fn run() -> Result<(), String> {
 }
 
 fn main() {
+    cpt32::init_logging();
+
     if let Err(error) = run() {
-        eprintln!("{error}");
+        tracing::error!(%error, "SQV4 conversion failed");
         process::exit(2);
     }
 }

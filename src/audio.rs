@@ -109,7 +109,7 @@ impl AudioHost {
         let ring_buffer = Arc::new(Mutex::new(AudioRingBuffer::new(buffer_capacity)));
 
         let stream_buf = Arc::clone(&ring_buffer);
-        let err_fn = |err| eprintln!("Audio stream error: {}", err);
+        let err_fn = |err| tracing::error!(%err, "Audio stream error");
 
         let stream = match sample_format {
             SampleFormat::F32 => device.build_output_stream(

@@ -25,6 +25,8 @@ fn gp0_noise_pixel(cpu: &mut Cpu, x: usize, y: usize) -> u8 {
     cpu.read_mem_u8(0x1001_2C00 + u32::from(index) * 3)
 }
 fn main() {
+    cpt32::init_logging();
+
     let args: Vec<String> = env::args().skip(1).collect();
     let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE]");
     let mut allow_running = false;

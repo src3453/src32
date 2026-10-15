@@ -133,9 +133,11 @@ fn run(args: &[String]) -> Result<(), CowError> {
 }
 
 fn main() {
+    cpt32::init_logging();
+
     let args: Vec<String> = std::env::args().collect();
     if let Err(error) = run(&args) {
-        eprintln!("Error: {error}");
+        tracing::error!(%error, "COW tool failed");
         std::process::exit(2);
     }
 }
