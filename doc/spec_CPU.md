@@ -15,7 +15,7 @@ Revision 2.4 (2026-10-15)
 
 ## 1. Overview
 
-SRC32 is a 32-bit educational RISC CPU.
+SRC32 (**S**calable **32**-bit **R**ISC **C**PU) is a 32-bit educational RISC CPU.
 Normal Mode uses fixed-length 32-bit instructions, and Extension S adds a Short Mode with 16-bit instructions.
 This repository includes:
 
