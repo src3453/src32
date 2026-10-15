@@ -459,10 +459,10 @@ impl Bus {
     /// Register a named device; its declared size determines the mapped range.
     pub fn add_device(&mut self, addr: u32, name: &'static str, device: Box<dyn Device>) {
         let size = device.size();
-        tracing::debug!(
-            start = addr,
-            end = addr.wrapping_add(size).wrapping_sub(1),
-            size,
+        tracing::info!(
+            start = format!("0x{:08X}", addr),
+            end = format!("0x{:08X}", addr.wrapping_add(size).wrapping_sub(1)),
+            size = format!("0x{:08X}", size),
             name,
             "Mapped bus device"
         );

@@ -57,6 +57,13 @@ fn load_program_data(
             bus.write_u8(STREAM_BASE + offset as u32, value);
         }
     }
+    tracing::info!(
+        "Loaded program data: {} bytes, music stream: {}",
+        data.len(),
+        music_stream
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| "none".to_owned())
+    );
     Ok(())
 }
 
