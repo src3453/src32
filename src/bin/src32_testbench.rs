@@ -75,7 +75,15 @@ fn main() {
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");
     let mut cpu = Cpu::new(bus);
-    cpu.load_program(0, &image);
+    if cpt32::wax::is_wax(&image) {
+        let img = cpt32::wax::parse(&image).expect("invalid WAX program");
+        assert!(!img.is_lib, ".wal library is not runnable");
+        cpu.load_program(img.base, img.text);
+        cpu.load_program(img.base.wrapping_add(img.text.len() as u32), img.rodata);
+        cpu.set_pc(img.entry);
+    } else {
+        cpu.load_program(0, &image);
+    }
     if let Some(stream) = stream {
         cpu.load_program(STREAM_BASE, &stream);
         // Finish validation and initial uploads before delivering the first VSYNC.

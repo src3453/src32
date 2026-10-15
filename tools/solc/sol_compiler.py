@@ -807,7 +807,7 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True, org: int = 0) -> str:
     if program.effective_stack_size_bytes < 0 or program.effective_stack_size_bytes > STACK_SIZE_BYTES:
         raise SolCompileError(
             f"effective stack size {program.effective_stack_size_bytes} exceeds fixed capacity {STACK_SIZE_BYTES}"
@@ -825,7 +825,7 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     lines: list[str] = []
     short_tag_counter = [0]
     short_plan = _plan_short_mode(program.instructions, use_short_mode)
-    lines.append(".ORG 0x00000000")
+    lines.append(".ORG 0x00000000" if org == 0 else f".ORG {_format_imm(org)}")
     lines.append(f"{ENTRY_LABEL}:")
     _emit_load_imm32(lines, "R28", stack_top)
     irq_handlers = program.irq_handlers or {}
@@ -951,7 +951,7 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True) -> str:
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True, org: int | None = None) -> str:
     try:
         program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, stack_top=stack_top, source_path=source_path, remove_unused_functions=remove_unused_functions)
     except SolVMError as exc:
@@ -959,4 +959,4 @@ def compile_to_src32_asm(source: str, debug: bool=False, var_base: int | None = 
     stack_capacity_bytes = min(program.effective_stack_size_bytes, program.stack_top + 4)
     stack_capacity_bytes = max(0, stack_capacity_bytes) // 4 * 4
     check_static_stack_safety(program, stack_capacity_bytes=stack_capacity_bytes)
-    return emit_src32_from_program(program, debug=debug, stack_top=program.stack_top, use_short_mode=use_short_mode)
+    return emit_src32_from_program(program, debug=debug, stack_top=program.stack_top, use_short_mode=use_short_mode, org=org if org is not None else 0)

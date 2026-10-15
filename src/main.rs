@@ -44,14 +44,12 @@ fn load_program_data(
     data: &[u8],
     music_stream: Option<&Path>,
     bus: &mut Bus,
-) -> Result<(), String> {
+) -> Result<u32, String> {
+    let entry = cpt32::wax::load_bytes(bus, data)?;
     let stream = music_stream
         .map(|path| read_music_stream(path, data.len()))
         .transpose()
         .map_err(|error| format!("Music stream startup error: {error}"))?;
-    for (i, byte) in data.iter().enumerate() {
-        bus.write_u8(i as u32, *byte);
-    }
     if let Some(stream) = stream {
         for (offset, value) in stream.into_iter().enumerate() {
             bus.write_u8(STREAM_BASE + offset as u32, value);
@@ -64,7 +62,7 @@ fn load_program_data(
             .map(|path| path.display().to_string())
             .unwrap_or_else(|| "none".to_owned())
     );
-    Ok(())
+    Ok(entry)
 }
 
 struct GuestMachine {
@@ -134,7 +132,7 @@ fn build_guest_machine(
             return build_raw_guest(program_path, music_stream, bus, input_sender, sgu, idc);
         }
     };
-    load_program_data(program, music_stream, &mut bus)?;
+    let entry = load_program_data(program, music_stream, &mut bus)?;
     let vdp = connect_vdp(&mut bus);
     if let Some(font_path) = pcg_font_path_from_config()? {
         vdp.borrow()
@@ -156,8 +154,10 @@ fn build_guest_machine(
     let title = cartridge
         .as_ref()
         .map(|cartridge| format!("CPT32 — {}", cartridge.title));
+    let mut cpu = Cpu::new(bus);
+    cpu.set_pc(entry);
     Ok(GuestMachine {
-        cpu: Cpu::new(bus),
+        cpu,
         vdp,
         sgu,
         idc: Some(idc),
@@ -180,7 +180,7 @@ fn build_raw_guest(
             program_path.display()
         )
     })?;
-    load_program_data(&data, music_stream, &mut bus)?;
+    let entry = load_program_data(&data, music_stream, &mut bus)?;
     let vdp = connect_vdp(&mut bus);
     if let Some(font_path) = pcg_font_path_from_config()? {
         vdp.borrow()
@@ -188,8 +188,10 @@ fn build_raw_guest(
             .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
     }
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)?;
+    let mut cpu = Cpu::new(bus);
+    cpu.set_pc(entry);
     Ok(GuestMachine {
-        cpu: Cpu::new(bus),
+        cpu,
         vdp,
         sgu,
         idc: Some(idc),

@@ -234,11 +234,16 @@ class SourceLine:
 
 
 class Assembler:
-    def __init__(self) -> None:
+    def __init__(self, strip: bool = False) -> None:
         self.symbols: dict[str, int] = {}
         self.lines: list[SourceLine] = []
         self.output = bytearray()
         self.pc = 0
+        # Address of output[0]. Stays 0 unless --strip omits leading padding.
+        self.image_base = 0
+        # Omit zero padding before the first emitted byte (for ROM images).
+        # Gaps between emitted sections are still padded.
+        self.strip = strip
 
     def load(self, text: str) -> None:
         self.lines = [SourceLine(i + 1, line) for i, line in enumerate(text.splitlines())]
@@ -441,10 +446,13 @@ class Assembler:
     def set_pc(self, new_pc: int, lineno: int) -> None:
         if new_pc < 0:
             raise ValueError(f"line {lineno}: negative .ORG value")
-        if new_pc < len(self.output):
+        if new_pc < self.pc:
             raise ValueError(f"line {lineno}: .ORG overlaps existing output")
-        while len(self.output) < new_pc:
-            self.output.append(0)
+        if self.strip and not self.output:
+            self.image_base = new_pc
+        else:
+            while len(self.output) < new_pc - self.image_base:
+                self.output.append(0)
         self.pc = new_pc
 
     def _split_label(self, line: str) -> tuple[str | None, str]:
@@ -540,6 +548,7 @@ class Assembler:
     def pass2(self) -> None:
         self.pc = 0
         self.output = bytearray()
+        self.image_base = 0
 
         for entry in self.lines:
             line = strip_comment(entry.text)
@@ -752,12 +761,14 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="SRC32 assembler")
     parser.add_argument("input", help="input assembly file")
     parser.add_argument("-o", "--output", help="output binary path")
+    parser.add_argument("--strip", action="store_true",
+                        help="omit zero padding before the first byte (for ROM images at a nonzero origin); interior gaps are still padded")
     args = parser.parse_args()
 
     with open(args.input, "r", encoding="utf-8") as f:
         text = f.read()
 
-    assembler = Assembler()
+    assembler = Assembler(strip=args.strip)
     binary = assembler.assemble(
         text,
         source=os.path.abspath(args.input),
@@ -768,7 +779,8 @@ def main() -> None:
     with open(out, "wb") as f:
         f.write(binary)
 
-    print(f"Assembled {len(binary)} bytes -> {out}")
+    suffix = f" (base 0x{assembler.image_base:08X})" if args.strip else ""
+    print(f"Assembled {len(binary)} bytes -> {out}{suffix}")
 
 
 if __name__ == "__main__":

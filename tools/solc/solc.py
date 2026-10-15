@@ -41,7 +41,7 @@ def _parse_int_option(s: str) -> int:
         raise argparse.ArgumentTypeError(f"invalid integer value: {s}") from exc
 
 
-def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, optimization: str = "size", no_short_mode: bool = False, remove_unused_functions: bool = True) -> int:
+def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, org: int | None = None, optimization: str = "size", no_short_mode: bool = False, remove_unused_functions: bool = True) -> int:
     with open(input_path, "r", encoding="utf-8") as f:
         src = f.read()
     try:
@@ -51,6 +51,7 @@ def compile_stub(input_path: str, out_path: str | None, debug: bool=False, var_b
             var_base=var_base,
             stack_top=stack_top,
             read_only_data_base=read_only_data_base,
+            org=org,
             source_path=input_path,
             use_short_mode=optimization == "size" and not no_short_mode,
             remove_unused_functions=remove_unused_functions,
@@ -87,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     compile_parser.add_argument("--var-base", type=_parse_int_option, default=None, help="override the source !var_base directive (default: 0x00100000)")
     compile_parser.add_argument("--stack-top", type=_parse_int_option, default=None, help="override the source !stack_top directive (default: 0x000FFFFC)")
     compile_parser.add_argument("--read-only-data-base", type=_parse_int_option, default=None, help="override the source !rodata_base directive (default: 0x00020000)")
+    compile_parser.add_argument("--org", type=_parse_int_option, default=None, help="load origin of the emitted code (default: 0x00000000; use 0xFF000000 for BIOS ROM builds)")
     return parser
 
 
@@ -107,6 +109,7 @@ def main(argv: list[str] | None = None) -> int:
             var_base=args.var_base,
             stack_top=args.stack_top,
             read_only_data_base=args.read_only_data_base,
+            org=args.org,
             optimization=args.O,
             no_short_mode=args.no_short_mode,
             remove_unused_functions=not args.keep_unused_functions,

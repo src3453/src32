@@ -309,6 +309,7 @@ STB [R1], R2 ; Set VDP to text mode
 
 - グローバル変数の割当ベースアドレスを指定するにはコンパイラの `--var-base` オプションを使用する（デフォルト: 0x00100000）。
 - 実行時スタック(R28)の初期位置を指定するにはコンパイラの `--stack-top` オプションを使用する（デフォルト: 0x000FFFFC）。
+- 生成コードのロードオリジンを指定するには `--org` オプションを使用する（デフォルト: 0x00000000）。BIOS ROM 等の非ゼロオリジン向けで、指定時は先頭に `.ORG <org>` を出力する。ROM 起動では RAM 上の rodata は事前ロードされないため、`--read-only-data-base` も ROM ウィンドウ内（例: BIOS は `--org 0xFF000000` と `--read-only-data-base 0xFF008000`）に置く。アセンブル時は `asm.py --strip` で先頭のゼロ埋めを省略し、ファイル先頭がオリジンに対応するイメージを得る（区間間のギャップは引き続き埋められる）。`JMP` は 16-bit PC 相対のためウィンドウ外へのジャンプには使えず、`LDIH`/`LDIL` + `JR` でレジスタ経由ジャンプする。
 - `solc compile` は `-O size` と `-O speed` を選択できる。既定値は `size`。
 - `size` は Short Mode 命令を自動選択し、命令列のバイナリサイズ（アセンブル後のbyte数）を小さくする。既存のShort Mode計画とtrampoline coalescingを使用する。
 - `speed` はShort Mode遷移を使わない通常命令列を生成し、SRC32 CPUの動的実行サイクル数を減らす。サイズとサイクル数は固定workloadを実行して測定する。

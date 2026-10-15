@@ -12,7 +12,15 @@ use cpt32::devices::sgu::sgu::connect_sgu;
 
 fn load_binary_data(path: &str, cpu: &mut Cpu, base: u32) {
     let data = std::fs::read(path).expect("Failed to read binary file");
-    cpu.load_program(base, &data);
+    if cpt32::wax::is_wax(&data) {
+        let img = cpt32::wax::parse(&data).expect("Invalid WAX file");
+        assert!(!img.is_lib, ".wal library is not runnable");
+        cpu.load_program(img.base, img.text);
+        cpu.load_program(img.base.wrapping_add(img.text.len() as u32), img.rodata);
+        cpu.set_pc(img.entry);
+    } else {
+        cpu.load_program(base, &data);
+    }
 }
 
 fn parse_u32(token: &str) -> Result<u32, String> {
@@ -162,10 +170,32 @@ pub fn execute_command(cpu: &mut Cpu, command_line: &str) -> CommandOutput {
             };
             match std::fs::read(path) {
                 Ok(data) => {
-                    cpu.load_program(addr, &data);
-                    output
-                        .lines
-                        .push(format!("Loaded {} bytes at 0x{:08X}", data.len(), addr));
+                    if cpt32::wax::is_wax(&data) {
+                        match cpt32::wax::parse(&data) {
+                            Ok(img) if !img.is_lib => {
+                                cpu.load_program(img.base, img.text);
+                                cpu.load_program(
+                                    img.base.wrapping_add(img.text.len() as u32),
+                                    img.rodata,
+                                );
+                                cpu.set_pc(img.entry);
+                                output.lines.push(format!(
+                                    "Loaded WAX {} (text {} + rodata {} at 0x{:08X}, entry 0x{:08X})",
+                                    path,
+                                    img.text.len(),
+                                    img.rodata.len(),
+                                    img.base,
+                                    img.entry
+                                ));
+                            }
+                            _ => output.lines.push(format!("Invalid WAX file {path}")),
+                        }
+                    } else {
+                        cpu.load_program(addr, &data);
+                        output
+                            .lines
+                            .push(format!("Loaded {} bytes at 0x{:08X}", data.len(), addr));
+                    }
                 }
                 Err(error) => output.lines.push(format!("Failed to read {path}: {error}")),
             }
@@ -423,8 +453,30 @@ pub fn run(program_path: Option<&str>) {
                 };
                 match std::fs::read(path) {
                     Ok(data) => {
-                        cpu.load_program(addr, &data);
-                        println!("Loaded {} bytes at 0x{:08X}", data.len(), addr);
+                        if cpt32::wax::is_wax(&data) {
+                            match cpt32::wax::parse(&data) {
+                                Ok(img) if !img.is_lib => {
+                                    cpu.load_program(img.base, img.text);
+                                    cpu.load_program(
+                                        img.base.wrapping_add(img.text.len() as u32),
+                                        img.rodata,
+                                    );
+                                    cpu.set_pc(img.entry);
+                                    println!(
+                                        "Loaded WAX {} (text {} + rodata {} at 0x{:08X}, entry 0x{:08X})",
+                                        path,
+                                        img.text.len(),
+                                        img.rodata.len(),
+                                        img.base,
+                                        img.entry
+                                    );
+                                }
+                                _ => println!("Invalid WAX file {path}"),
+                            }
+                        } else {
+                            cpu.load_program(addr, &data);
+                            println!("Loaded {} bytes at 0x{:08X}", data.len(), addr);
+                        }
                     }
                     Err(err) => println!("Failed to read {}: {}", path, err),
                 }

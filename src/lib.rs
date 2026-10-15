@@ -7,6 +7,7 @@ pub mod cpu;
 pub mod music;
 pub mod sys;
 pub mod wav;
+pub mod wax;
 pub mod devices {
     pub mod bmc;
     pub mod cpu;
