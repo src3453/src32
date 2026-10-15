@@ -18,3 +18,5 @@ tools/vscode-sol-syntax/out/
 .omp/
 config.yaml
 tmp.*
+.obsidian
+.pytest_cache

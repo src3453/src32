@@ -123,51 +123,11 @@ driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止�
 
 ## ドキュメント
 
-### システムと CPU
+仕様・ガイド・設計資料は、Obsidian 互換の Wiki 形式で整理した [日本語ドキュメントホーム](doc/ja/Home.md) または [Documentation Home](doc/Home.md) から参照できます。
 
-| ドキュメント | 内容 |
-|---|---|
-| [CPT32 システム仕様](doc/spec.md) | システム全体と各コンポーネントの設計 |
-| [SRC32 CPU 仕様](doc/spec_CPU.md) | CPU、レジスタ、命令セット |
-| [SRC32 ABI 仕様](doc/spec_ABI.md) | アプリケーションバイナリインターフェース |
+- [システムと CPU](doc/Systems.md)
+- [ハードウェア仕様](doc/Hardware.md)
+- [言語・パッケージ・ツール](doc/Software.md)
+- [チュートリアルと開発ガイド](doc/Guides.md)
 
-### 言語・コンパイラ
-
-| ドキュメント | 内容 |
-|---|---|
-| [sol 言語仕様](doc/spec_sol.md) | 言語、実行モデル、呼び出し規約 |
-| [CSC 言語仕様](doc/spec_csc.md) | SRC32／SRC16 向け C サブセット |
-
-### ハードウェア仕様
-
-| ドキュメント | 内容 |
-|---|---|
-| [BMC / DMAC](doc/spec_BMC_DMAC.md) | バス調停と DMA |
-| [VDP](doc/spec_VDP.md) | 表示タイミングと描画レイヤー合成 |
-| [VPU](doc/spec_VPU.md) | 3D 描画パイプライン |
-| [SGC](doc/spec_SGC.md) | スプライトと 2D コマンド描画 |
-| [SGU](doc/spec_SGU.md) | 音源と音声出力 |
-| [PeC](doc/spec_PeC.md) | 周辺機器コントローラー |
-| [WASM expansion-card 開発ガイド](doc/WASM_expansion_card_development.md) | Rust `no_std` SDK、package 作成、host API、装着手順 |
-| [WASM Expansion Card ABI v1](doc/spec_WASM_expansion_card.md) | WASM module、host import、package、実行制限 |
-| [IDC](doc/spec_IDC.md) | ディスクコントローラー |
-
-### チュートリアルと形式仕様
-
-| ドキュメント | 内容 |
-|---|---|
-| [VPU の使い方](doc/VPU_howtouse.md) | `sol` から VPU を操作して描画する手順 |
-| [DMA・IRQ・PeC・IDC チュートリアル](doc/DMA_IRQ_PeC_IDC_howtouse.md) | DMA と割り込みを使ったディスク読み込み |
-| [SQV4 コンバーターの使い方](doc/squeezvox/README.md) | WAV と SQV4 の変換コマンド |
-| [SQV4 v1/v2 仕様](doc/squeezvox/squeezvox4_spec_stub.md) | SQV4 のファイル形式と予測復号規則 |
-
-### 設計メモ
-
-- [LLVM IR から SRC32 アセンブリへの変換基盤計画](doc/llvm_ir_to_src32_plan.md)
-
-### 開発ツールとエディター拡張
-
-- [SRC16 アセンブリ用 VS Code シンタックス拡張](tools/vscode-src32-asm-syntax/README.md)
-- [sol VS Code 拡張 README](tools/vscode-sol-syntax/README.md)
-- [sol 拡張のクイックスタート](tools/vscode-sol-syntax/vsc-extension-quickstart.md)
-- [sol 拡張の変更履歴](tools/vscode-sol-syntax/CHANGELOG.md)
+英語原文があるページには `doc/ja/` 以下に対応する日本語版があります。
