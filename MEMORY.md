@@ -282,3 +282,5 @@
   更新しない。既に出力済みの byte を含む block の base を動かすと、その後の WAX payload が
   `.bin` と異なる絶対番地に配置される。空 block segment の時だけ base を更新し、`.bin` を
   ゼロ初期化して WAX block を load address に展開した結果との等価性をテストする。
+- デバッグ GUI の `Performance` は、`Debug Controls` の `Cycles / frame` と同じ実行予算で CPU 使用率を正規化する。
+  `PerformanceStats` の IPC は VSync 間の retired instructions / running cycles。実行サイクルが0なら IPC は0として表示する。

@@ -844,26 +844,39 @@ impl GuiApp {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PerformanceStats {
     running_cycles: u128,
+    cycle_budget: usize,
     instructions: u128,
     cpu_utilization_percent: f64,
     kips: f64,
+    ipc: f64,
 }
 
 impl PerformanceStats {
-    fn from_deltas(running_cycles: u128, instructions: u128, elapsed: Duration) -> Self {
-        let cpu_utilization_percent =
-            running_cycles as f64 * 100.0 / f64::from(cpt32::cpu::CYCLES_PER_FRAME);
+    fn from_deltas(
+        running_cycles: u128,
+        instructions: u128,
+        elapsed: Duration,
+        cycle_budget: usize,
+    ) -> Self {
+        let cpu_utilization_percent = running_cycles as f64 * 100.0 / cycle_budget as f64;
         let kips = if elapsed.is_zero() {
             0.0
         } else {
             instructions as f64 / elapsed.as_secs_f64() / 1_000.0
         };
+        let ipc = if running_cycles == 0 {
+            0.0
+        } else {
+            instructions as f64 / running_cycles as f64
+        };
 
         Self {
             running_cycles,
+            cycle_budget,
             instructions,
             cpu_utilization_percent,
             kips,
+            ipc,
         }
     }
 }
@@ -963,14 +976,17 @@ impl DebugUiState {
         parsed.clamp(1, max)
     }
 
+    fn cycles_per_frame(&self) -> usize {
+        Self::parse_usize(
+            &self.cycles_per_frame_input,
+            cpt32::cpu::CYCLES_PER_FRAME as usize,
+            10_000_000,
+        )
+    }
+
     fn execute_cpu(&mut self, cpu: &mut AnyCpu) {
         if self.running {
-            let cycles = Self::parse_usize(
-                &self.cycles_per_frame_input,
-                cpt32::cpu::CYCLES_PER_FRAME as usize,
-                10_000_000,
-            );
-            cpu.run(cycles);
+            cpu.run(self.cycles_per_frame());
         } else if self.queued_steps > 0 {
             for _ in 0..self.queued_steps {
                 if !cpu.step_once() {
@@ -1153,7 +1169,7 @@ impl DebugUiState {
                         "CPU utilization: {:.1}% ({} / {} running cycles per VSync)",
                         stats.cpu_utilization_percent,
                         stats.running_cycles,
-                        cpt32::cpu::CYCLES_PER_FRAME
+                        stats.cycle_budget
                     ));
                     ProgressBar::new(
                         (stats.cpu_utilization_percent / 100.0).clamp(0.0, 1.0) as f32,
@@ -1163,13 +1179,14 @@ impl DebugUiState {
                     ui.same_line();
                     ui.text(format!("{:.1}%", stats.cpu_utilization_percent));
                     ui.text(format!("Instruction throughput: {:.1} KIPS", stats.kips));
+                    ui.text(format!("IPC: {:.3} instructions/cycle", stats.ipc));
                     ui.text(format!("Instructions this VSync: {}", stats.instructions));
                 } else {
                     ui.text("Waiting for the first VSync sample...");
                 }
 
                 ui.separator();
-                ui.text("CPU utilization history (last 120 VSync samples, 0-100%)");
+                ui.text("CPU utilization history (last 120 VSync samples, 0-100% of configured cycles/frame)");
                 let size = [500.0, 150.0];
                 let origin = ui.cursor_screen_pos();
                 ui.invisible_button("CPU utilization history", size);
@@ -1450,6 +1467,7 @@ impl DebugGui {
                 running_cycles.saturating_sub(last_running_cycles),
                 instructions.saturating_sub(last_instructions),
                 sample_time.duration_since(last_time),
+                self.state.cycles_per_frame(),
             );
             self.state.performance = Some(stats);
             if self.state.cpu_utilization_history.len() == DebugUiState::PERFORMANCE_HISTORY_SAMPLES
@@ -2056,19 +2074,23 @@ mod input_tests {
     }
 
     #[test]
-    fn calculates_vsync_cpu_utilization_and_real_time_kips() {
-        let stats = PerformanceStats::from_deltas(400_000, 6_000, Duration::from_millis(500));
+    fn calculates_utilization_against_configured_cycle_budget_and_ipc() {
+        let stats =
+            PerformanceStats::from_deltas(100_000, 5_000, Duration::from_millis(500), 200_000);
 
-        assert_eq!(stats.running_cycles, 400_000);
-        assert_eq!(stats.instructions, 6_000);
+        assert_eq!(stats.running_cycles, 100_000);
+        assert_eq!(stats.cycle_budget, 200_000);
+        assert_eq!(stats.instructions, 5_000);
         assert_eq!(stats.cpu_utilization_percent, 50.0);
-        assert_eq!(stats.kips, 12.0);
+        assert_eq!(stats.kips, 10.0);
+        assert_eq!(stats.ipc, 0.05);
     }
 
     #[test]
-    fn zero_elapsed_time_produces_zero_kips() {
-        let stats = PerformanceStats::from_deltas(0, 100, Duration::ZERO);
+    fn zero_elapsed_time_produces_zero_kips_and_zero_cycle_ipc() {
+        let stats = PerformanceStats::from_deltas(0, 100, Duration::ZERO, 200_000);
         assert_eq!(stats.kips, 0.0);
+        assert_eq!(stats.ipc, 0.0);
     }
 
     #[test]
