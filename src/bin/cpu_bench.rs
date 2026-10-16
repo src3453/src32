@@ -1,0 +1,221 @@
+use cpt32::bus::Bus;
+use cpt32::cpu_select::{AnyCpu, CpuKind};
+use cpt32::devices::ram::connect_ram;
+use std::error::Error;
+use std::time::{Duration, Instant};
+
+const DEFAULT_ITERATIONS: usize = 10_000;
+const DEFAULT_SAMPLES: usize = 5;
+const DATA_ADDRESS: u32 = 0x00F0_0000;
+
+const RUN_CHUNK: usize = 64;
+struct Sample {
+    elapsed: Duration,
+    running_cycles: u128,
+    instructions: u128,
+    stalls: Option<u128>,
+    flushes: Option<u128>,
+    registers: [u32; 32],
+    pc: u32,
+    memory: u32,
+}
+
+fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 4] {
+    let raw =
+        ((op as u32) << 26) | ((rd as u32) << 21) | ((rs1 as u32) << 16) | ((rs2 as u32) << 11);
+    raw.to_be_bytes()
+}
+
+fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 4] {
+    let raw =
+        ((op as u32) << 26) | ((rd as u32) << 21) | ((rs1 as u32) << 16) | (imm as u16 as u32);
+    raw.to_be_bytes()
+}
+
+fn workload(iterations: usize) -> Result<Vec<u8>, Box<dyn Error>> {
+    let image_size = iterations
+        .checked_mul(7 * 4)
+        .and_then(|size| size.checked_add(4 * 4))
+        .ok_or("iteration count overflows program size")?;
+    if image_size > DATA_ADDRESS as usize {
+        return Err(format!(
+            "program is {image_size} bytes; maximum before data is {DATA_ADDRESS} bytes"
+        )
+        .into());
+    }
+
+    let mut image = Vec::with_capacity(image_size);
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 3)); // R2 = 3
+    image.extend_from_slice(&encode_i(0x3D, 6, 0, 0x00F0)); // LDIH R6, data address high half
+    image.extend_from_slice(&encode_i(0x3C, 6, 0, 0)); // LDIL R6, data address low half
+    for _ in 0..iterations {
+        image.extend_from_slice(&encode_i(0x04, 1, 1, 1)); // increment R1
+        image.extend_from_slice(&encode_r(0x03, 3, 1, 2)); // dependent ALU operation
+        image.extend_from_slice(&encode_r(0x18, 4, 3, 2)); // multi-cycle MUL
+        image.extend_from_slice(&encode_i(0x04, 5, 4, 1)); // consume MUL result
+        image.extend_from_slice(&encode_i(0x02, 5, 6, 0)); // store forwarded value
+        image.extend_from_slice(&encode_i(0x01, 7, 6, 0)); // load stored value
+        image.extend_from_slice(&encode_r(0x03, 8, 7, 5)); // load-use dependency
+    }
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    Ok(image)
+}
+
+fn run(kind: CpuKind, image: &[u8]) -> Sample {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(kind, bus);
+    cpu.load_program(0, image);
+
+    let start = Instant::now();
+    while cpu.is_running() {
+        cpu.run(RUN_CHUNK);
+    }
+    let elapsed = start.elapsed();
+
+    let mut registers = [0; 32];
+    for (index, register) in registers.iter_mut().enumerate() {
+        *register = cpu.read_reg(index);
+    }
+    let pc = cpu.pc();
+    let memory = cpu.read_mem_u32_be(DATA_ADDRESS);
+    let (stalls, flushes) = cpu
+        .pipeline_stats()
+        .map_or((None, None), |(stalls, flushes)| {
+            (Some(stalls), Some(flushes))
+        });
+
+    Sample {
+        elapsed,
+        running_cycles: cpu.running_cycles(),
+        instructions: cpu.instructions_executed(),
+        stalls,
+        flushes,
+        registers,
+        pc,
+        memory,
+    }
+}
+
+fn assert_same_architecture(scalar: &Sample, pipeline: &Sample) -> Result<(), Box<dyn Error>> {
+    if scalar.registers != pipeline.registers
+        || scalar.pc != pipeline.pc
+        || scalar.memory != pipeline.memory
+    {
+        return Err("scalar and pipeline architectural state diverged".into());
+    }
+    if scalar.instructions != pipeline.instructions {
+        return Err("scalar and pipeline retired different instruction counts".into());
+    }
+    Ok(())
+}
+
+fn assert_expected_workload(
+    iterations: usize,
+    image: &[u8],
+    sample: &Sample,
+) -> Result<(), Box<dyn Error>> {
+    let count = iterations as u32;
+    let expected_product = count.wrapping_add(3).wrapping_mul(3);
+    let expected_stored = expected_product.wrapping_add(1);
+    let expected_instructions = (iterations as u128) * 7 + 4;
+    if sample.registers[1] != count
+        || sample.registers[2] != 3
+        || sample.registers[4] != expected_product
+        || sample.registers[5] != expected_stored
+        || sample.registers[6] != DATA_ADDRESS
+        || sample.registers[7] != expected_stored
+        || sample.registers[8] != expected_stored.wrapping_mul(2)
+        || sample.memory != expected_stored
+        || sample.pc != image.len() as u32
+        || sample.instructions != expected_instructions
+    {
+        return Err("benchmark workload produced unexpected architectural state".into());
+    }
+    if let (Some(stalls), Some(flushes)) = (sample.stalls, sample.flushes) {
+        if stalls != iterations as u128 * 3 || flushes != 0 {
+            return Err("pipeline workload did not observe the expected hazards".into());
+        }
+    }
+    Ok(())
+}
+
+fn median(mut values: Vec<Duration>) -> Duration {
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
+fn report(label: &str, elapsed: Duration, sample: &Sample) {
+    let seconds = elapsed.as_secs_f64();
+    let instructions_per_second = sample.instructions as f64 / seconds;
+    let cycles_per_instruction = sample.running_cycles as f64 / sample.instructions as f64;
+    println!(
+        "{label:<8} median={:.3} ms  {:.0} instr/s  cycles={}  CPI={:.3}",
+        elapsed.as_secs_f64() * 1_000.0,
+        instructions_per_second,
+        sample.running_cycles,
+        cycles_per_instruction,
+    );
+    if let (Some(stalls), Some(flushes)) = (sample.stalls, sample.flushes) {
+        println!("         pipeline stalls={stalls}  flushes={flushes}");
+    }
+}
+
+fn main() -> Result<(), Box<dyn Error>> {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.len() > 2 {
+        return Err("usage: cpu_bench [iterations [samples]]".into());
+    }
+    let iterations = args
+        .first()
+        .map_or(Ok(DEFAULT_ITERATIONS), |arg| arg.parse::<usize>())?;
+    let samples = args
+        .get(1)
+        .map_or(Ok(DEFAULT_SAMPLES), |arg| arg.parse::<usize>())?;
+    if iterations == 0 || samples == 0 {
+        return Err("iterations and samples must be greater than zero".into());
+    }
+
+    let image = workload(iterations)?;
+    let mut scalar_results = Vec::with_capacity(samples);
+    let mut pipeline_results = Vec::with_capacity(samples);
+    for index in 0..samples {
+        // Alternate order to reduce systematic warm-up and thermal bias.
+        let (scalar, pipeline) = if index % 2 == 0 {
+            (
+                run(CpuKind::Scalar, &image),
+                run(CpuKind::Pipelined, &image),
+            )
+        } else {
+            let pipeline = run(CpuKind::Pipelined, &image);
+            let scalar = run(CpuKind::Scalar, &image);
+            (scalar, pipeline)
+        };
+        assert_expected_workload(iterations, &image, &scalar)?;
+        assert_expected_workload(iterations, &image, &pipeline)?;
+        assert_same_architecture(&scalar, &pipeline)?;
+        scalar_results.push(scalar);
+        pipeline_results.push(pipeline);
+    }
+
+    let scalar = &scalar_results[0];
+    let pipeline = &pipeline_results[0];
+    let scalar_median = median(scalar_results.iter().map(|sample| sample.elapsed).collect());
+    let pipeline_median = median(
+        pipeline_results
+            .iter()
+            .map(|sample| sample.elapsed)
+            .collect(),
+    );
+    println!(
+        "CPU comparison: {iterations} workload iterations, {samples} samples, {} guest instructions/sample",
+        scalar.instructions,
+    );
+    report("Scalar", scalar_median, scalar);
+    report("Pipeline", pipeline_median, pipeline);
+    println!(
+        "Pipeline wall-clock speedup: {:.3}x",
+        scalar_median.as_secs_f64() / pipeline_median.as_secs_f64(),
+    );
+    Ok(())
+}

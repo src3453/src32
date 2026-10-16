@@ -48,7 +48,7 @@ fn load_use_stalls_one_cycle_and_forwards() {
     cpu.run(64);
     assert_eq!(cpu.read_reg(3), 0x1234_5678);
     assert_eq!(cpu.read_reg(4), 0x1234_5678u32.wrapping_mul(2));
-    assert!(cpu.stall_cycles() >= 1);
+    assert_eq!(cpu.stall_cycles(), 1);
 }
 
 #[test]
@@ -63,7 +63,24 @@ fn branch_taken_flushes_and_skips() {
     image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
     cpu.load_program(0, &image);
     cpu.run(64);
+    assert_eq!(cpu.flush_events(), 1);
+    assert_eq!(cpu.instructions_executed(), 5);
+}
+
+#[test]
+fn not_taken_branch_does_not_flush_or_skip_fallthrough() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 1)); // R1 = 1
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 2)); // R2 = 2
+    image.extend_from_slice(&encode_i(0x07, 1, 2, 4)); // BEQ not taken
+    image.extend_from_slice(&encode_i(0x04, 3, 0, 0x55)); // fall-through
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.run(64);
     assert_eq!(cpu.read_reg(3), 0x55);
+    assert_eq!(cpu.flush_events(), 0);
+    assert_eq!(cpu.instructions_executed(), 5);
 }
 
 #[test]
@@ -83,7 +100,36 @@ fn mul_div_match_scalar_with_extra_latency() {
     assert_eq!(cpu.read_reg(4), 84);
     assert_eq!(cpu.read_reg(5), 7);
     assert_eq!(cpu.read_reg(6), 10);
-    assert!(cpu.stall_cycles() >= (MUL_EXTRA + DIV_EXTRA) as u128);
+    assert_eq!(cpu.stall_cycles(), (MUL_EXTRA + DIV_EXTRA) as u128);
+}
+
+#[test]
+fn every_multicycle_alu_op_stalls_exactly_and_forwards_to_its_consumer() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 21)); // R1 = 21
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 3)); // R2 = 3
+    image.extend_from_slice(&encode_r(0x18, 3, 1, 2)); // MUL R3 = 63
+    image.extend_from_slice(&encode_r(0x03, 4, 3, 1)); // dependent ADD = 84
+    image.extend_from_slice(&encode_r(0x1B, 5, 1, 2)); // MULH R5 = 0
+    image.extend_from_slice(&encode_r(0x03, 6, 5, 1)); // dependent ADD = 21
+    image.extend_from_slice(&encode_r(0x19, 7, 1, 2)); // DIV R7 = 7
+    image.extend_from_slice(&encode_r(0x03, 8, 7, 2)); // dependent ADD = 10
+    image.extend_from_slice(&encode_r(0x1A, 9, 1, 2)); // MOD R9 = 0
+    image.extend_from_slice(&encode_r(0x03, 10, 9, 2)); // dependent ADD = 3
+    image.extend_from_slice(&encode_r(0x1C, 11, 1, 2)); // DIVU R11 = 7
+    image.extend_from_slice(&encode_r(0x03, 12, 11, 2)); // dependent ADD = 10
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.run(512);
+
+    assert_eq!(cpu.read_reg(4), 84);
+    assert_eq!(cpu.read_reg(6), 21);
+    assert_eq!(cpu.read_reg(8), 10);
+    assert_eq!(cpu.read_reg(10), 3);
+    assert_eq!(cpu.read_reg(12), 10);
+    assert_eq!(cpu.stall_cycles(), (2 * MUL_EXTRA + 3 * DIV_EXTRA) as u128);
+    assert_eq!(cpu.instructions_executed(), 13);
 }
 
 const MUL_EXTRA: u32 = 2; // MUL_LATENCY(3) - 1 execute tick
@@ -121,6 +167,22 @@ fn store_then_load_roundtrip() {
     cpu.run(64);
     assert_eq!(cpu.read_reg(3), 42);
     assert_eq!(cpu.read_mem_u32_be(0x200), 42);
+}
+
+#[test]
+fn store_forwards_the_latest_alu_result() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 0x200)); // R1 = address
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 0x1234)); // R2 = value
+    image.extend_from_slice(&encode_i(0x02, 2, 1, 0)); // ST immediately consumes R2
+    image.extend_from_slice(&encode_i(0x01, 3, 1, 0)); // LD to observe stored value
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.run(64);
+    assert_eq!(cpu.read_mem_u32_be(0x200), 0x1234);
+    assert_eq!(cpu.read_reg(3), 0x1234);
+    assert_eq!(cpu.stall_cycles(), 0);
 }
 
 #[test]

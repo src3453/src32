@@ -90,9 +90,10 @@ link value participates in forwarding.
 
 - The scalar `Cpu` (`src/cpu.rs`) is the reference. Same program, same
   initial memory → same registers, same architectural PC, same memory.
-  Proven by `tests/cpu_pipeline.rs::differential_mixed_program_matches_scalar`
-  (34-instruction mixed program) plus edge tests (division edges, MULH/DIVU,
-  Short-mode roundtrip, HALT/IRQ wake-up, CPUID).
+  `tests/cpu_pipeline.rs::differential_mixed_program_matches_scalar` checks a
+  mixed program; directed tests assert the exact single-cycle load-use stall,
+  branch flush behavior, store forwarding, and exact stalls plus dependent
+  results for `MUL`, `MULH`, `DIV`, `DIVU`, and `MOD`.
 - The emulator boots on `PipelineCpu` by default. Selection lives in
   `src/cpu_select.rs` (`AnyCpu` over `Cpu`/`PipelineCpu`, same harness API):
   `--cpu scalar|pipeline` CLI flag first, then the `cpu.microarchitecture`
@@ -102,5 +103,8 @@ link value participates in forwarding.
 ## 4. Files
 
 - `src/cpu_pipeline.rs` — implementation.
-- `tests/cpu_pipeline.rs` — TDD suite (12 tests).
+- `tests/cpu_pipeline.rs` — regression suite (15 tests).
 - `doc/spec_CPU.md` — ISA source of truth (unchanged semantics).
+- `src/bin/cpu_bench.rs` — paired Scalar/Pipeline host-time benchmark;
+  `cargo run --release --bin cpu_bench -- [iterations [samples]]` runs an
+  ALU/multiply/memory dependency workload and rejects architectural divergence.

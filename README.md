@@ -41,6 +41,14 @@ cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-pause
 
 エミュレータは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU に切り替えるには `--cpu scalar` を指定します（`--cpu pipeline` で明示も可）。`config.yaml` の `cpu.microarchitecture` でも既定値を変えられます（CLI が優先）。
 
+Scalar CPU とパイプライン CPU の性能を同じ合成ワークロードで比較するには、リリースビルドでベンチマークを実行します。位置引数は順にワークロード反復数と測定サンプル数です（既定値: `10000`, `5`）。実行ごとにレジスタ・PC・データメモリ・完了命令数を照合し、差異があれば失敗します。
+
+```sh
+cargo run --release --bin cpu_bench -- 10000 5
+```
+
+ワークロードは依存する ALU 演算、MUL とその直後の利用、ストア／ロード、および load-use 依存を含みます。出力の wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンタです。
+
 ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
 
 ```sh
