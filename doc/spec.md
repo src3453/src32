@@ -386,6 +386,13 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 エミュレータのGUIデバッグ表示は `--debug-gui` で有効にする。ImGuiの `Windows > Performance` では、VSyncごとのCPU稼働サイクル数を800,000サイクルで割った使用率をパーセンテージ付きプログレスバーで表示し、直近120回のVSyncサンプルの使用率を0〜100%の折れ線グラフで確認できる。サンプル間隔から換算した命令実行速度（KIPS）も表示する。
 デバッグ GUI 有効時は ImGui のメインメニューバーが画面上部に描画されるため、ゲーム画面はメニューバーの高さ分だけ下にずらして表示し、メニューと重ならないようにする。マウス座標からゲスト座標への変換も同じずらし量を使う。
 
+`Windows > Debug Controls` の `Run CPU (Realtime)` チェックボックス、および Pause / Run / Step ボタンは、エミュレーション全体の実行可否（`DebugUiState::running`）を制御する。Step 系ボタンは実行を停止した状態で少量だけ進めるため、ステップ後は Run で再開する必要がある。
+
+ここは以前ドキュメントに書かれておらず、あいまいだった点を明記する:
+
+- **一時停止中は CPU が1命令も実行されない。** `running == false` のとき `execute_cpu` は `cpu.run` を呼ばず、`tick` → `tick_devices` → `refresh_device_irqs` が走らない。したがって IRQC の source 3 がサンプリングされず、`halt` で停止中の CPU はキーボード入力（PeC）で復帰しない。pec-input スレッドは独立して入力を FIFO へ積むため、停止中に入力を打つと FIFO が増えていき 256 件でオーバーフローする。これは障害ではなく「停止中は入力処理されない」ことの帰結だが、原因が分かりにくかった。
+- **`CPU running:` 表示はあいまい。** これは `cpu.is_running()`（CPU の halt 状態）を示し、REPL 待機中の halt と一時停止の双方で `false` になる。区別するため `Emulation: RUNNING (realtime)` / `Emulation: PAUSED - CPU not ticked; keyboard input is not processed` 行を追加した。キーボードが無反応ならまず `PAUSED` を確認し、チェックを ON（または Run）すれば復帰する。一時停止中に積まれた入力は再開後に処理される。
+
 ---
 
 # 10. Future Extensions

@@ -166,7 +166,9 @@ def _format_imm16(value: int) -> tuple[str, str]:
 
 def _emit_load_imm32(lines: list[str], reg: str, value: int) -> None:
     high, low = _format_imm16(value)
-    lines.append(f"    ADDI {reg}, R0, 0")
+    # LDIH sets bits 31:16 (preserving 15:0) and LDIL sets bits 15:0
+    # (preserving 31:16), so together they fully determine the 32-bit
+    # register regardless of its prior value. No zeroing is needed first.
     lines.append(f"    LDIH {reg}, {high}")
     lines.append(f"    LDIL {reg}, {low}")
 

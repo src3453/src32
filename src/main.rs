@@ -1282,6 +1282,11 @@ impl DebugUiState {
                     self.queued_steps = self.queued_steps.saturating_add(100);
                 }
                 ui.separator();
+                if self.running {
+                    ui.text("Emulation: RUNNING (realtime)");
+                } else {
+                    ui.text("Emulation: PAUSED - CPU not ticked; keyboard input is not processed");
+                }
                 ui.text(format!("CPU running: {}", cpu.is_running()));
                 ui.text(format!("PC: 0x{:08X}", cpu.pc()));
                 ui.text(format!("Mode: {:?}", cpu.instruction_mode()));

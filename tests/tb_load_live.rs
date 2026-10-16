@@ -88,9 +88,28 @@ fn run_frames(
     }
     for _ in 0..frames {
         vdp.borrow_mut().tick();
+        cpu.set_irq_source(0, true);
+        cpu.set_irq_source(0, false);
         cpu.run(CYCLES_PER_FRAME as usize);
     }
 }
+fn run_until_halted(
+    cpu: &mut Cpu,
+    vdp: &std::cell::RefCell<cpt32::devices::vdp::vdp::Vdp>,
+    max_frames: usize,
+) {
+    for _ in 0..max_frames {
+        if !cpu.is_running() {
+            return;
+        }
+        vdp.borrow_mut().tick();
+        cpu.set_irq_source(0, true);
+        cpu.set_irq_source(0, false);
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
+    assert!(!cpu.is_running(), "CPU did not return to its input wait");
+}
+
 
 fn read_text_plane_any(cpu: &mut cpt32::cpu_select::AnyCpu) -> String {
     let mut text = String::new();
@@ -285,6 +304,149 @@ fn tb_repl_accepts_input_after_full_size_load() {
     std::fs::remove_dir_all(&root).unwrap();
 }
 
+// A default LOAD reads 128 sectors (64 KiB); Pipeline CPU emulation can take
+// about 100 seconds to finish this guest-side line scan.
+#[test]
+fn tb_repl_accepts_input_after_full_size_load_pipelined() {
+    let root = std::env::temp_dir().join(format!("tb-load-input-pipe-{}", std::process::id()));
+    std::fs::create_dir_all(&root).unwrap();
+    let mut disk_image = Vec::new();
+    let filler = format!("100 REM {}\n", "X".repeat(100));
+    let program = b"10 print 99\n";
+    while disk_image.len() + filler.len() + program.len() <= 128 * 512 {
+        disk_image.extend_from_slice(filler.as_bytes());
+    }
+    disk_image.extend_from_slice(program);
+    disk_image.resize(128 * 512, b' ');
+    std::fs::write(root.join("disk0.bas"), disk_image).unwrap();
+    std::fs::write(
+        root.join("config.yaml"),
+        "disk:\n  - slot: 0\n    type: fdd\n    image: disk0.bas\n    read_only: true\n    transfer_rate_bytes_per_second: 48000000\n    access_latency_ms: 0\n    incomplete_sector_policy: pad\n",
+    )
+    .unwrap();
+    let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
+    let mut bus = Bus::new();
+    let input = connect_pec_input(&mut bus);
+    connect_rng(&mut bus);
+    let vdp = connect_devices_with_vdp(&mut bus);
+    connect_idc(&mut bus, drives);
+    let mut cpu = cpt32::cpu_select::AnyCpu::new(cpt32::cpu_select::CpuKind::Pipelined, bus);
+    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin")).unwrap();
+    cpu.load_program(0, &image);
+
+    for _ in 0..8 {
+        vdp.borrow_mut().tick();
+        cpu.set_irq_source(0, true);
+        cpu.set_irq_source(0, false);
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
+    type_pipeline_text(&mut cpu, &vdp, &input, "load\n");
+    let after_load = wait_pipeline_text(&mut cpu, &vdp, "LOADED", 128);
+    assert!(after_load.contains("LOADED"), "large LOAD did not finish:\n{after_load}");
+    wait_pipeline_halted(&mut cpu, &vdp, 256);
+
+    type_pipeline_text(&mut cpu, &vdp, &input, "print 42\n");
+    let after_input = wait_pipeline_text(&mut cpu, &vdp, "42", 64);
+    assert!(
+        after_input.contains("42"),
+        "Pipeline REPL did not accept input after full-size LOAD:\n{after_input}"
+    );
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn tb_repl_accepts_input_after_list_and_run() {
+    let (mut cpu, vdp, input) = boot();
+    run_frames(&mut cpu, &vdp, &input, "10 print 99\n", 16);
+
+    run_frames(&mut cpu, &vdp, &input, "list\n", 1);
+    run_frames(&mut cpu, &vdp, &input, "print 42\n", 1);
+    run_until_halted(&mut cpu, &vdp, 256);
+    assert!(
+        read_text_plane(&mut cpu).contains("10 print 99"),
+        "LIST did not finish before returning to input"
+    );
+    assert!(
+        read_text_plane(&mut cpu).contains("42"),
+        "keyboard input queued during LIST was not accepted"
+    );
+
+
+    run_frames(&mut cpu, &vdp, &input, "run\n", 16);
+    run_until_halted(&mut cpu, &vdp, 256);
+    assert!(
+        read_text_plane(&mut cpu).contains("99"),
+        "RUN did not finish before returning to input"
+    );
+
+    run_frames(&mut cpu, &vdp, &input, "print 42\n", 16);
+    assert!(
+        read_text_plane(&mut cpu).contains("42"),
+        "keyboard input was not accepted after RUN"
+    );
+}
+
+
+#[test]
+fn tb_repl_accepts_input_after_list_and_run_pipelined() {
+    let mut bus = Bus::new();
+    let input = connect_pec_input(&mut bus);
+    connect_rng(&mut bus);
+    let vdp = connect_devices_with_vdp(&mut bus);
+    let mut cpu = cpt32::cpu_select::AnyCpu::new(cpt32::cpu_select::CpuKind::Pipelined, bus);
+    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin")).unwrap();
+    cpu.load_program(0, &image);
+
+    for _ in 0..8 {
+        vdp.borrow_mut().tick();
+        cpu.set_irq_source(0, true);
+        cpu.set_irq_source(0, false);
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
+    type_pipeline_text(&mut cpu, &vdp, &input, "10 print 99\n");
+    type_pipeline_text(&mut cpu, &vdp, &input, "list\n");
+    type_pipeline_text(&mut cpu, &vdp, &input, "print 42\n");
+    wait_pipeline_halted(&mut cpu, &vdp, 256);
+    assert!(
+        read_text_plane_any(&mut cpu).contains("10 print 99"),
+        "LIST did not finish before returning to input"
+    );
+
+    assert!(
+        read_text_plane_any(&mut cpu).contains("42"),
+        "keyboard input was not accepted after LIST"
+    );
+
+    type_pipeline_text(&mut cpu, &vdp, &input, "run\n");
+    wait_pipeline_halted(&mut cpu, &vdp, 256);
+    assert!(
+        read_text_plane_any(&mut cpu).contains("99"),
+        "RUN did not finish before returning to input"
+    );
+
+    type_pipeline_text(&mut cpu, &vdp, &input, "print 42\n");
+    assert!(
+        read_text_plane_any(&mut cpu).contains("42"),
+        "keyboard input was not accepted after RUN"
+    );
+}
+
+fn wait_pipeline_halted(
+    cpu: &mut cpt32::cpu_select::AnyCpu,
+    vdp: &std::cell::RefCell<cpt32::devices::vdp::vdp::Vdp>,
+    max_frames: usize,
+) {
+    for _ in 0..max_frames {
+        if !cpu.is_running() {
+            return;
+        }
+        vdp.borrow_mut().tick();
+        cpu.set_irq_source(0, true);
+        cpu.set_irq_source(0, false);
+        cpu.run(CYCLES_PER_FRAME as usize);
+    }
+    assert!(!cpu.is_running(), "pipeline CPU did not return to input wait");
+}
 #[test]
 fn tb_repl_accepts_input_after_configured_hdd_load() {
     let config = concat!(env!("CARGO_MANIFEST_DIR"), "/config.yaml");
@@ -399,6 +561,8 @@ fn type_pipeline_text(
         }
         for _ in 0..3 {
             vdp.borrow_mut().tick();
+            cpu.set_irq_source(0, true);
+            cpu.set_irq_source(0, false);
             cpu.run(CYCLES_PER_FRAME as usize);
         }
     }

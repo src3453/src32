@@ -2233,33 +2233,113 @@ fn tb_save_serialize () :
     end
 ;
 
+# Finalize a streamed LOAD line when it ends (newline or end of image).
+# The scan already parsed the number (state 1) and wrote the body straight
+# into the line slot (state 3), so this only has to cover a number that ran
+# to the line end with no body (state 1: validate then delete), a number
+# followed by whitespace only (state 2: delete), or a written body (state 3:
+# NUL-terminate). States 0/4 do nothing (no number seen, or line discarded).
+fn tb_finish_load_line (state line addr idx) :
+    state 1 eq if
+        line 1 lt line TB_MAX_LINE gt and if
+            "LINE RANGE" tb_print_string tb_newline
+        else
+            0 line tb_line_addr stb
+        end
+    end
+    state 2 eq if
+        0 addr stb
+    end
+    state 3 eq if
+        0 addr idx add stb
+    end
+;
+
+# Stream the disk image straight into program memory in one pass, replacing
+# the old buffer-into-TB_INPUT_BASE + re-scan (tb_store_input_line) +
+# re-copy (tb_copy_line) path. count mirrors the old buffer cap so a long
+# line still truncates at TB_MAX_TEXT (line slots are TB_LINE_STRIDE bytes,
+# so the cap also keeps a body from overflowing the slot).
+#   state 0 = seeking the line number, 1 = parsing digits, 2 = skipping
+#   whitespace after the number, 3 = writing the body, 4 = discarding.
 fn tb_load_disk_lines (bytes) :
     local pos 0
-    local count 0
     local ch 0
+    local line 0
+    local addr 0
+    local idx 0
+    local state 0
+    local count 0
     tb_clear_program
-    0 >count
     while
         pos bytes lt
         if
             TB_DISK_BASE pos add ldb >ch
+            pos 1 add >pos
             ch 0 eq
             if
                 1
             else
                 ch 10 eq ch 13 eq and
                 if
-                    0 TB_INPUT_BASE count add stb
-                    count 0 gt if tb_store_input_line end
+                    state 0 eq state 4 eq and if
+                    else
+                        state line addr idx tb_finish_load_line
+                    end
+                    0 >state
+                    0 >line
+                    0 >idx
                     0 >count
-                    pos 1 add >pos
                     0
                 else
                     count TB_MAX_TEXT lt if
-                        ch TB_INPUT_BASE count add stb
+                        state 3 eq if
+                            ch addr idx add stb
+                            idx 1 add >idx
+                        else
+                            state 2 eq if
+                                ch 32 eq ch 9 eq and if
+                                else
+                                    ch addr stb
+                                    1 >idx
+                                    3 >state
+                                end
+                            else
+                                state 1 eq if
+                                    ch 48 ge ch 57 le or if
+                                        line 10 mul ch 48 sub add >line
+                                    else
+                                        line 1 lt line TB_MAX_LINE gt and if
+                                            "LINE RANGE" tb_print_string tb_newline
+                                            4 >state
+                                        else
+                                            line tb_line_addr >addr
+                                            ch 32 eq ch 9 eq and if
+                                                2 >state
+                                            else
+                                                ch addr stb
+                                                1 >idx
+                                                3 >state
+                                            end
+                                        end
+                                    end
+                                else
+                                    state 0 eq if
+                                        ch 48 ge ch 57 le or if
+                                            ch 48 sub >line
+                                            1 >state
+                                        else
+                                            ch 32 eq ch 9 eq and if
+                                            else
+                                                4 >state
+                                            end
+                                        end
+                                    end
+                                end
+                            end
+                        end
                         count 1 add >count
                     end
-                    pos 1 add >pos
                     0
                 end
             end
@@ -2267,10 +2347,7 @@ fn tb_load_disk_lines (bytes) :
             1
         end
     end
-    count 0 gt if
-        0 TB_INPUT_BASE count add stb
-        tb_store_input_line
-    end
+    state line addr idx tb_finish_load_line
 ;
 
 fn main () :
