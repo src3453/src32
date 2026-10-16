@@ -290,6 +290,7 @@ mod tests {
         old_version[4..6].copy_from_slice(&1u16.to_be_bytes());
         assert!(parse(&old_version).is_err());
         let mut reserved = pack(0x100, 0, &[(0x100, &[0, 0, 0, 0])]);
+        reserved[48..64].fill(0);
         reserved[63] = 1;
         assert!(parse(&reserved).is_err());
         assert!(parse(&[0u8; 64]).is_err());

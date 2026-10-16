@@ -79,9 +79,10 @@ Block table entry (12 bytes each):
 - `tools/wax/wax.py pack --base 0x100 --block 0x100=code.bin
   --block 0x10000=stub.bin -o app.wax` creates a multi-block image.
 - `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` writes one block
-  per separated `.ORG` region. Gaps are omitted; `.ORG` addresses are retained
-  as load addresses. `.wax` selects WAX automatically; other output suffixes
-  retain raw-binary output.
+  per `.ORG` address region. A `.ORG` at the current PC does not move the start
+  address of bytes already emitted. Gaps are omitted; expanding blocks into a
+  zero-filled image at their load addresses matches the raw binary output.
+  `.wax` selects WAX automatically; other output suffixes retain raw-binary output.
 - `src/wax.rs` parses and loads blocks. Main, testbench, monitor, and BIOS
   consumers use those block load addresses.
 - `tools/imhex/wax.hexpat` visualizes the v2 header, block table, payload bytes

@@ -461,9 +461,10 @@ class Assembler:
             if new_pc > self.pc and len(self.output) > self._block_start:
                 self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
                 self._block_start = len(self.output)
-            if not self.blocks and self._block_start == len(self.output):
-                self.image_base = new_pc
-            self._block_base = new_pc
+            if self._block_start == len(self.output):
+                if not self.blocks:
+                    self.image_base = new_pc
+                self._block_base = new_pc
             self.pc = new_pc
             return
         if self.strip and not self.output:

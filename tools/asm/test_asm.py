@@ -105,6 +105,36 @@ def test_cli_selects_sparse_wax_by_output_extension_and_entry_label(tmp_path, mo
         {"load_address": 0x10000, "data": bytes.fromhex("fc000000")},
     ]
     assert len(output.read_bytes()) < len(Assembler().assemble(source.read_text()))
+def test_wax_memory_image_matches_raw_binary_for_same_address_org(tmp_path, monkeypatch):
+    source = tmp_path / "same_address_org.asm"
+    source.write_text(
+        ".ORG 0x100\n.BYTE 0x11\n.ORG 0x110\n.BYTE 0x22\n"
+        ".ORG 0x111\n.BYTE 0x33\n",
+        encoding="utf-8",
+    )
+    binary_path = tmp_path / "program.bin"
+    monkeypatch.setattr(
+        sys, "argv", [str(ASM_SCRIPT), str(source), "-o", str(binary_path)]
+    )
+    asm_main()
+    binary = binary_path.read_bytes()
+
+    wax_path = tmp_path / "program.wax"
+    monkeypatch.setattr(
+        sys, "argv", [str(ASM_SCRIPT), str(source), "-o", str(wax_path)]
+    )
+    asm_main()
+    image = parse_wax(wax_path.read_bytes())
+    expanded = bytearray(len(binary))
+    for block in image["blocks"]:
+        start = block["load_address"]
+        expanded[start:start + len(block["data"])] = block["data"]
+
+    assert bytes(expanded) == binary
+    assert image["blocks"] == [
+        {"load_address": 0x100, "data": b"\x11"},
+        {"load_address": 0x110, "data": b"\x22\x33"},
+    ]
 
 
 def test_cli_raw_binary_output_remains_the_default(tmp_path, monkeypatch):

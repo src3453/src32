@@ -20,3 +20,5 @@ config.yaml
 tmp.*
 .obsidian
 .pytest_cache
+.wax
+!examples/

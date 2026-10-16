@@ -76,9 +76,10 @@ Block table entry（各 12 byte）:
 
 - `tools/wax/wax.py pack --base 0x100 --block 0x100=code.bin
   --block 0x10000=stub.bin -o app.wax` で複数 block を pack できます。
-- `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` は `.ORG` で分かれた領域を
-  別 block として出力します。address gap は省略し、各 `.ORG` address を保持します。
-  `.wax` 拡張子で WAX を選択し、その他の拡張子では raw binary のままです。
+- `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` は `.ORG` の address region ごとに
+  block を出力します。現在の PC と同じ address への `.ORG` は、出力済み byte の開始 address を
+  変更しません。gap は省略されますが、block を load address に配置してゼロ埋め展開すると
+  raw binary の出力と一致します。`.wax` 拡張子で WAX を選択し、その他は raw binary のままです。
 - `src/wax.rs` は block を解析・ロードします。main、testbench、monitor、BIOS は各 block の
   load address を使います。
 - `tools/imhex/wax.hexpat` は v2 header、block table、file offset 上の payload、
