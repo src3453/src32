@@ -1,8 +1,12 @@
 ## 作業で得た知識・注意点
 
-- WAX v1 (doc/spec_WAX.md): .wax/.wal は同一 64B ヘッダのコンテナで種別のみ違う。ロード先は
-  section ごとではなく base ひとつ + entry_offset、debug は NOLOAD の付録。ヘッダ複数バイト項目は
-  little-endian。ローダはマジック sniff で素朴 .bin (base 0/PC 0) と両対応し、CPT32PKG manifest は不変。
+- WAX v2 (`doc/spec_WAX.md`) は 64B big-endian header と 12B block table entry
+  (`load_address`, `file_offset`, `size`) を使う。各 payload は 4B file alignment、load range は
+  昇順・非重複・u32 範囲内。`base` は `.wax` 最小 load address、entry は実在 block 内のみ有効。
+  Loader は block のみを書き、hole をゼロ埋めしない。v1 single text/rodata 形式とは互換なし。
+  Python pack/parse は `tools/wax/wax.py`; Rust `WaxImage.blocks` は main/monitor/testbench/BIOS でロード。
+- `tools/asm/asm.py -o output.wax` は拡張子で WAX を選択し、forward `.ORG` ごとに sparse block を生成する。
+  `.bin` と他 suffix は従来どおり flat raw output。`--entry` は label または absolute address。
 - `cargo test` (lib) は `src/devices/sgu/sqv4.rs` の `include_str!("../../../../s3w2_core/tests/...")`
   がリポジトリの親ディレクトリ側 `s3w2_core` を指し、存在しないためコンパイル失敗する。wax 単体は
   空スタブを親側に一時配置して `cargo test wax::` で通した。スタブは必ず削除すること。
@@ -272,3 +276,5 @@
 - 英語原文の日本語版は `doc/ja/` 以下（外部の開発 README は隣接する `.ja.md`）に置き、`translation_of` は日本語ノートから原文への実在する相対パスにする。階層が違うと `../` の数も変わるため、リンク検証で実ファイルまで解決する。仕様のコード例・数値・識別子は原文と照合する。
 - Pipeline CPU の directed regression は `tests/cpu_pipeline.rs` に置き、タイミング契約は単なる `>=` でなく正確な stall/flush 数を確認する。通常の load-use は1 cycle、MUL/MULH は latency 3 から初回 EX tick を引いた2 stall、DIV/DIVU/MOD は latency 16 から1を引いた15 stall。各多サイクル命令直後に依存する ADD を置くと結果 forwarding も検証できる。branch flush は taken のみ数え、HALT を含む retired instruction 数も確認する。
 - Scalar/Pipeline 比較ハーネスは `cargo run --release --bin cpu_bench -- [iterations [samples]]`。同一生成 workload を両CPUで実行し、各 sample の register file / architectural PC / data memory / retired count が一致しなければ失敗する。CPU生成・RAM接続・program load は計測外、実行時間は median、実行順は交互。wall-clock speedup はホスト依存値でありゲスト cycles/CPI と区別する。README と `doc/spec_CPU_p.md` に実行方法を記載。
+- ImHex patterns は `tools/imhex/*.hexpat` に配置する。SQV4 は little-endian 16B header と variant-dependent channel fragments、WAX v2 は big-endian header/table と file_offset 上の payload を可視化する。ImHex official Pattern Language では `#pragma endian`, dynamic arrays, struct 内 `@ offset` placement を使用する。検証は `C:\Program Files\ImHex\imhex.exe --pl format INPUT PATTERN OUTPUT.json`。`--pl run` は成功時でも構造を表示しないことがあるため、format JSON の header/blocks/fragments を確認する。
+- `examples/test.wax` の文字テーブル payload は `W/S DIST...` から始まり、guest code は文字列を `0x00020000`、`0x00020011`、`0x00020023` などの固定番地で参照する。壊れていた第2 block の `load_address=0x0002002F` を `0x00020000` に直す（file_offset/size は不変）。`tests/wax_sparse_example.rs` は各参照先 byte と sparse hole 不変を確認する。

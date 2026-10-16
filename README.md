@@ -31,6 +31,12 @@ python3 tools/asm/asm.py /tmp/3d_cube.asm -o /tmp/3d_cube.bin
 cargo run --release --bin cpt32 -- /tmp/3d_cube.bin
 ```
 
+Assembler は出力拡張子で形式を選択します。raw `.bin` が既定で、`-o` の出力先を `.wax` にすると WAX v2 を直接生成します。先頭に `.ORG` がある場合はその番地、それ以外は 0 が WAX base になり、先頭 padding と forward `.ORG` 間の hole はファイルに格納されません。各領域は独立した block としてロードされ、hole には書き込みません。entry は既定で最初の byte、ラベルまたは絶対番地で指定できます。
+
+```sh
+python3 tools/asm/asm.py program.asm -o program.wax --entry start
+```
+
 デバッグ GUI を有効にするには `--debug-gui` を指定します。デバッグ GUI 起動時に一時停止する場合は `--start-paused` も指定してください。
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
 `Performance` ウィンドウではCPU使用率のパーセンテージ付きプログレスバー、直近120サンプルの使用率折れ線グラフ、命令実行速度を確認できます。

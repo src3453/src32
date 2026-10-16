@@ -2,8 +2,12 @@ import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "wax"))
 
-from asm import Assembler
+from asm import Assembler, main as asm_main
+from wax import parse as parse_wax
+
+ASM_SCRIPT = Path(__file__).with_name("asm.py").resolve()
 
 
 def assemble_hex(source: str) -> str:
@@ -70,3 +74,43 @@ def test_backward_org_is_rejected_with_and_without_strip():
             assert "overlaps" in str(exc)
         else:
             raise AssertionError("backward .ORG must fail")
+
+
+
+def test_sparse_assembly_preserves_addresses_without_gap_bytes():
+    asm = Assembler(strip=True, sparse=True)
+    compact = asm.assemble(".ORG 0x100\n.BYTE 1\n.ORG 0x10000\n.BYTE 2")
+    assert asm.image_base == 0x100
+    assert compact == b"\x01\x02"
+    assert asm.blocks == [(0x100, b"\x01"), (0x10000, b"\x02")]
+def test_cli_selects_sparse_wax_by_output_extension_and_entry_label(tmp_path, monkeypatch):
+    source = tmp_path / "program.asm"
+    source.write_text(
+        ".ORG 0x100\nstart: NOP\nentry: HALT\n.ORG 0x10000\nHALT\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "program.wax"
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [str(ASM_SCRIPT), str(source), "--entry", "entry", "-o", str(output)],
+    )
+    asm_main()
+    image = parse_wax(output.read_bytes())
+    assert image["base"] == 0x100
+    assert image["entry_offset"] == 4
+    assert image["entry"] == 0x104
+    assert image["blocks"] == [
+        {"load_address": 0x100, "data": bytes.fromhex("00000000fc000000")},
+        {"load_address": 0x10000, "data": bytes.fromhex("fc000000")},
+    ]
+    assert len(output.read_bytes()) < len(Assembler().assemble(source.read_text()))
+
+
+def test_cli_raw_binary_output_remains_the_default(tmp_path, monkeypatch):
+    source = tmp_path / "raw.asm"
+    source.write_text(".ORG 8\nHALT\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(ASM_SCRIPT), str(source)])
+    asm_main()
+    output = tmp_path / "raw.asm.bin"
+    assert output.read_bytes() == bytes(8) + bytes.fromhex("fc000000")

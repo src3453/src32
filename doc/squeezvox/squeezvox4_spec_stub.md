@@ -67,3 +67,8 @@ For L and L+, at each input sample the encoder evaluates every legal magnitude w
 ## Hardware playback container
 
 The S3W2 SQV4 waveform consumes a file placed wholly within PCM RAM. The start register points to the 16-byte file header; the end register is an exclusive byte address covering the complete file. Only mono files are accepted by this hardware playback path. The PCM sample-rate register continues to control playback cadence; the file's sample rate is metadata only. A loop address of zero or equal to start means restart at the file header. Any other loop address MUST point to the first byte of a channel fragment (the volume byte) after the header; it MUST NOT be interpreted as an independent seek state. Looping reconstructs from initial predictor/index state through the selected fragment. Invalid header, non-mono data, out-of-RAM bounds, incomplete file, or invalid loop boundary makes the channel inactive without reading out of bounds and produces silence.
+
+## ImHex inspection pattern
+
+`tools/imhex/sqv4.hexpat` displays the v1/v2 header and variant-sized channel
+fragments. Packed ADPCM code bytes remain raw; the pattern does not decode them.

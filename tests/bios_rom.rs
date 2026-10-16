@@ -27,21 +27,39 @@ fn finish(dir: &PathBuf) {
     fs::remove_dir_all(dir).unwrap();
 }
 
-/// Minimal WAX executable: 64-byte header plus one text blob.
-fn wax_bytes(base: u32, text: &[u8]) -> Vec<u8> {
-    let mut out = vec![0u8; 64];
+/// Minimal WAX v2 executable with one or more addressable payload blocks.
+fn wax_blocks(base: u32, blocks: &[(u32, &[u8])]) -> Vec<u8> {
+    let table_offset = 64usize;
+    let mut file_size = table_offset + blocks.len() * 12;
+    let mut records = Vec::new();
+    for &(address, payload) in blocks {
+        file_size = (file_size + 3) & !3;
+        records.push((address, file_size, payload));
+        file_size += payload.len();
+    }
+    let mut out = vec![0u8; file_size];
     out[..4].copy_from_slice(&cpt32::wax::MAGIC);
-    out[4..6].copy_from_slice(&1u16.to_le_bytes());
-    out[6..8].copy_from_slice(&1u16.to_le_bytes());
-    out[8..10].copy_from_slice(&1u16.to_le_bytes());
-    out[10..12].copy_from_slice(&0u16.to_le_bytes());
-    out[12..16].copy_from_slice(&64u32.to_le_bytes());
-    out[16..20].copy_from_slice(&base.to_le_bytes());
-    out[20..24].copy_from_slice(&0u32.to_le_bytes());
-    out[24..28].copy_from_slice(&64u32.to_le_bytes());
-    out[28..32].copy_from_slice(&(text.len() as u32).to_le_bytes());
-    out.extend_from_slice(text);
+    out[4..6].copy_from_slice(&cpt32::wax::VERSION.to_be_bytes());
+    out[6..8].copy_from_slice(&cpt32::wax::TYPE_WAX.to_be_bytes());
+    out[8..10].copy_from_slice(&cpt32::wax::ARCH_SRC32.to_be_bytes());
+    out[12..16].copy_from_slice(&64u32.to_be_bytes());
+    out[16..20].copy_from_slice(&base.to_be_bytes());
+    out[24..28].copy_from_slice(&(table_offset as u32).to_be_bytes());
+    out[28..32].copy_from_slice(&(blocks.len() as u32).to_be_bytes());
+    out[32..36].copy_from_slice(&12u32.to_be_bytes());
+    out[44..48].copy_from_slice(&(file_size as u32).to_be_bytes());
+    for (index, (address, file_offset, payload)) in records.into_iter().enumerate() {
+        let record = table_offset + index * 12;
+        out[record..record + 4].copy_from_slice(&address.to_be_bytes());
+        out[record + 4..record + 8].copy_from_slice(&(file_offset as u32).to_be_bytes());
+        out[record + 8..record + 12].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+        out[file_offset..file_offset + payload.len()].copy_from_slice(payload);
+    }
     out
+}
+
+fn wax_bytes(base: u32, text: &[u8]) -> Vec<u8> {
+    wax_blocks(base, &[(base, text)])
 }
 
 #[test]
@@ -99,7 +117,7 @@ fn absolute_image_paths_resolve() {
     fs::write(&image_path, image).unwrap();
     let config = write_config(
         &dir,
-        &format!("bios:\n  image: \"{}\"\n", image_path.display()),
+        &format!("bios:\n  image: '{}'\n", image_path.display()),
     );
     let mut bus = Bus::new();
     assert_eq!(load_bios(&config, &mut bus), Ok(Some(BIOS_BASE)));
@@ -153,6 +171,26 @@ fn wax_inside_window_loads_at_offset_with_entry() {
     assert_eq!(load_bios(&config, &mut bus), Ok(Some(base)));
     assert_eq!(bus.read_u8(base), 0xFC);
     assert_eq!(bus.read_u8(BIOS_BASE), 0);
+    finish(&dir);
+}
+
+#[test]
+fn sparse_wax_bios_blocks_map_at_their_addresses() {
+    let dir = temp_dir();
+    let base = BIOS_BASE + 0x100;
+    let second = BIOS_BASE + 0x1000;
+    fs::write(
+        dir.join("sparse.wax"),
+        wax_blocks(base, &[(base, &[0xFC, 0, 0, 0]), (second, &[0x12, 0x34])]),
+    )
+    .unwrap();
+    let config = write_config(&dir, "bios:\n  image: \"sparse.wax\"\n");
+    let mut bus = Bus::new();
+    assert_eq!(load_bios(&config, &mut bus), Ok(Some(base)));
+    assert_eq!(bus.read_u8(base), 0xFC);
+    assert_eq!(bus.read_u8(base + 4), 0);
+    assert_eq!(bus.read_u8(second), 0x12);
+    assert_eq!(bus.read_u8(second + 1), 0x34);
     finish(&dir);
 }
 

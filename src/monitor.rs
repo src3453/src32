@@ -16,8 +16,9 @@ fn load_binary_data(path: &str, cpu: &mut AnyCpu, base: u32) {
     if cpt32::wax::is_wax(&data) {
         let img = cpt32::wax::parse(&data).expect("Invalid WAX file");
         assert!(!img.is_lib, ".wal library is not runnable");
-        cpu.load_program(img.base, img.text);
-        cpu.load_program(img.base.wrapping_add(img.text.len() as u32), img.rodata);
+        for block in &img.blocks {
+            cpu.load_program(block.load_address, block.data);
+        }
         cpu.set_pc(img.entry);
     } else {
         cpu.load_program(base, &data);
@@ -174,18 +175,17 @@ pub fn execute_command(cpu: &mut AnyCpu, command_line: &str) -> CommandOutput {
                     if cpt32::wax::is_wax(&data) {
                         match cpt32::wax::parse(&data) {
                             Ok(img) if !img.is_lib => {
-                                cpu.load_program(img.base, img.text);
-                                cpu.load_program(
-                                    img.base.wrapping_add(img.text.len() as u32),
-                                    img.rodata,
-                                );
+                                for block in &img.blocks {
+                                    cpu.load_program(block.load_address, block.data);
+                                }
                                 cpu.set_pc(img.entry);
+                                let loaded_bytes: usize =
+                                    img.blocks.iter().map(|block| block.data.len()).sum();
                                 output.lines.push(format!(
-                                    "Loaded WAX {} (text {} + rodata {} at 0x{:08X}, entry 0x{:08X})",
+                                    "Loaded WAX {} ({} blocks, {} bytes, entry 0x{:08X})",
                                     path,
-                                    img.text.len(),
-                                    img.rodata.len(),
-                                    img.base,
+                                    img.blocks.len(),
+                                    loaded_bytes,
                                     img.entry
                                 ));
                             }
@@ -466,18 +466,17 @@ pub fn run(program_path: Option<&str>, cli_cpu: Option<CpuKind>) {
                         if cpt32::wax::is_wax(&data) {
                             match cpt32::wax::parse(&data) {
                                 Ok(img) if !img.is_lib => {
-                                    cpu.load_program(img.base, img.text);
-                                    cpu.load_program(
-                                        img.base.wrapping_add(img.text.len() as u32),
-                                        img.rodata,
-                                    );
+                                    for block in &img.blocks {
+                                        cpu.load_program(block.load_address, block.data);
+                                    }
                                     cpu.set_pc(img.entry);
+                                    let loaded_bytes: usize =
+                                        img.blocks.iter().map(|block| block.data.len()).sum();
                                     println!(
-                                        "Loaded WAX {} (text {} + rodata {} at 0x{:08X}, entry 0x{:08X})",
+                                        "Loaded WAX {} ({} blocks, {} bytes, entry 0x{:08X})",
                                         path,
-                                        img.text.len(),
-                                        img.rodata.len(),
-                                        img.base,
+                                        img.blocks.len(),
+                                        loaded_bytes,
                                         img.entry
                                     );
                                 }

@@ -2,81 +2,84 @@
 lang: ja
 translation_of: ../spec_WAX.md
 ---
-# WAX（Where's All the eXecutables?）コンテナ仕様 v1
+# WAX（Where's All the eXecutables?）コンテナー仕様 v2
 
-WAX は SRC32 用の小型 ELF 風コンテナです。拡張子:
-`.wax` = 実行ファイル、`.wal` = ライブラリ（同じ形式で、型が異なります）。
-WAX は "Where's All the eXecutables?" の略です。
-WAL は "Where's All the Libraries?" の略で、v1 では再配置を含まない PIC lump です。
-この仕様が対象とするのは v1 コンテナのみです。リンク／再配置はまだありません。
+WAX は SRC32 のスパース実行形式です。`.wax` は実行ファイル、`.wal` は再配置を
+含まない PIC ライブラリです。ブロックテーブルを使い、未マップのアドレス間隔を
+ファイル内に格納しません。v2 は v1 と互換性がなく、v1 ファイルは再 pack が必要です。
+v1 互換 parser は提供しません。
 
 ## レイアウト
 
-64 バイトのヘッダーに続いて、text バイト、rodata バイト、debug バイトが並びます。
-フィールドの順序とオフセットは固定です。ヘッダー内の複数バイトの
-フィールドはすべてリトルエンディアンです。ペイロードのバイト列は不透明です。
+固定 64 バイトのヘッダー、ブロックテーブル、アラインメント済みの payload block、
+任意の debug block の順に配置します。複数バイト整数はすべてビッグエンディアンです。
+payload の byte 列は不透明です。
 
 ```
-オフセット  サイズ  名称
-0       4     magic = 57 41 58 00 ("WAX\0")
-4       2     version = 1
-6       2     type: 1 = .wax 実行ファイル、2 = .wal ライブラリ
-8       2     arch = 1 (SRC32)
-10      2     flags: bit0 = DEBUG_PRESENT、その他は 0
-12      4     header_size = 64
-16      4     base_addr（実行ファイルのロード先。 .wal では無視）
-20      4     entry_offset（entry = base + entry_offset。 .wal では無視）
-24      4     text_offset
-28      4     text_size（0 より大きいこと）
-32      4     rodata_offset
-36      4     rodata_size（0 は存在しないことを示す）
-40      4     debug_offset
-44      4     debug_size（0 は存在しないことを示す）
-48      16    reserved（0）
+Header offset  サイズ  名称
+0             4     magic = 57 41 58 00 ("WAX\0")
+4             2     version = 2
+6             2     type: 1 = .wax 実行ファイル、2 = .wal ライブラリ
+8             2     arch = 1 (SRC32)
+10            2     flags: bit0 = DEBUG_PRESENT、その他は 0
+12            4     header_size = 64
+16            4     base_addr: .wax の最小 block address、.wal は 0
+20            4     entry_offset: entry = base_addr + entry_offset、.wal は 0
+24            4     block_table_offset
+28            4     block_count
+32            4     block_entry_size = 12
+36            4     debug_offset（存在しない場合は 0）
+40            4     debug_size（存在しない場合は 0）
+44            4     file_size（実際の byte 数と一致）
+48            16    reserved（0）
+
+Block table entry（各 12 byte）:
+0             4     load_address: .wax の u32 address、.wal の PIC offset
+4             4     file_offset: コンテナー内の payload 位置
+8             4     size: payload byte 数
 ```
 
 ## 規則
 
-- オフセットは 4 バイト境界に揃えます。データブロックはファイル内に収まり、
-  重複せず、EOF を越えてラップしません。
-- text_size > 0。rodata/debug は空でもかまいません（size 0 の場合、
-  offset は無視されます）。
-- debug_size > 0 の場合に限り DEBUG_PRESENT を設定します（かつ、その場合は必ず設定します）。
-- base_addr + text/rodata の範囲が u32 の範囲を超えてはなりません。
-  Main RAM は 0x00000000-0x00FFFFFF（16 MB）です。
-- .wal: base_addr と entry_offset は 0 でなければなりません（この形式では無視されます）。
-  text/rodata は PIC データ塊であり、v1 では再配置を行いません。
-- .wax の entry = base_addr + entry_offset は、ロードされた text 範囲内に
-  位置しなければなりません。
-- 未知の version/arch/type/flag bits は拒否します。
-- v1 にはチェックサムがありません。破損チェックには magic +
-  version + 範囲検証を使います。
-- v1 では Debug block は NOLOAD かつ不透明です。ローダーはこれをスキップします。
+- `block_table_offset` は 4 byte 境界かつ 64 以上です。`block_count` は 1 以上、
+  `block_entry_size` は 12 固定です。テーブル全体がファイル内に収まる必要があります。
+- block size は 0 にできません。テーブルは `load_address` 昇順で、ロード先の範囲が
+  重複したり `0x1_0000_0000` を越えて wrap したりしてはいけません。
+- `file_offset` は 4 byte 境界で、テーブルの後ろを指します。payload は `file_size` 内に
+  収まり、相互および debug block と重複しません。`file_size` は実ファイル長と一致します。
+- `.wax` の `base_addr` は先頭 block の `load_address` です。entry
+  (`base_addr + entry_offset`) は u32 wrap せず、いずれか 1 block の内部に置きます。
+  block 間の hole は entry にできません。
+- `.wal` の `base_addr` と `entry_offset` は 0 でなければなりません。block address は
+  PIC offset です。ライブラリは解析できますが実行できません。
+- `debug_size > 0` の場合に限り `DEBUG_PRESENT` を設定します。debug は NOLOAD で不透明です。
+- 未知の version/arch/type/flag bits は拒否します。v2 に checksum はありません。
 
 ## ロード
 
-1. 先頭 4 バイトが magic と異なる場合、入力を legacy raw
-   .bin として扱います。address 0 にロードし、PC = 0 とします。
-2. それ以外はヘッダーを解析して検証し、text バイトを
-   base_addr+i に、rodata バイトを base_addr+text_size+i に書き込みます
-   （rodata はメモリ上で text の後に続きます）。
-3. PC = base_addr + entry_offset に設定します（.wax のみ）。
-4. CPT32PKG entrypoint path は .wax または .bin を指定できます。
-   ローダーは magic を判別します。Manifest schema は変更されません。
+1. WAX magic がない入力は従来どおり raw `.bin` とし、address 0 にロードして PC=0 にします。
+2. WAX は各 payload をテーブルの `load_address` に書き込みます。アドレス間の hole は
+   ファイルに含まれず、loader も書き込みません。
+3. `.wax` は `base_addr + entry_offset` から実行し、debug はスキップします。
+4. CPT32PKG entrypoint は `.wax` または raw `.bin` を指定できます。Manifest は変更しません。
 
 ## テストベクトル
 
-- 最小 .wax: text = 4 バイトの NOP (0x00000000)、
-  base 0、entry_offset 0、rodata/debug なし。0 にロードされ、PC=0。
-- オフセット付き .wax: base 0x100 の text、entry_offset 0。
-  ローダーは 0x100 に書き込み、PC=0x100。
-- .wal: type=2、base=entry=0、text あり。解析 OK、
-  実行ファイルとしてのロードは拒否されます（ライブラリであり、実行不可）。
-- 拒否: 不正な magic version、重複、アラインメントされていない offset、
-  空の text、text 外の entry、切り詰められたデータブロック。
+- 1 block: address 0 に 4 byte NOP、`base_addr=0`、`entry_offset=0`。
+- sparse image: `0x100` に NOP、`0x10000` に HALT。各 4 byte の 2 block は合計 96 byte
+  （64 byte header + 24 byte table + 8 byte payload）で、間のゼロ領域を保存しません。
+- 拒否: 空テーブル、順不同／重複するロード範囲、hole 内 entry、テーブル／payload 重複、
+  ファイル範囲外 payload、address wrap、不正 version。
+- `.wal`: type=2、base=entry=0、1個以上の PIC block。実行は拒否します。
 
-## ツール（v1）
+## ツール
 
-- tools/wax/wax.py: .wax/.wal の pack/unpack/info。
-- src/wax.rs: main/testbench/monitor が使用する parse + load。
-- asm.py は変更なし（引き続き raw .bin を出力し、wax.py が合成します）。
+- `tools/wax/wax.py pack --base 0x100 --block 0x100=code.bin
+  --block 0x10000=stub.bin -o app.wax` で複数 block を pack できます。
+- `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` は `.ORG` で分かれた領域を
+  別 block として出力します。address gap は省略し、各 `.ORG` address を保持します。
+  `.wax` 拡張子で WAX を選択し、その他の拡張子では raw binary のままです。
+- `src/wax.rs` は block を解析・ロードします。main、testbench、monitor、BIOS は各 block の
+  load address を使います。
+- `tools/imhex/wax.hexpat` は v2 header、block table、file offset 上の payload、
+  任意の debug block を表示します。

@@ -1,4 +1,5 @@
 import argparse
+import sys
 import os
 import re
 import struct
@@ -234,7 +235,7 @@ class SourceLine:
 
 
 class Assembler:
-    def __init__(self, strip: bool = False) -> None:
+    def __init__(self, strip: bool = False, sparse: bool = False) -> None:
         self.symbols: dict[str, int] = {}
         self.lines: list[SourceLine] = []
         self.output = bytearray()
@@ -244,6 +245,10 @@ class Assembler:
         # Omit zero padding before the first emitted byte (for ROM images).
         # Gaps between emitted sections are still padded.
         self.strip = strip
+        self.sparse = sparse
+        self.blocks: list[tuple[int, bytes]] = []
+        self._block_base = 0
+        self._block_start = 0
         # Branch instructions recorded during pass1 for far-jump analysis.
         self.branch_records: list[dict] = []
         # Monotonic counter for generated trampoline labels.
@@ -452,6 +457,15 @@ class Assembler:
             raise ValueError(f"line {lineno}: negative .ORG value")
         if new_pc < self.pc:
             raise ValueError(f"line {lineno}: .ORG overlaps existing output")
+        if self.sparse:
+            if new_pc > self.pc and len(self.output) > self._block_start:
+                self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
+                self._block_start = len(self.output)
+            if not self.blocks and self._block_start == len(self.output):
+                self.image_base = new_pc
+            self._block_base = new_pc
+            self.pc = new_pc
+            return
         if self.strip and not self.output:
             self.image_base = new_pc
         else:
@@ -636,6 +650,9 @@ class Assembler:
     def pass2(self) -> None:
         self.pc = 0
         self.output = bytearray()
+        self.blocks = []
+        self._block_base = 0
+        self._block_start = 0
         self.image_base = 0
 
         for entry in self.lines:
@@ -851,33 +868,64 @@ class Assembler:
         else:
             raise ValueError("far-branch trampoline iteration did not converge")
         self.pass2()
+        if self.sparse and len(self.output) > self._block_start:
+            self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
+            self._block_start = len(self.output)
         return bytes(self.output)
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="SRC32 assembler")
     parser.add_argument("input", help="input assembly file")
-    parser.add_argument("-o", "--output", help="output binary path")
+    parser.add_argument("-o", "--output",
+                        help="output path (.wax selects WAX; other extensions write raw bytes)")
     parser.add_argument("--strip", action="store_true",
                         help="omit zero padding before the first byte (for ROM images at a nonzero origin); interior gaps are still padded")
+    parser.add_argument("--entry",
+                        help="WAX entry label or absolute address (requires a .wax output; default: first assembled byte)")
     args = parser.parse_args()
+    out = args.output or (args.input + ".bin")
+    wax_output = os.path.splitext(out)[1].lower() == ".wax"
+    if args.entry is not None and not wax_output:
+        parser.error("--entry requires an output path with the .wax extension")
 
     with open(args.input, "r", encoding="utf-8") as f:
         text = f.read()
 
-    assembler = Assembler(strip=args.strip)
+    assembler = Assembler(strip=args.strip or wax_output, sparse=wax_output)
     binary = assembler.assemble(
         text,
         source=os.path.abspath(args.input),
         base_dir=os.path.dirname(os.path.abspath(args.input)),
     )
+    output_bytes = binary
+    if wax_output:
+        base = assembler.image_base
+        entry_address = base
+        if args.entry is not None:
+            entry_address = assembler.symbols.get(args.entry)
+            if entry_address is None:
+                entry_address = parse_number(args.entry)
+        entry_offset = entry_address - base
 
-    out = args.output or (args.input + ".bin")
+        wax_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "wax"))
+        if wax_dir not in sys.path:
+            sys.path.insert(0, wax_dir)
+        from wax import pack as pack_wax
+
+        output_bytes = pack_wax(base, entry_offset, assembler.blocks)
+
     with open(out, "wb") as f:
-        f.write(binary)
+        f.write(output_bytes)
 
-    suffix = f" (base 0x{assembler.image_base:08X})" if args.strip else ""
-    print(f"Assembled {len(binary)} bytes -> {out}{suffix}")
+    if wax_output:
+        print(
+            f"Assembled {len(binary)} bytes into WAX ({len(output_bytes)} bytes) -> {out} "
+            f"(base 0x{base:08X}, entry 0x{(base + entry_offset) & 0xFFFFFFFF:08X})"
+        )
+    else:
+        suffix = f" (base 0x{assembler.image_base:08X})" if args.strip else ""
+        print(f"Assembled {len(binary)} bytes -> {out}{suffix}")
 
 
 if __name__ == "__main__":

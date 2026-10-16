@@ -43,19 +43,20 @@ impl BiosRom {
         if image.is_lib {
             return Err("cannot execute .wal library as BIOS".to_owned());
         }
-        let base = u64::from(image.base);
-        let len = image.text.len() as u64 + image.rodata.len() as u64;
-        if base < u64::from(BIOS_BASE) || base + len > BIOS_END {
-            return Err(format!(
-                "BIOS WAX at base 0x{base:08X} ({} bytes) lies outside the ROM window",
-                image.text.len() + image.rodata.len(),
-            ));
-        }
         let mut data = Box::new([0u8; BIOS_SIZE]);
-        let offset = (base - u64::from(BIOS_BASE)) as usize;
-        data[offset..offset + image.text.len()].copy_from_slice(image.text);
-        let rodata_offset = offset + image.text.len();
-        data[rodata_offset..rodata_offset + image.rodata.len()].copy_from_slice(image.rodata);
+        for block in &image.blocks {
+            let block_start = u64::from(block.load_address);
+            let block_end = block_start + block.data.len() as u64;
+            if block_start < u64::from(BIOS_BASE) || block_end > BIOS_END {
+                return Err(format!(
+                    "BIOS WAX block at 0x{:08X} ({} bytes) lies outside the ROM window",
+                    block.load_address,
+                    block.data.len(),
+                ));
+            }
+            let offset = (block_start - u64::from(BIOS_BASE)) as usize;
+            data[offset..offset + block.data.len()].copy_from_slice(block.data);
+        }
         Ok((Self { data }, image.entry))
     }
 }

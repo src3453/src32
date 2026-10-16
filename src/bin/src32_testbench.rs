@@ -88,8 +88,9 @@ fn main() {
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
         assert!(!img.is_lib, ".wal library is not runnable");
-        cpu.load_program(img.base, img.text);
-        cpu.load_program(img.base.wrapping_add(img.text.len() as u32), img.rodata);
+        for block in &img.blocks {
+            cpu.load_program(block.load_address, block.data);
+        }
         cpu.set_pc(img.entry);
     } else {
         cpu.load_program(0, &image);
