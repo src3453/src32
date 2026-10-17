@@ -414,9 +414,10 @@
   vscode-oniguruma`（package-lock.json は変わらない）で実際に `loadGrammar("source.sol")` して
   スコープを検証。後者で `!namespace`/別名/`X.Y`/`!asm` ブロック/文字列内の `fn` が期待どおりに
   トークン化されることを確認済み。ファイル改行は CHANGELOG.md が CRLF、CHANGELOG.ja.md が LF。
-- 既知の制限：別ファイル（`!include ... as ns` の中身）に定義された `ns.member` は member 側を
-  function/constant/variable に解決しない（include 展開の再実装はコンパイラとずれるため意図的に
-  やらない）。prefix だけ namespace 色になる。
+- 既知の制限（セマンティックトークンのみ）：別ファイル（`!include ... as ns` の中身）に定義された
+  `ns.member` は member 側を function/constant/variable に解決しない（`tokens()` は同文書内の
+  完全一致しか見ないため）。prefix だけ namespace 色になる。**ナビゲーション機能は 2026-10-17 の
+  追記で include closure を自前展開して解決できるようになった**ので、この制限はトークン色に限る。
 - 検証済みの制限：実 VS Code のアウトライン表示そのもの（GUI）は未確認。プロトコルとクライアント
   変換コードの契約までを確認した。
 
@@ -472,3 +473,58 @@
   デバッグ GUI / 実機検証の手順: ゲストを直接動かすには BIOS 節の無い config.yaml を持つディレクトリで
   起動する。**フォント未指定だと PCG テキストが描画されず画面が空白になる**ので、その config には
   `pcg.font` (例 `assets/cga.f08`) を必ず入れること (空白画面はゲスト不動作と誤認しやすい)。
+
+## sol LSP の宣言ナビゲーション (2026-10-17)
+- 対象: `tools/solc/sol_language_server.py`（正式）と `tools/vscode-sol-syntax/server/sol_language_server.py`
+  （同梱）。**両者はバイト単位で一致させる**（cp して cmp）。同梱系列の `sol_vm.py` は古いが
+  `LABEL_RE` / `QUALIFIED_RE` / `_decode_string_literal` / `RawAssemblyToken` は揃っているので、
+  サーバ側の新規 import はその 4 つに留めれば両方で動く。`IncludeMarker` など新規型はサーバ内で定義する。
+- 追加した capability とハンドラ: `definitionProvider` / `declarationProvider` /
+  `referencesProvider` / `hoverProvider` / `documentHighlightProvider` / `workspaceSymbolProvider`。
+  vscode-languageclient は capability から自動登録するので `src/extension.ts` も `package.json` も
+  変更不要（DocumentSymbol のときと同じ）。
+- 解決モデル: `tokenize()`（同梱系列でも位置修正済み）で include closure を**自前展開**し
+  （`!include "f" as ns` は IncludeMarker で前後を挟む＝コンパイラと同じ scope 付与。相対パスは
+  インクルード元ファイルのディレクトリ基準）、単一の flat ストリームを 2 パスで走査する。
+  pass1=宣言（`fn` + args + 関数 body 内の `local`、`!const`/`!var`/`!define`、`!namespace`、別名）、
+  pass2=参照。シンボル表はコンパイラと同じ `(namespace, name)` キーで、`!define` だけ `(None, name)`。
+  解決順は **locals → args → `(現在ns,name)` → `(None,name)` → namespace 名**（locals が args に勝つのは
+  sol_vm のパス順がそうなっているため）。`ns.member` は `(ns, member)` のみ。
+- 参照の位置は必ず「名前そのもの」を指すこと: `>name` の store は `+1`、`ns.member` は
+  qualifier と member の**2 参照に分割**して member を `len(qualifier)+1` ずらす
+  （`Ref(offset=...)`）。ずれると declaration/definition が黙って None を返す。
+- 宣言位置の参照は pass2 から除外する（`index.decl_positions`）。除外しないと宣言名が「参照」として
+  二重に数えられ、references が 1 件多く出る。カーソルが宣言上にある場合は `find_decl()` で
+  自身を返す（Go to Definition が宣言上で無反応にならない）。
+- `textDocument/references` / `workspace/symbol` は `initialize` の `rootUri` / `workspaceFolders` から
+  プロジェクトを走査する（`target` / `node_modules` / `__pycache__` / `.` 始まりは除外、上限 4000 ファイル・
+  2000 件）。参照は「各ファイル自身の closure で解決してから (uri,line,char) で dedupe」するので、
+  ライブラリ側の内部参照とそれを include するゲスト側の参照の両方が一度ずつ出る。
+- パフォーマンス: ディスクの tokenize は `(st_mtime_ns, st_size)` キーでキャッシュ。実リポジトリ
+  （24 ファイル）で references / workspace symbols が 0.1 秒台。closure はリクエスト毎に再走査する
+  （トークンはキャッシュ済みなので軽い）。
+- イン・フライトのバッファ（未終端文字列 / `!end` の無い `!asm`）は `tokenize` が例外を投げる。
+  ナビゲーションは `tokens = []` に縮退して null を返す。`semanticTokens/full` も同じ入力で
+  空データを返すようにした（以前は例外がハンドラを貫き、`main()` が id 無しのエラーを返していた）。
+  加えて `main()` の例外ハンドラは**リクエストの id を付けて**返すようにした（`{"id":None,...}` だと
+  クライアントは自分のリクエストの応答を永久に待ち、テスト用 Session もハングする。実際にこれで
+  テストが FAILED ではなく**ハング**して気づいた）。
+- 落とし穴:
+  (1) `Server.path()` は `urlparse(uri).path` をそのまま返すため Windows では `/C:/...` になる。
+      ナビゲーション用に `fs_path()`（先頭 `/` を除去）と `uri_for_path()` を追加した。既存の
+      `path()` は `compile_program` の診断に使い続けているため**触っていない**（そのため
+      `!include` 失敗時の診断メッセージは今も `C:\C:\...` と二重ドライブに見える。既知・未修正）。
+  (2) テストの `Session.__exit__` が `return True` だと `with` 内の AssertionError を**握り潰して
+      PASSED になる**。実際にこれで 4 テストが偽陽性 PASS した。`return None` にして
+      「同梱コピー未同期なら落ちる」ことを確認してから cp する、が正しい手順（偽陽性の検出手段）。
+  (3) `find_references` でループ変数の index を使い回すと、後続ファイルで root の index を
+      上書きして誤った closure を検索する。
+- 検証の型: `python3 -m pytest tools/solc -q`（156 件全通過。`tools/solc/test_sol_language_server.py`
+  に 4 テスト追加: cross-file / args・locals・highlight / namespace シャドウ＋壊れたバッファ /
+  workspace symbols。**同梱サーバも同じテストで回す**）。実リポジトリ検証: tinybasic.sol の
+  `pcg.pcg_cur_x` で references が 18 件（`grep -ro pcg_cur_x` の内訳 dos3 / pcg9 / test3 /
+  tinybasic3 と完全一致）、`pcg.putcscr` の hover が `fn putcscr (char)` + `sol/cpt32/pcg.sol:102:4`、
+  workspace/symbol "prnscr" が containerName `pcg`。プローブ（node_modules 直下に置いて実行後に削除）で
+  `vscode-languageserver-protocol` の `Location.is()` / `Hover.is()` に定義・宣言・参照・ホバーを
+  通し、highlight / SymbolInformation は型ガードが無い版なので shape を手動検証。`npm run compile` と
+  `npx vsce package --no-dependencies`（15 ファイル）も通過。

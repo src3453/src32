@@ -1,9 +1,13 @@
 import json
+import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import unquote, urlparse
 
 SERVER = Path(__file__).with_name("sol_language_server.py")
+BUNDLED_SERVER = SERVER.parents[1] / "vscode-sol-syntax" / "server" / "sol_language_server.py"
+WINDOWS_PATH_RE = re.compile(r"^/[A-Za-z]:")
 
 def send(stream, message):
     raw = json.dumps(message, separators=(",", ":")).encode()
@@ -169,3 +173,211 @@ def test_lsp_reports_namespace_outline_and_semantic_tokens():
         assert marked[(16, lines[16].index("other"))] == ("namespace", 5)
         assert marked[(10, 0)] == ("directive", 4)
         assert not any(line in (8, 11) for line, _ in marked)
+
+
+NAV_LIBRARY = "\n".join([
+    "!const LIMIT 8",
+    "fn increment (value) : value 1 add ret ;",
+    "fn reset () : local total 0 >total ret ;",
+    "!var counter",
+])
+
+NAV_MAIN = "\n".join([
+    '!include "lib.sol" as library',
+    "!const GLOBAL 4",
+    "fn main () : library.LIMIT library.increment GLOBAL add >library.counter ret ;",
+])
+
+SHADOW_SOURCE = "\n".join([
+    "!const LIMIT 1",
+    "!namespace inner -",
+    "!const LIMIT 8",
+    "fn pick () : LIMIT ret ;",
+    "!end",
+    "fn outer () : LIMIT ret ;",
+])
+
+def uri_to_path(uri):
+    path = unquote(urlparse(uri).path)
+    return Path(path[1:] if WINDOWS_PATH_RE.match(path) else path)
+
+def location(uri, line, character, name):
+    return uri, {"start": {"line": line, "character": character}, "end": {"line": line, "character": character + len(name)}}
+
+def found_locations(result):
+    if not result:
+        return []
+    if isinstance(result, dict):
+        result = [result]
+    return [(uri_to_path(item["location"]["uri"]), item["location"]["range"]) if "location" in item else (item["uri"], item["range"]) for item in result]
+
+def found_ranges(result):
+    return [(item["range"], item["kind"]) for item in result]
+
+class Session:
+    """Minimal LSP client driving one server process over stdio."""
+
+    def __init__(self, server):
+        self.process = subprocess.Popen([sys.executable, str(server)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        self.next_id = 1
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_exc):
+        try:
+            self.request("shutdown", {})
+        except (OSError, ValueError, AssertionError):
+            pass
+        try:
+            self.notify("exit", {})
+            self.process.wait(timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            if self.process.poll() is None:
+                self.process.kill()
+                self.process.wait(timeout=5)
+        return None
+
+    def notify(self, method, params):
+        send(self.process.stdin, {"jsonrpc": "2.0", "method": method, "params": params})
+
+    def request(self, method, params):
+        ident = self.next_id
+        self.next_id += 1
+        send(self.process.stdin, {"jsonrpc": "2.0", "id": ident, "method": method, "params": params})
+        while True:
+            message = receive(self.process.stdout)
+            if message.get("id") == ident:
+                assert "error" not in message, message
+                return message["result"]
+
+    def initialize(self, root=None):
+        return self.request("initialize", {"rootUri": root} if root else {})["capabilities"]
+
+    def open(self, uri, text):
+        self.notify("textDocument/didOpen", {"textDocument": {"uri": uri, "version": 1, "text": text}})
+
+    def at(self, method, uri, line, character, **extra):
+        params = {"textDocument": {"uri": uri}, "position": {"line": line, "character": character}}
+        params.update(extra)
+        return self.request(method, params)
+
+def navigation_project(tmp_path):
+    library = tmp_path / "lib.sol"
+    library.write_text(NAV_LIBRARY, encoding="utf-8")
+    main = tmp_path / "main.sol"
+    main.write_text(NAV_MAIN, encoding="utf-8")
+    return library, main
+
+def test_lsp_navigates_declarations_across_includes(tmp_path):
+    library, main = navigation_project(tmp_path)
+    library_lines = NAV_LIBRARY.split("\n")
+    main_lines = NAV_MAIN.split("\n")
+    main_uri = main.as_uri()
+    call = main_lines[2]
+    for server in (SERVER, BUNDLED_SERVER):
+        with Session(server) as session:
+            capabilities = session.initialize(tmp_path.as_uri())
+            for provider in ("definitionProvider", "declarationProvider", "referencesProvider", "hoverProvider", "documentHighlightProvider", "workspaceSymbolProvider"):
+                assert capabilities[provider] is True, provider
+            session.open(main_uri, NAV_MAIN)
+            # the namespace qualifier names the aliased `!include`
+            assert found_locations(session.at("textDocument/definition", main_uri, 2, call.index("library"))) == [
+                location(main_uri, 0, main_lines[0].index("library"), "library")]
+            # a constant of the included file
+            assert found_locations(session.at("textDocument/declaration", main_uri, 2, call.index("LIMIT"))) == [
+                location(library.as_uri(), 0, library_lines[0].index("LIMIT"), "LIMIT")]
+            # a function of the included file
+            assert found_locations(session.at("textDocument/definition", main_uri, 2, call.index("increment"))) == [
+                location(library.as_uri(), 1, library_lines[1].index("increment"), "increment")]
+            # a constant declared next to the reference
+            assert found_locations(session.at("textDocument/definition", main_uri, 2, call.index("GLOBAL"))) == [
+                location(main_uri, 1, main_lines[1].index("GLOBAL"), "GLOBAL")]
+            # assignment to a qualified variable of the included file
+            assert found_locations(session.at("textDocument/definition", main_uri, 2, call.index("counter"))) == [
+                location(library.as_uri(), 3, library_lines[3].index("counter"), "counter")]
+            hover = session.at("textDocument/hover", main_uri, 2, call.index("increment"))
+            assert "fn increment (value)" in hover["contents"]["value"]
+            assert "lib.sol" in hover["contents"]["value"]
+            call_position = call.index("increment")
+            assert found_locations(session.at("textDocument/references", main_uri, 2, call_position, context={"includeDeclaration": True})) == [
+                location(library.as_uri(), 1, library_lines[1].index("increment"), "increment"),
+                location(main_uri, 2, call_position, "increment")]
+            assert found_locations(session.at("textDocument/references", main_uri, 2, call_position, context={"includeDeclaration": False})) == [
+                location(main_uri, 2, call_position, "increment")]
+            # a qualified reference is not visible from the included file itself
+            assert session.at("textDocument/definition", main_uri, 1, main_lines[1].index("GLOBAL")) is not None
+            assert found_locations(session.at("textDocument/references", library.as_uri(), 1, library_lines[1].index("increment"), context={"includeDeclaration": True})) == [
+                location(library.as_uri(), 1, library_lines[1].index("increment"), "increment"),
+                location(main_uri, 2, call_position, "increment")]
+
+def test_lsp_navigates_arguments_locals_and_highlights(tmp_path):
+    library, _main = navigation_project(tmp_path)
+    library_uri = library.as_uri()
+    lines = NAV_LIBRARY.split("\n")
+    signature, store = lines[1], lines[2]
+    argument = signature.index("value", signature.index(":"))
+    write = store.index(">") + 1
+    local = store.index("total")
+    for server in (SERVER, BUNDLED_SERVER):
+        with Session(server) as session:
+            session.initialize(tmp_path.as_uri())
+            session.open(library_uri, NAV_LIBRARY)
+            assert found_locations(session.at("textDocument/definition", library_uri, 1, argument)) == [
+                location(library_uri, 1, signature.index("value"), "value")]
+            hover = session.at("textDocument/hover", library_uri, 1, argument)
+            assert "argument value (of increment)" in hover["contents"]["value"]
+            assert found_locations(session.at("textDocument/definition", library_uri, 2, write)) == [
+                location(library_uri, 2, local, "total")]
+            assert found_locations(session.at("textDocument/definition", library_uri, 2, local)) == [
+                location(library_uri, 2, local, "total")]
+            assert found_ranges(session.at("textDocument/documentHighlight", library_uri, 2, write)) == [
+                ({"start": {"line": 2, "character": local}, "end": {"line": 2, "character": local + 5}}, 1),
+                ({"start": {"line": 2, "character": write}, "end": {"line": 2, "character": write + 5}}, 3)]
+            assert found_locations(session.at("textDocument/references", library_uri, 2, write, context={"includeDeclaration": True})) == [
+                location(library_uri, 2, local, "total"), location(library_uri, 2, write, "total")]
+            # an argument stays inside its own function
+            assert found_locations(session.at("textDocument/references", library_uri, 1, argument, context={"includeDeclaration": True})) == [
+                location(library_uri, 1, signature.index("value"), "value"), location(library_uri, 1, argument, "value")]
+
+def test_lsp_prefers_namespaced_declarations_and_tolerates_broken_buffers(tmp_path):
+    uri = "file:///tmp/navigation-shadow.sol"
+    lines = SHADOW_SOURCE.split("\n")
+    pick, outer = lines[3], lines[5]
+    for server in (SERVER, BUNDLED_SERVER):
+        with Session(server) as session:
+            session.initialize(tmp_path.as_uri())
+            session.open(uri, SHADOW_SOURCE)
+            # inside `!namespace inner -` the namespace constant shadows the global one
+            assert found_locations(session.at("textDocument/definition", uri, 3, pick.index("LIMIT", pick.index(":")))) == [
+                (uri, {"start": {"line": 2, "character": lines[2].index("LIMIT")}, "end": {"line": 2, "character": lines[2].index("LIMIT") + 5}})]
+            assert found_locations(session.at("textDocument/definition", uri, 5, outer.index("LIMIT", outer.index(":")))) == [
+                (uri, {"start": {"line": 0, "character": lines[0].index("LIMIT")}, "end": {"line": 0, "character": lines[0].index("LIMIT") + 5}})]
+            # an unterminated string is a normal in-flight buffer: navigation answers null
+            broken = "file:///tmp/navigation-broken.sol"
+            session.open(broken, 'fn main () : "unterminated\n')
+            assert session.at("textDocument/definition", broken, 0, 4) is None
+            assert session.at("textDocument/hover", broken, 0, 4) is None
+            assert session.request("textDocument/semanticTokens/full", {"textDocument": {"uri": broken}})["data"] == []
+            assert [item["name"] for item in session.request("textDocument/documentSymbol", {"textDocument": {"uri": broken}})] == ["main"]
+
+def test_lsp_lists_workspace_symbols(tmp_path):
+    library, main = navigation_project(tmp_path)
+    library_lines = NAV_LIBRARY.split("\n")
+    for server in (SERVER, BUNDLED_SERVER):
+        with Session(server) as session:
+            session.initialize(tmp_path.as_uri())
+            symbols = found_locations(session.request("workspace/symbol", {"query": "infix"}))
+            assert symbols == []
+            symbols = session.request("workspace/symbol", {"query": "incre"})
+            assert [(uri_to_path(item["location"]["uri"]), item["name"], item["kind"], item["location"]["range"]) for item in symbols] == [
+                (library, "increment", 12, {"start": {"line": 1, "character": library_lines[1].index("increment")}, "end": {"line": 1, "character": library_lines[1].index("increment") + 9}})]
+            names = {item["name"] for item in session.request("workspace/symbol", {"query": ""})}
+            assert {"LIMIT", "increment", "reset", "counter", "GLOBAL", "main", "library"} <= names
+            assert not names & {"total", "value"}
+        with Session(server) as session:
+            session.initialize()
+            session.open(main.as_uri(), NAV_MAIN)
+            names = {item["name"] for item in session.request("workspace/symbol", {"query": ""})}
+            assert "main" in names
+            assert "increment" not in names

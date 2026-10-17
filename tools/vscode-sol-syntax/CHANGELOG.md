@@ -5,6 +5,7 @@ All notable changes to the "vscode-sol-syntax" extension will be documented in t
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
 ## [Unreleased]
+- Add declaration, definition, hover, document highlight, references and workspace symbol providers so `Go to Declaration`/`Go to Definition`, `Find All References`, `Go to Symbol in Workspace` and hover work, including through `!include`d files and `namespace.name` qualifiers.
 - Add a document symbol provider so namespaces, functions, constants, variables, locals and macros appear in the outline.
 - Mark namespace blocks, aliased `!include` namespaces and `namespace.name` qualifiers as namespaces in semantic highlighting.
 - Report exact token columns after string literals and punctuation, and stop emitting semantic tokens for punctuation and raw `!asm` bodies.
