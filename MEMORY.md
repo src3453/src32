@@ -366,3 +366,56 @@
   `python3 -m pytest tools/dsfs/test_dsfs.py`（14件）、さらにゲストが書いた画像を
   `tools/dsfs/dsfs.py verify/info/ls` に通して §7/§6.2 を host 側から確認した
   （disk0 = 編集後 2 file/0 leak、disk1 = FORMAT + COPY で 1 file/0 leak）。
+
+## sol VS Code 拡張の namespace 対応とアウトライン (2026-10-17)
+- 拡張は `tools/vscode-sol-syntax/`。LSP は `server/sol_language_server.py`（同梱コピー）で、
+  正式版は `tools/solc/sol_language_server.py`。**この2つはバイト単位で一致させる**（AGENTS.md）。
+  同梱コピーは以前 text モードの `sys.stdout.write` で Content-Length を送っており、Windows の
+  CRLF 変換で `\r\r\n` になりフレーミングが壊れていた（`tools/solc/test_sol_language_server.py`
+  の argument-assignment テストがこれで落ちていた）。`sys.stdout.buffer` + `len(raw.encode())` に
+  統一すると通る。同梱 `server/sol_vm.py` は org/irq/stack_top を持たない**古い系列**なので、
+  solc 側の sol_vm.py を丸ごとコピーしないこと（必要な修正だけ両方に入れる）。
+- アウトライン（DocumentSymbol）はサーバ側だけで完結する。initialize の capabilities に
+  `documentSymbolProvider: True` を返せば vscode-languageclient が自動でプロバイダを登録する
+  （`src/extension.ts` の変更・tsc 再ビルドは不要）。クライアントは
+  `hierarchicalDocumentSymbolSupport: true` を送るので `DocumentSymbol[]`（range/selectionRange/
+  name/kind/children）を返す。`range` は `selectionRange` を包含している必要がある。
+- 実装は `Server.symbols()`：tokenize は入力途中（未終端文字列・`!asm` に `!end` が無い）で
+  例外を投げるため使わず、行ベースのスキャナにした。`blank_literals()` で文字列と `#` コメントを
+  空白化してから正規表現を当てる（位置は保たれる）。`!asm`/`!data`/`!db` ブロックは `!end` まで
+  読み飛ばす（asm 内の `;` はコメントなので、これを文末と誤認すると関数範囲が壊れる）。
+  関数は `;` で終端（spec_sol.md のとおり）、ローカル変数は関数の子、名前空間は
+  `!namespace`〜`!end` の子として入れ子にする。kind は namespace=3 / function=12 /
+  variable=13 / constant=14（`!define` マクロも constant）。`!end` が無い名前空間は末尾までに補正。
+- セマンティックトークン：legend の**末尾**に "namespace" を追加（既存 index を動かさない）し、
+  `package.json` の `semanticTokenScopes` で `entity.name.namespace.sol` に割り当てる（未割当の型は
+  型名そのものがスコープ扱いになる）。`!namespace X` の別名、`!include "f" as X` の別名、
+  修飾参照 `X.Y` は **2 トークン**に分割して `X`=namespace / `Y`=function|constant|variable
+  （同一文書内の完全一致がある場合のみ、他は identifier）を出す。`;`/`(`/`)` にはトークンを出さない。
+  さらに `RawAssemblyToken` を素通しすると dataclass の repr が巨大な identifier トークンとして
+  出ていたので、`!asm` の 4 文字 directive を出して本体は捨てる。
+- `sol_vm.tokenize` の桁位置を2箇所修正（solc と同梱の両方）：(1) 開きクォートで `advance(ch)` が
+  無く、同じ行の文字列リテラル以降のトークンが文字列1個につき1桁ずれる、(2) `;`/`(`/`)` が
+  `append_token` 前の `start_token()` を欠き、直前トークンの開始位置を引き継いでいた。
+  回帰: `tools/solc/test_sol_vm.py::test_token_locations_follow_string_literals_and_punctuation`。
+  これは LSP のセマンティックトークン位置に直結する（`!include` 別名の桁ずれとして露見した）。
+- TextMate 文法（`syntaxes/sol.tmLanguage.json`）に `#namespaces` を追加し、`!namespace NAME -`、
+  `!include "..." as NAME`、`X.Y` 修飾子を `entity.name.namespace.sol` にする。存在しない
+  `#labels`/`#variables`/`#identifiers` の include は削除した。なお `#directives` には
+  コンパイラが実装していない `!required_return_stack_size` / `!force_return_stack_size` が
+  残っている（未修正）。
+- 検証の型：`python3 -m pytest tools/solc/test_sol_language_server.py tools/solc/test_sol_vm.py` と
+  tools/solc 全体（151 件）、`npm run compile`、`npx vsce package --no-dependencies`（15 ファイル）。
+  GUI 無しでも次の2つのプローブで実挙動を確認できる（node_modules 直下に置いて実行し、終わったら削除）：
+  (1) `vscode-languageserver-protocol` の `DocumentSymbol.is()` と
+  `vscode-languageclient/lib/common/documentSymbol.js` から読んだ SupportedSymbolKinds で
+  サーバ応答を検証（`vscode` モジュールは拡張ホスト外では require できないので
+  documentSymbol.js の import は失敗する）、(2) `npm install --no-save vscode-textmate
+  vscode-oniguruma`（package-lock.json は変わらない）で実際に `loadGrammar("source.sol")` して
+  スコープを検証。後者で `!namespace`/別名/`X.Y`/`!asm` ブロック/文字列内の `fn` が期待どおりに
+  トークン化されることを確認済み。ファイル改行は CHANGELOG.md が CRLF、CHANGELOG.ja.md が LF。
+- 既知の制限：別ファイル（`!include ... as ns` の中身）に定義された `ns.member` は member 側を
+  function/constant/variable に解決しない（include 展開の再実装はコンパイラとずれるため意図的に
+  やらない）。prefix だけ namespace 色になる。
+- 検証済みの制限：実 VS Code のアウトライン表示そのもの（GUI）は未確認。プロトコルとクライアント
+  変換コードの契約までを確認した。

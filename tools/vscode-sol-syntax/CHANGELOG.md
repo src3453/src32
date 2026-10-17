@@ -5,6 +5,9 @@ All notable changes to the "vscode-sol-syntax" extension will be documented in t
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
 ## [Unreleased]
+- Add a document symbol provider so namespaces, functions, constants, variables, locals and macros appear in the outline.
+- Mark namespace blocks, aliased `!include` namespaces and `namespace.name` qualifiers as namespaces in semantic highlighting.
+- Report exact token columns after string literals and punctuation, and stop emitting semantic tokens for punctuation and raw `!asm` bodies.
 - Support `!namespace` blocks and aliased `!include` namespaces in compiler diagnostics.
 - Support UTF-8 string literals by default and `u16"..."` UTF-16BE literals in the bundled language server.
 - Highlight the `u16` string prefix.

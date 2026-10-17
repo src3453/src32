@@ -253,6 +253,7 @@ def tokenize(source: str, source_path: str | None = None) -> list[SourceToken | 
             if current:
                 append_token("".join(current))
                 current = []
+            start_token()
             append_token(ch)
             advance(ch)
             i += 1
@@ -264,6 +265,7 @@ def tokenize(source: str, source_path: str | None = None) -> list[SourceToken | 
                 current = []
             start_token()
             current.append(ch)
+            advance(ch)
             in_string = True
             escaped = False
             i += 1

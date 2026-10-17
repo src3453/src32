@@ -8,6 +8,7 @@ from sol_vm import (
     compile_program,
     parse_number,
     to_i32,
+    tokenize,
 )
 
 
@@ -47,6 +48,18 @@ def test_compiled_instruction_carries_source_location(tmp_path):
     assert program.instructions[0].location.path == str(source_path)
     assert (program.instructions[0].location.line, program.instructions[0].location.column) == (1, 1)
     assert (program.instructions[2].location.line, program.instructions[2].location.column) == (2, 3)
+
+
+def test_token_locations_follow_string_literals_and_punctuation(tmp_path):
+    source_path = tmp_path / "strings.sol"
+    tokens = tokenize('fn show () : "hi" prnscr ;\n', source_path=str(source_path))
+    located = {str(token): (token.location.line, token.location.column) for token in tokens}
+
+    assert located["("] == (1, 9)
+    assert located[")"] == (1, 10)
+    assert located['"hi"'] == (1, 14)
+    assert located["prnscr"] == (1, 19)
+    assert located[";"] == (1, 26)
 
 
 def test_runtime_error_reports_source_location(tmp_path):

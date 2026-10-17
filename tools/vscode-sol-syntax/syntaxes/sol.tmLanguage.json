@@ -10,13 +10,13 @@
 			"include": "#asm"
 		},
 		{
+			"include": "#namespaces"
+		},
+		{
 			"include": "#directives"
 		},
 		{
 			"include": "#declarations"
-		},
-		{
-			"include": "#labels"
 		},
 		{
 			"include": "#operators"
@@ -31,12 +31,6 @@
 			"include": "#strings"
 		},
 		{
-			"include": "#variables"
-		},
-		{
-			"include": "#identifiers"
-		},
-		{
 			"include": "#type"
 		}
 	],
@@ -45,6 +39,45 @@
 			"patterns": [{
 				"name": "comment.line.number-sign.sol",
 				"match": "#.*$"
+			}]
+		},
+		"namespaces": {
+			"patterns": [{
+				"name": "meta.namespace.block.sol",
+				"match": "^\\s*(!namespace)\\s+([A-Za-z_][A-Za-z0-9_]*)\\s*(-)?",
+				"captures": {
+					"1": {
+						"name": "keyword.control.directive.c"
+					},
+					"2": {
+						"name": "entity.name.namespace.sol"
+					},
+					"3": {
+						"name": "keyword.operator.sol"
+					}
+				}
+			}, {
+				"name": "meta.namespace.include.sol",
+				"match": "(!include\\s+\"[^\"]*\"\\s+as\\s+)([A-Za-z_][A-Za-z0-9_]*)",
+				"captures": {
+					"1": {
+						"name": "keyword.control.directive.c"
+					},
+					"2": {
+						"name": "entity.name.namespace.sol"
+					}
+				}
+			}, {
+				"name": "meta.namespace.qualifier.sol",
+				"match": "\\b([A-Za-z_][A-Za-z0-9_]*)(\\.)(?=[A-Za-z_])",
+				"captures": {
+					"1": {
+						"name": "entity.name.namespace.sol"
+					},
+					"2": {
+						"name": "punctuation.separator.namespace.sol"
+					}
+				}
 			}]
 		},
 		"asm": {

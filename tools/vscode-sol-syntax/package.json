@@ -55,6 +55,9 @@
                     "constant": [
                         "entity.name.type.sol"
                     ],
+                    "namespace": [
+                        "entity.name.namespace.sol"
+                    ],
                     "assignment": [
                         "entity.name.type.sol"
                     ],
