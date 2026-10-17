@@ -376,6 +376,31 @@ fn keyboard_hid_usage(code: KeyCode) -> Option<u8> {
     })
 }
 
+/// Guest HID input for a window key event: the usage id and whether the key went
+/// down, or `None` when the event is not user input.
+///
+/// winit synthesizes a key state snapshot (`is_synthetic`) for every key the OS
+/// reports as pressed when a window gains focus, and a release snapshot when it
+/// loses focus (`WM_SETFOCUS` / `WM_KILLFOCUS`). An active IME keeps its own
+/// virtual keys (`VK_DBE_ALPHANUMERIC`, `VK_DBE_SBCSCHAR`, ...) reported as
+/// pressed, and Windows maps those through the layout onto unrelated scancodes,
+/// so focusing the window used to deliver a phantom `Backquote` (HID usage
+/// 0x35, `` ` `` in US layouts) press to the guest. A snapshot is not a physical
+/// transition, so it must not reach the PeC FIFO.
+fn guest_key_input(
+    physical_key: &PhysicalKey,
+    state: ElementState,
+    is_synthetic: bool,
+) -> Option<(u8, bool)> {
+    if is_synthetic {
+        return None;
+    }
+    let PhysicalKey::Code(code) = physical_key else {
+        return None;
+    };
+    keyboard_hid_usage(*code).map(|usage| (usage, state == ElementState::Pressed))
+}
+
 fn debug_menu_reserve_px(gui: Option<&DebugGui>) -> f64 {
     gui.map(|gui| {
         let scale = f64::from(gui.imgui.io().display_framebuffer_scale[1]);
@@ -1580,12 +1605,25 @@ impl ApplicationHandler for GuiApp {
         match event {
             WindowEvent::CloseRequested => event_loop.exit(),
             WindowEvent::DroppedFile(_) => unreachable!("handled above"),
-            WindowEvent::KeyboardInput { event, .. } => {
-                if matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
+            WindowEvent::KeyboardInput {
+                event,
+                is_synthetic,
+                ..
+            } => {
+                if !is_synthetic && matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
                     event_loop.exit();
                 }
                 if let PhysicalKey::Code(code) = event.physical_key {
-                    if code == KeyCode::F1 {
+                    if is_synthetic {
+                        // Focus key snapshot, not a physical transition; see
+                        // `guest_key_input`.
+                        if pec_trace_enabled() && event.state == ElementState::Pressed {
+                            tracing::info!(
+                                target: "pec_debug",
+                                "[PEC-DBG] GUI key focus snapshot ignored physical={code:?}"
+                            );
+                        }
+                    } else if code == KeyCode::F1 {
                         if event.state == ElementState::Pressed && !event.repeat {
                             let imgui_captures = self
                                 .debug_gui
@@ -1598,8 +1636,9 @@ impl ApplicationHandler for GuiApp {
                                 }
                             }
                         }
-                    } else if let Some(usage) = keyboard_hid_usage(code) {
-                        let down = event.state == ElementState::Pressed;
+                    } else if let Some((usage, down)) =
+                        guest_key_input(&event.physical_key, event.state, is_synthetic)
+                    {
                         if pec_trace_enabled() {
                             tracing::info!(
                                 target: "pec_debug",
@@ -2048,6 +2087,50 @@ mod input_tests {
         assert_eq!(normalize_stick(1.0), i16::MAX);
         assert_eq!(normalize_trigger(0.0), 0);
         assert_eq!(normalize_trigger(1.0), u16::MAX);
+    }
+
+    #[test]
+    fn focus_key_snapshot_is_not_guest_input() {
+        // winit reports the key state of a window focus change as a synthetic
+        // event. On an IME-enabled desktop the OS reports the IME's own virtual
+        // keys as pressed and Windows maps them onto Backquote / Caps Lock, so
+        // focusing the window pushed a phantom backquote (usage 0x35) into the
+        // PeC FIFO and every guest echoed it.
+        let backquote = PhysicalKey::Code(KeyCode::Backquote);
+        assert_eq!(
+            guest_key_input(&backquote, ElementState::Pressed, true),
+            None
+        );
+        assert_eq!(
+            guest_key_input(&backquote, ElementState::Released, true),
+            None
+        );
+        let caps_lock = PhysicalKey::Code(KeyCode::CapsLock);
+        assert_eq!(
+            guest_key_input(&caps_lock, ElementState::Pressed, true),
+            None
+        );
+
+        assert_eq!(
+            guest_key_input(&backquote, ElementState::Pressed, false),
+            Some((0x35, true))
+        );
+        assert_eq!(
+            guest_key_input(&backquote, ElementState::Released, false),
+            Some((0x35, false))
+        );
+        assert_eq!(
+            guest_key_input(&caps_lock, ElementState::Pressed, false),
+            Some((0x39, true))
+        );
+        assert_eq!(
+            guest_key_input(
+                &PhysicalKey::Code(KeyCode::F25),
+                ElementState::Pressed,
+                false
+            ),
+            None
+        );
     }
 
     #[test]

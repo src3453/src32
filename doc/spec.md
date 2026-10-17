@@ -392,6 +392,7 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 
 - **一時停止中は CPU が1命令も実行されない。** `running == false` のとき `execute_cpu` は `cpu.run` を呼ばず、`tick` → `tick_devices` → `refresh_device_irqs` が走らない。したがって IRQC の source 3 がサンプリングされず、`halt` で停止中の CPU はキーボード入力（PeC）で復帰しない。pec-input スレッドは独立して入力を FIFO へ積むため、停止中に入力を打つと FIFO が増えていき 256 件でオーバーフローする。これは障害ではなく「停止中は入力処理されない」ことの帰結だが、原因が分かりにくかった。
 - **`CPU running:` 表示はあいまい。** これは `cpu.is_running()`（CPU の halt 状態）を示し、REPL 待機中の halt と一時停止の双方で `false` になる。区別するため `Emulation: RUNNING (realtime)` / `Emulation: PAUSED - CPU not ticked; keyboard input is not processed` 行を追加した。キーボードが無反応ならまず `PAUSED` を確認し、チェックを ON（または Run）すれば復帰する。一時停止中に積まれた入力は再開後に処理される。
+- **フォーカス時のキー状態スナップショットは入力ではない。** winit はウィンドウがフォーカスを得る/失うたびに、その時点で OS が「押下中」と報告するキーの `KeyboardInput` を `is_synthetic == true` として合成する（`WM_SETFOCUS` / `WM_KILLFOCUS`）。IME 有効時は OS が IME 自身の仮想キー（`VK_DBE_ALPHANUMERIC` / `VK_DBE_SBCSCHAR` など）を押下中として報告し、Windows がそれを無関係なスキャンコード（Backquote / Caps Lock）に写像する。この合成イベントをゲスト入力へ流すと、**ウィンドウにフォーカスを合わせるだけで幽霊キー（HID usage 0x35 = `` ` ``、usage 0x39 = Caps Lock）が PeC FIFO に入り、ゲストが ` を表示・エコーしていた**。`guest_key_input` は `is_synthetic` のイベントを変換しない（`src/main.rs`）。フォーカス中に実キーを押しっぱなしにして戻った場合、そのキーの押下は実イベントが来るまでゲストに渡らない（離した時のイベントは届くが、キー押下を見ていないゲストでは無害）。ユーザーが半角/全角キーを実際に押した場合は今も US-HID 変換により usage 0x35 が届く（別件の既知動作）。
 
 ---
 

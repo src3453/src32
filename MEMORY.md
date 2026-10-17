@@ -450,3 +450,25 @@
 - 検証済みテスト（baseline = namespace 整理後も同じ）: tinybasic 5 / dos_smoke 3 / pipeline_guest_boot 1 /
   tinybasic_load_disk 1 / strek_smoke 2(+1 既知失敗) / strek_micro 5 / strek_verify 1 / tb_load_live 7。
 - .sol は LF、MEMORY.md は CRLF。バイナリは `*.bin`、中間の `*sol.a` は .gitignore 済み。
+- ウィンドウにフォーカスを合わせると ` が勝手に入力される件 (2026-10-17 修正): 原因は winit 0.30 の
+  合成キーイベント。Windows バックエンドは `WM_SETFOCUS` で「その時点で OS が押下中と報告する全キー」の
+  keydown を `is_synthetic: true` で合成する (`keyboard.rs::synthesize_kbd_state`)。**日本語 IME 有効時は
+  `GetAsyncKeyState` が IME 自身の仮想キー `VK_DBE_ALPHANUMERIC(0xF0)` / `VK_DBE_SBCSCHAR(0xF3)` /
+  `VK_DBE_ROMAN(0xF5)` を押下中として返す** (トグル状態も同様)。winit は `MapVirtualKeyExW(vk,
+  MAPVK_VK_TO_VSC_EX)` でスキャンコードへ写像するので、US 相当の写像では 0xF0→0x3A (CapsLock)、
+  0xF3→0x29 (Backquote) となり、ゲスト (PeC FIFO) へ usage 0x39 / 0x35 の幽霊押下が届いていた
+  (dos.sol は 53→'`' をエコーし、起動直後のプロンプトが `0>` の後に ` を表示していた)。修正は
+  `src/main.rs` の `guest_key_input` が `is_synthetic` を入力に変換しないこと + KeyboardInput 分岐で
+  合成スナップショットを無視すること (Escape / F1 マウスキャプチャも合成では発火しない)。
+  検証: `CPT32_PEC_TRACE=1` で「GUI key focus snapshot ignored physical=Backquote」+ FIFO push 無し、
+  実キー (VK_A) は usage 0x04 が push されゲストが 'a' をエコー。dos.sol / TinyBASIC の両方で
+  フォーカス後のプロンプトに ` が無いことをスクリーンショットで確認。回帰は
+  `cargo test --bin cpt32 focus_key_snapshot_is_not_guest_input`。
+  注意: ユーザーが半角/全角キーを **実際に押した** 場合は今も lparam の scancode 0x29 から usage 0x35
+  ('`') が届く (US-HID 変換の既知動作、別件)。また `--bin cpt32` のテスト 2 件
+  (`package_guest_builder_loads_program_at_address_zero`, `package_drop_replaces_guest_transactionally`)
+  はリポジトリルートの config.yaml が `bios.image` を持つため program が 0 番地にロードされず失敗する
+  (既知・今回と無関係。`git stash` でも同様に失敗することを確認)。
+  デバッグ GUI / 実機検証の手順: ゲストを直接動かすには BIOS 節の無い config.yaml を持つディレクトリで
+  起動する。**フォント未指定だと PCG テキストが描画されず画面が空白になる**ので、その config には
+  `pcg.font` (例 `assets/cga.f08`) を必ず入れること (空白画面はゲスト不動作と誤認しやすい)。
