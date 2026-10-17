@@ -82,5 +82,10 @@ Block table entry（各 12 byte）:
   raw binary の出力と一致します。`.wax` 拡張子で WAX を選択し、その他は raw binary のままです。
 - `src/wax.rs` は block を解析・ロードします。main、testbench、monitor、BIOS は各 block の
   load address を使います。
+- `sol/cpt32/wax.sol` は guest RAM 上の WAX v2 実行ファイルを検証し、各 sparse
+  block をロードして宣言された entry へ制御を移します。DOS では `RUN NAME`
+  で起動します。DOS のファイル上限は 64 KiB です。
+  `0x00FE0000..0x01000000` と重なる block は拒否します。この RAM は image の staging、
+  8 KiB の file-span bitmap、および転送 trampoline に予約されています。
 - `tools/imhex/wax.hexpat` は v2 header、block table、file offset 上の payload、
   任意の debug block を表示します。

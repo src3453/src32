@@ -64,11 +64,11 @@ fn make_dsfs(files: &[(&[u8; 11], &[u8])]) -> Vec<u8> {
     image[BITMAP_OFFSET + 2] = 0xE0;
     let mut next = 19u32;
     for (index, (name, data)) in files.iter().enumerate() {
-        assert!(data.len() <= SECTOR, "test helper handles single-block files");
         let entry = DIR_OFFSET + index * ENTRY_SIZE;
         image[entry] = 1;
         image[entry + 1..entry + 12].copy_from_slice(*name);
         let blocks = data.len().div_ceil(SECTOR) as u32;
+        assert!(next + blocks <= TOTAL as u32, "test files exceed DSFS capacity");
         be32(&mut image, entry + 16, if data.is_empty() { 0 } else { next });
         be32(&mut image, entry + 20, data.len() as u32);
         be32(&mut image, entry + 24, 1_700_000_000);
@@ -81,6 +81,47 @@ fn make_dsfs(files: &[(&[u8; 11], &[u8])]) -> Vec<u8> {
             }
         }
         next += blocks;
+    }
+    image
+}
+
+/// Build a minimal WAX v2 executable with address-sorted sparse blocks.
+fn make_wax(blocks: &[(u32, &[u8])], entry: u32) -> Vec<u8> {
+    assert!(!blocks.is_empty());
+    let table_offset = 64usize;
+    let mut payload_offset = (table_offset + blocks.len() * 12 + 3) & !3;
+    let records: Vec<_> = blocks
+        .iter()
+        .map(|(address, payload)| {
+            let record = (*address, payload_offset, payload.len());
+            payload_offset = (payload_offset + payload.len() + 3) & !3;
+            record
+        })
+        .collect();
+    let file_size = records
+        .last()
+        .map(|(_, offset, size)| offset + size)
+        .unwrap();
+    let mut image = vec![0u8; file_size];
+    image[0..4].copy_from_slice(b"WAX\0");
+    image[4..6].copy_from_slice(&2u16.to_be_bytes());
+    image[6..8].copy_from_slice(&1u16.to_be_bytes());
+    image[8..10].copy_from_slice(&1u16.to_be_bytes());
+    be32(&mut image, 12, 64);
+    be32(&mut image, 16, blocks[0].0);
+    be32(&mut image, 20, entry - blocks[0].0);
+    be32(&mut image, 24, table_offset as u32);
+    be32(&mut image, 28, blocks.len() as u32);
+    be32(&mut image, 32, 12);
+    be32(&mut image, 44, file_size as u32);
+    for (index, ((address, payload), (_, offset, size))) in
+        blocks.iter().zip(records.iter()).enumerate()
+    {
+        let record = table_offset + index * 12;
+        be32(&mut image, record, *address);
+        be32(&mut image, record + 4, *offset as u32);
+        be32(&mut image, record + 8, *size as u32);
+        image[*offset..*offset + payload.len()].copy_from_slice(payload);
     }
     image
 }
@@ -158,9 +199,14 @@ impl Harness {
 
     /// The visible 80x30 PCG character plane, non-printable cells blanked.
     fn screen(&mut self) -> String {
+        self.screen_width(80)
+    }
+
+    /// PCG rows are packed using the active text width (40 or 80 columns).
+    fn screen_width(&mut self, width: usize) -> String {
         let mut text = String::new();
-        for cell in 0..80 * 30 {
-            let byte = self.cpu.read_mem_u8(VDP_VRAM_BASE + cell);
+        for cell in 0..width * 30 {
+            let byte = self.cpu.read_mem_u8(VDP_VRAM_BASE + cell as u32);
             text.push(if byte.is_ascii_graphic() || byte == b' ' {
                 byte as char
             } else {
@@ -236,13 +282,45 @@ fn key_for(ch: char) -> (u8, bool) {
     }
 }
 
-/// Split the 80-column plane dump into rows so failures are readable.
-fn wrap(text: &str) -> String {
+/// Split a packed PCG text plane into rows at the selected cell width.
+fn wrap_width(text: &str, width: usize) -> String {
     text.as_bytes()
-        .chunks(80)
+        .chunks(width)
         .map(|row| String::from_utf8_lossy(row).into_owned())
         .collect::<Vec<_>>()
         .join("\n")
+}
+
+fn wrap(text: &str) -> String {
+    wrap_width(text, 80)
+}
+
+fn assert_dir_columns(text: &str, width: usize, name: &str, size: &str, blocks: &str) {
+    let rendered = wrap_width(text, width);
+    let header = rendered
+        .lines()
+        .find(|line| line.contains("#   NAME"))
+        .unwrap();
+    let row = rendered.lines().find(|line| line.contains(name)).unwrap();
+    assert_eq!(&header[23..27], "SIZE", "DIR size heading:\n{rendered}");
+    assert_eq!(&header[31..37], "BLOCKS", "DIR blocks heading:\n{rendered}");
+    assert_eq!(row[23..31].trim(), size, "DIR size column:\n{rendered}");
+    assert_eq!(row[31..36].trim(), blocks, "DIR blocks column:\n{rendered}");
+}
+
+fn assert_hex_columns(text: &str) {
+    let rendered = wrap(text);
+    let labels = rendered
+        .lines()
+        .find(|line| line.contains("00 01 02 03 04 05 06 07"))
+        .unwrap();
+    let first_row = rendered
+        .lines()
+        .find(|line| line.starts_with("0000:"))
+        .unwrap();
+    assert_eq!(&labels[6..8], "00", "HEX first column label:\n{rendered}");
+    assert_eq!(&first_row[6..8], "30", "HEX first byte:\n{rendered}");
+    assert_eq!(&first_row[54..55], "|", "HEX ASCII separator:\n{rendered}");
 }
 
 fn temp_root(tag: &str) -> PathBuf {
@@ -276,6 +354,7 @@ fn hex_returns_to_shell_at_budget(
     h.command("HEX TEST.TXT", "HEX EDITOR", 2_000);
     h.frames(render_frames);
     let text = h.screen();
+    assert_hex_columns(&text);
     assert!(text.contains("00F0:"), "HEX rendering did not finish:\n{text}");
     h.command("Q", "0>", command_frames);
     h.command("HELP", "COPY SRC DST", render_frames);
@@ -308,6 +387,104 @@ fn dos_pipeline_hex_returns_to_shell_at_default_cycles_per_frame() {
 }
 
 #[test]
+fn dos_dir_columns_align_in_40_and_80_column_modes() {
+    let root = temp_root("dir-columns");
+    let hello = b"HELLO FROM DSFS\n";
+    let tinybas = vec![0u8; 110_228];
+    let image = make_dsfs(&[
+        (b"HELLO   TXT", hello.as_slice()),
+        (b"TINYBAS WAX", tinybas.as_slice()),
+    ]);
+    std::fs::write(root.join("disk0.img"), image).unwrap();
+    write_config(&root, &[("disk0.img", false)]);
+
+    let mut h = Harness::boot(&root);
+    h.wait_text("CPT32 DOS", 200);
+    h.wait_text("0> ", 200);
+    h.command("MODE 40", "40-COLUMN MODE", 200);
+    h.command("DIR", "HELLO.TXT", 200);
+    assert_dir_columns(&h.screen_width(40), 40, "HELLO.TXT", "16", "1");
+    assert_dir_columns(&h.screen_width(40), 40, "TINYBAS.WAX", "110228", "216");
+    h.command("MODE 80", "80-COLUMN MODE", 200);
+    h.command("DIR", "HELLO.TXT", 200);
+    assert_dir_columns(&h.screen(), 80, "HELLO.TXT", "16", "1");
+    assert_dir_columns(&h.screen(), 80, "TINYBAS.WAX", "110228", "216");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn dos_runs_sparse_wax_and_rejects_invalid_images() {
+    let root = temp_root("wax-run");
+    let app = make_wax(
+        &[
+            (0x0000_0000, &[0x00, 0x00, 0x00, 0x00]),
+            (0x0001_0000, &[0xFC, 0x00, 0x00, 0x00]),
+            (0x0031_0000, &[0xA5, 0x5A, 0xC3, 0x3C]),
+        ],
+        0x0001_0000,
+    );
+    let reserved = make_wax(&[(0x00FE_0000, &[0xFC, 0x00, 0x00, 0x00])], 0x00FE_0000);
+    let overlap = make_wax(
+        &[
+            (0x0002_0000, &[0x00, 0x00, 0x00, 0x00]),
+            (0x0002_0000, &[0xFC, 0x00, 0x00, 0x00]),
+        ],
+        0x0002_0000,
+    );
+    let mut shared = make_wax(
+        &[
+            (0x0003_0000, &[0x00, 0x00, 0x00, 0x00]),
+            (0x0004_0000, &[0xFC, 0x00, 0x00, 0x00]),
+        ],
+        0x0003_0000,
+    );
+    be32(&mut shared, 64 + 12 + 4, 88);
+    let image = make_dsfs(&[
+        (b"BROKEN  WAX", b"not WAX".as_slice()),
+        (b"RESERVE WAX", reserved.as_slice()),
+        (b"OVERLAP WAX", overlap.as_slice()),
+        (b"SHARED  WAX", shared.as_slice()),
+        (b"APP     WAX", app.as_slice()),
+    ]);
+    std::fs::write(root.join("disk0.img"), image).unwrap();
+    write_config(&root, &[("disk0.img", false)]);
+
+    let mut h = Harness::boot(&root);
+    h.wait_text("CPT32 DOS", 200);
+    h.wait_text("0> ", 200);
+    h.command("RUN BROKEN.WAX", "INVALID WAX HEADER", 200);
+    h.command("RUN RESERVE.WAX", "WAX USES RESERVED RAM", 200);
+    h.command("RUN OVERLAP.WAX", "INVALID WAX LAYOUT", 200);
+    h.command("RUN SHARED.WAX", "OVERLAPPING WAX DATA", 200);
+
+    h.type_text("RUN APP.WAX");
+    h.type_text("\r");
+    let mut launched = false;
+    for _ in 0..400 {
+        h.frames(1);
+        if !h.cpu.is_running()
+            && h.cpu.read_mem_u8(0x0000_0000) == 0x00
+            && h.cpu.read_mem_u8(0x0001_0000) == 0xFC
+            && h.cpu.read_mem_u8(0x0031_0000) == 0xA5
+        {
+            launched = true;
+            break;
+        }
+    }
+    assert!(
+        launched,
+        "DOS did not load and execute WAX: running={}, pc={:#010X}, screen:\n{}",
+        h.cpu.is_running(),
+        h.cpu.pc(),
+        wrap(&h.screen())
+    );
+    assert_eq!(h.cpu.read_mem_u8(0x0001_0001), 0x00);
+    assert_eq!(h.cpu.read_mem_u8(0x0080_0000), 0, "sparse hole was modified");
+    assert!(!h.cpu.is_running(), "WAX HALT should stop the guest CPU");
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
 fn dos_shell_manages_files_on_two_drives() {
     let root = temp_root("shell");
     let hello = b"HELLO FROM DSFS\n";
@@ -323,6 +500,7 @@ fn dos_shell_manages_files_on_two_drives() {
     h.wait_text("CPT32 DOS", 200);
     h.wait_text("0> ", 200);
     h.command("MODE 40", "40-COLUMN MODE", 200);
+    h.command("DIR", "HELLO.TXT", 200);
     assert!(h.screen().contains("0> "), "40-column prompt missing");
     h.command("MODE 80", "80-COLUMN MODE", 200);
     assert!(h.screen().contains("0> "), "80-column prompt missing");

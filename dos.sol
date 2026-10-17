@@ -19,6 +19,7 @@
 # Commands (case insensitive, NAME.EXT or N:NAME.EXT for drive N):
 #   DIR                 list files with size and block count
 #   TYPE NAME           print a file as text
+#   RUN NAME            load and execute a WAX v2 program
 #   NEW NAME            create an empty file
 #   REN OLD NEW         rename (name only, timestamps kept)
 #   DEL NAME            delete a file
@@ -41,12 +42,14 @@
 #   names  names and words        disk  DSFS access
 #   cmds   typed commands         edit  line editor
 #   hex    hex editor             shell REPL and dispatch
+#   wax    WAX validation/loading
 # irq3 and main stay in the global namespace: solc only builds the IRQ
 # dispatcher and the entry call for globally named functions.
 
 !include "sol/cpt32/pcg.sol"
 !include "sol/cpt32/idc.sol"
 !include "sol/cpt32/dsfs.sol"
+!include "sol/cpt32/wax.sol"
 !include "sol/cpt32/irqc.sol"
 
 !rodata_base 0x00040000
@@ -864,6 +867,7 @@ fn dos_cmd_dir () :
     local addr 0
     local rows 0
     local size 0
+    local digits 0
     local used 0
     disk.dos_ensure 0 neq if retn end
     DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "DIRECTORY READ ERROR" con.dos_err retn end
@@ -875,7 +879,7 @@ fn dos_cmd_dir () :
     " BLOCKS  " con.dos_puts
     used con.dos_putnum
     " FILE(S)" con.dos_putsln
-    "  #   NAME             SIZE  BLOCKS" con.dos_putsln
+    "  #   NAME             SIZE    BLOCKS" con.dos_putsln
     1 >rows
     0 >i
     while
@@ -888,12 +892,14 @@ fn dos_cmd_dir () :
                 "  " con.dos_puts
                 addr 1 add DOS_TMP_TXT names.dos_name_text
                 DOS_TMP_TXT con.dos_puts
-                DOS_TMP_TXT con.dos_strlen 14 lt if
-                    14 DOS_TMP_TXT con.dos_strlen sub con.dos_pad
+                DOS_TMP_TXT con.dos_strlen 17 lt if
+                    17 DOS_TMP_TXT con.dos_strlen sub con.dos_pad
                 end
                 addr 20 add ld >size
-                size con.dos_putnum
-                "  " con.dos_puts
+                size DOS_TMP_TXT con.dos_num_text >digits
+                0 DOS_TMP_TXT digits add stb
+                DOS_TMP_TXT con.dos_puts
+                8 digits sub con.dos_pad
                 size 0 eq if
                     0 con.dos_putnum
                 else
@@ -947,6 +953,27 @@ fn dos_cmd_type (name) :
         end
     end
     con.dos_newline
+;
+fn dos_cmd_run (name) :
+    local size 0
+    local err 0
+    disk.dos_ensure 0 neq if retn end
+    name disk.dos_file_size >size
+    size 0 lt if "NOT FOUND" con.dos_err retn end
+    size DOS_MAX_FILE gt if "FILE TOO LARGE" con.dos_err retn end
+    DOS_DIR_BUF name DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" con.dos_err retn end
+    "STARTING " con.dos_puts
+    name DOS_TMP_TXT names.dos_name_text
+    DOS_TMP_TXT con.dos_putsln
+    DOS_FILE_BUF size wax.wax_load >err
+    err wax.WAX_ERR_HEADER eq if "INVALID WAX HEADER" con.dos_err retn end
+    err wax.WAX_ERR_LAYOUT eq if "INVALID WAX LAYOUT" con.dos_err retn end
+    err wax.WAX_ERR_RANGE eq if "INVALID WAX RANGE" con.dos_err retn end
+    err wax.WAX_ERR_OVERLAP eq if "OVERLAPPING WAX DATA" con.dos_err retn end
+    err wax.WAX_ERR_ENTRY eq if "INVALID WAX ENTRY" con.dos_err retn end
+    err wax.WAX_ERR_RESERVED eq if "WAX USES RESERVED RAM" con.dos_err retn end
+    err wax.WAX_ERR_BUFFER eq if "INVALID WAX BUFFER" con.dos_err retn end
+    "WAX LOAD ERROR" con.dos_err
 ;
 
 fn dos_cmd_new (name) :
@@ -1128,6 +1155,7 @@ fn dos_cmd_free () :
 fn dos_cmd_help () :
     "DIR              list files" con.dos_putsln
     "TYPE NAME        print a text file" con.dos_putsln
+    "RUN NAME         load and execute a WAX v2 program" con.dos_putsln
     "NEW NAME         create an empty file" con.dos_putsln
     "REN OLD NEW      rename a file" con.dos_putsln
     "DEL NAME         delete a file" con.dos_putsln
@@ -1493,7 +1521,7 @@ fn dos_hex_show () :
         DOS_MSGBUF con.dos_putsln
         0 >dos_msg
     end
-    "        " con.dos_puts
+    "      " con.dos_puts
     "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F" con.dos_putsln
     0 >row
     while
@@ -1723,6 +1751,12 @@ fn dos_dispatch (ptr n) :
         DOS_NAME_A cmds.dos_cmd_type
         retn
     end
+    w0 "RUN" con.dos_streq if
+        n 2 lt if "USAGE: RUN NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_run
+        retn
+    end
     w0 "NEW" con.dos_streq if
         n 2 lt if "USAGE: NEW NAME" con.dos_err retn end
         w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
@@ -1844,7 +1878,7 @@ fn dos_dispatch (ptr n) :
 
 fn dos_banner () :
     "CPT32 DOS v1.0 - DSFS / FDD SHELL" con.dos_putsln
-    "DIR TYPE NEW REN DEL COPY EDIT HEX FORMAT DRV MODE FREE CLS HELP EXIT" con.dos_putsln
+    "DIR TYPE RUN NEW REN DEL COPY EDIT HEX FORMAT DRV MODE FREE CLS HELP EXIT" con.dos_putsln
     con.dos_newline
 ;
 

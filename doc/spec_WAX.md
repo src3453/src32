@@ -85,5 +85,10 @@ Block table entry (12 bytes each):
   `.wax` selects WAX automatically; other output suffixes retain raw-binary output.
 - `src/wax.rs` parses and loads blocks. Main, testbench, monitor, and BIOS
   consumers use those block load addresses.
+- `sol/cpt32/wax.sol` validates WAX v2 executables in guest RAM and loads
+  their sparse blocks before transferring control to the declared entry. DOS
+  exposes this as `RUN NAME`; DOS limits files to 64 KiB and rejects blocks
+  overlapping `0x00FE0000..0x01000000`. DOS reserves that RAM for staging, an
+  8 KiB file-span bitmap, and the transfer trampoline.
 - `tools/imhex/wax.hexpat` visualizes the v2 header, block table, payload bytes
   at their file offsets, and the optional debug block.
