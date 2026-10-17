@@ -381,3 +381,97 @@ def test_lsp_lists_workspace_symbols(tmp_path):
             names = {item["name"] for item in session.request("workspace/symbol", {"query": ""})}
             assert "main" in names
             assert "increment" not in names
+
+
+NESTED_SOURCE = "\n".join([
+    "!namespace outer -",
+    "!const BASE 10",
+    "!namespace inner -",
+    "!const BASE 20",
+    "fn pick () : BASE ret ;",
+    "!end",
+    "fn local_pick () : BASE ret ;",
+    "!end",
+    "outer.inner.pick",
+    "outer.local_pick",
+])
+
+
+def test_lsp_reports_nested_namespaces_outline_tokens_and_navigation(tmp_path):
+    source_path = tmp_path / "nested.sol"
+    source_path.write_text(NESTED_SOURCE, encoding="utf-8")
+    uri = source_path.as_uri()
+    lines = NESTED_SOURCE.split("\n")
+    call = lines[8]
+    member = call.index("pick")
+    for server in (SERVER, BUNDLED_SERVER):
+        with Session(server) as session:
+            capabilities = session.initialize(tmp_path.as_uri())
+            session.open(uri, NESTED_SOURCE)
+            symbols = session.request("textDocument/documentSymbol", {"textDocument": {"uri": uri}})
+            assert [(item["name"], item["kind"]) for item in symbols] == [("outer", 3)]
+            outer = symbols[0]
+            assert [(item["name"], item["kind"]) for item in outer["children"]] == [
+                ("BASE", 14), ("inner", 3), ("local_pick", 12)]
+            inner = outer["children"][1]
+            assert [(item["name"], item["kind"]) for item in inner["children"]] == [("BASE", 14), ("pick", 12)]
+            assert inner["range"]["end"] == {"line": 5, "character": len(lines[5])}
+            assert outer["range"]["end"] == {"line": 7, "character": len(lines[7])}
+            # every namespace component navigates to the namespace it names
+            assert found_locations(session.at("textDocument/definition", uri, 8, call.index("outer"))) == [
+                location(uri, 0, lines[0].index("outer"), "outer")]
+            assert found_locations(session.at("textDocument/definition", uri, 8, call.index("inner"))) == [
+                location(uri, 2, lines[2].index("inner"), "inner")]
+            assert found_locations(session.at("textDocument/definition", uri, 8, member)) == [
+                location(uri, 4, lines[4].index("pick"), "pick")]
+            hover = session.at("textDocument/hover", uri, 8, member)
+            assert "fn pick ()" in hover["contents"]["value"]
+            legend = capabilities["semanticTokensProvider"]["legend"]["tokenTypes"]
+            tokens = session.request("textDocument/semanticTokens/full", {"textDocument": {"uri": uri}})["data"]
+            marked = decode_semantic_tokens(tokens, legend)
+            assert marked[(8, call.index("outer"))] == ("namespace", len("outer.inner"))
+            assert marked[(8, member)] == ("function", len("pick"))
+            assert marked[(9, lines[9].index("outer"))] == ("namespace", 5)
+            assert marked[(9, lines[9].index("local_pick"))] == ("function", len("local_pick"))
+
+
+def test_lsp_analyzes_nested_namespace_scopes(tmp_path):
+    bundled_server = SERVER.parents[1] / "vscode-sol-syntax" / "server" / "sol_language_server.py"
+    nested = "\n".join([
+        "!namespace outer -",
+        "!const BASE 10",
+        "!namespace inner -",
+        "fn pick () : BASE ret ;",
+        "!end",
+        "!end",
+        "outer.inner.pick",
+    ])
+    broken = "\n".join([
+        "!namespace outer -",
+        "!namespace inner -",
+        "!const K 1",
+        "!end",
+        "!end",
+        "outer.inner.MISSING",
+    ])
+    analyze = (
+        "import json,sys; sys.path.insert(0,sys.argv[1]); "
+        "from sol_language_server import Server; "
+        "print(json.dumps(Server().analyze(sys.argv[2],sys.argv[3])))"
+    )
+
+    for server in (SERVER, bundled_server):
+        def run(source):
+            result = subprocess.run(
+                [sys.executable, "-c", analyze, str(server.parent), "file:///tmp/nested.sol", source],
+                capture_output=True,
+                text=True,
+                stdin=subprocess.DEVNULL,
+                check=True,
+            )
+            return json.loads(result.stdout)
+
+        assert run(nested) == []
+        diagnostics = run(broken)
+        assert [(item["severity"], item["message"], item["range"]["start"]) for item in diagnostics] == [
+            (1, "unknown word: outer.inner.MISSING", {"line": 5, "character": 0})]

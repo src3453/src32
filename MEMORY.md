@@ -528,3 +528,26 @@
   `vscode-languageserver-protocol` の `Location.is()` / `Hover.is()` に定義・宣言・参照・ホバーを
   通し、highlight / SymbolInformation は型ガードが無い版なので shape を手動検証。`npm run compile` と
   `npx vsce package --no-dependencies`（15 ファイル）も通過。
+## sol 名前空間の入れ子（2026-10-17）
+
+- `!namespace` ブロックは入れ子にできる（実装: 名前空間名のスタック）。完全名は `outer.inner` のように `.` で連結し、
+  `!end` は直近に開始したブロックを 1 つだけ閉じる。同じ完全名は複数ブロックに分けて再宣言でき、1 つの名前空間として扱う。
+- 非修飾名の解決順: 現在の名前空間 → 外側の名前空間（内→外）→ グローバル。修飾名 `ns1.ns2.name` は
+  その完全名が指す名前空間のみを検索し、外側へフォールバックしない（`inner.target` は `outer.target` を拾わない）。
+  名前空間ブロックの内側で `!include "f" as ns` すると、その名前空間の内側に入れ子（`outer.ns.*`）になる。
+- 実装場所: `tools/solc/sol_vm.py` と同梱 `tools/vscode-sol-syntax/server/sol_vm.py` の両方に
+  `split_qualified_name()` / `namespace_chain()` を追加し、`resolve_function_name` / `resolve_symbol` を
+  チェーン検索へ、`QUALIFIED_RE` を複数ドット可（`(?:\.[A-Za-z_]\w*)*`）へ、`internal_function_name` を
+  コンポーネント毎の `len_` 連結（`__solc_ns_1_a_1_b_1_f_f`）へ変更。単一階層では従来と同一文字列に
+  なるようにしてあるので、既存ゲストの `.a` はバイト一致（tinybasic.sol / dos.sol で HEAD と cmp 済み）。
+- LSP（canonical `tools/solc/sol_language_server.py` と同梱コピーは **byte-identical を維持**）も
+  `scan` の pass1/pass2 と `tokens()`、`symbols()` を名前空間スタック化。`Index.resolve()` は
+  ドット付き名を「namespace 完全名 → 修飾シンボル」の順に引き、非修飾名は `namespace_chain` で検索する。
+  修飾名の参照は**各プレフィックスごとに Ref を出す**（`a.b.f` → `a`, `a.b`, `f`）。`find_ref` は挿入順の
+  最初の一致を返すので短いプレフィックスから追加すると、各コンポーネントのクリックがその名前空間の宣言に飛ぶ。
+  namespace の Decl は name=局所名・key/containerName=完全名。
+- 検証: `python -m pytest tools/solc -q` 全通過（vm に 7 件、LSP に 2 件追加）。入れ子ゲストを
+  `solc.py compile` → `asm.py` → `src32_testbench.exe`（bios 無し config の一時ディレクトリ）で
+  `-O size|speed` × `--cpu scalar|pipeline` の 4 通り PASS（R1=45、入れ子 `!var` の ST バイトも確認）。
+- 落とし穴: `!end` の閉じ忘れエラーは残っているスタックの完全名を出す（`!namespace a - !namespace b -` に
+  `!end` 1 個 → `unterminated namespace: a`）。テストで「a.b」を期待しないこと。

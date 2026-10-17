@@ -444,6 +444,94 @@ def test_namespaced_symbol_errors(source, message):
         compile_program(source)
 
 
+def test_nested_namespaces_resolve_qualified_names_and_enclosing_scope():
+    source = """
+!namespace outer -
+!const BASE 10
+fn outer_val () : 100 ret ;
+!namespace inner -
+!const BASE 20
+fn read_base () : BASE ret ;
+fn read_outer () : outer_val 1 add ret ;
+!end
+fn read_base () : BASE ret ;
+!end
+outer.inner.read_base outer.inner.read_outer outer.read_base
+"""
+    assert SolVM().run_source(source) == [20, 101, 10]
+
+
+def test_three_level_namespace_resolves_full_qualified_path():
+    source = """
+!namespace a -
+!namespace b -
+!namespace c -
+fn value () : 7 ret ;
+!end
+fn value () : 1 ret ;
+!end
+fn value () : 2 ret ;
+!end
+a.b.c.value a.b.value a.value
+"""
+    assert SolVM().run_source(source) == [7, 1, 2]
+
+
+def test_nested_namespace_variables_store_and_shadow_without_colliding():
+    source = """
+!const K 1
+!var n 7
+!namespace a -
+!const K 2
+!var n 8
+!namespace b -
+!const K 3
+!var n 9
+fn bump () : n 1 add >n n ret ;
+!end
+!end
+a.b.bump a.b.n a.n n K a.K a.b.K
+"""
+    assert SolVM().run_source(source) == [10, 10, 8, 7, 1, 2, 3]
+
+
+def test_nested_namespace_qualified_lookup_does_not_search_enclosing_namespaces():
+    source = """
+!namespace outer -
+fn target () : 1 ret ;
+!namespace inner -
+fn call () : inner.target ret ;
+!end
+!end
+outer.inner.call
+"""
+    with pytest.raises(SolVMError, match="unknown word: inner.target"):
+        compile_program(source)
+
+
+def test_aliased_include_nested_in_namespaces_uses_the_full_path(tmp_path):
+    library = tmp_path / "library.sol"
+    library.write_text("fn increment (value) : value 1 add ret ;\n!const LIMIT 4\n", encoding="utf-8")
+    source_path = tmp_path / "main.sol"
+    source = '!namespace a -\n!namespace b -\n!include "library.sol" as lib\n!end\n!end\n41 a.b.lib.increment a.b.lib.LIMIT\n'
+    assert SolVM().run_source(source, source_path=str(source_path)) == [42, 4]
+
+
+def test_keepfn_accepts_a_nested_namespace_qualifier():
+    program = compile_program("!namespace a -\n!namespace b -\nfn kept () : 1 ret ;\n!end\n!end\n!keepfn a.b.kept\n2")
+    assert "__solc_ns_1_a_1_b_4_kept" in program.functions
+
+
+@pytest.mark.parametrize("source,message", [
+    ("!namespace a -\n!namespace b -\n!const K 1\n", "unterminated namespace: a.b"),
+    ("!namespace a -\n!namespace b -\nfn f () : 1 ret ;\n!end\n!end\na.c.f\n", "unknown word: a.c.f"),
+    ("!namespace a -\n!namespace b -\n!const K 1\n!end\n!end\na.b.MISSING\n", "unknown word: a.b.MISSING"),
+])
+def test_nested_namespace_errors(source, message):
+    with pytest.raises(SolVMError, match=message):
+        compile_program(source)
+
+
 def test_nested_function_calls():
     vm = SolVM()
     src = """

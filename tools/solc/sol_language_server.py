@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sol_vm import tokenize, compile_program, SolVMError, parse_number, RawAssemblyToken, LABEL_RE, QUALIFIED_RE, _decode_string_literal
+from sol_vm import tokenize, compile_program, SolVMError, parse_number, RawAssemblyToken, LABEL_RE, QUALIFIED_RE, _decode_string_literal, split_qualified_name, namespace_chain
 from sol_compiler import check_static_stack_safety, SolCompileError
 
 TOKEN_TYPES = ["comment", "string", "number", "operator", "directive", "control", "function", "parameter", "local", "variable", "constant", "assignment", "identifier", "namespace"]
@@ -147,9 +147,10 @@ class Scope:
 class Index:
     """Declarations, references and resolution tables of one include closure.
 
-    `symbols` mirrors the compiler symbol tables: qualified names hit one namespace
-    only, unqualified names are stored and looked up per namespace with the global
-    scope as the fallback."""
+    `symbols` mirrors the compiler symbol tables: a qualified name hits one
+    namespace only; unqualified names are stored and looked up per namespace,
+    searching the current namespace and its enclosing namespaces before the
+    global scope."""
 
     def __init__(self):
         self.symbols = {}
@@ -190,14 +191,22 @@ class Index:
 
     def resolve(self, ref):
         name = ref.name
-        if "." not in name:
-            if ref.scope is not None:
-                local = ref.scope.locals.get(name) or ref.scope.params.get(name)
-                if local is not None:
-                    return local
-            return self.symbols.get((ref.namespace, name)) or self.symbols.get((None, name)) or self.namespaces.get(name)
-        qualifier, member = name.split(".", 1)
-        return self.symbols.get((qualifier, member))
+        if "." in name:
+            # A namespace qualifier (`ns1.ns2`) or a qualified symbol (`ns1.ns2.fn`).
+            namespace_decl = self.namespaces.get(name)
+            if namespace_decl is not None:
+                return namespace_decl
+            qualified = split_qualified_name(name)
+            return self.symbols.get(qualified) if qualified is not None else None
+        if ref.scope is not None:
+            local = ref.scope.locals.get(name) or ref.scope.params.get(name)
+            if local is not None:
+                return local
+        for candidate in namespace_chain(ref.namespace):
+            found = self.symbols.get((candidate, name))
+            if found is not None:
+                return found
+        return self.namespaces.get(name)
 
 class Server:
     def __init__(self):
@@ -324,17 +333,24 @@ class Server:
     def scan(self, flat, path_map, index):
         """Collect declarations (pass 1) and references (pass 2) from an expanded stream."""
         i = 0
-        namespace = None
+        namespace_stack = []
+
+        def namespace_path():
+            return ".".join(namespace_stack) if namespace_stack else None
+
         while i < len(flat):
             token = flat[i]
             if isinstance(token, IncludeMarker):
                 if token.entering:
-                    namespace = token.alias
-                    decl = self.decl_for(token.token, token.alias, KIND_NAMESPACE, "!namespace", path_map)
-                    index.namespaces.setdefault(token.alias, decl)
+                    namespace_stack.append(token.alias)
+                    name = namespace_path()
+                    decl = self.decl_for(token.token, token.alias, KIND_NAMESPACE, "!namespace", path_map,
+                                         namespace=namespace_path() if len(namespace_stack) > 1 else None)
+                    index.namespaces.setdefault(name, decl)
                     index.add_decl(decl)
                 else:
-                    namespace = None
+                    if namespace_stack:
+                        namespace_stack.pop()
                 i += 1
                 continue
             if isinstance(token, RawAssemblyToken):
@@ -346,17 +362,21 @@ class Server:
                 if name_token is None or not LABEL_RE.match(str(name_token)):
                     i += 1
                     continue
-                namespace = str(name_token)
-                decl = self.decl_for(name_token, namespace, KIND_NAMESPACE, "!namespace", path_map)
+                namespace_stack.append(str(name_token))
+                namespace = namespace_path()
+                decl = self.decl_for(name_token, str(name_token), KIND_NAMESPACE, "!namespace", path_map,
+                                     namespace=namespace_path() if len(namespace_stack) > 1 else None)
                 index.namespaces.setdefault(namespace, decl)
                 index.add_decl(decl)
                 index.decl_positions.add(self.token_pos(name_token))
                 i += 3 if i + 2 < len(flat) and str(flat[i + 2]) == "-" else 2
                 continue
             if text == "!end":
-                namespace = None
+                if namespace_stack:
+                    namespace_stack.pop()
                 i += 1
                 continue
+            namespace = namespace_path()
             if text in ("!data", "!db"):
                 j = i + 1
                 while j < len(flat) and str(flat[j]) != "!end":
@@ -432,6 +452,11 @@ class Server:
         position = 0
         scope = None
         i = 0
+        namespace_stack = []
+
+        def namespace_path():
+            return ".".join(namespace_stack) if namespace_stack else None
+
         while i < len(flat):
             if scope is not None and i > scope.end:
                 scope = None
@@ -440,7 +465,10 @@ class Server:
                 position += 1
             token = flat[i]
             if isinstance(token, IncludeMarker):
-                namespace = token.alias if token.entering else None
+                if token.entering:
+                    namespace_stack.append(token.alias)
+                elif namespace_stack:
+                    namespace_stack.pop()
                 i += 1
                 continue
             if isinstance(token, RawAssemblyToken):
@@ -452,13 +480,15 @@ class Server:
                 if name_token is None or not LABEL_RE.match(str(name_token)):
                     i += 1
                     continue
-                namespace = str(name_token)
+                namespace_stack.append(str(name_token))
                 i += 3 if i + 2 < len(flat) and str(flat[i + 2]) == "-" else 2
                 continue
             if text == "!end":
-                namespace = None
+                if namespace_stack:
+                    namespace_stack.pop()
                 i += 1
                 continue
+            namespace = namespace_path()
             if text in ("!data", "!db"):
                 j = i + 1
                 while j < len(flat) and str(flat[j]) != "!end":
@@ -485,13 +515,20 @@ class Server:
                 i += 1
                 continue
             uri = path_map.get(os.path.normcase(os.path.abspath(token.location.path or ""))) or self.uri_for_path(token.location.path)
-            if "." in name:
-                qualifier, member = name.split(".", 1)
-                base = 1 if write else 0
-                index.add_ref(Ref(qualifier, uri, token.location, len(qualifier), namespace, scope, offset=base))
+            base = 1 if write else 0
+            qualified = split_qualified_name(name)
+            if qualified is not None:
+                qualifier, member = qualified
+                # One reference per namespace prefix so each component navigates
+                # to the namespace it names (`a.b.c.fn` -> `a`, `a.b`, `a.b.c`, fn).
+                end = 0
+                for component in qualifier.split("."):
+                    end += len(component)
+                    index.add_ref(Ref(qualifier[:end], uri, token.location, end, namespace, scope, offset=base))
+                    end += 1
                 index.add_ref(Ref(name, uri, token.location, len(member), namespace, scope, write=write, offset=base + len(qualifier) + 1))
             else:
-                index.add_ref(Ref(name, uri, token.location, len(name), namespace, scope, write=write, offset=1 if write else 0))
+                index.add_ref(Ref(name, uri, token.location, len(name), namespace, scope, write=write, offset=base))
             i += 1
         return index
 
@@ -578,35 +615,39 @@ class Server:
         try: toks=tokenize(text,self.path(uri))
         except SolVMError: return out
         fn_names=set(); params=set(); locals_=set(); consts=set(); vars_=set()
-        namespace=None; block_stack=[]; namespace_names=set()
+        namespace_stack=[]; block_stack=[]; namespace_names=set()
+        def namespace_path(): return ".".join(namespace_stack) if namespace_stack else None
         for i,t in enumerate(toks):
             if t == "!namespace" and i+1 < len(toks):
-                namespace=str(toks[i+1]); namespace_names.add(namespace); block_stack.append("namespace")
+                namespace_stack.append(str(toks[i+1])); namespace_names.add(namespace_path()); block_stack.append("namespace")
                 continue
             if t == "!include":
                 j=i+1
                 while j < len(toks) and str(toks[j]).startswith('"'): j+=1
-                if j+1 < len(toks) and str(toks[j])=="as": namespace_names.add(str(toks[j+1]))
+                if j+1 < len(toks) and str(toks[j])=="as":
+                    namespace_names.add(str(toks[j+1]))
+                    if namespace_stack: namespace_names.add(namespace_path()+"."+str(toks[j+1]))
                 continue
             if t in {"!asm","!data","!db"}:
                 block_stack.append(str(t))
                 continue
             if t == "!end":
-                if block_stack and block_stack.pop() == "namespace": namespace=None
+                if block_stack and block_stack.pop() == "namespace":
+                    if namespace_stack: namespace_stack.pop()
                 continue
             if t == "fn" and i+1 < len(toks):
                 name=str(toks[i+1]); fn_names.add(name)
-                if namespace: fn_names.add(namespace+"."+name)
+                if namespace_stack: fn_names.add(namespace_path()+"."+name)
                 j=i+2
                 while j < len(toks) and toks[j] != ")":
                     if toks[j] != "(": params.add(str(toks[j]))
                     j += 1
             if t=="!const" and i+1<len(toks):
                 name=str(toks[i+1]); consts.add(name)
-                if namespace: consts.add(namespace+"."+name)
+                if namespace_stack: consts.add(namespace_path()+"."+name)
             if t=="!var" and i+1<len(toks):
                 name=str(toks[i+1]); vars_.add(name)
-                if namespace: vars_.add(namespace+"."+name)
+                if namespace_stack: vars_.add(namespace_path()+"."+name)
             if t=="local" and i+1<len(toks): locals_.add(str(toks[i+1]))
         for t in toks:
             if isinstance(t, RawAssemblyToken):
@@ -616,7 +657,7 @@ class Server:
             if s in {";","(",")"}: continue
             typ=None
             if "." in s and not s.startswith('"') and not s.startswith(">") and (s[0].isalpha() or s[0]=="_"):
-                prefix,member=s.split(".",1)
+                prefix,member=s.rsplit(".",1)
                 member_type="function" if s in fn_names else "constant" if s in consts else "variable" if s in vars_ else "identifier"
                 out.append((t.location.line-1,t.location.column-1,len(prefix),TOKEN_TYPES.index("namespace"),0))
                 out.append((t.location.line-1,t.location.column+len(prefix),len(member),TOKEN_TYPES.index(member_type),0))

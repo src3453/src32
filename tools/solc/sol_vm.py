@@ -12,8 +12,8 @@ from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-# An optional `namespace.` qualifier in front of a function, variable or constant name.
-QUALIFIED_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
+# One or more `namespace.` qualifiers in front of a function, variable or constant name.
+QUALIFIED_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)*$")
 FLOAT_RE = re.compile(
     r"^-?(?:[0-9]+\.[0-9]*(?:[eE][+-]?[0-9]+)?|\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+|inf|nan)[fF]$"
 )
@@ -28,6 +28,29 @@ STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
 logger = logging.getLogger(__name__)
+
+
+def split_qualified_name(name: str) -> tuple[str, str] | None:
+    """Split `ns1.ns2.member` into its namespace path and final member name.
+
+    Returns None for unqualified or malformed names."""
+    if "." not in name:
+        return None
+    qualifier, member = name.rsplit(".", 1)
+    if not QUALIFIED_RE.fullmatch(qualifier) or not LABEL_RE.fullmatch(member):
+        return None
+    return qualifier, member
+
+
+def namespace_chain(namespace: str | None) -> tuple[str | None, ...]:
+    """Lookup order of an unqualified name inside `namespace`.
+
+    A nested namespace searches itself first, then its enclosing namespaces from
+    inner to outer, and finally the global scope."""
+    if namespace is None:
+        return (None,)
+    parts = namespace.split(".")
+    return tuple(".".join(parts[:depth]) for depth in range(len(parts), 0, -1)) + (None,)
 
 
 class SolVMError(RuntimeError):
@@ -416,28 +439,31 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     def internal_function_name(namespace: str | None, name: str) -> str:
         if namespace is None:
             return name
-        return f"__solc_ns_{len(namespace)}_{namespace}_{len(name)}_{name}"
+        prefix = "".join(f"{len(part)}_{part}_" for part in namespace.split("."))
+        return f"__solc_ns_{prefix}{len(name)}_{name}"
 
     def resolve_function_name(name: str, namespace: str | None) -> str | None:
-        if "." in name:
-            qualifier, function_name = name.split(".", 1)
-            if not LABEL_RE.fullmatch(qualifier) or not LABEL_RE.fullmatch(function_name):
-                return None
-            return function_symbols.get((qualifier, function_name))
-        return function_symbols.get((namespace, name)) or function_symbols.get((None, name))
+        qualified = split_qualified_name(name)
+        if qualified is not None:
+            return function_symbols.get(qualified)
+        for candidate in namespace_chain(namespace):
+            resolved = function_symbols.get((candidate, name))
+            if resolved is not None:
+                return resolved
+        return None
 
     def resolve_symbol(table: dict[tuple[str | None, str], int], name: str, namespace: str | None) -> int | None:
-        """Resolve a variable/constant name: qualified names hit that namespace
-        only; unqualified names search the current namespace, then the global scope."""
-        if "." in name:
-            qualifier, symbol_name = name.split(".", 1)
-            if not LABEL_RE.fullmatch(qualifier) or not LABEL_RE.fullmatch(symbol_name):
-                return None
-            return table.get((qualifier, symbol_name))
-        scoped = (namespace, name)
-        if scoped in table:
-            return table[scoped]
-        return table.get((None, name))
+        """Resolve a variable/constant name: qualified names hit one namespace
+        only; unqualified names search the current namespace and its enclosing
+        namespaces, then the global scope."""
+        qualified = split_qualified_name(name)
+        if qualified is not None:
+            return table.get(qualified)
+        for candidate in namespace_chain(namespace):
+            found = table.get((candidate, name))
+            if found is not None:
+                return found
+        return None
 
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
@@ -647,7 +673,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if i + 1 >= len(words):
                         raise SolVMError("!keepfn requires a function name")
                     name = words[i + 1]
-                    if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?", name):
+                    if not QUALIFIED_RE.fullmatch(name):
                         raise SolVMError(f"invalid function name for !keepfn: {name}")
                     function_name = resolve_function_name(name, word_namespace)
                     if function_name is None:
@@ -868,7 +894,11 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     cleaned_tokens: list[str] = []
     if SOLC_DEBUG:
         print("DEBUG: entering first-pass function collection; tokens length=", len(tokens))
-    current_namespace: str | None = None
+    namespace_stack: list[str] = []
+
+    def current_namespace() -> str | None:
+        return ".".join(namespace_stack) if namespace_stack else None
+
     while i < len(tokens):
         tok = tokens[i]
         if isinstance(tok, str) and tok.startswith("\\!"):
@@ -877,27 +907,23 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             print(f"DEBUG first-pass i={i} tok={tok}")
         if isinstance(tok, NamespaceMarker):
             if tok.entering:
-                if current_namespace is not None:
-                    raise SolVMError("namespaces cannot be nested")
-                current_namespace = tok.namespace
+                namespace_stack.append(tok.namespace)
             else:
-                if current_namespace != tok.namespace:
+                if not namespace_stack or namespace_stack[-1] != tok.namespace:
                     raise SolVMError(f"mismatched include namespace: {tok.namespace}")
-                current_namespace = None
+                namespace_stack.pop()
             i += 1
             continue
         if tok == "!namespace":
-            if current_namespace is not None:
-                raise SolVMError("namespaces cannot be nested")
             if i + 1 >= len(tokens) or not LABEL_RE.fullmatch(tokens[i + 1]):
                 raise SolVMError("!namespace requires a valid namespace name")
-            current_namespace = tokens[i + 1]
+            namespace_stack.append(tokens[i + 1])
             i += 2
             if i < len(tokens) and tokens[i] == "-":
                 i += 1
             continue
-        if tok == "!end" and current_namespace is not None:
-            current_namespace = None
+        if tok == "!end" and namespace_stack:
+            namespace_stack.pop()
             i += 1
             continue
         if tok in {"!data", "!db"}:
@@ -907,7 +933,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             if end_index >= len(tokens):
                 raise SolVMError(f"{tok} requires terminating !end")
             cleaned_tokens.extend(
-                SourceToken(str(item), item.location, current_namespace)
+                SourceToken(str(item), item.location, current_namespace())
                 if isinstance(item, SourceToken) else item
                 for item in tokens[i:end_index + 1]
             )
@@ -975,8 +1001,9 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if body_tokens[idx] == arg:
                         body_tokens[idx] = marker
 
-            internal_name = internal_function_name(current_namespace, name)
-            symbol = (current_namespace, name)
+            active_namespace = current_namespace()
+            internal_name = internal_function_name(active_namespace, name)
+            symbol = (active_namespace, name)
             if symbol in function_symbols or internal_name in functions:
                 raise SolVMError(f"duplicate function: {name}")
             function_symbols[symbol] = internal_name
@@ -984,11 +1011,11 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 "args": args,
                 "body": body_tokens,
                 "locals": locals_list,
-                "namespace": current_namespace,
+                "namespace": active_namespace,
                 "source_name": name,
                 "location": getattr(name, "location", None),
             }
-            irq_match = re.fullmatch(r"irq(\d+)", name) if current_namespace is None else None
+            irq_match = re.fullmatch(r"irq(\d+)", name) if active_namespace is None else None
             if irq_match:
                 irq_number = int(irq_match.group(1))
                 if irq_number > 15:
@@ -1002,11 +1029,11 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
             continue
 
         if isinstance(tok, SourceToken):
-            tok = SourceToken(str(tok), tok.location, current_namespace)
+            tok = SourceToken(str(tok), tok.location, current_namespace())
         cleaned_tokens.append(tok)
         i += 1
-    if current_namespace is not None:
-        raise SolVMError(f"unterminated namespace: {current_namespace}")
+    if namespace_stack:
+        raise SolVMError(f"unterminated namespace: {'.'.join(namespace_stack)}")
 
     # Only emit functions reachable from the top-level program.  Function
     # bodies are compiled after the main program, so emitting every collected
