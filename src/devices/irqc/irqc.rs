@@ -42,6 +42,13 @@ impl IrqController {
         }
     }
 
+    /// Clear all latched and configured interrupt state.
+    pub fn reset(&mut self) {
+        self.pending = 0;
+        self.enable = 0;
+        self.source_level = 0;
+    }
+
     pub fn pending(&self) -> u16 {
         self.pending
     }
@@ -183,5 +190,27 @@ impl Device for SharedIrqController {
 
     fn size(&self) -> u32 {
         IRQC_MMIO_SIZE
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn reset_clears_pending_enable_and_source_levels() {
+        let mut irqc = IrqController::new();
+        irqc.set_enable_mask(1 << 3);
+        irqc.set_source(3, true);
+        assert_eq!(irqc.pending(), 1 << 3);
+        assert!(irqc.irq_output().valid);
+
+        irqc.reset();
+
+        assert_eq!(irqc.pending(), 0);
+        assert_eq!(irqc.enable_mask(), 0);
+        assert!(!irqc.irq_output().valid);
+        irqc.set_source(3, true);
+        assert_eq!(irqc.pending(), 1 << 3);
     }
 }

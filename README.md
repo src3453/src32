@@ -41,6 +41,7 @@ python3 tools/asm/asm.py program.asm -o program.wax --entry start
 デバッグ GUI を有効にするには `--debug-gui` を指定します。デバッグ GUI 起動時に一時停止する場合は `--start-paused` も指定してください。
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
 `Performance` ウィンドウではCPU使用率のプログレスバーと履歴グラフ、命令実行速度、IPC（instructions per cycle）を確認できます。使用率の最大値は `Debug Controls` の `Cycles / frame` 設定に連動します。
+`Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止します。ゲストRAMの内容は保持します。
 
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
@@ -104,6 +105,9 @@ cd path/to/config-dir && cargo run --release --bin src32_testbench -- /path/to/d
 | `HEX NAME` | HEX エディタ（`N`/`P` ページ、`G` 移動、`E` 書き換え、`W` 保存、`Q` 終了） |
 | `FORMAT [N]` | ドライブ N を DSFS でフォーマット |
 | `DRV N` / `FREE` / `CLS` / `HELP` / `EXIT` | ドライブ選択・空き容量・画面消去・ヘルプ・終了 |
+| `MODE 40` / `MODE 80` | 表示幅を切り替えて画面を消去 |
+
+プロンプトは `0> ` の形式です。
 
 名前は 8.3 形式（大文字、`N:NAME.EXT` でドライブ指定）で、ファイルは 1 個 64 KiB までです。回帰テストは `tests/dos_smoke.rs`（`cargo test --test dos_smoke`、`dos.bin` のローカルビルドが必要）です。
 

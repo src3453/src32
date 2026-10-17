@@ -193,6 +193,12 @@
   ポインタではなく `retire_pc` (最終コミット命令の次アドレス) を使うこと。
   そうしないと HALT を越えて先取りした命令が IRQ 復帰後に二重実行・
   または消失し、スカラーとずれる。割り込みはコミット境界でのみ受理。
+- Early-return MUL/DIV stall paths must accept a pending IRQ before syncing the CPU
+  register block. Reversing that order leaves stale interrupted PC/status in the
+  block; the next empty-pipeline tick overwrites the IRQ vector and skips the guest
+  handler. Regression `tests/cpu_pipeline.rs::irq_during_multicycle_mul_stall_enters_handler_and_resumes`
+  injects IRQ3 during both the initial and continued MUL stalls, then checks the
+  handler marker, MUL result, resumed marker, and IRET-enabled state.
 - `cargo fmt -- src/cpu_pipeline.rs tests/cpu_pipeline.rs` で自ファイルのみ
   整形 (全体 `cargo fmt --check` は未変更部の差分で失敗するため対象外)。
   検証は `cargo test --test cpu --test cpu_pipeline` (+ bus_memory_map,
@@ -366,6 +372,7 @@
   `python3 -m pytest tools/dsfs/test_dsfs.py`（14件）、さらにゲストが書いた画像を
   `tools/dsfs/dsfs.py verify/info/ls` に通して §7/§6.2 を host 側から確認した
   （disk0 = 編集後 2 file/0 leak、disk1 = FORMAT + COPY で 1 file/0 leak）。
+  DOS shell に `MODE 40` / `MODE 80` を追加。PCG の `col40` / `col80` を切り替えてから画面を消去し、選択幅を表示する。REPL prompt は drive number の後に `> `（末尾スペースあり）。回帰テストは両モード切替と prompt の `0> ` を PCG plane で確認。
 
 ## sol VS Code 拡張の namespace 対応とアウトライン (2026-10-17)
 - 拡張は `tools/vscode-sol-syntax/`。LSP は `server/sol_language_server.py`（同梱コピー）で、
@@ -551,3 +558,33 @@
   `-O size|speed` × `--cpu scalar|pipeline` の 4 通り PASS（R1=45、入れ子 `!var` の ST バイトも確認）。
 - 落とし穴: `!end` の閉じ忘れエラーは残っているスタックの完全名を出す（`!namespace a - !namespace b -` に
   `!end` 1 個 → `unterminated namespace: a`）。テストで「a.b」を期待しないこと。
+
+## DOS 表示幅切替とプロンプト表記 (2026-10-17)
+- `dos.sol` の `MODE 40` / `MODE 80` は `pcg.col40` / `pcg.col80` を呼び、画面を消去して選択幅を表示する。コマンドは `shell.dos_dispatch`、ヘルプ／起動画面も更新する。
+- REPL prompt はドライブ番号の後に `> `（スペース1個）。`tests/dos_smoke.rs` は両モード切替後の確認表示と `0> ` をPCG text planeで検査する。
+
+## デバッグ GUI の Reset と IRQ 状態 (2026-10-17)
+- `Debug Controls > Reset` は `AnyCpu::reset(0)` を呼び、実行を一時停止して未実行ステップを破棄する。通常のゲストRAMは保持される（GUIの回帰テストでアドレス `0x100` の値を確認）。
+- scalar / pipeline CPU の reset は CPU 内IRQラッチに加え共有 `IrqController` の pending・enable・source_level を消去する。カード reset が IRQ 状態を再駆動しないよう、controller の reset は `bus.reset_expansion_cards()` の後に行う。
+
+## 低速 DOS の PeC/IRQC 手動プローブ (2026-10-17)
+- `--debug-gui` の `Debug Controls > Cycles / frame` を 800 にすると、画面上で設定値 800 を確認できる。DOS の `HELP` 実行中は Performance 表示が `CPU utilization: 100.0% (800 / 800 running cycles per VSync)`、`Instructions this VSync: 693` となった。
+- その処理中に `FREE` を入力すると PeC trace に FIFO push が記録され、HELP 完了後にイベントが pop され、DOS は `ERROR: DRIVE NOT MOUNTED - FORMAT IT FIRST` の後に次の `0>` prompt を表示した。この `HELP` + 未接続ドライブ `FREE` の組合せではハングを再現していない。別の重い DOS 操作が必要な可能性を残し、一般的な再現不能と結論しない。
+- `tests/irq_vsync_probe/probe.sol` は基準キー待ち → 10,000 回の busy loop → 2 回目のキー待ちを実行し、`irq3` が IRQC source 3 を acknowledge する手動ゲスト。`config.yaml` は BIOS を省き、PCG font を相対指定する。`CPT32_PEC_TRACE=1` と emulator の stderr redirect で GUI key / FIFO / IRQC 遷移を採取する。
+- プローブ開始時に PeC FIFO を空にしてから source 3 pending を clear・enable すること。起動時に PadConnected 等の非キーイベントが FIFO に届くため、事前排出しないと source 3 が high のままになり、次の key が新しい rising edge にならない。最初の試験でこの落とし穴を確認した。
+- Sol は 0=true。複数の比較条件を論理 AND する場合は bitwise `or` を使う。プローブ初版は `and` を連結していたため、A key-up（down 比較だけ false）も A key-down と判定し、post-stress 待ちを早期通過する偽陽性があった。`irq-vsync-release.log` は基準 A down/up の FIFO pop 後、後続の key event は pop されず FIFO high-water/overflow まで進むため、この後半はテスト終了後の入力であり CPU の IRQ wake 失敗を示す証拠ではない。プローブは `or` に修正してから再実行する。
+- ユーザー提供の `C:\Users\y2k34\Downloads\floppy1.44.img` は 1.44 MiB の有効な DSFS。`TEST.TXT` は 14 bytes。`dsfs.py ls` の `created=51` は RTC の既定値 0 を基準にしたゲスト時刻であり、画像破損・ホスト時刻ではない（この画像は read-only 検査のみ）。
+- `dos_cmd_hex` はファイルを `DOS_FILE_BUF` に読み込み、16行を表示した後、シェルと共通の `kbd.dos_read_line` で入力を待つ。既存 smoke は HEX→Q→TYPE を検査。read-only の14-byte `TEST.TXT` で scalar / pipeline 両 CPU、800 / `CYCLES_PER_FRAME` のテストを追加し、Q 入力前に最終行 `00F0:` の描画完了を待つ。
+- 検証: solc/asm の DOS build 成功。DOS smoke 全7件、pipeline CPU 全16件 PASS。`cargo check --bin cpt32` 成功。ユーザー提供 image は有効な DSFS 1.44 MiB、`TEST.TXT` は14 bytes。`created=51` は RTC 既定値0のゲスト時刻であり、画像破損・ホスト時刻ではない。
+- 初版テストは HEX header の直後に Q を送り、表示の途中で timeout した。これは報告されたハングではなかった。修正テストは `00F0:` 表示後に Q を送る。
+- 先の `irq-vsync.log` は probe binary（262218 bytes）、後続添付は DOS binary（264764 bytes）。最新の再現は BIOS なし。
+- 実 trace: HEX 描画中の Enter key-up で source3 pending=0x0009。CPU は cause3、EPC/PC=0x00006488（`con.dos_puts`）で IRQ を受理するが、対応する IRET が記録されない。Q 入力時には CPU が HALT、`cpu_irq_enabled=false`、IRQC source3 は pending+enabled のまま。後続キーは FIFO に積まれるが消費されない。
+- 根本原因: active PipelineCpu の IRQ acceptance は pipeline を flush して `fetch_pc` を vector に設定する一方、`retire_pc` を中断位置に残していた。次 tick の pipeline-empty `sync_from_register_block()` が stale PC で `fetch_pc` を上書きし、IRQ dispatcher / IRET を迂回していた。修正では割り込み受理時に `retire_pc` / `retire_mode` も vector に更新し、元 PC は EPC に保持する。active-pipeline IRQ regression は修正前 `irq_enabled=false` で失敗し、修正後 PASS。
+- `CPT32_PEC_TRACE=1` の `[PEC-DBG] GUI key` 行は `total_cycles` / `running_cycles` / `instructions` / `cpu_running` / `cpu_irq_enabled` / `pc` / `epc` / `irq_cause` / `debug_gui_running` を記録する。`total_cycles` は HALT 中の clock advance でも増えるので、実命令進行は `running_cycles` と `instructions` の差分で判定する。scalar/pipeline とも halted tick は `cycles` のみ増やし、`running_cycles` は増やさない。debug GUI pause 中は `cpu.run` 自体が呼ばれず、`debug_gui_running=false`。Q 入力時に IRQ enable が false なら CPU マスク／IRET 経路、true なら IRQ 入力サンプリング側を調べる。`cargo check --bin cpt32` 成功。
+- `CPT32_PEC_TRACE=1` では scalar/pipeline CPU の IRQ acceptance と IRET commit も `CPU IRQ accept` / `CPU IRET` として記録し、cause・PC/EPC・active cycles・retired instructions を出す。これにより Enter key-up 後に IRQ3 handler が入ったのか、IRET まで戻ったのかを一回の実 DOS run で判別できる。`cargo check --bin cpt32` 成功。
+- CPU `status` MMIO write と scalar/pipeline の `sync_from_register_block` にも IRQ-enable 差分ログを追加。次の trace で `CPU status MMIO write` / `CPU status resync` が出ればソフトウェア／register-block sync が mask を落とした経路。出ず、`CPU IRQ accept` の後に IRET が無ければ割り込み復帰経路。`cargo check --bin cpt32` 成功。
+- Release-profile verification: `cargo test --release --test cpu_pipeline active_pipeline_irq_returns_to_the_interrupted_program -- --exact`, plus `dos_pipeline_hex_returns_to_shell_at_default_cycles_per_frame` and `_at_800_cycles_per_frame`, all passed. The CPU-only regression reproduces the active-pipeline IRQ case independently of the GUI. The GUI run itself has not yet been repeated after the fix.
+
+- IDC transfer timing (`doc/spec_IDC.md` §6) must remain cycle-exact, but calculating its `u128` ceiling-division deadline on every 48 MHz device tick made the synchronous GUI frame loop repeatedly pay for expensive arithmetic during disk I/O. `WindowEvent::RedrawRequested` runs the CPU frame budget on the GUI thread. Cache the next absolute sector deadline at command start and recompute only at sector completion; this preserves latency/rate semantics while removing work proportional to simulated cycles. Read regression `idc::tests::read_dma_uses_exact_deadline_for_each_sector_without_early_next_sector` checks both sector boundaries and no early DRQ; write regression `idc::tests::write_dma_commits_each_sector_only_at_its_deadline` checks commit boundaries. Verified with `cargo test --lib idc::` and the TinyBASIC disk-transfer guest smoke.
+
+- GUI audio synthesis currently remains on the event-loop thread after CPU/frame execution; CPAL's callback is a separate thread that only drains the output ring. `IdcAudio::render_into` previously cloned the selected `SoundProfile` every frame, deep-copying its WAV sample vectors (including FDD seek variants); it now borrows profiles and reuses mix scratch buffers. GUI retains stereo buffers, `S3w2Sound::clock_mixed_into` adds chip output into them, and `AudioHost` interleaves/converts directly into the ring without a temporary `Vec`. These reduce copies/allocations but do not move synthesis off-thread. A worker cannot safely take the current SGU/IDC objects as-is: `SguDevice`/`S3w2Sound` share `Rc<RefCell<...>>` state and PCM RAM with CPU MMIO; offloading requires a message/event handoff or a deliberate thread-safe ownership refactor. Verified: `cargo check --bin cpt32`, `cargo test --bin cpt32` (14 passed), `cargo test --lib idc::audio::tests` (6 passed), `cargo test --lib test_audio_clock` (1 passed), and targeted `rustfmt --check`.

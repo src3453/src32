@@ -28,7 +28,7 @@
 #   HEX NAME            hex editor (N/P/G/E/W/Q)
 #   FORMAT [N]          format drive N as DSFS
 #   DRV N               select the current drive
-#   FREE                block and file statistics
+#   MODE 40 / MODE 80   select text width
 #   CLS / HELP / EXIT
 #
 # Buffers live in main RAM: the DSFS directory needs 8192 bytes and file
@@ -1136,6 +1136,7 @@ fn dos_cmd_help () :
     "HEX NAME         hex editor" con.dos_putsln
     "FORMAT [N]       format drive N as DSFS" con.dos_putsln
     "DRV N            select the current drive" con.dos_putsln
+    "MODE 40 / 80     set text width" con.dos_putsln
     "FREE             block and file statistics" con.dos_putsln
     "CLS / HELP / EXIT" con.dos_putsln
 ;
@@ -1814,6 +1815,24 @@ fn dos_dispatch (ptr n) :
         retn
     end
     w0 "FREE" con.dos_streq if cmds.dos_cmd_free retn end
+    w0 "MODE" con.dos_streq if
+        n 2 lt if "USAGE: MODE 40|80" con.dos_err retn end
+        w1 names.dos_parse_dec >num
+        num 40 eq if
+            pcg.col40
+            con.dos_cls
+            "40-COLUMN MODE" con.dos_putsln
+            retn
+        end
+        num 80 eq if
+            pcg.col80
+            con.dos_cls
+            "80-COLUMN MODE" con.dos_putsln
+            retn
+        end
+        "USAGE: MODE 40|80" con.dos_err
+        retn
+    end
     w0 "STAT" con.dos_streq if cmds.dos_cmd_free retn end
     w0 "HELP" con.dos_streq if cmds.dos_cmd_help retn end
     w0 "CLS" con.dos_streq if con.dos_cls retn end
@@ -1825,7 +1844,7 @@ fn dos_dispatch (ptr n) :
 
 fn dos_banner () :
     "CPT32 DOS v1.0 - DSFS / FDD SHELL" con.dos_putsln
-    "DIR TYPE NEW REN DEL COPY EDIT HEX FORMAT DRV FREE CLS HELP EXIT" con.dos_putsln
+    "DIR TYPE NEW REN DEL COPY EDIT HEX FORMAT DRV MODE FREE CLS HELP EXIT" con.dos_putsln
     con.dos_newline
 ;
 
@@ -1841,7 +1860,7 @@ fn dos_repl () :
     end
     while
         dos_drv con.dos_putnum
-        ">" con.dos_puts
+        "> " con.dos_puts
         DOS_CMD_BUF DOS_CMD_CAP kbd.dos_read_line >n
         DOS_CMD_BUF n names.dos_words >w
         DOS_CMD_BUF w dos_dispatch

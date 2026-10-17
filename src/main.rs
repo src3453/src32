@@ -593,6 +593,8 @@ struct GuiApp {
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
     audio_host: Option<audio::AudioHost>,
+    audio_left: Vec<i16>,
+    audio_right: Vec<i16>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     held_keys: HashSet<u8>,
     held_mouse_buttons: u8,
@@ -645,6 +647,8 @@ impl GuiApp {
             sgu: machine.sgu,
             idc: machine.idc,
             audio_host,
+            audio_left: Vec::new(),
+            audio_right: Vec::new(),
             input_sender: machine.input_sender,
             held_keys: HashSet::new(),
             held_mouse_buttons: 0,
@@ -1022,6 +1026,12 @@ impl DebugUiState {
         }
     }
 
+    fn reset_cpu(&mut self, cpu: &mut AnyCpu) {
+        cpu.reset(0);
+        self.running = false;
+        self.queued_steps = 0;
+    }
+
     fn draw_windows(&mut self, ui: &Ui, cpu: &mut AnyCpu, vdp: &Rc<RefCell<Vdp>>) {
         ui.main_menu_bar(|| {
             ui.menu("Windows", || {
@@ -1305,6 +1315,10 @@ impl DebugUiState {
                 if ui.button("Step 100 instructions") {
                     self.running = false;
                     self.queued_steps = self.queued_steps.saturating_add(100);
+                }
+                ui.same_line();
+                if ui.button("Reset") {
+                    self.reset_cpu(cpu);
                 }
                 ui.separator();
                 if self.running {
@@ -1642,8 +1656,17 @@ impl ApplicationHandler for GuiApp {
                         if pec_trace_enabled() {
                             tracing::info!(
                                 target: "pec_debug",
-                                "[PEC-DBG] GUI key physical={code:?} usage=0x{usage:02X} down={down} repeat={}",
-                                event.repeat
+                                "[PEC-DBG] GUI key physical={code:?} usage=0x{usage:02X} down={down} repeat={} total_cycles={} running_cycles={} instructions={} cpu_running={} cpu_irq_enabled={} pc=0x{:08X} epc=0x{:08X} irq_cause={} debug_gui_running={:?}",
+                                event.repeat,
+                                self.cpu.cycles(),
+                                self.cpu.running_cycles(),
+                                self.cpu.instructions_executed(),
+                                self.cpu.is_running(),
+                                self.cpu.irq_enabled(),
+                                self.cpu.pc(),
+                                self.cpu.epc(),
+                                self.cpu.irq_cause(),
+                                self.debug_gui.as_ref().map(|gui| gui.state.running)
                             );
                         }
                         if down {
@@ -1776,26 +1799,22 @@ impl ApplicationHandler for GuiApp {
                     if let Some(audio_host) = self.audio_host.as_ref() {
                         let sample_rate = audio_host.sample_rate();
                         let sample_count = (sample_rate / cpt32::sys::FRAME_RATE) as usize;
-                        let (left0, right0) = self.sgu[0].borrow_mut().clock_mixed(sample_count);
-                        let (left1, right1) = self.sgu[1].borrow_mut().clock_mixed(sample_count);
-                        let mut left: Vec<i16> = left0
-                            .into_iter()
-                            .zip(left1)
-                            .map(|(a, b)| a.saturating_add(b))
-                            .collect();
-                        let mut right: Vec<i16> = right0
-                            .into_iter()
-                            .zip(right1)
-                            .map(|(a, b)| a.saturating_add(b))
-                            .collect();
-                        // Layer IDC disk operation sounds (spindle hum and
-                        // seek clicks from the user-supplied asset pack).
-                        // Silent when no sound profile is assigned.
-                        if let Some(idc) = self.idc.as_ref() {
-                            idc.borrow_mut()
-                                .render_audio(sample_rate, &mut left, &mut right);
+                        self.audio_left.resize(sample_count, 0);
+                        self.audio_right.resize(sample_count, 0);
+                        self.audio_left.fill(0);
+                        self.audio_right.fill(0);
+                        for sgu in &self.sgu {
+                            sgu.borrow_mut()
+                                .clock_mixed_into(&mut self.audio_left, &mut self.audio_right);
                         }
-                        audio_host.push_samples_i16(&left, &right);
+                        if let Some(idc) = self.idc.as_ref() {
+                            idc.borrow_mut().render_audio(
+                                sample_rate,
+                                &mut self.audio_left,
+                                &mut self.audio_right,
+                            );
+                        }
+                        audio_host.push_samples_i16(&self.audio_left, &self.audio_right);
                     }
 
                     match render_result {
@@ -2016,6 +2035,24 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
 mod input_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn debug_reset_restarts_cpu_paused_without_clearing_ram() {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        bus.write_u8(0x100, 0xA5);
+        let mut cpu = AnyCpu::new(CpuKind::Scalar, bus);
+        cpu.set_pc(0x40);
+        let mut state = DebugUiState::new(false);
+        state.queued_steps = 7;
+
+        state.reset_cpu(&mut cpu);
+
+        assert_eq!(cpu.pc(), 0);
+        assert_eq!(cpu.read_mem_u8(0x100), 0xA5);
+        assert!(!state.running);
+        assert_eq!(state.queued_steps, 0);
+    }
 
     #[test]
     fn maps_physical_keyboard_usage_ids_without_discriminant_casts() {
@@ -2290,6 +2327,8 @@ mod input_tests {
             sgu: old_sgu,
             idc: None,
             audio_host: None,
+            audio_left: Vec::new(),
+            audio_right: Vec::new(),
             input_sender: old_sender,
             held_keys: HashSet::from([0x04]),
             held_mouse_buttons: 1,

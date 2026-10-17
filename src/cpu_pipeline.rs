@@ -337,6 +337,7 @@ impl PipelineCpu {
         self.retire_pc = pc;
         self.retire_mode = InstructionMode::Normal;
         self.bus.reset_expansion_cards();
+        self.irq_controller.borrow_mut().reset();
         self.sync_register_block();
     }
 
@@ -356,13 +357,25 @@ impl PipelineCpu {
 
     fn sync_from_register_block(&mut self) {
         let block = self.register_block.borrow();
+        let irq_enable = block.status & 1 != 0;
+        if self.irq_enable != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] CPU status resync cpu=pipeline old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
+                self.irq_enable,
+                irq_enable,
+                block.pc,
+                block.epc,
+                block.cause
+            );
+        }
         self.reg = block.regs;
         self.reg[REG_ZERO] = 0;
         self.fetch_pc = block.pc;
         self.retire_pc = block.pc;
         self.epc = block.epc;
         self.cause = block.cause as u8;
-        self.irq_enable = block.status & 1 != 0;
+        self.irq_enable = irq_enable;
         self.fetch_mode = if block.instr_mode & 1 != 0 {
             InstructionMode::Short
         } else {
@@ -1408,6 +1421,16 @@ impl PipelineCpu {
         if !self.irq_enable || !self.irq_pending {
             return false;
         }
+        if crate::devices::pec::pec::pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] CPU IRQ accept cpu=pipeline cause={} pc=0x{:08X} running_cycles={} instructions={}",
+                self.irq_pending_number,
+                self.retire_pc,
+                self.running_cycles,
+                self.instructions_executed
+            );
+        }
         // Precise interrupt: resume after the last committed instruction.
         self.epc = self.retire_pc;
         self.irq_return_mode = self.retire_mode;
@@ -1415,7 +1438,12 @@ impl PipelineCpu {
         self.irq_pending = false;
         self.irq_enable = false;
         self.fetch_mode = InstructionMode::Normal;
-        self.fetch_pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        let vector_pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        self.fetch_pc = vector_pc;
+        // The empty-pipeline sync on the next tick reloads fetch_pc from retire_pc.
+        // Keep the vector there; EPC already holds the interrupted PC.
+        self.retire_pc = vector_pc;
+        self.retire_mode = InstructionMode::Normal;
         self.if_id.valid = false;
         self.id_ex = invalid_id_ex();
         self.ex_mem = invalid_ex_mem();
@@ -1466,6 +1494,17 @@ impl PipelineCpu {
             self.retire_mode = mode;
         }
         if wb.iret {
+            if crate::devices::pec::pec::pec_trace_enabled() {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] CPU IRET cpu=pipeline pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
+                    wb.pc,
+                    self.epc,
+                    self.cause,
+                    self.running_cycles,
+                    self.instructions_executed
+                );
+            }
             // IRET itself was already redirected at EX; the commit restores
             // the architectural PC/mode saved at interrupt entry.
             self.fetch_pc = self.epc;
@@ -1574,10 +1613,12 @@ impl PipelineCpu {
                 self.stall_cycles += 1;
                 self.mem_wb = next_mem_wb;
                 self.ex_mem = invalid_ex_mem();
-                self.sync_register_block();
                 if wb.valid {
                     self.accept_pending_irq();
                 }
+                // Publish the vector PC and masked status before the next empty-pipeline
+                // tick reloads architectural state from the register block.
+                self.sync_register_block();
                 if halted_by_commit {
                     self.if_id.valid = false;
                     self.id_ex = invalid_id_ex();
@@ -1613,10 +1654,11 @@ impl PipelineCpu {
                 self.mem_wb = next_mem_wb;
                 self.ex_mem = invalid_ex_mem();
                 // Hold IF/ID and ID/EX; fetch held (no bus re-issue).
-                self.sync_register_block();
                 if wb.valid {
                     self.accept_pending_irq();
                 }
+                // Keep IRQ acceptance ordered before register-block synchronization.
+                self.sync_register_block();
                 if halted_by_commit {
                     self.if_id.valid = false;
                     self.id_ex = invalid_id_ex();

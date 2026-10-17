@@ -230,6 +230,7 @@ struct ActiveCommand {
     completed_sectors: u32,
     dma_bytes_completed: u64,
     start_cycle: u128,
+    next_deadline_cycle: u128,
     buffer: [u8; SECTOR_SIZE],
     cursor: usize,
     read_ready: bool,
@@ -238,11 +239,11 @@ struct ActiveCommand {
 }
 
 impl ActiveCommand {
-    fn deadline(&self, drive: &Drive, completed_sector_count: u32) -> u128 {
+    fn deadline(start_cycle: u128, drive: &Drive, completed_sector_count: u32) -> u128 {
         let transfer_bytes = u128::from(completed_sector_count) * SECTOR_SIZE as u128;
         let transfer_cycles = (transfer_bytes * CYCLES_PER_SECOND)
             .div_ceil(u128::from(drive.transfer_rate_bytes_per_second));
-        self.start_cycle
+        start_cycle
             .saturating_add(u128::from(drive.access_latency_ms) * CYCLES_PER_MILLISECOND)
             .saturating_add(transfer_cycles)
     }
@@ -760,14 +761,7 @@ impl Idc {
         };
         let slot = active.slot;
         let direction = active.direction;
-        let sector_index = active.completed_sectors;
-        let deadline_sector_count = sector_index.saturating_add(1);
-        let deadline = {
-            let drive = self.drives[slot]
-                .as_ref()
-                .expect("active IDC command has a drive");
-            active.deadline(drive, deadline_sector_count)
-        };
+        let deadline = active.next_deadline_cycle;
 
         if direction == DmaDirection::DeviceToMemory {
             let should_load = self
@@ -830,6 +824,8 @@ impl Idc {
                 self.audio.notify_sector_tick(slot, lba, self.cycle);
                 if complete {
                     self.finish_success();
+                } else {
+                    self.update_next_deadline();
                 }
             }
         }
@@ -895,7 +891,7 @@ impl Idc {
     /// Called after the DMAC has completed both bus beats for one byte.
     /// Returns true when an IDC-requested abort has reached a sector boundary.
     pub(crate) fn dma_byte_completed(&mut self, channel: usize) -> bool {
-        let (abort_at_boundary, complete_read) = {
+        let (abort_at_boundary, sector_completed, transfer_completed) = {
             let Some(active) = self.active.as_mut() else {
                 return false;
             };
@@ -903,29 +899,28 @@ impl Idc {
                 return false;
             }
             active.dma_bytes_completed += 1;
-            let complete_read =
+            let sector_completed =
                 active.direction == DmaDirection::DeviceToMemory && active.cursor == SECTOR_SIZE;
-            if complete_read {
+            if sector_completed {
                 active.completed_sectors += 1;
                 active.cursor = 0;
                 active.read_ready = false;
             }
             (
                 active.abort_requested && active.dma_bytes_completed % SECTOR_SIZE as u64 == 0,
-                complete_read && active.completed_sectors == active.sector_count,
+                sector_completed,
+                sector_completed && active.completed_sectors == active.sector_count,
             )
         };
         if abort_at_boundary {
             self.finish_error(5);
             return true;
         }
-        if complete_read {
-            let finished = self
-                .active
-                .as_ref()
-                .is_some_and(|active| active.completed_sectors == active.sector_count);
-            if finished {
+        if sector_completed {
+            if transfer_completed {
                 self.finish_success();
+            } else {
+                self.update_next_deadline();
             }
         }
         false
@@ -1077,17 +1072,38 @@ impl Idc {
             completed_sectors: 0,
             dma_bytes_completed: 0,
             start_cycle: self.cycle,
+            next_deadline_cycle: self.cycle,
             buffer: [0; SECTOR_SIZE],
             cursor: 0,
             read_ready: false,
             dma_channel: None,
             abort_requested: false,
         });
+        self.update_next_deadline();
         let start_lba = self.lba;
         let sector_count = self.sector_count;
         let cycle = self.cycle;
         self.audio
             .notify_transfer_start(slot, start_lba, sector_count, cycle);
+    }
+
+    fn update_next_deadline(&mut self) {
+        let Some((slot, start_cycle, completed_sectors)) = self
+            .active
+            .as_ref()
+            .map(|active| (active.slot, active.start_cycle, active.completed_sectors))
+        else {
+            return;
+        };
+        let drive = self.drives[slot]
+            .as_ref()
+            .expect("active IDC command has a drive");
+        let deadline =
+            ActiveCommand::deadline(start_cycle, drive, completed_sectors.saturating_add(1));
+        self.active
+            .as_mut()
+            .expect("active IDC command")
+            .next_deadline_cycle = deadline;
     }
 
     fn identify(&mut self) {
@@ -1742,6 +1758,130 @@ mod tests {
         let root = temp_root();
         let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
         assert!(drives.iter().all(Option::is_none));
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn read_dma_uses_exact_deadline_for_each_sector_without_early_next_sector() {
+        let mut image = vec![0xA5; SECTOR_SIZE];
+        image.extend_from_slice(&[0x5A; SECTOR_SIZE]);
+        let drive = Drive {
+            kind: DriveType::Hdd,
+            image: DriveImage::Bytes(Arc::from(image)),
+            capacity_sectors: 2,
+            trailing_bytes: 0,
+            read_only: true,
+            transfer_rate_bytes_per_second: CYCLES_PER_SECOND as u64,
+            access_latency_ms: 0,
+        };
+        let mut idc = Idc::new([Some(drive), None, None, None]);
+        idc.drive_select = 0;
+        idc.lba = 0;
+        idc.sector_count = 2;
+        idc.execute_command(1);
+        assert!(idc.attach_dma(0));
+
+        for _ in 0..SECTOR_SIZE - 1 {
+            idc.tick();
+        }
+        assert_eq!(idc.status() & STATUS_DRQ, 0);
+        idc.tick();
+        assert_ne!(idc.status() & STATUS_DRQ, 0);
+
+        for _ in 0..SECTOR_SIZE {
+            assert_eq!(idc.dma_read_data(0), Some(0xA5));
+            assert!(!idc.dma_byte_completed(0));
+        }
+        assert_eq!(idc.status() & STATUS_DRQ, 0);
+        for _ in 0..SECTOR_SIZE - 1 {
+            idc.tick();
+        }
+        assert_eq!(idc.status() & STATUS_DRQ, 0);
+        idc.tick();
+        assert_ne!(idc.status() & STATUS_DRQ, 0);
+
+        for _ in 0..SECTOR_SIZE {
+            assert_eq!(idc.dma_read_data(0), Some(0x5A));
+            assert!(!idc.dma_byte_completed(0));
+        }
+        assert_ne!(idc.status() & STATUS_DONE, 0);
+    }
+    #[test]
+    fn write_dma_commits_each_sector_only_at_its_deadline() {
+        let root = temp_root();
+        let image_path = root.join("disk.img");
+        fs::write(&image_path, [0; SECTOR_SIZE * 2]).unwrap();
+        let drive = Drive {
+            kind: DriveType::Hdd,
+            image: DriveImage::File(
+                OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .open(&image_path)
+                    .unwrap(),
+            ),
+            capacity_sectors: 2,
+            trailing_bytes: 0,
+            read_only: false,
+            transfer_rate_bytes_per_second: CYCLES_PER_SECOND as u64,
+            access_latency_ms: 0,
+        };
+        let mut idc = Idc::new([Some(drive), None, None, None]);
+        idc.drive_select = 0;
+        idc.lba = 0;
+        idc.sector_count = 2;
+        idc.execute_command(2);
+        assert!(idc.attach_dma(0));
+
+        for _ in 0..SECTOR_SIZE {
+            assert!(idc.dma_write_data(0, 0xA5));
+            assert!(!idc.dma_byte_completed(0));
+        }
+        let mut sector = [0; SECTOR_SIZE];
+        idc.drives[0]
+            .as_mut()
+            .unwrap()
+            .read_sector(0, &mut sector)
+            .unwrap();
+        assert_eq!(sector, [0; SECTOR_SIZE]);
+        for _ in 0..SECTOR_SIZE - 1 {
+            idc.tick();
+        }
+        idc.drives[0]
+            .as_mut()
+            .unwrap()
+            .read_sector(0, &mut sector)
+            .unwrap();
+        assert_eq!(sector, [0; SECTOR_SIZE]);
+        idc.tick();
+        idc.drives[0]
+            .as_mut()
+            .unwrap()
+            .read_sector(0, &mut sector)
+            .unwrap();
+        assert_eq!(sector, [0xA5; SECTOR_SIZE]);
+
+        for _ in 0..SECTOR_SIZE {
+            assert!(idc.dma_write_data(0, 0x5A));
+            assert!(!idc.dma_byte_completed(0));
+        }
+        for _ in 0..SECTOR_SIZE - 1 {
+            idc.tick();
+        }
+        idc.drives[0]
+            .as_mut()
+            .unwrap()
+            .read_sector(1, &mut sector)
+            .unwrap();
+        assert_eq!(sector, [0; SECTOR_SIZE]);
+        idc.tick();
+        idc.drives[0]
+            .as_mut()
+            .unwrap()
+            .read_sector(1, &mut sector)
+            .unwrap();
+        assert_eq!(sector, [0x5A; SECTOR_SIZE]);
+        assert_ne!(idc.status() & STATUS_DONE, 0);
+        drop(idc);
         fs::remove_dir_all(root).unwrap();
     }
     #[test]

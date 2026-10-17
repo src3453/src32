@@ -65,6 +65,16 @@ impl CpuRegisterBlock {
             self.vectors[(offset / 4) as usize] = value;
             return;
         }
+        if offset == 0x28C && (self.status & 1) != (value & 1) {
+            if crate::devices::pec::pec::pec_trace_enabled() {
+                tracing::info!(
+                    target: "pec_debug",
+                    "[PEC-DBG] CPU status MMIO write old=0x{:08X} new=0x{:08X}",
+                    self.status,
+                    value
+                );
+            }
+        }
         match offset {
             0x200..=0x27F if offset % 4 == 0 => {
                 let index = ((offset - 0x200) / 4) as usize;

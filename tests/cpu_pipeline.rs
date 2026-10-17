@@ -253,6 +253,70 @@ fn cpuid_advertises_p_and_r0_stays_zero() {
 }
 
 #[test]
+fn active_pipeline_irq_returns_to_the_interrupted_program() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 11)); // Entry marker
+    for _ in 0..32 {
+        image.extend_from_slice(&encode_r(0x03, 0, 0, 0)); // NOP
+    }
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 22)); // Resume marker
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.write_mem_u32_be(0xFFFF_010C, 0x8000_0000); // IRQ3 vector: IRET
+
+    cpu.run(12);
+    assert!(cpu.is_running());
+    cpu.set_irq_input(true, 3);
+    cpu.run(8);
+    cpu.set_irq_input(false, 3);
+    cpu.run(256);
+
+    assert!(cpu.irq_enabled(), "active IRQ never returned via IRET");
+    assert!(!cpu.is_running());
+    assert_eq!(cpu.read_reg(1), 11);
+    assert_eq!(cpu.read_reg(2), 22);
+}
+
+fn assert_irq_during_mul_stall(inject_after_first_stall: bool) {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 21)); // R1 = 21
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 3)); // R2 = 3
+    image.extend_from_slice(&encode_r(0x18, 4, 1, 2)); // MUL R4 = 63
+    image.extend_from_slice(&encode_i(0x04, 5, 0, 42)); // Resume marker
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.write_mem_u32_be(
+        0xFFFF_010C,
+        u32::from_be_bytes(encode_i(0x04, 3, 0, 33)), // IRQ3 handler marker
+    );
+    cpu.write_mem_u32_be(0xFFFF_0110, 0x8000_0000); // IRET
+
+    cpu.run(4);
+    if inject_after_first_stall {
+        cpu.tick();
+        assert_eq!(cpu.stall_cycles(), 1);
+    }
+    cpu.set_irq_input(true, 3);
+    cpu.tick();
+    cpu.set_irq_input(false, 3);
+    cpu.run(256);
+
+    assert_eq!(cpu.read_reg(3), 33, "IRQ3 handler was skipped");
+    assert_eq!(cpu.read_reg(4), 63, "MUL did not finish after IRET");
+    assert_eq!(cpu.read_reg(5), 42, "interrupted program did not resume");
+    assert!(cpu.irq_enabled(), "IRQ3 handler did not return via IRET");
+    assert!(!cpu.is_running());
+}
+
+#[test]
+fn irq_during_multicycle_mul_stall_enters_handler_and_resumes() {
+    assert_irq_during_mul_stall(false);
+    assert_irq_during_mul_stall(true);
+}
+
+#[test]
 fn halt_wakes_on_irq_and_returns_past_halt() {
     let mut cpu = boot();
     let mut image = Vec::new();

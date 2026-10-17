@@ -210,6 +210,7 @@ impl Cpu {
         self.instruction = None;
         self.cycles_left = 0;
         self.bus.reset_expansion_cards();
+        self.irq_controller.borrow_mut().reset();
         self.sync_register_block();
     }
 
@@ -229,12 +230,24 @@ impl Cpu {
 
     fn sync_from_register_block(&mut self) {
         let block = self.register_block.borrow();
+        let irq_enable = block.status & 1 != 0;
+        if self.irq_enable != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] CPU status resync cpu=scalar old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
+                self.irq_enable,
+                irq_enable,
+                block.pc,
+                block.epc,
+                block.cause
+            );
+        }
         self.reg = block.regs;
         self.reg[REG_ZERO] = 0;
         self.pc = block.pc;
         self.epc = block.epc;
         self.cause = block.cause as u8;
-        self.irq_enable = block.status & 1 != 0;
+        self.irq_enable = irq_enable;
         self.instr_mode = if block.instr_mode & 1 != 0 {
             InstructionMode::Short
         } else {
@@ -410,6 +423,16 @@ impl Cpu {
             return false;
         }
 
+        if crate::devices::pec::pec::pec_trace_enabled() {
+            tracing::info!(
+                target: "pec_debug",
+                "[PEC-DBG] CPU IRQ accept cpu=scalar cause={} pc=0x{:08X} running_cycles={} instructions={}",
+                self.irq_pending_number,
+                self.pc,
+                self.running_cycles,
+                self.instructions_executed
+            );
+        }
         self.epc = self.pc;
         self.irq_return_mode = self.instr_mode;
         self.cause = self.irq_pending_number;
@@ -926,6 +949,17 @@ impl Cpu {
                 self.running = false;
             }
             Instruction::Iret => {
+                if crate::devices::pec::pec::pec_trace_enabled() {
+                    tracing::info!(
+                        target: "pec_debug",
+                        "[PEC-DBG] CPU IRET cpu=scalar pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
+                        self.pc,
+                        self.epc,
+                        self.cause,
+                        self.running_cycles,
+                        self.instructions_executed
+                    );
+                }
                 self.pc = self.epc;
                 self.instr_mode = self.irq_return_mode;
                 self.irq_enable = true;

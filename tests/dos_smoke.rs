@@ -17,7 +17,8 @@
 //!   FORMAT, COPY, HEX, EDIT, FREE and EXIT.
 //! * `dos_reports_missing_media` boots with no drive attached.
 use cpt32::bus::{Bus, connect_devices_with_vdp};
-use cpt32::cpu::{CYCLES_PER_FRAME, Cpu};
+use cpt32::cpu::CYCLES_PER_FRAME;
+use cpt32::cpu_select::{AnyCpu, CpuKind};
 use cpt32::devices::pec::idc::idc::{Idc, connect_idc};
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
 use cpt32::devices::pec::rng::connect_rng;
@@ -109,21 +110,26 @@ fn write_config(root: &Path, slots: &[(&str, bool)]) {
 }
 
 struct Harness {
-    cpu: Cpu,
+    cpu: AnyCpu,
     vdp: Rc<RefCell<Vdp>>,
     input: UnboundedSender<HostInputEvent>,
     root: PathBuf,
+    cycles_per_frame: usize,
 }
 
 impl Harness {
     fn boot(root: &Path) -> Harness {
+        Self::boot_with_kind(root, CpuKind::Scalar)
+    }
+
+    fn boot_with_kind(root: &Path, cpu_kind: CpuKind) -> Harness {
         let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
         let mut bus = Bus::new();
         let input = connect_pec_input(&mut bus);
         connect_rng(&mut bus);
         let vdp = connect_devices_with_vdp(&mut bus);
         connect_idc(&mut bus, drives);
-        let mut cpu = Cpu::new(bus);
+        let mut cpu = AnyCpu::new(cpu_kind, bus);
         let guest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/dos.bin")).expect(
             "dos.bin is missing; build it from dos.sol (see the module comment)",
         );
@@ -133,6 +139,7 @@ impl Harness {
             vdp,
             input,
             root: root.to_path_buf(),
+            cycles_per_frame: CYCLES_PER_FRAME as usize,
         }
     }
 
@@ -143,7 +150,9 @@ impl Harness {
     fn frames(&mut self, count: usize) {
         for _ in 0..count {
             self.vdp.borrow_mut().tick();
-            self.cpu.run(CYCLES_PER_FRAME as usize);
+            self.cpu.set_irq_source(0, true);
+            self.cpu.set_irq_source(0, false);
+            self.cpu.run(self.cycles_per_frame);
         }
     }
 
@@ -190,8 +199,15 @@ impl Harness {
                 return text;
             }
         }
+        let pc = self.cpu.pc();
+        let running = self.cpu.is_running();
+        let cycles = self.cpu.cycles();
+        let irq_pending = (u16::from(self.cpu.read_mem_u8(0xFFFF_0040)) << 8)
+            | u16::from(self.cpu.read_mem_u8(0xFFFF_0041));
+        let irq_enable = (u16::from(self.cpu.read_mem_u8(0xFFFF_0044)) << 8)
+            | u16::from(self.cpu.read_mem_u8(0xFFFF_0045));
         panic!(
-            "timeout waiting for {needle:?}; screen:\n{}\n",
+            "timeout waiting for {needle:?} (running={running}, pc=0x{pc:08X}, cycles={cycles}, IRQC pending=0x{irq_pending:04X}, enable=0x{irq_enable:04X}); screen:\n{}\n",
             wrap(&self.screen())
         );
     }
@@ -236,6 +252,61 @@ fn temp_root(tag: &str) -> PathBuf {
     root
 }
 
+fn hex_returns_to_shell_at_budget(
+    cycles_per_frame: usize,
+    cpu_kind: CpuKind,
+    tag: &str,
+) {
+    let root = temp_root(tag);
+    let contents = b"0123456789ABCD";
+    std::fs::write(
+        root.join("disk0.img"),
+        make_dsfs(&[(b"TEST    TXT", contents.as_slice())]),
+    )
+    .unwrap();
+    write_config(&root, &[("disk0.img", true)]);
+
+    let mut h = Harness::boot_with_kind(&root, cpu_kind);
+    h.wait_text("CPT32 DOS", 200);
+    h.wait_text("0> ", 200);
+    h.cycles_per_frame = cycles_per_frame;
+
+    let render_frames = 16_000_000usize.div_ceil(cycles_per_frame);
+    let command_frames = 4_000_000usize.div_ceil(cycles_per_frame);
+    h.command("HEX TEST.TXT", "HEX EDITOR", 2_000);
+    h.frames(render_frames);
+    let text = h.screen();
+    assert!(text.contains("00F0:"), "HEX rendering did not finish:\n{text}");
+    h.command("Q", "0>", command_frames);
+    h.command("HELP", "COPY SRC DST", render_frames);
+    h.command("EXIT", "BYE", command_frames);
+    std::fs::remove_dir_all(&root).unwrap();
+}
+
+#[test]
+fn dos_hex_returns_to_shell_at_800_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(800, CpuKind::Scalar, "hex-slow");
+}
+
+#[test]
+fn dos_hex_returns_to_shell_at_default_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(CYCLES_PER_FRAME as usize, CpuKind::Scalar, "hex-default");
+}
+
+#[test]
+fn dos_pipeline_hex_returns_to_shell_at_800_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(800, CpuKind::Pipelined, "hex-pipe-slow");
+}
+
+#[test]
+fn dos_pipeline_hex_returns_to_shell_at_default_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(
+        CYCLES_PER_FRAME as usize,
+        CpuKind::Pipelined,
+        "hex-pipe-default",
+    );
+}
+
 #[test]
 fn dos_shell_manages_files_on_two_drives() {
     let root = temp_root("shell");
@@ -250,6 +321,11 @@ fn dos_shell_manages_files_on_two_drives() {
 
     let mut h = Harness::boot(&root);
     h.wait_text("CPT32 DOS", 200);
+    h.wait_text("0> ", 200);
+    h.command("MODE 40", "40-COLUMN MODE", 200);
+    assert!(h.screen().contains("0> "), "40-column prompt missing");
+    h.command("MODE 80", "80-COLUMN MODE", 200);
+    assert!(h.screen().contains("0> "), "80-column prompt missing");
 
     // DIR lists the preexisting file with its size.
     h.command("DIR", "HELLO.TXT", 200);

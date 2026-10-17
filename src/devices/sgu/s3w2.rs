@@ -737,10 +737,17 @@ impl S3w2Sound {
         output
     }
 
-    /// Mix all channels to stereo 16-bit PCM output: `(left_samples, right_samples)`
+    /// Mix all channels to stereo 16-bit PCM output: `(left_samples, right_samples)`.
     pub fn clock_mixed(&mut self, samples: usize) -> (Vec<i16>, Vec<i16>) {
         let mut left_out = vec![0i16; samples];
         let mut right_out = vec![0i16; samples];
+        self.clock_mixed_into(&mut left_out, &mut right_out);
+        (left_out, right_out)
+    }
+
+    /// Add this chip's stereo output to existing buffers using saturating mix.
+    pub fn clock_mixed_into(&mut self, left_out: &mut [i16], right_out: &mut [i16]) {
+        let samples = left_out.len().min(right_out.len());
         for i in 0..samples {
             let mut mix_l = 0i32;
             let mut mix_r = 0i32;
@@ -753,10 +760,11 @@ impl S3w2Sound {
                     mix_r += (sample as i32) * pan_r / 15;
                 }
             }
-            left_out[i] = mix_l.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
-            right_out[i] = mix_r.clamp(i16::MIN as i32, i16::MAX as i32) as i16;
+            left_out[i] =
+                left_out[i].saturating_add(mix_l.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
+            right_out[i] =
+                right_out[i].saturating_add(mix_r.clamp(i16::MIN as i32, i16::MAX as i32) as i16);
         }
-        (left_out, right_out)
     }
 }
 
@@ -843,6 +851,11 @@ mod tests {
         assert_eq!(out.len(), NUM_CHANNELS);
         assert_eq!(out[0][0].len(), 64);
         assert_eq!(out[0][1].len(), 64);
+        let mut left = [100; 64];
+        let mut right = [100; 64];
+        sound.clock_mixed_into(&mut left, &mut right);
+        assert_eq!(left, right);
+        assert!(left.iter().any(|&sample| sample != 100));
     }
 
     fn sqv4_golden_bytes() -> Vec<u8> {

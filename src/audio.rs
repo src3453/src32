@@ -22,21 +22,25 @@ impl AudioRingBuffer {
         }
     }
 
-    pub fn push_interleaved(&mut self, samples: &[f32]) {
+    pub fn push_stereo_i16(&mut self, left: &[i16], right: &[i16]) {
+        let frames = left.len().min(right.len());
+        let sample_count = frames * 2;
         let write_pos = self.write_pos.load(Ordering::Relaxed);
         let read_pos = self.read_pos.load(Ordering::Acquire);
         let available = (read_pos + self.capacity - write_pos - 1) % self.capacity;
 
-        if samples.len() > available {
+        if sample_count > available {
             // Buffer overflow - skip old samples
-            let skip = samples.len() - available;
+            let skip = sample_count - available;
             let new_read = (read_pos + skip) % self.capacity;
             self.read_pos.store(new_read, Ordering::Release);
         }
 
         let mut cur = write_pos;
-        for &sample in samples {
-            self.buffer[cur] = sample;
+        for i in 0..frames {
+            self.buffer[cur] = left[i] as f32 / 32768.0;
+            cur = (cur + 1) % self.capacity;
+            self.buffer[cur] = right[i] as f32 / 32768.0;
             cur = (cur + 1) % self.capacity;
         }
         self.write_pos.store(cur, Ordering::Release);
@@ -45,15 +49,13 @@ impl AudioRingBuffer {
     pub fn pop(&mut self) -> Option<f32> {
         let read_pos = self.read_pos.load(Ordering::Relaxed);
         let write_pos = self.write_pos.load(Ordering::Acquire);
-
         if read_pos == write_pos {
-            None
-        } else {
-            let sample = self.buffer[read_pos];
-            self.read_pos
-                .store((read_pos + 1) % self.capacity, Ordering::Release);
-            Some(sample)
+            return None;
         }
+        let sample = self.buffer[read_pos];
+        self.read_pos
+            .store((read_pos + 1) % self.capacity, Ordering::Release);
+        Some(sample)
     }
 
     pub fn fill_slice(&mut self, output: &mut [f32]) {
@@ -96,7 +98,7 @@ impl AudioHost {
         } else {
             device
                 .default_output_config()
-                .map_err(|e| format!("Failed to get default output config: {e}"))?
+                .map_err(|e| format!("Failed to get default config: {e}"))?
         };
 
         let sample_rate = chosen_config.sample_rate();
@@ -173,17 +175,25 @@ impl AudioHost {
         self.sample_rate
     }
 
-    /// Push stereo i16 samples (left, right interleaved or from slices)
+    /// Push stereo i16 samples (left/right), interleaved into the host ring buffer.
     pub fn push_samples_i16(&self, left: &[i16], right: &[i16]) {
-        let count = left.len().min(right.len());
-        let mut interleaved = Vec::with_capacity(count * 2);
-        for i in 0..count {
-            interleaved.push(left[i] as f32 / 32768.0);
-            interleaved.push(right[i] as f32 / 32768.0);
-        }
-
         if let Ok(mut buf) = self.ring_buffer.lock() {
-            buf.push_interleaved(&interleaved);
+            buf.push_stereo_i16(left, right);
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn stereo_push_preserves_channel_order_and_sample_values() {
+        let mut buffer = AudioRingBuffer::new(8);
+        buffer.push_stereo_i16(&[i16::MAX, i16::MIN], &[0, 16_384]);
+
+        let mut output = [0.0; 4];
+        buffer.fill_slice(&mut output);
+        assert_eq!(output, [i16::MAX as f32 / 32768.0, 0.0, -1.0, 0.5]);
     }
 }

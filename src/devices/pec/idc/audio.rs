@@ -188,6 +188,8 @@ pub struct IdcAudio {
     profiles: Vec<SoundProfile>,
     slots: [SlotState; 4],
     volume: f32,
+    mix_left: Vec<f32>,
+    mix_right: Vec<f32>,
 }
 
 impl Default for IdcAudio {
@@ -202,6 +204,8 @@ impl IdcAudio {
             profiles: Vec::new(),
             slots: std::array::from_fn(|_| SlotState::new()),
             volume: 1.0,
+            mix_left: Vec::new(),
+            mix_right: Vec::new(),
         }
     }
 
@@ -397,32 +401,37 @@ impl IdcAudio {
             return;
         }
         let frames = left.len().min(right.len());
-        if frames == 0 {
+        if frames == 0 || !self.slots.iter().any(|slot| slot.profile.is_some()) {
             return;
         }
-        if !self.slots.iter().any(|slot| slot.profile.is_some()) {
-            return;
-        }
-        let mut mix_l = vec![0.0f32; frames];
-        let mut mix_r = vec![0.0f32; frames];
-        for slot_index in 0..self.slots.len() {
-            let Some(&profile_index) = self.slots[slot_index].profile.as_ref() else {
+
+        let gain = self.volume;
+        let Self {
+            profiles,
+            slots,
+            mix_left,
+            mix_right,
+            ..
+        } = self;
+        mix_left.resize(frames, 0.0);
+        mix_right.resize(frames, 0.0);
+        mix_left.fill(0.0);
+        mix_right.fill(0.0);
+
+        for state in slots.iter_mut() {
+            let Some(profile_index) = state.profile else {
                 continue;
             };
-            if profile_index >= self.profiles.len() {
+            let Some(profile) = profiles.get(profile_index) else {
                 continue;
-            }
-            // Clone the small state we need to satisfy the borrow checker;
-            // profiles are read-only during rendering.
-            let profile = self.profiles[profile_index].clone();
-            let state = &mut self.slots[slot_index];
-            render_spindle(&profile, state, sample_rate, &mut mix_l, &mut mix_r);
-            render_seeks(&profile, state, sample_rate, &mut mix_l, &mut mix_r);
+            };
+            render_spindle(profile, state, sample_rate, mix_left, mix_right);
+            render_seeks(profile, state, sample_rate, mix_left, mix_right);
         }
-        let gain = self.volume;
+
         for i in 0..frames {
-            let l = left[i] as f32 + mix_l[i] * 32767.0 * gain;
-            let r = right[i] as f32 + mix_r[i] * 32767.0 * gain;
+            let l = left[i] as f32 + mix_left[i] * 32767.0 * gain;
+            let r = right[i] as f32 + mix_right[i] * 32767.0 * gain;
             left[i] = l.clamp(-32768.0, 32767.0) as i16;
             right[i] = r.clamp(-32768.0, 32767.0) as i16;
         }

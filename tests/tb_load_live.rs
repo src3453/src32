@@ -340,9 +340,34 @@ fn tb_repl_accepts_input_after_full_size_load_pipelined() {
         cpu.set_irq_source(0, false);
         cpu.run(CYCLES_PER_FRAME as usize);
     }
-    type_pipeline_text(&mut cpu, &vdp, &input, "load\n");
+    type_pipeline_text(&mut cpu, &vdp, &input, "load");
+    input
+        .send(HostInputEvent::Key {
+            usage: 40,
+            down: true,
+        })
+        .unwrap();
+    // Match the GUI: Enter key-up may arrive while the synchronous LOAD scan
+    // is still executing, after key-down has already started the command.
+    vdp.borrow_mut().tick();
+    cpu.set_irq_source(0, true);
+    cpu.set_irq_source(0, false);
+    cpu.run(CYCLES_PER_FRAME as usize);
+    input
+        .send(HostInputEvent::Key {
+            usage: 40,
+            down: false,
+        })
+        .unwrap();
+    vdp.borrow_mut().tick();
+    cpu.set_irq_source(0, true);
+    cpu.set_irq_source(0, false);
+    cpu.run(CYCLES_PER_FRAME as usize);
     let after_load = wait_pipeline_text(&mut cpu, &vdp, "LOADED", 128);
-    assert!(after_load.contains("LOADED"), "large LOAD did not finish:\n{after_load}");
+    assert!(
+        after_load.contains("LOADED"),
+        "large LOAD did not finish:\n{after_load}"
+    );
     wait_pipeline_halted(&mut cpu, &vdp, 256);
 
     type_pipeline_text(&mut cpu, &vdp, &input, "print 42\n");
