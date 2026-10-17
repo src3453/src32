@@ -668,7 +668,7 @@ mod tests {
 
     #[test]
     fn console_set_register_command_updates_cpu_and_returns_feedback() {
-        for kind in [CpuKind::Scalar, CpuKind::Pipelined] {
+        for kind in [CpuKind::Scalar, CpuKind::Cached, CpuKind::Pipelined] {
             let mut bus = Bus::new();
             connect_ram(&mut bus);
             let mut cpu = AnyCpu::new(kind, bus);

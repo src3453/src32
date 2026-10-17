@@ -1940,7 +1940,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 }
                 cpu = Some(
                     args.next()
-                        .ok_or("--cpu requires 'scalar' or 'pipeline'")?
+                        .ok_or("--cpu requires 'scalar', 'cached', or 'pipeline'")?
                         .parse::<CpuKind>()?,
                 );
             }
@@ -2000,13 +2000,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }
@@ -2199,23 +2199,44 @@ mod input_tests {
     }
 
     #[test]
-    fn calculates_utilization_against_configured_cycle_budget_and_ipc() {
-        let stats =
-            PerformanceStats::from_deltas(100_000, 5_000, Duration::from_millis(500), 200_000);
+    fn calculates_utilization_and_realtime_speed_from_distinct_cycle_counts() {
+        let stats = PerformanceStats::from_deltas(
+            100_000,
+            24_000_000,
+            5_000,
+            Duration::from_millis(500),
+            200_000,
+        );
 
         assert_eq!(stats.running_cycles, 100_000);
         assert_eq!(stats.cycle_budget, 200_000);
         assert_eq!(stats.instructions, 5_000);
         assert_eq!(stats.cpu_utilization_percent, 50.0);
+        assert_eq!(stats.emulation_speed_percent, 100.0);
         assert_eq!(stats.kips, 10.0);
         assert_eq!(stats.ipc, 0.05);
     }
 
     #[test]
+    fn realtime_emulation_speed_can_exceed_100_percent() {
+        let stats = PerformanceStats::from_deltas(
+            200_000,
+            36_000_000,
+            5_000,
+            Duration::from_millis(500),
+            200_000,
+        );
+
+        assert_eq!(stats.cpu_utilization_percent, 100.0);
+        assert_eq!(stats.emulation_speed_percent, 150.0);
+    }
+
+    #[test]
     fn zero_elapsed_time_produces_zero_kips_and_zero_cycle_ipc() {
-        let stats = PerformanceStats::from_deltas(0, 100, Duration::ZERO, 200_000);
+        let stats = PerformanceStats::from_deltas(0, 0, 100, Duration::ZERO, 200_000);
         assert_eq!(stats.kips, 0.0);
         assert_eq!(stats.ipc, 0.0);
+        assert_eq!(stats.emulation_speed_percent, 0.0);
     }
 
     #[test]

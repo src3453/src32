@@ -16,10 +16,11 @@ fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 4] {
 }
 
 #[test]
-fn pipeline_is_the_default_kind() {
+fn cpu_modes_parse_and_keep_pipeline_as_default() {
     assert_eq!(CpuKind::default(), CpuKind::Pipelined);
     assert_eq!("pipeline".parse::<CpuKind>().unwrap(), CpuKind::Pipelined);
     assert_eq!("scalar".parse::<CpuKind>().unwrap(), CpuKind::Scalar);
+    assert_eq!("cached".parse::<CpuKind>().unwrap(), CpuKind::Cached);
     assert!("fast".parse::<CpuKind>().is_err());
 }
 
@@ -44,12 +45,124 @@ fn run_guest(kind: CpuKind) -> [u32; 32] {
 }
 
 #[test]
-fn any_cpu_runs_the_same_program_on_both_kinds() {
+fn cached_cpu_observes_modified_code_after_cache_population() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(CpuKind::Cached, bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 1));
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 1));
+    image.extend_from_slice(&encode_i(0x09, 0, 0, -8));
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+    cpu.load_program(0, &image);
+
+    assert!(cpu.step_once()); // populate address 0
+    assert!(cpu.step_once()); // populate address 4
+    assert!(cpu.step_once()); // populate address 8, branch back to address 4
+    cpu.write_mem_u32_be(4, u32::from_be_bytes(encode_i(0x04, 2, 0, 9)));
+    assert!(cpu.step_once());
+    assert_eq!(cpu.read_reg(2), 9);
+    assert!(cpu.step_once()); // cached branch at address 8
+    assert!(cpu.step_once()); // cached updated instruction at address 4
+    assert_eq!(cpu.read_reg(2), 9);
+    let (hits, misses) = cpu.instruction_cache_stats().unwrap();
+    assert!(hits > 0);
+    assert!(misses > 0);
+}
+#[test]
+fn cached_cpu_invalidates_an_instruction_crossing_a_generation_page() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(CpuKind::Cached, bus);
+    let pc = 4094;
+    cpu.load_program(pc, &encode_i(0x04, 2, 0, 1));
+    cpu.set_pc(pc);
+    assert!(cpu.step_once());
+    assert_eq!(cpu.read_reg(2), 1);
+
+    cpu.write_mem_u8(pc + 3, 9);
+    cpu.set_pc(pc);
+    assert!(cpu.step_once());
+    assert_eq!(cpu.read_reg(2), 9);
+}
+
+#[test]
+fn cached_interpreter_commits_simple_instruction_in_one_cycle() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(CpuKind::Cached, bus);
+    cpu.load_program(0, &encode_i(0x04, 1, 0, 7));
+    cpu.run(1);
+    assert_eq!(cpu.instructions_executed(), 1);
+    assert_eq!(cpu.cycles(), 1);
+    assert_eq!(cpu.read_reg(1), 7);
+}
+#[test]
+fn cached_interpreter_executes_short_mode_and_returns_to_normal() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(CpuKind::Cached, bus);
+    let mut image = vec![
+        0x91, 0x05, // S.LDI R1, 5
+        0x92, 0x07, // S.LDI R2, 7
+        0x13, 0x12, // S.ADD R3, R1, R2
+        0xF0, 0x00, // S.RET
+    ];
+    image.extend_from_slice(&encode_r(0x03, 4, 3, 2));
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+    cpu.load_program(0, &image);
+    cpu.set_instruction_mode(cpt32::cpu::InstructionMode::Short);
+
+    cpu.run(5);
+    assert_eq!(cpu.read_reg(3), 12);
+    assert_eq!(cpu.read_reg(4), 19);
+    assert_eq!(cpu.instruction_mode(), cpt32::cpu::InstructionMode::Normal);
+    assert_eq!(cpu.pc(), 12);
+    assert_eq!(cpu.instructions_executed(), 5);
+    cpu.run(1);
+    assert!(!cpu.is_running());
+    assert_eq!(cpu.instructions_executed(), 6);
+}
+
+#[test]
+fn cached_interpreter_preserves_multiply_and_divide_latency() {
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut cpu = AnyCpu::new(CpuKind::Cached, bus);
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 2));
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 3));
+    image.extend_from_slice(&encode_r(0x18, 3, 1, 2));
+    image.extend_from_slice(&encode_r(0x19, 4, 3, 2));
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+    cpu.load_program(0, &image);
+
+    cpu.run(2);
+    assert_eq!(cpu.instructions_executed(), 2);
+    assert_eq!(cpu.cycles(), 2);
+    cpu.run(3);
+    assert_eq!(cpu.instructions_executed(), 3);
+    assert_eq!(cpu.cycles(), 5);
+    cpu.run(16);
+    assert_eq!(cpu.instructions_executed(), 4);
+    assert_eq!(cpu.cycles(), 21);
+    assert_eq!(cpu.read_reg(3), 6);
+    assert_eq!(cpu.read_reg(4), 2);
+    cpu.run(1);
+    assert!(!cpu.is_running());
+    assert_eq!(cpu.instructions_executed(), 5);
+    assert_eq!(cpu.cycles(), 22);
+}
+#[test]
+fn any_cpu_runs_the_same_program_on_scalar_cached_and_pipeline_modes() {
     let scalar = run_guest(CpuKind::Scalar);
+    let cached = run_guest(CpuKind::Cached);
     let pipelined = run_guest(CpuKind::Pipelined);
     assert_eq!(scalar[3], 30);
+    assert_eq!(cached[3], 30);
     assert_eq!(pipelined[3], 30);
     assert_eq!(scalar[2], 0x3F);
+    assert_eq!(cached[2], scalar[2]);
     assert_eq!(pipelined[2], 0x3F | 0x80);
 }
 
@@ -70,6 +183,7 @@ fn scratch_config(contents: &str) -> std::path::PathBuf {
 fn resolve_prefers_cli_then_config_then_default() {
     let scalar_cfg = scratch_config("cpu:\n  microarchitecture: scalar\n");
     let pipeline_cfg = scratch_config("cpu:\n  microarchitecture: pipeline\n");
+    let cached_cfg = scratch_config("cpu:\n  microarchitecture: cached\n");
     let empty_cfg = scratch_config("pcg: {}\n");
     let missing = std::env::temp_dir().join(format!(
         "cpt32-cpu-kind-missing-{}-{}.yaml",
@@ -97,6 +211,11 @@ fn resolve_prefers_cli_then_config_then_default() {
         resolve_cpu_kind(None, &pipeline_cfg).unwrap(),
         CpuKind::Pipelined
     );
+    // Config selects cached interpretation explicitly.
+    assert_eq!(
+        resolve_cpu_kind(None, &cached_cfg).unwrap(),
+        CpuKind::Cached
+    );
     // CLI wins over config either way.
     assert_eq!(
         resolve_cpu_kind(Some(CpuKind::Pipelined), &scalar_cfg).unwrap(),
@@ -106,8 +225,13 @@ fn resolve_prefers_cli_then_config_then_default() {
         resolve_cpu_kind(Some(CpuKind::Scalar), &pipeline_cfg).unwrap(),
         CpuKind::Scalar
     );
+    assert_eq!(
+        resolve_cpu_kind(Some(CpuKind::Cached), &scalar_cfg).unwrap(),
+        CpuKind::Cached
+    );
 
     std::fs::remove_file(&scalar_cfg).ok();
+    std::fs::remove_file(&cached_cfg).ok();
     std::fs::remove_file(&pipeline_cfg).ok();
     std::fs::remove_file(&empty_cfg).ok();
 }

@@ -15,6 +15,8 @@ struct Sample {
     instructions: u128,
     stalls: Option<u128>,
     flushes: Option<u128>,
+    cache_hits: Option<u128>,
+    cache_misses: Option<u128>,
     registers: [u32; 32],
     pc: u32,
     memory: u32,
@@ -33,30 +35,24 @@ fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 4] {
 }
 
 fn workload(iterations: usize) -> Result<Vec<u8>, Box<dyn Error>> {
-    let image_size = iterations
-        .checked_mul(7 * 4)
-        .and_then(|size| size.checked_add(4 * 4))
-        .ok_or("iteration count overflows program size")?;
-    if image_size > DATA_ADDRESS as usize {
-        return Err(format!(
-            "program is {image_size} bytes; maximum before data is {DATA_ADDRESS} bytes"
-        )
-        .into());
-    }
-
-    let mut image = Vec::with_capacity(image_size);
+    let count = u32::try_from(iterations).map_err(|_| "iteration count exceeds 32 bits")?;
+    let mut image = Vec::with_capacity(10 * 4);
+    image.extend_from_slice(&encode_i(0x3D, 9, 0, (count >> 16) as u16 as i16)); // LDIH R9, count high
+    image.extend_from_slice(&encode_i(0x3C, 9, 0, count as u16 as i16)); // LDIL R9, count low
     image.extend_from_slice(&encode_i(0x04, 2, 0, 3)); // R2 = 3
     image.extend_from_slice(&encode_i(0x3D, 6, 0, 0x00F0)); // LDIH R6, data address high half
     image.extend_from_slice(&encode_i(0x3C, 6, 0, 0)); // LDIL R6, data address low half
-    for _ in 0..iterations {
-        image.extend_from_slice(&encode_i(0x04, 1, 1, 1)); // increment R1
-        image.extend_from_slice(&encode_r(0x03, 3, 1, 2)); // dependent ALU operation
-        image.extend_from_slice(&encode_r(0x18, 4, 3, 2)); // multi-cycle MUL
-        image.extend_from_slice(&encode_i(0x04, 5, 4, 1)); // consume MUL result
-        image.extend_from_slice(&encode_i(0x02, 5, 6, 0)); // store forwarded value
-        image.extend_from_slice(&encode_i(0x01, 7, 6, 0)); // load stored value
-        image.extend_from_slice(&encode_r(0x03, 8, 7, 5)); // load-use dependency
-    }
+    let loop_start = image.len() as i16;
+    image.extend_from_slice(&encode_i(0x04, 1, 1, 1)); // increment R1
+    image.extend_from_slice(&encode_r(0x03, 3, 1, 2)); // dependent ALU operation
+    image.extend_from_slice(&encode_r(0x18, 4, 3, 2)); // multi-cycle MUL
+    image.extend_from_slice(&encode_i(0x04, 5, 4, 1)); // consume MUL result
+    image.extend_from_slice(&encode_i(0x02, 5, 6, 0)); // store forwarded value
+    image.extend_from_slice(&encode_i(0x01, 7, 6, 0)); // load stored value
+    image.extend_from_slice(&encode_r(0x03, 8, 7, 5)); // load-use dependency
+    image.extend_from_slice(&encode_i(0x04, 9, 9, -1)); // decrement loop counter
+    let branch_offset = loop_start - (image.len() as i16 + 4);
+    image.extend_from_slice(&encode_i(0x08, 0, 9, branch_offset)); // repeat until R9 == 0
     image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
     Ok(image)
 }
@@ -84,6 +80,9 @@ fn run(kind: CpuKind, image: &[u8]) -> Sample {
         .map_or((None, None), |(stalls, flushes)| {
             (Some(stalls), Some(flushes))
         });
+    let (cache_hits, cache_misses) = cpu
+        .instruction_cache_stats()
+        .map_or((None, None), |(hits, misses)| (Some(hits), Some(misses)));
 
     Sample {
         elapsed,
@@ -91,6 +90,8 @@ fn run(kind: CpuKind, image: &[u8]) -> Sample {
         instructions: cpu.instructions_executed(),
         stalls,
         flushes,
+        cache_hits,
+        cache_misses,
         registers,
         pc,
         memory,
@@ -118,7 +119,7 @@ fn assert_expected_workload(
     let count = iterations as u32;
     let expected_product = count.wrapping_add(3).wrapping_mul(3);
     let expected_stored = expected_product.wrapping_add(1);
-    let expected_instructions = (iterations as u128) * 7 + 4;
+    let expected_instructions = (iterations as u128) * 9 + 6;
     if sample.registers[1] != count
         || sample.registers[2] != 3
         || sample.registers[4] != expected_product
@@ -133,8 +134,13 @@ fn assert_expected_workload(
         return Err("benchmark workload produced unexpected architectural state".into());
     }
     if let (Some(stalls), Some(flushes)) = (sample.stalls, sample.flushes) {
-        if stalls != iterations as u128 * 3 || flushes != 0 {
+        if stalls != iterations as u128 * 3 || flushes != iterations.saturating_sub(1) as u128 {
             return Err("pipeline workload did not observe the expected hazards".into());
+        }
+    }
+    if let Some(misses) = sample.cache_misses {
+        if misses == 0 {
+            return Err("cached workload did not exercise instruction-cache misses".into());
         }
     }
     Ok(())
@@ -159,6 +165,9 @@ fn report(label: &str, elapsed: Duration, sample: &Sample) {
     if let (Some(stalls), Some(flushes)) = (sample.stalls, sample.flushes) {
         println!("         pipeline stalls={stalls}  flushes={flushes}");
     }
+    if let (Some(hits), Some(misses)) = (sample.cache_hits, sample.cache_misses) {
+        println!("         instruction cache hits={hits}  misses={misses}");
+    }
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -179,27 +188,41 @@ fn main() -> Result<(), Box<dyn Error>> {
     let image = workload(iterations)?;
     let mut scalar_results = Vec::with_capacity(samples);
     let mut pipeline_results = Vec::with_capacity(samples);
+    let mut cached_results = Vec::with_capacity(samples);
     for index in 0..samples {
-        // Alternate order to reduce systematic warm-up and thermal bias.
-        let (scalar, pipeline) = if index % 2 == 0 {
-            (
+        // Rotate start order to reduce systematic warm-up and thermal bias.
+        let (scalar, pipeline, cached) = match index % 3 {
+            0 => (
                 run(CpuKind::Scalar, &image),
                 run(CpuKind::Pipelined, &image),
-            )
-        } else {
-            let pipeline = run(CpuKind::Pipelined, &image);
-            let scalar = run(CpuKind::Scalar, &image);
-            (scalar, pipeline)
+                run(CpuKind::Cached, &image),
+            ),
+            1 => {
+                let pipeline = run(CpuKind::Pipelined, &image);
+                let cached = run(CpuKind::Cached, &image);
+                let scalar = run(CpuKind::Scalar, &image);
+                (scalar, pipeline, cached)
+            }
+            _ => {
+                let cached = run(CpuKind::Cached, &image);
+                let scalar = run(CpuKind::Scalar, &image);
+                let pipeline = run(CpuKind::Pipelined, &image);
+                (scalar, pipeline, cached)
+            }
         };
         assert_expected_workload(iterations, &image, &scalar)?;
         assert_expected_workload(iterations, &image, &pipeline)?;
+        assert_expected_workload(iterations, &image, &cached)?;
         assert_same_architecture(&scalar, &pipeline)?;
+        assert_same_architecture(&scalar, &cached)?;
         scalar_results.push(scalar);
         pipeline_results.push(pipeline);
+        cached_results.push(cached);
     }
 
     let scalar = &scalar_results[0];
     let pipeline = &pipeline_results[0];
+    let cached = &cached_results[0];
     let scalar_median = median(scalar_results.iter().map(|sample| sample.elapsed).collect());
     let pipeline_median = median(
         pipeline_results
@@ -207,15 +230,18 @@ fn main() -> Result<(), Box<dyn Error>> {
             .map(|sample| sample.elapsed)
             .collect(),
     );
+    let cached_median = median(cached_results.iter().map(|sample| sample.elapsed).collect());
     println!(
-        "CPU comparison: {iterations} workload iterations, {samples} samples, {} guest instructions/sample",
+        "CPU comparison: {iterations} loop iterations, {samples} samples, {} guest instructions/sample",
         scalar.instructions,
     );
     report("Scalar", scalar_median, scalar);
     report("Pipeline", pipeline_median, pipeline);
+    report("Cached", cached_median, cached);
     println!(
-        "Pipeline wall-clock speedup: {:.3}x",
-        scalar_median.as_secs_f64() / pipeline_median.as_secs_f64(),
+        "Cached speedup vs Scalar: {:.3}x  vs Pipeline: {:.3}x",
+        scalar_median.as_secs_f64() / cached_median.as_secs_f64(),
+        pipeline_median.as_secs_f64() / cached_median.as_secs_f64(),
     );
     Ok(())
 }

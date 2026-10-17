@@ -40,6 +40,14 @@ pub trait Device {
     fn read(&mut self, addr: u32) -> u8;
     fn write(&mut self, addr: u32, value: u8);
     fn size(&self) -> u32;
+    /// Return the generation token for the cache-coherence unit containing `addr`.
+    /// It must change whenever any byte in that unit changes. `None` disables
+    /// instruction caching for the address.
+    fn instruction_cache_generation(&self, _addr: u32) -> Option<u64> {
+        None
+    }
+    /// Enable or initialize generation tracking before a cached CPU is created.
+    fn enable_instruction_cache_tracking(&mut self) {}
     fn next_event_cycle(&self) -> Option<u64> {
         None
     }
@@ -526,6 +534,23 @@ impl Bus {
             }
         }
         None
+    }
+
+    /// Return the executable-memory generation at an address without a bus read.
+    pub(crate) fn instruction_cache_generation(&self, addr: u32) -> Option<u64> {
+        self.devices.iter().find_map(|mapped| {
+            let offset = addr.checked_sub(mapped.region.start)?;
+            (offset < mapped.region.size)
+                .then(|| mapped.device.instruction_cache_generation(offset))
+                .flatten()
+        })
+    }
+
+    /// Enable instruction-generation tracking for cache-aware CPU modes.
+    pub(crate) fn enable_instruction_cache_tracking(&mut self) {
+        for mapped in &mut self.devices {
+            mapped.device.enable_instruction_cache_tracking();
+        }
     }
 
     pub fn read_u8(&mut self, addr: u32) -> u8 {

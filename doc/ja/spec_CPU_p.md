@@ -64,10 +64,8 @@ Revision 0.1 (2026-10-15). 状態: 実装済み（`src/cpu_pipeline.rs`）。
 ## 3. 参照モデルとテスト
 
 - スカラーの`Cpu`（`src/cpu.rs`）が参照モデルです。同じプログラムと同じ初期メモリーを与えれば、レジスター、アーキテクチャ上のPC、メモリーが一致します。`tests/cpu_pipeline.rs::differential_mixed_program_matches_scalar`（34命令の混合プログラム）および端点テスト（除算端点、MULH/DIVU、Short-mode往復、HALT/IRQ wake-up、CPUID）で実証されています。
-- エミュレーターはデフォルトで`PipelineCpu`を起動します。選択処理は`src/cpu_select.rs`（`Cpu`/`PipelineCpu`を同じharness APIで扱う`AnyCpu`）にあります。優先順は、まず`--cpu scalar|pipeline` CLIフラグ、次に`config.yaml`の`cpu.microarchitecture`キー、最後にpipelineデフォルトです。スカラーの`Cpu`は動作参照モデルおよび差分テスト用に残されています。
+- エミュレーターは既定で`PipelineCpu`を起動します。`src/cpu_select.rs`の`AnyCpu`は`--cpu scalar|cached|pipeline`と`config.yaml`の`cpu.microarchitecture`を扱います（CLI優先）。CachedはスカラーCPUの命令セマンティクスを再利用する独立したsingle-instruction-per-tick interpreterで、書き込み整合性を持つ命令デコードキャッシュを使い、拡張pは報告しません。キャッシュヒットではRAM命令フェッチのバスアクセスを省略します。既定方式はpipelineのままで、対象ワークロードとホストでの測定を基に選択してください。
 
 ## 4. ファイル
 
-- `src/cpu_pipeline.rs` — 実装。
-- `tests/cpu_pipeline.rs` — TDDテストスイート（12テスト）。
-- [[doc/ja/spec_CPU|SRC32 ISA仕様]] — ISAの基準仕様（セマンティクス変更なし）。
+- `src/bin/cpu_bench.rs` — Scalar/Pipeline/Cachedの3方式を同じループで比較します。状態一致を検査し、中央値、キャッシュhit/miss、Cachedの2方式に対するspeedupを表示します。
