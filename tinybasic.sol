@@ -20,6 +20,19 @@
 # 128 sectors with LBA 0; LOAD clamps to the disk capacity; LOAD or NEW
 # typed inside a running program stops it (the AST under execution would
 # otherwise go stale); BYE/QUIT halt the CPU.
+#
+# Modules: every function lives in a sol namespace named after its section
+# banner, and calls that cross a namespace are written qualified so the
+# module boundary is visible at the call site.
+#   line   line text storage        vars  variable / array storage
+#   con    console output           kbd   keyboard input
+#   lex    lexer                    ast   AST heap
+#   parse  parser                   prog  program lines -> AST directory
+#   eval   expression evaluator     exec  statement executor
+#   emit   codegen hook             run   REPL and execution loop
+#   disk   DSFS load / save
+# irq3 and main stay in the global namespace: solc only builds the IRQ
+# dispatcher and the entry call for globally named functions.
 !include "sol/cpt32/pcg.sol"
 !include "sol/cpt32/pec_rng.sol"
 !include "sol/cpt32/irqc.sol"
@@ -185,6 +198,7 @@
 !var tb_disk_limit 0
 
 # ---------------- line text storage ----------------
+!namespace line -
 
 fn tb_line_addr (line) :
     TB_LINE_BASE line TB_LINE_STRIDE mul add ret
@@ -231,7 +245,7 @@ fn tb_store_input_line () :
         end
     end
     line 1 lt line TB_MAX_LINE gt and if
-        "LINE RANGE" tb_print_string tb_newline
+        "LINE RANGE" con.tb_print_string con.tb_newline
         retn
     end
     while
@@ -272,10 +286,10 @@ fn tb_list_program () :
             line tb_line_addr >addr
             addr ldb 0 neq
             if
-                line tb_print_number
-                32 tb_putc
-                addr tb_print_string
-                tb_newline
+                line con.tb_print_number
+                32 con.tb_putc
+                addr con.tb_print_string
+                con.tb_newline
             end
             line 1 add >line
             0
@@ -286,15 +300,17 @@ fn tb_list_program () :
 ;
 
 fn tb_help () :
-    "TinyBASIC: LET, PRINT, INPUT, IF/THEN, GOTO, GOSUB/RETURN," tb_print_string tb_newline
-    "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" tb_print_string tb_newline
-    "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," tb_print_string tb_newline
-    "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." tb_print_string tb_newline
-    "PRINT: , tab, ; no newline, #N right-justifies next number." tb_print_string tb_newline
-    "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." tb_print_string tb_newline
+    "TinyBASIC: LET, PRINT, INPUT, IF/THEN, GOTO, GOSUB/RETURN," con.tb_print_string con.tb_newline
+    "FOR/NEXT, RUN, LIST, NEW, CLEAR, LOAD, SAVE, REM, END" con.tb_print_string con.tb_newline
+    "Expressions: + - * / \\ MOD ^, comparisons, AND/OR/NOT," con.tb_print_string con.tb_newline
+    "ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n)." con.tb_print_string con.tb_newline
+    "PRINT: , tab, ; no newline, #N right-justifies next number." con.tb_print_string con.tb_newline
+    "LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps sectors to image size." con.tb_print_string con.tb_newline
 ;
+!end
 
 # ---------------- variables ----------------
+!namespace vars -
 
 fn tb_get_var (index) :
     TB_VAR_BASE index 2 shl add ld ret
@@ -362,8 +378,10 @@ fn tb_input_value () :
     end
     value sign mul ret
 ;
+!end
 
 # ---------------- console output ----------------
+!namespace con -
 
 fn tb_putc (char) :
     char 13 eq if retn end
@@ -463,6 +481,7 @@ fn tb_report_error () :
         tb_newline
     end
 ;
+!end
 
 # ---------------- keyboard input ----------------
 
@@ -475,6 +494,7 @@ fn irq3 () :
     8 irqc.IRQC_PENDING sth
     retn
 ;
+!namespace kbd -
 
 # Consume PeC keyboard events until Enter. HID shift/caps are tracked locally.
 fn tb_read_line (dest capacity) :
@@ -503,20 +523,20 @@ fn tb_read_line (dest capacity) :
                                 ch 13 eq if
                                     1 TB_PEC_POP st
                                     0 dest count add stb
-                                    tb_newline
+                                    con.tb_newline
                                     count ret
                                 end
                                 ch 8 eq if
                                     count 0 gt if
                                         count 1 sub >count
                                         0 dest count add stb
-                                        8 tb_putc
+                                        8 con.tb_putc
                                     end
                                 else
                                     ch 0 neq count capacity lt or if
                                         ch dest count add stb
                                         count 1 add >count
-                                        ch tb_putc
+                                        ch con.tb_putc
                                     end
                                 end
                             end
@@ -588,8 +608,10 @@ fn tb_key_ascii (usage shifted caps) :
     usage 53 eq if shifted 0 eq if 96 ret else 126 ret end end
     0 ret
 ;
+!end
 
 # ---------------- LEXER: text -> token array ----------------
+!namespace lex -
 # Tokens live in TB_TOK_BUF as (type, value) pairs; tb_ntok counts them
 # including the trailing EOF token. String bytes of the current line go
 # to TB_STR_BUF; the parser copies them into the persistent pool.
@@ -807,8 +829,10 @@ fn tb_lex_line (src) :
         pos 0 ge tb_error 0 eq or
     end
 ;
+!end
 
 # ---------------- AST heap ----------------
+!namespace ast -
 # Nodes are 20 bytes: +0 kind, +4 value, +8 a, +12 b, +16 c.
 
 fn tb_ast_alloc (kind value a b c) :
@@ -878,8 +902,10 @@ fn tb_pool_str (src) :
     dest len add 1 add >tb_str_pool
     dest ret
 ;
+!end
 
 # ---------------- PARSER: tokens -> AST ----------------
+!namespace parse -
 
 fn tb_tok_type (index) :
     TB_TOK_BUF index 8 mul add ld ret
@@ -960,7 +986,7 @@ fn tb_make_binop (op lhs rhs) :
     op tb_op_code >code
     code 0 eq if 1 >tb_error 0 ret end
     lhs 0 eq rhs 0 eq and if 1 >tb_error 0 ret end
-    5 code lhs rhs 0 tb_ast_alloc ret
+    5 code lhs rhs 0 ast.tb_ast_alloc ret
 ;
 
 # Parse one builtin call; kind is one of TB_TOKEN_ABS/SGN/ASC/RND.
@@ -976,7 +1002,7 @@ fn ps_builtin (kind) :
         tb_error 0 neq if 0 ret end
         41 ps_expect drop
         tb_error 0 neq if 0 ret end
-        7 1 arg 0 0 tb_ast_alloc ret
+        7 1 arg 0 0 ast.tb_ast_alloc ret
     end
     kind TB_TOKEN_SGN eq if
         ps_advance
@@ -986,27 +1012,27 @@ fn ps_builtin (kind) :
         tb_error 0 neq if 0 ret end
         41 ps_expect drop
         tb_error 0 neq if 0 ret end
-        7 2 arg 0 0 tb_ast_alloc ret
+        7 2 arg 0 0 ast.tb_ast_alloc ret
     end
     kind TB_TOKEN_ASC eq if
         ps_advance
         40 ps_expect drop
         tb_error 0 neq if 0 ret end
         ps_peek 2 eq if
-            ps_peek_val tb_pool_str >arg
+            ps_peek_val ast.tb_pool_str >arg
             tb_error 0 neq if 0 ret end
             ps_advance
-            2 arg 0 0 0 tb_ast_alloc >arg
+            2 arg 0 0 0 ast.tb_ast_alloc >arg
             tb_error 0 neq if 0 ret end
             41 ps_expect drop
             tb_error 0 neq if 0 ret end
-            7 3 arg 0 0 tb_ast_alloc ret
+            7 3 arg 0 0 ast.tb_ast_alloc ret
         end
         0 ps_expr >arg
         tb_error 0 neq if 0 ret end
         41 ps_expect drop
         tb_error 0 neq if 0 ret end
-        7 3 arg 0 0 tb_ast_alloc ret
+        7 3 arg 0 0 ast.tb_ast_alloc ret
     end
     kind TB_TOKEN_RND eq if
         ps_advance
@@ -1016,7 +1042,7 @@ fn ps_builtin (kind) :
         tb_error 0 neq if 0 ret end
         41 ps_expect drop
         tb_error 0 neq if 0 ret end
-        7 4 arg 0 0 tb_ast_alloc ret
+        7 4 arg 0 0 ast.tb_ast_alloc ret
     end
     1 >tb_error
     0 ret
@@ -1030,19 +1056,19 @@ fn ps_primary () :
     ps_peek 1 eq if
         ps_peek_val >value
         ps_advance
-        1 value 0 0 0 tb_ast_alloc ret
+        1 value 0 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 2 eq if
-        ps_peek_val tb_pool_str >value
+        ps_peek_val ast.tb_pool_str >value
         tb_error 0 neq if 0 ret end
         ps_advance
-        2 value 0 0 0 tb_ast_alloc ret
+        2 value 0 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 45 eq if
         ps_advance
         7 ps_expr >value
         tb_error 0 neq if 0 ret end
-        6 1 value 0 0 tb_ast_alloc ret
+        6 1 value 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 43 eq if
         ps_advance
@@ -1052,7 +1078,7 @@ fn ps_primary () :
         ps_advance
         3 ps_expr >value
         tb_error 0 neq if 0 ret end
-        6 2 value 0 0 tb_ast_alloc ret
+        6 2 value 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 40 eq if
         ps_advance
@@ -1070,7 +1096,7 @@ fn ps_primary () :
         tb_error 0 neq if 0 ret end
         41 ps_expect drop
         tb_error 0 neq if 0 ret end
-        4 0 index 0 0 tb_ast_alloc ret
+        4 0 index 0 0 ast.tb_ast_alloc ret
     end
     1 >tb_error
     ps_advance
@@ -1091,7 +1117,7 @@ fn ps_expr (minimum) :
         ps_peek 3 eq if
             ps_peek_val >lhs
             ps_advance
-            3 lhs 0 0 0 tb_ast_alloc >lhs
+            3 lhs 0 0 0 ast.tb_ast_alloc >lhs
         else
             ps_primary >lhs
         end
@@ -1141,20 +1167,20 @@ fn ps_print_items () :
             1
         else
             ps_peek 2 eq if
-                ps_peek_val tb_pool_str >node
+                ps_peek_val ast.tb_pool_str >node
                 tb_error 0 neq if 0 ret end
                 ps_advance
-                12 node 0 0 0 tb_ast_alloc >node
+                12 node 0 0 0 ast.tb_ast_alloc >node
                 tb_error 0 neq if 0 ret end
-                head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                head 0 eq if node >head node >tail else tail node ast.tb_ast_set_c node >tail end
                 0
             else
                 ps_peek 44 eq ps_peek 59 eq and if
                     ps_peek >node
                     ps_advance
-                    14 node 0 0 0 tb_ast_alloc >node
+                    14 node 0 0 0 ast.tb_ast_alloc >node
                     tb_error 0 neq if 0 ret end
-                    head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                    head 0 eq if node >head node >tail else tail node ast.tb_ast_set_c node >tail end
                     0
                 else
                     ps_peek 35 eq if
@@ -1165,16 +1191,16 @@ fn ps_print_items () :
                         ps_peek 44 eq ps_peek 59 eq and if ps_advance end
                         0 ps_expr >expr
                         tb_error 0 neq if 0 ret end
-                        13 width expr 0 0 tb_ast_alloc >node
+                        13 width expr 0 0 ast.tb_ast_alloc >node
                         tb_error 0 neq if 0 ret end
-                        head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                        head 0 eq if node >head node >tail else tail node ast.tb_ast_set_c node >tail end
                         0
                     else
                         0 ps_expr >expr
                         tb_error 0 neq if 0 ret end
-                        13 0 expr 0 0 tb_ast_alloc >node
+                        13 0 expr 0 0 ast.tb_ast_alloc >node
                         tb_error 0 neq if 0 ret end
-                        head 0 eq if node >head node >tail else tail node tb_ast_set_c node >tail end
+                        head 0 eq if node >head node >tail else tail node ast.tb_ast_set_c node >tail end
                         0
                     end
                 end
@@ -1192,20 +1218,20 @@ fn ps_parse_sys (code) :
     code TB_SYS_LOAD eq code TB_SYS_SAVE eq and if
         ps_advance
         ps_peek 0 eq ps_peek 58 eq and if
-            25 code 0 0 0 tb_ast_alloc ret
+            25 code 0 0 0 ast.tb_ast_alloc ret
         end
         0 ps_expr >lba
         tb_error 0 neq if 0 ret end
         ps_peek 44 eq ps_peek 59 eq and if ps_advance end
         ps_peek 0 eq ps_peek 58 eq and if
-            25 code lba 0 0 tb_ast_alloc ret
+            25 code lba 0 0 ast.tb_ast_alloc ret
         end
         0 ps_expr >secs
         tb_error 0 neq if 0 ret end
-        25 code lba secs 0 tb_ast_alloc ret
+        25 code lba secs 0 ast.tb_ast_alloc ret
     end
     ps_advance
-    25 code 0 0 0 tb_ast_alloc ret
+    25 code 0 0 0 ast.tb_ast_alloc ret
 ;
 
 # Parse one statement; returns the stmt node (0 for empty/REM).
@@ -1225,13 +1251,13 @@ fn ps_statement () :
     ps_peek 268 eq ps_peek 63 eq and if
         ps_print_items >expr
         tb_error 0 neq if 0 ret end
-        11 0 expr 0 0 tb_ast_alloc ret
+        11 0 expr 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 269 eq if
         ps_advance
         0 >prompt
         ps_peek 2 eq if
-            ps_peek_val tb_pool_str >prompt
+            ps_peek_val ast.tb_pool_str >prompt
             tb_error 0 neq if 0 ret end
             ps_advance
             ps_peek 44 eq if ps_advance end
@@ -1239,7 +1265,7 @@ fn ps_statement () :
         ps_peek 3 eq if
             ps_peek_val >index
             ps_advance
-            18 index prompt 0 0 tb_ast_alloc ret
+            18 index prompt 0 0 ast.tb_ast_alloc ret
         else
             1 >tb_error
             0 ret
@@ -1254,7 +1280,7 @@ fn ps_statement () :
             tb_error 0 neq if 0 ret end
             0 ps_expr >expr
             tb_error 0 neq if 0 ret end
-            16 index expr 0 0 tb_ast_alloc ret
+            16 index expr 0 0 ast.tb_ast_alloc ret
         else
             1 >tb_error
             0 ret
@@ -1267,7 +1293,7 @@ fn ps_statement () :
         tb_error 0 neq if 0 ret end
         0 ps_expr >expr
         tb_error 0 neq if 0 ret end
-        16 index expr 0 0 tb_ast_alloc ret
+        16 index expr 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 64 eq if
         ps_advance
@@ -1281,23 +1307,23 @@ fn ps_statement () :
         tb_error 0 neq if 0 ret end
         0 ps_expr >expr
         tb_error 0 neq if 0 ret end
-        17 0 index expr 0 tb_ast_alloc ret
+        17 0 index expr 0 ast.tb_ast_alloc ret
     end
     ps_peek 272 eq if
         ps_advance
         0 ps_expr >expr
         tb_error 0 neq if 0 ret end
-        19 0 expr 0 0 tb_ast_alloc ret
+        19 0 expr 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 273 eq if
         ps_advance
         0 ps_expr >expr
         tb_error 0 neq if 0 ret end
-        20 0 expr 0 0 tb_ast_alloc ret
+        20 0 expr 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 274 eq if
         ps_advance
-        21 0 0 0 0 tb_ast_alloc ret
+        21 0 0 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 270 eq if
         ps_advance
@@ -1307,11 +1333,11 @@ fn ps_statement () :
         ps_peek 1 eq if
             ps_peek_val >line
             ps_advance
-            22 line cond 0 0 tb_ast_alloc ret
+            22 line cond 0 0 ast.tb_ast_alloc ret
         else
             ps_stmt_list >then
             tb_error 0 neq if 0 ret end
-            22 0 cond then 0 tb_ast_alloc ret
+            22 0 cond then 0 ast.tb_ast_alloc ret
         end
     end
     ps_peek 275 eq if
@@ -1327,7 +1353,7 @@ fn ps_statement () :
             tb_error 0 neq if 0 ret end
             0 ps_expr >limit
             tb_error 0 neq if 0 ret end
-            23 index expr limit 0 tb_ast_alloc ret
+            23 index expr limit 0 ast.tb_ast_alloc ret
         else
             1 >tb_error
             0 ret
@@ -1340,11 +1366,11 @@ fn ps_statement () :
             ps_peek_val >index
             ps_advance
         end
-        24 index 0 0 0 tb_ast_alloc ret
+        24 index 0 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 283 eq ps_peek 284 eq and if
         ps_advance
-        25 11 0 0 0 tb_ast_alloc ret
+        25 11 0 0 0 ast.tb_ast_alloc ret
     end
     ps_peek 278 eq if 1 ps_parse_sys ret end
     ps_peek 279 eq if 2 ps_parse_sys ret end
@@ -1382,7 +1408,7 @@ fn ps_stmt_list () :
                 ps_statement >st
                 tb_error 0 neq if 0 ret end
                 st 0 neq if
-                    head 0 eq if st >head st >tail else tail st tb_ast_set_c st >tail end
+                    head 0 eq if st >head st >tail else tail st ast.tb_ast_set_c st >tail end
                 end
                 0
             end
@@ -1401,8 +1427,10 @@ fn tb_parse_line () :
     tb_error 0 neq if 0 ret end
     head ret
 ;
+!end
 
 # ---------------- PROGRAM: text lines -> AST directory ----------------
+!namespace prog -
 
 fn tb_dir_line (index) :
     TB_LINE_DIR index 8 mul add ld ret
@@ -1439,12 +1467,12 @@ fn tb_build_program () :
     0 >tb_error
     while
         line TB_MAX_LINE le tb_error 0 eq or if
-            line tb_line_addr >addr
+            line line.tb_line_addr >addr
             addr ldb 0 neq if
                 0 >tb_error
-                addr tb_lex_line
+                addr lex.tb_lex_line
                 tb_error 0 eq if
-                    tb_parse_line >head
+                    parse.tb_parse_line >head
                 end
                 tb_error 0 neq if
                     line >tb_line
@@ -1479,8 +1507,10 @@ fn tb_goto_line (line) :
     index tb_dir_root >tb_cur
     1 >tb_jump
 ;
+!end
 
 # ---------------- EVALUATOR: AST -> integer ----------------
+!namespace eval -
 # BASIC comparisons yield 1 (true) / 0 (false).
 
 fn tb_power (base exponent) :
@@ -1532,8 +1562,8 @@ fn tb_eval_binop (code lhs rhs) :
 fn tb_eval_call (func argnode) :
     local value 0
     func 3 eq if
-        argnode tb_ast_kind 2 eq if
-            argnode tb_ast_val ldb ret
+        argnode ast.tb_ast_kind 2 eq if
+            argnode ast.tb_ast_val ldb ret
         end
         argnode tb_eval >value
         value ret
@@ -1559,37 +1589,39 @@ fn tb_eval (node) :
     local left 0
     local right 0
     node 0 eq if 1 >tb_error 0 ret end
-    node tb_ast_kind >kind
-    kind 1 eq if node tb_ast_val ret end
-    kind 2 eq if node tb_ast_val ldb ret end
-    kind 3 eq if node tb_ast_val tb_get_var ret end
+    node ast.tb_ast_kind >kind
+    kind 1 eq if node ast.tb_ast_val ret end
+    kind 2 eq if node ast.tb_ast_val ldb ret end
+    kind 3 eq if node ast.tb_ast_val vars.tb_get_var ret end
     kind 4 eq if
-        node tb_ast_a tb_eval >value
+        node ast.tb_ast_a tb_eval >value
         tb_error 0 neq if 0 ret end
         value 0 lt value TB_ARRAY_SIZE ge and if 1 >tb_error 0 ret end
         TB_ARRAY_BASE value 2 shl add ld ret
     end
     kind 5 eq if
-        node tb_ast_a tb_eval >left
+        node ast.tb_ast_a tb_eval >left
         tb_error 0 neq if 0 ret end
-        node tb_ast_b tb_eval >right
+        node ast.tb_ast_b tb_eval >right
         tb_error 0 neq if 0 ret end
-        node tb_ast_val left right tb_eval_binop ret
+        node ast.tb_ast_val left right tb_eval_binop ret
     end
     kind 6 eq if
-        node tb_ast_a tb_eval >left
+        node ast.tb_ast_a tb_eval >left
         tb_error 0 neq if 0 ret end
-        node tb_ast_val 1 eq if left neg ret end
+        node ast.tb_ast_val 1 eq if left neg ret end
         left 0 eq if 1 ret else 0 ret end
     end
     kind 7 eq if
-        node tb_ast_val node tb_ast_a tb_eval_call ret
+        node ast.tb_ast_val node ast.tb_ast_a tb_eval_call ret
     end
     1 >tb_error
     0 ret
 ;
+!end
 
 # ---------------- EXECUTOR: AST statements ----------------
+!namespace exec -
 
 fn tb_exec_print (items) :
     local p 0
@@ -1600,30 +1632,30 @@ fn tb_exec_print (items) :
     items >p
     while
         p 0 eq if 1 else
-            p tb_ast_kind >kind
+            p ast.tb_ast_kind >kind
             kind 12 eq if
-                p tb_ast_val tb_print_string
+                p ast.tb_ast_val con.tb_print_string
                 1 >nl
             end
             kind 13 eq if
-                p tb_ast_a tb_eval >value
+                p ast.tb_ast_a eval.tb_eval >value
                 tb_error 0 neq if 1 ret end
-                p tb_ast_val >width
+                p ast.tb_ast_val >width
                 width 0 eq if
-                    value tb_print_number
+                    value con.tb_print_number
                 else
-                    value width tb_print_padded
+                    value width con.tb_print_padded
                 end
                 1 >nl
             end
             kind 14 eq if
                 0 >nl
             end
-            p tb_ast_c >p
+            p ast.tb_ast_c >p
             0
         end
     end
-    nl 0 neq if tb_newline end
+    nl 0 neq if con.tb_newline end
 ;
 
 # Execute a detached statement chain (IF/THEN branch). Jumps set tb_jump
@@ -1634,7 +1666,7 @@ fn tb_exec_list (head) :
     head >p
     while
         p 0 eq tb_stop 0 neq and tb_error 0 neq and tb_jump 0 neq and if 1 else
-            p tb_ast_c >next
+            p ast.tb_ast_c >next
             p tb_exec_one
             next >p
             0
@@ -1648,35 +1680,35 @@ fn tb_exec_one (node) :
     local a 0
     local b 0
     local frame 0
-    node tb_ast_kind >kind
-    node tb_ast_val >value
-    node tb_ast_a >a
-    node tb_ast_b >b
+    node ast.tb_ast_kind >kind
+    node ast.tb_ast_val >value
+    node ast.tb_ast_a >a
+    node ast.tb_ast_b >b
     kind 11 eq if a tb_exec_print retn end
     kind 16 eq if
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if retn end
-        node tb_ast_val value tb_set_var
+        node ast.tb_ast_val value vars.tb_set_var
         retn
     end
     kind 17 eq if
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if retn end
-        b tb_eval >a
+        b eval.tb_eval >a
         tb_error 0 neq if retn end
-        value a tb_array_store
+        value a vars.tb_array_store
         retn
     end
     kind 18 eq if
-        a 0 neq if a tb_print_string else "? " tb_print_string end
-        TB_INPUT_BASE 120 tb_read_line drop
-        node tb_ast_val tb_input_value tb_set_var
+        a 0 neq if a con.tb_print_string else "? " con.tb_print_string end
+        TB_INPUT_BASE 120 kbd.tb_read_line drop
+        node ast.tb_ast_val vars.tb_input_value vars.tb_set_var
         retn
     end
     kind 19 eq if
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if retn end
-        value tb_goto_line
+        value prog.tb_goto_line
         retn
     end
     kind 20 eq if
@@ -1685,12 +1717,12 @@ fn tb_exec_one (node) :
         tb_pc frame st
         tb_cur frame 4 add st
         tb_gsp 1 add >tb_gsp
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if
             tb_gsp 1 sub >tb_gsp
             retn
         end
-        value tb_goto_line
+        value prog.tb_goto_line
         retn
     end
     kind 21 eq if
@@ -1700,7 +1732,7 @@ fn tb_exec_one (node) :
         frame ld >tb_pc
         frame 4 add ld >tb_cur
         tb_pc 0 ge if
-            tb_pc tb_dir_line >tb_line
+            tb_pc prog.tb_dir_line >tb_line
         else
             0 >tb_line
         end
@@ -1708,11 +1740,11 @@ fn tb_exec_one (node) :
         retn
     end
     kind 22 eq if
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if retn end
         value 0 neq if
-            node tb_ast_val 0 neq if
-                node tb_ast_val tb_goto_line
+            node ast.tb_ast_val 0 neq if
+                node ast.tb_ast_val prog.tb_goto_line
             else
                 b tb_exec_list
             end
@@ -1720,14 +1752,14 @@ fn tb_exec_one (node) :
         retn
     end
     kind 23 eq if
-        a tb_eval >value
+        a eval.tb_eval >value
         tb_error 0 neq if retn end
-        b tb_eval >a
+        b eval.tb_eval >a
         tb_error 0 neq if retn end
-        node tb_ast_val value tb_set_var
+        node ast.tb_ast_val value vars.tb_set_var
         tb_fsp 32 ge if 1 >tb_error retn end
         TB_FOR_BASE tb_fsp 16 mul add >frame
-        node tb_ast_val frame st
+        node ast.tb_ast_val frame st
         a frame 4 add st
         tb_pc frame 8 add st
         tb_cur frame 12 add st
@@ -1739,13 +1771,13 @@ fn tb_exec_one (node) :
         TB_FOR_BASE tb_fsp 1 sub 16 mul add >frame
         frame ld >b
         value -1 neq value b neq or if 1 >tb_error retn end
-        b tb_get_var 1 add >value
-        b value tb_set_var
+        b vars.tb_get_var 1 add >value
+        b value vars.tb_set_var
         value frame 4 add ld le if
             frame 8 add ld >tb_pc
             frame 12 add ld >tb_cur
             tb_pc 0 ge if
-                tb_pc tb_dir_line >tb_line
+                tb_pc prog.tb_dir_line >tb_line
             else
                 0 >tb_line
             end
@@ -1767,17 +1799,17 @@ fn tb_exec_one (node) :
 ;
 
 fn tb_exec_sys (code) :
-    code 1 eq if tb_sys_run retn end
-    code 2 eq if tb_list_program retn end
+    code 1 eq if run.tb_sys_run retn end
+    code 2 eq if line.tb_list_program retn end
     code 3 eq if
-        tb_clear_program
-        tb_clear_variables
+        line.tb_clear_program
+        vars.tb_clear_variables
         tb_pc 0 ge if 1 >tb_stop end
         retn
     end
-    code 4 eq if tb_clear_variables retn end
-    code 5 eq if tb_cls retn end
-    code 6 eq if tb_help retn end
+    code 4 eq if vars.tb_clear_variables retn end
+    code 5 eq if run.tb_cls retn end
+    code 6 eq if line.tb_help retn end
     code 9 eq if 1 >tb_trace retn end
     code 10 eq if 0 >tb_trace retn end
     code 11 eq if 1 >tb_stop retn end
@@ -1793,47 +1825,47 @@ fn tb_exec_disk (cmd lbaNode secNode) :
     local capacity 0
     local available 0
     lbaNode 0 neq if
-        lbaNode tb_eval >lba
+        lbaNode eval.tb_eval >lba
         tb_error 0 neq if retn end
     end
     secNode 0 neq if
-        secNode tb_eval >sectors
+        secNode eval.tb_eval >sectors
         tb_error 0 neq if retn end
     else
         128 >sectors
     end
     cmd TB_SYS_LOAD eq if
-        tb_disk_capacity >capacity
+        disk.tb_disk_capacity >capacity
         lba capacity lt if
             capacity lba sub >available
             sectors available gt if
                 available >sectors
             end
-            lba sectors 1 tb_disk_transfer >result
+            lba sectors 1 disk.tb_disk_transfer >result
             result 0 eq if
-                sectors 512 mul tb_load_disk_lines
-                "LOADED" tb_print_string tb_newline
+                sectors 512 mul disk.tb_load_disk_lines
+                "LOADED" con.tb_print_string con.tb_newline
             else
-                "DISK READ ERROR" tb_print_string tb_newline
+                "DISK READ ERROR" con.tb_print_string con.tb_newline
             end
         else
-            "DISK READ ERROR" tb_print_string tb_newline
+            "DISK READ ERROR" con.tb_print_string con.tb_newline
         end
     else
         lbaNode 0 eq secNode 0 eq and if
-            "SAVE NEEDS LBA AND SECTORS" tb_print_string tb_newline
+            "SAVE NEEDS LBA AND SECTORS" con.tb_print_string con.tb_newline
         else
             sectors 512 mul >tb_disk_limit
-            tb_save_serialize
+            disk.tb_save_serialize
             tb_error 0 eq if
-                lba sectors 2 tb_disk_transfer >result
+                lba sectors 2 disk.tb_disk_transfer >result
                 result 0 eq if
-                    "SAVED" tb_print_string tb_newline
+                    "SAVED" con.tb_print_string con.tb_newline
                 else
-                    "DISK WRITE ERROR" tb_print_string tb_newline
+                    "DISK WRITE ERROR" con.tb_print_string con.tb_newline
                 end
             else
-                "SAVE BUFFER FULL" tb_print_string tb_newline
+                "SAVE BUFFER FULL" con.tb_print_string con.tb_newline
             end
         end
     end
@@ -1841,8 +1873,10 @@ fn tb_exec_disk (cmd lbaNode secNode) :
         cmd TB_SYS_LOAD eq if 1 >tb_stop end
     end
 ;
+!end
 
 # ---------------- CODEGEN HOOK (future compiler backend) ----------------
+!namespace emit -
 # These walk the same AST the interpreter executes and count nodes.
 # A real backend would emit code at each visit; the traversal order here
 # (expression post-order, statements in line order) is the contract it
@@ -1851,14 +1885,14 @@ fn tb_exec_disk (cmd lbaNode secNode) :
 fn tb_emit_expr (node count) :
     local kind 0
     node 0 eq if count ret end
-    node tb_ast_kind >kind
+    node ast.tb_ast_kind >kind
     count 1 add >count
     kind 5 eq kind 6 eq and if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_expr >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_expr >count
     else
         kind 7 eq kind 4 eq and if
-            node tb_ast_a count tb_emit_expr >count
+            node ast.tb_ast_a count tb_emit_expr >count
         end
     end
     count ret
@@ -1870,10 +1904,10 @@ fn tb_emit_items (items count) :
     while
         p 0 eq if 1 else
             count 1 add >count
-            p tb_ast_kind 13 eq if
-                p tb_ast_a count tb_emit_expr >count
+            p ast.tb_ast_kind 13 eq if
+                p ast.tb_ast_a count tb_emit_expr >count
             end
-            p tb_ast_c >p
+            p ast.tb_ast_c >p
             0
         end
     end
@@ -1883,22 +1917,22 @@ fn tb_emit_items (items count) :
 # Single statement without following siblings (used for THEN branches).
 fn tb_emit_single (node count) :
     local kind 0
-    node tb_ast_kind >kind
+    node ast.tb_ast_kind >kind
     count 1 add >count
-    kind 11 eq if node tb_ast_a count tb_emit_items >count end
-    kind 16 eq if node tb_ast_a count tb_emit_expr >count end
+    kind 11 eq if node ast.tb_ast_a count tb_emit_items >count end
+    kind 16 eq if node ast.tb_ast_a count tb_emit_expr >count end
     kind 17 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_expr >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_expr >count
     end
-    kind 19 eq kind 20 eq and if node tb_ast_a count tb_emit_expr >count end
+    kind 19 eq kind 20 eq and if node ast.tb_ast_a count tb_emit_expr >count end
     kind 22 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_chain >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_chain >count
     end
     kind 23 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_expr >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_expr >count
     end
     count ret
 ;
@@ -1909,7 +1943,7 @@ fn tb_emit_chain (head count) :
     while
         p 0 eq if 1 else
             p count tb_emit_single >count
-            p tb_ast_c >p
+            p ast.tb_ast_c >p
             0
         end
     end
@@ -1919,24 +1953,24 @@ fn tb_emit_chain (head count) :
 fn tb_emit_stmt (node count) :
     local kind 0
     node 0 eq if count ret end
-    node tb_ast_kind >kind
+    node ast.tb_ast_kind >kind
     count 1 add >count
-    kind 11 eq if node tb_ast_a count tb_emit_items >count end
-    kind 16 eq if node tb_ast_a count tb_emit_expr >count end
+    kind 11 eq if node ast.tb_ast_a count tb_emit_items >count end
+    kind 16 eq if node ast.tb_ast_a count tb_emit_expr >count end
     kind 17 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_expr >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_expr >count
     end
-    kind 19 eq kind 20 eq and if node tb_ast_a count tb_emit_expr >count end
+    kind 19 eq kind 20 eq and if node ast.tb_ast_a count tb_emit_expr >count end
     kind 22 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_chain >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_chain >count
     end
     kind 23 eq if
-        node tb_ast_a count tb_emit_expr >count
-        node tb_ast_b count tb_emit_expr >count
+        node ast.tb_ast_a count tb_emit_expr >count
+        node ast.tb_ast_b count tb_emit_expr >count
     end
-    node tb_ast_c count tb_emit_stmt >count
+    node ast.tb_ast_c count tb_emit_stmt >count
     count ret
 ;
 
@@ -1948,7 +1982,7 @@ fn tb_emit_program () :
     while
         i tb_nlines lt
         if
-            i tb_dir_root count tb_emit_stmt >count
+            i prog.tb_dir_root count tb_emit_stmt >count
             i 1 add >i
             0
         else
@@ -1957,8 +1991,10 @@ fn tb_emit_program () :
     end
     count ret
 ;
+!end
 
 # ---------------- main execution loop ----------------
+!namespace run -
 # One loop serves direct mode (tb_pc = -1, tb_cur = direct chain) and
 # program mode (tb_pc = directory index). Jumps move the cursor; when it
 # runs off the direct chain the loop ends, when it runs off the program
@@ -1975,44 +2011,44 @@ fn tb_run_loop () :
                         1 >tb_stop
                         1
                     else
-                        tb_pc tb_dir_line >tb_line
-                        tb_pc tb_dir_root >tb_cur
+                        tb_pc prog.tb_dir_line >tb_line
+                        tb_pc prog.tb_dir_root >tb_cur
                         tb_trace 0 neq if
-                            tb_line tb_print_number
-                            32 tb_putc
-                            tb_line tb_line_addr tb_print_string
-                            tb_newline
+                            tb_line con.tb_print_number
+                            32 con.tb_putc
+                            tb_line line.tb_line_addr con.tb_print_string
+                            con.tb_newline
                         end
                         0
                     end
                 end
             else
                 tb_cur >stmt
-                tb_cur tb_ast_c >tb_cur
+                tb_cur ast.tb_ast_c >tb_cur
                 0 >tb_jump
-                stmt tb_exec_one
+                stmt exec.tb_exec_one
                 0
             end
         end
     end
     tb_error 0 neq if
-        tb_report_error
+        con.tb_report_error
         0 >tb_error
     end
 ;
 
 fn tb_sys_run () :
-    tb_clear_variables
+    vars.tb_clear_variables
     0 >tb_gsp
     0 >tb_fsp
     0 >tb_stop
     0 >tb_error
-    tb_build_program
+    prog.tb_build_program
     tb_error 0 neq if retn end
     0 >tb_pc
     tb_nlines 0 gt if
-        0 tb_dir_line >tb_line
-        0 tb_dir_root >tb_cur
+        0 prog.tb_dir_line >tb_line
+        0 prog.tb_dir_root >tb_cur
     else
         0 >tb_cur
         0 >tb_line
@@ -2027,22 +2063,22 @@ fn tb_run_program () :
 
 fn tb_direct_line () :
     local head 0
-    TB_INPUT_BASE tb_lex_line
+    TB_INPUT_BASE lex.tb_lex_line
     tb_ntok 0 gt if
-        0 tb_tok_type 1 eq if
+        0 parse.tb_tok_type 1 eq if
             0 >tb_error
-            tb_store_input_line
+            line.tb_store_input_line
             retn
         end
     end
     tb_error 0 neq if
-        "? ERROR" tb_print_string tb_newline
+        "? ERROR" con.tb_print_string con.tb_newline
         0 >tb_error
         retn
     end
-    tb_parse_line >head
+    parse.tb_parse_line >head
     tb_error 0 neq if
-        "? ERROR" tb_print_string tb_newline
+        "? ERROR" con.tb_print_string con.tb_newline
         0 >tb_error
         retn
     end
@@ -2076,19 +2112,21 @@ fn tb_cls () :
 
 fn tb_repl () :
     tb_cls
-    tb_help
+    line.tb_help
     TB_AST_BASE >tb_ast_bump
     TB_STR_POOL >tb_str_pool
     while
-        "OK" tb_print_string tb_newline
-        "> " tb_print_string
-        TB_INPUT_BASE 120 tb_read_line drop
+        "OK" con.tb_print_string con.tb_newline
+        "> " con.tb_print_string
+        TB_INPUT_BASE 120 kbd.tb_read_line drop
         tb_direct_line
         0
     end
 ;
+!end
 
 # ---------------- disk ----------------
+!namespace disk -
 
 fn tb_disk_transfer (lba sectors command) :
     local bytes 0
@@ -2197,7 +2235,7 @@ fn tb_save_serialize () :
     while
         line TB_MAX_LINE le tb_error 0 eq or
         if
-            line tb_line_addr >addr
+            line line.tb_line_addr >addr
             addr ldb 0 neq if
                 line tb_buffer_number
                 32 tb_buffer_byte
@@ -2242,9 +2280,9 @@ fn tb_save_serialize () :
 fn tb_finish_load_line (state line addr idx) :
     state 1 eq if
         line 1 lt line TB_MAX_LINE gt and if
-            "LINE RANGE" tb_print_string tb_newline
+            "LINE RANGE" con.tb_print_string con.tb_newline
         else
-            0 line tb_line_addr stb
+            0 line line.tb_line_addr stb
         end
     end
     state 2 eq if
@@ -2270,7 +2308,7 @@ fn tb_load_disk_lines (bytes) :
     local idx 0
     local state 0
     local count 0
-    tb_clear_program
+    line.tb_clear_program
     while
         pos bytes lt
         if
@@ -2310,10 +2348,10 @@ fn tb_load_disk_lines (bytes) :
                                         line 10 mul ch 48 sub add >line
                                     else
                                         line 1 lt line TB_MAX_LINE gt and if
-                                            "LINE RANGE" tb_print_string tb_newline
+                                            "LINE RANGE" con.tb_print_string con.tb_newline
                                             4 >state
                                         else
-                                            line tb_line_addr >addr
+                                            line line.tb_line_addr >addr
                                             ch 32 eq ch 9 eq and if
                                                 2 >state
                                             else
@@ -2349,6 +2387,7 @@ fn tb_load_disk_lines (bytes) :
     end
     state line addr idx tb_finish_load_line
 ;
+!end
 
 fn main () :
     1 0x80000000 stb
@@ -2357,7 +2396,7 @@ fn main () :
     pcg.col80
     8 irqc.IRQC_PENDING sth
     8 irqc.IRQC_ENABLE sth
-    tb_repl
+    run.tb_repl
 ;
 
 main

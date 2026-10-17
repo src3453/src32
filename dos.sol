@@ -33,6 +33,16 @@
 #
 # Buffers live in main RAM: the DSFS directory needs 8192 bytes and file
 # operations are limited to 64 KiB per file (DOS_MAX_FILE).
+#
+# Modules: every function lives in a sol namespace named after its section
+# banner, and calls that cross a namespace are written qualified so the
+# module boundary is visible at the call site.
+#   con    console output         kbd   keyboard input
+#   names  names and words        disk  DSFS access
+#   cmds   typed commands         edit  line editor
+#   hex    hex editor             shell REPL and dispatch
+# irq3 and main stay in the global namespace: solc only builds the IRQ
+# dispatcher and the entry call for globally named functions.
 
 !include "sol/cpt32/pcg.sol"
 !include "sol/cpt32/idc.sol"
@@ -101,6 +111,7 @@ fn irq3 () :
 ;
 
 # ---------------- console ----------------
+!namespace con -
 
 # Clear the whole 80x30 PCG window and home the cursor.
 fn dos_cls () :
@@ -242,7 +253,7 @@ fn dos_err (ptr) :
 # Paged output: print the marker and wait for a key.
 fn dos_more () :
     "  -- MORE --" dos_puts
-    dos_waitkey drop
+    kbd.dos_waitkey drop
     dos_newline
 ;
 
@@ -348,8 +359,10 @@ fn dos_upper (ch) :
     end
     c ret
 ;
+!end
 
 # ---------------- keyboard ----------------
+!namespace kbd -
 
 # Consume PeC keyboard events until Enter; echoes and returns the length.
 # HALT s while the FIFO is empty so IRQ3 wakes the shell on the next event.
@@ -379,20 +392,20 @@ fn dos_read_line (dest cap) :
                                 ch 13 eq if
                                     1 DOS_PEC_POP st
                                     0 dest count add stb
-                                    dos_newline
+                                    con.dos_newline
                                     count ret
                                 end
                                 ch 8 eq if
                                     count 0 gt if
                                         count 1 sub >count
                                         0 dest count add stb
-                                        8 dos_putc
+                                        8 con.dos_putc
                                     end
                                 else
                                     ch 0 neq count cap 1 sub lt or if
                                         ch dest count add stb
                                         count 1 add >count
-                                        ch dos_putc
+                                        ch con.dos_putc
                                     end
                                 end
                             end
@@ -497,8 +510,10 @@ fn dos_key_ascii (usage shifted caps) :
     usage 56 eq if shifted 0 eq if 47 ret else 63 ret end end
     0 ret
 ;
+!end
 
 # ---------------- names and words ----------------
+!namespace names -
 
 fn dos_name_char_ok (ch) :
     local c 0
@@ -542,13 +557,13 @@ fn dos_name_build (src len dest) :
     base_len 1 lt if 1 ret end
     base_len 8 gt if 1 ret end
     ext_len 3 gt if 1 ret end
-    dest 11 32 dos_memfill
+    dest 11 32 con.dos_memfill
     0 >i
     while
         i base_len lt
         if
             src i add ldb >ch
-            ch dos_upper >c
+            ch con.dos_upper >c
             c dos_name_char_ok 0 neq if 1 ret end
             c dest i add stb
             i 1 add >i
@@ -563,7 +578,7 @@ fn dos_name_build (src len dest) :
             i ext_len lt
             if
                 src dot 1 add add i add ldb >ch
-                ch dos_upper >c
+                ch con.dos_upper >c
                 c dos_name_char_ok 0 neq if 1 ret end
                 c dest 8 add i add stb
                 i 1 add >i
@@ -637,7 +652,7 @@ fn dos_name_text (name dest) :
 # Typed word -> 11-byte name in DOS_NAME_A; 0 = ok.
 fn dos_name_from_word (w) :
     local len 0
-    w dos_strlen >len
+    w con.dos_strlen >len
     w len DOS_NAME_A dos_name_build ret
 ;
 
@@ -689,7 +704,7 @@ fn dos_words (ptr len) :
                 end
             else
                 w DOS_MAX_WORDS lt n 31 lt or if
-                    ch dos_upper DOS_WORD_BUF w DOS_WORD_CAP mul add n add stb
+                    ch con.dos_upper DOS_WORD_BUF w DOS_WORD_CAP mul add n add stb
                     n 1 add >n
                     1 >started
                 end
@@ -779,7 +794,7 @@ fn dos_parse_dec (ptr) :
 
 fn dos_hexval (ch) :
     local c 0
-    ch dos_upper >c
+    ch con.dos_upper >c
     c 48 ge c 57 le or if c 48 sub ret end
     c 65 ge c 70 le or if c 55 sub ret end
     -1 ret
@@ -810,8 +825,10 @@ fn dos_parse_hex (ptr) :
     n 0 eq if -1 ret end
     v ret
 ;
+!end
 
 # ---------------- disk ----------------
+!namespace disk -
 
 # Seconds since the Unix epoch from the PeC RTC (0 when it is not wired).
 fn dos_time () :
@@ -825,7 +842,7 @@ fn dos_mount (drv) :
 # 0 when the current drive is mounted; prints an error otherwise.
 fn dos_ensure () :
     dos_drv dos_mount 0 eq if 0 ret end
-    "DRIVE NOT MOUNTED - FORMAT IT FIRST" dos_err
+    "DRIVE NOT MOUNTED - FORMAT IT FIRST" con.dos_err
     1 ret
 ;
 
@@ -837,8 +854,10 @@ fn dos_file_size (name) :
     idx 0 lt if -1 ret end
     DOS_DIR_BUF idx 5 shl add 20 add ld ret
 ;
+!end
 
 # ---------------- commands ----------------
+!namespace cmds -
 
 fn dos_cmd_dir () :
     local i 0
@@ -846,17 +865,17 @@ fn dos_cmd_dir () :
     local rows 0
     local size 0
     local used 0
-    dos_ensure 0 neq if retn end
-    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "DIRECTORY READ ERROR" dos_err retn end
+    disk.dos_ensure 0 neq if retn end
+    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "DIRECTORY READ ERROR" con.dos_err retn end
     DOS_DIR_BUF dsfs.dsfs_count >used
-    "DRIVE " dos_puts
-    dos_drv dos_putnum
-    "  " dos_puts
-    dsfs.dsfs_total dos_putnum
-    " BLOCKS  " dos_puts
-    used dos_putnum
-    " FILE(S)" dos_putsln
-    "  #   NAME             SIZE  BLOCKS" dos_putsln
+    "DRIVE " con.dos_puts
+    dos_drv con.dos_putnum
+    "  " con.dos_puts
+    dsfs.dsfs_total con.dos_putnum
+    " BLOCKS  " con.dos_puts
+    used con.dos_putnum
+    " FILE(S)" con.dos_putsln
+    "  #   NAME             SIZE  BLOCKS" con.dos_putsln
     1 >rows
     0 >i
     while
@@ -864,27 +883,27 @@ fn dos_cmd_dir () :
         if
             DOS_DIR_BUF i 5 shl add >addr
             addr ldb 1 eq if
-                "  " dos_puts
-                i 2 dos_puthex
-                "  " dos_puts
-                addr 1 add DOS_TMP_TXT dos_name_text
-                DOS_TMP_TXT dos_puts
-                DOS_TMP_TXT dos_strlen 14 lt if
-                    14 DOS_TMP_TXT dos_strlen sub dos_pad
+                "  " con.dos_puts
+                i 2 con.dos_puthex
+                "  " con.dos_puts
+                addr 1 add DOS_TMP_TXT names.dos_name_text
+                DOS_TMP_TXT con.dos_puts
+                DOS_TMP_TXT con.dos_strlen 14 lt if
+                    14 DOS_TMP_TXT con.dos_strlen sub con.dos_pad
                 end
                 addr 20 add ld >size
-                size dos_putnum
-                "  " dos_puts
+                size con.dos_putnum
+                "  " con.dos_puts
                 size 0 eq if
-                    0 dos_putnum
+                    0 con.dos_putnum
                 else
-                    size 511 add 9 shr dos_putnum
+                    size 511 add 9 shr con.dos_putnum
                 end
-                dos_newline
+                con.dos_newline
                 rows 1 add >rows
                 rows 26 ge if
                     0 >rows
-                    dos_more
+                    con.dos_more
                 end
             end
             i 1 add >i
@@ -900,11 +919,11 @@ fn dos_cmd_type (name) :
     local rows 0
     local size 0
     local ch 0
-    dos_ensure 0 neq if retn end
-    name dos_file_size >size
-    size 0 lt if "NOT FOUND" dos_err retn end
-    size DOS_MAX_FILE gt if "FILE TOO LARGE" dos_err retn end
-    DOS_DIR_BUF name DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" dos_err retn end
+    disk.dos_ensure 0 neq if retn end
+    name disk.dos_file_size >size
+    size 0 lt if "NOT FOUND" con.dos_err retn end
+    size DOS_MAX_FILE gt if "FILE TOO LARGE" con.dos_err retn end
+    DOS_DIR_BUF name DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" con.dos_err retn end
     0 >i
     0 >rows
     while
@@ -912,14 +931,14 @@ fn dos_cmd_type (name) :
         if
             DOS_FILE_BUF i add ldb >ch
             ch 10 eq if
-                dos_newline
+                con.dos_newline
                 rows 1 add >rows
                 rows 24 ge if
                     0 >rows
-                    dos_more
+                    con.dos_more
                 end
             else
-                ch dos_putc
+                ch con.dos_putc
             end
             i 1 add >i
             0
@@ -927,37 +946,37 @@ fn dos_cmd_type (name) :
             1
         end
     end
-    dos_newline
+    con.dos_newline
 ;
 
 fn dos_cmd_new (name) :
-    dos_ensure 0 neq if retn end
-    name dos_file_size 0 ge if "ALREADY EXISTS" dos_err retn end
-    dos_time dsfs.dsfs_set_time
-    DOS_DIR_BUF DOS_BM_BUF name DOS_FILE_BUF 0 dsfs.dsfs_write_file 0 neq if "CREATE FAILED" dos_err retn end
-    "CREATED " dos_puts
-    name DOS_TMP_TXT dos_name_text
-    DOS_TMP_TXT dos_putsln
+    disk.dos_ensure 0 neq if retn end
+    name disk.dos_file_size 0 ge if "ALREADY EXISTS" con.dos_err retn end
+    disk.dos_time dsfs.dsfs_set_time
+    DOS_DIR_BUF DOS_BM_BUF name DOS_FILE_BUF 0 dsfs.dsfs_write_file 0 neq if "CREATE FAILED" con.dos_err retn end
+    "CREATED " con.dos_puts
+    name DOS_TMP_TXT names.dos_name_text
+    DOS_TMP_TXT con.dos_putsln
 ;
 
 fn dos_cmd_delete (name) :
-    dos_ensure 0 neq if retn end
-    name dos_file_size 0 lt if "NOT FOUND" dos_err retn end
-    DOS_DIR_BUF DOS_BM_BUF name dsfs.dsfs_delete_file 0 neq if "DELETE FAILED" dos_err retn end
-    "DELETED " dos_puts
-    name DOS_TMP_TXT dos_name_text
-    DOS_TMP_TXT dos_putsln
+    disk.dos_ensure 0 neq if retn end
+    name disk.dos_file_size 0 lt if "NOT FOUND" con.dos_err retn end
+    DOS_DIR_BUF DOS_BM_BUF name dsfs.dsfs_delete_file 0 neq if "DELETE FAILED" con.dos_err retn end
+    "DELETED " con.dos_puts
+    name DOS_TMP_TXT names.dos_name_text
+    DOS_TMP_TXT con.dos_putsln
 ;
 
 fn dos_cmd_rename (old new) :
     local idx 0
     local addr 0
     local i 0
-    dos_ensure 0 neq if retn end
-    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "DIRECTORY READ ERROR" dos_err retn end
+    disk.dos_ensure 0 neq if retn end
+    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "DIRECTORY READ ERROR" con.dos_err retn end
     DOS_DIR_BUF old dsfs.dsfs_find >idx
-    idx 0 lt if "NOT FOUND" dos_err retn end
-    DOS_DIR_BUF new dsfs.dsfs_find 0 ge if "NAME ALREADY IN USE" dos_err retn end
+    idx 0 lt if "NOT FOUND" con.dos_err retn end
+    DOS_DIR_BUF new dsfs.dsfs_find 0 ge if "NAME ALREADY IN USE" con.dos_err retn end
     DOS_DIR_BUF idx 5 shl add >addr
     0 >i
     while
@@ -970,13 +989,13 @@ fn dos_cmd_rename (old new) :
             1
         end
     end
-    DOS_DIR_BUF idx dsfs.dsfs_dir_save_sector 0 neq if "WRITE ERROR" dos_err retn end
-    "RENAMED " dos_puts
-    old DOS_TMP_TXT dos_name_text
-    DOS_TMP_TXT dos_puts
-    " -> " dos_puts
-    new DOS_TMP_TXT dos_name_text
-    DOS_TMP_TXT dos_putsln
+    DOS_DIR_BUF idx dsfs.dsfs_dir_save_sector 0 neq if "WRITE ERROR" con.dos_err retn end
+    "RENAMED " con.dos_puts
+    old DOS_TMP_TXT names.dos_name_text
+    DOS_TMP_TXT con.dos_puts
+    " -> " con.dos_puts
+    new DOS_TMP_TXT names.dos_name_text
+    DOS_TMP_TXT con.dos_putsln
 ;
 
 fn dos_cmd_copy (w1 w2) :
@@ -988,31 +1007,31 @@ fn dos_cmd_copy (w1 w2) :
     local size 0
     local sectors 0
     local tail 0
-    w1 dos_strlen >srclen
-    w2 dos_strlen >dstlen
-    w1 srclen dos_parse_spec >srclen
-    srclen 0 lt if "BAD SOURCE NAME" dos_err retn end
+    w1 con.dos_strlen >srclen
+    w2 con.dos_strlen >dstlen
+    w1 srclen names.dos_parse_spec >srclen
+    srclen 0 lt if "BAD SOURCE NAME" con.dos_err retn end
     dos_spec_drv >sdrv
-    DOS_NAME_A DOS_NAME_B 11 dos_memcpy
-    w2 dstlen dos_parse_spec >dstlen
-    dstlen 0 lt if "BAD DEST NAME" dos_err retn end
+    DOS_NAME_A DOS_NAME_B 11 con.dos_memcpy
+    w2 dstlen names.dos_parse_spec >dstlen
+    dstlen 0 lt if "BAD DEST NAME" con.dos_err retn end
     dos_spec_drv >ddrv
-    sdrv dos_mount 0 neq if "SOURCE DRIVE ERROR" dos_err retn end
-    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "SOURCE DIRECTORY ERROR" dos_err retn end
+    sdrv disk.dos_mount 0 neq if "SOURCE DRIVE ERROR" con.dos_err retn end
+    DOS_DIR_BUF dsfs.dsfs_dir_load 0 neq if "SOURCE DIRECTORY ERROR" con.dos_err retn end
     DOS_DIR_BUF DOS_NAME_B dsfs.dsfs_find >idx
-    idx 0 lt if "SOURCE NOT FOUND" dos_err retn end
+    idx 0 lt if "SOURCE NOT FOUND" con.dos_err retn end
     DOS_DIR_BUF idx 5 shl add 20 add ld >size
-    size DOS_MAX_FILE gt if "FILE TOO LARGE" dos_err retn end
-    DOS_DIR_BUF DOS_NAME_B DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" dos_err retn end
+    size DOS_MAX_FILE gt if "FILE TOO LARGE" con.dos_err retn end
+    DOS_DIR_BUF DOS_NAME_B DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" con.dos_err retn end
     size 511 add 9 shr >sectors
     sectors 512 mul size sub >tail
-    DOS_FILE_BUF size add tail dos_memzero
-    ddrv dos_mount 0 neq if "DEST DRIVE ERROR" dos_err retn end
-    dos_time dsfs.dsfs_set_time
-    DOS_DIR_BUF DOS_BM_BUF DOS_NAME_A DOS_FILE_BUF size dsfs.dsfs_write_file 0 neq if "WRITE ERROR" dos_err retn end
-    "COPIED " dos_puts
-    size dos_putnum
-    " BYTES" dos_putsln
+    DOS_FILE_BUF size add tail con.dos_memzero
+    ddrv disk.dos_mount 0 neq if "DEST DRIVE ERROR" con.dos_err retn end
+    disk.dos_time dsfs.dsfs_set_time
+    DOS_DIR_BUF DOS_BM_BUF DOS_NAME_A DOS_FILE_BUF size dsfs.dsfs_write_file 0 neq if "WRITE ERROR" con.dos_err retn end
+    "COPIED " con.dos_puts
+    size con.dos_putnum
+    " BYTES" con.dos_putsln
 ;
 
 # DSFS format (doc/spec_DSFS.md §2/§8) written by the guest itself.
@@ -1022,19 +1041,19 @@ fn dos_cmd_format (drv) :
     local ds 0
     local i 0
     drv idc.idc_identify >total
-    total 0 lt if "NO MEDIA IN DRIVE" dos_err retn end
-    total 19 lt if "DEVICE TOO SMALL FOR DSFS" dos_err retn end
-    total 32768 gt if "VOLUME TOO LARGE (16MB MAX)" dos_err retn end
+    total 0 lt if "NO MEDIA IN DRIVE" con.dos_err retn end
+    total 19 lt if "DEVICE TOO SMALL FOR DSFS" con.dos_err retn end
+    total 32768 gt if "VOLUME TOO LARGE (16MB MAX)" con.dos_err retn end
     total 4095 add 12 shr >bb
-    bb 1 neq if "VOLUME NEEDS A LARGER BITMAP" dos_err retn end
+    bb 1 neq if "VOLUME NEEDS A LARGER BITMAP" con.dos_err retn end
     bb 2 add 16 add >ds
     # Boot sector: zeroed code area plus the 0x55AA signature.
-    DOS_DIR_BUF 512 dos_memzero
+    DOS_DIR_BUF 512 con.dos_memzero
     0x55 DOS_DIR_BUF 510 add stb
     0xAA DOS_DIR_BUF 511 add stb
-    drv 0 1 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (BOOT)" dos_err retn end
+    drv 0 1 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (BOOT)" con.dos_err retn end
     # Superblock.
-    DOS_DIR_BUF 512 dos_memzero
+    DOS_DIR_BUF 512 con.dos_memzero
     0x44534653 DOS_DIR_BUF st
     1 DOS_DIR_BUF 4 add sth
     0 DOS_DIR_BUF 6 add sth
@@ -1044,10 +1063,10 @@ fn dos_cmd_format (drv) :
     bb 2 add DOS_DIR_BUF 20 add st
     16 DOS_DIR_BUF 24 add st
     ds DOS_DIR_BUF 28 add st
-    dos_time DOS_DIR_BUF 32 add st
-    drv 1 1 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (SUPER)" dos_err retn end
+    disk.dos_time DOS_DIR_BUF 32 add st
+    drv 1 1 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (SUPER)" con.dos_err retn end
     # Bitmap: metadata blocks 0..ds-1 marked used, the rest free.
-    DOS_BM_BUF 512 dos_memzero
+    DOS_BM_BUF 512 con.dos_memzero
     0 >i
     while
         i ds lt
@@ -1059,25 +1078,25 @@ fn dos_cmd_format (drv) :
             1
         end
     end
-    drv 2 bb DOS_BM_BUF idc.idc_write 0 neq if "WRITE ERROR (BITMAP)" dos_err retn end
+    drv 2 bb DOS_BM_BUF idc.idc_write 0 neq if "WRITE ERROR (BITMAP)" con.dos_err retn end
     # Empty directory.
-    DOS_DIR_BUF 8192 dos_memzero
-    drv bb 2 add 16 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (DIR)" dos_err retn end
-    "FORMATTED " dos_puts
-    total dos_putnum
-    " BLOCKS, DATA AT " dos_puts
-    ds dos_putnum
-    " FREE " dos_puts
-    total ds sub dos_putnum
-    " BLOCKS" dos_putsln
+    DOS_DIR_BUF 8192 con.dos_memzero
+    drv bb 2 add 16 DOS_DIR_BUF idc.idc_write 0 neq if "WRITE ERROR (DIR)" con.dos_err retn end
+    "FORMATTED " con.dos_puts
+    total con.dos_putnum
+    " BLOCKS, DATA AT " con.dos_puts
+    ds con.dos_putnum
+    " FREE " con.dos_puts
+    total ds sub con.dos_putnum
+    " BLOCKS" con.dos_putsln
 ;
 
 fn dos_cmd_free () :
     local i 0
     local used 0
     local entries 0
-    dos_ensure 0 neq if retn end
-    DOS_BM_BUF dsfs.dsfs_bitmap_load 0 neq if "BITMAP READ ERROR" dos_err retn end
+    disk.dos_ensure 0 neq if retn end
+    DOS_BM_BUF dsfs.dsfs_bitmap_load 0 neq if "BITMAP READ ERROR" con.dos_err retn end
     0 >used
     dsfs.dsfs_data_start >i
     while
@@ -1094,51 +1113,53 @@ fn dos_cmd_free () :
     end
     DOS_DIR_BUF dsfs.dsfs_dir_load drop
     DOS_DIR_BUF dsfs.dsfs_count >entries
-    "TOTAL BLOCKS  " dos_puts
-    dsfs.dsfs_total dos_putnum dos_newline
-    "DATA BLOCKS   " dos_puts
-    dsfs.dsfs_total dsfs.dsfs_data_start sub dos_putnum dos_newline
-    "USED BLOCKS   " dos_puts
-    used dos_putnum dos_newline
-    "FREE BLOCKS   " dos_puts
-    dsfs.dsfs_total dsfs.dsfs_data_start sub used sub dos_putnum dos_newline
-    "FILES         " dos_puts
-    entries dos_putnum dos_newline
+    "TOTAL BLOCKS  " con.dos_puts
+    dsfs.dsfs_total con.dos_putnum con.dos_newline
+    "DATA BLOCKS   " con.dos_puts
+    dsfs.dsfs_total dsfs.dsfs_data_start sub con.dos_putnum con.dos_newline
+    "USED BLOCKS   " con.dos_puts
+    used con.dos_putnum con.dos_newline
+    "FREE BLOCKS   " con.dos_puts
+    dsfs.dsfs_total dsfs.dsfs_data_start sub used sub con.dos_putnum con.dos_newline
+    "FILES         " con.dos_puts
+    entries con.dos_putnum con.dos_newline
 ;
 
 fn dos_cmd_help () :
-    "DIR              list files" dos_putsln
-    "TYPE NAME        print a text file" dos_putsln
-    "NEW NAME         create an empty file" dos_putsln
-    "REN OLD NEW      rename a file" dos_putsln
-    "DEL NAME         delete a file" dos_putsln
-    "COPY SRC DST     copy between drives (0:NAME.TXT)" dos_putsln
-    "EDIT NAME        line editor" dos_putsln
-    "HEX NAME         hex editor" dos_putsln
-    "FORMAT [N]       format drive N as DSFS" dos_putsln
-    "DRV N            select the current drive" dos_putsln
-    "FREE             block and file statistics" dos_putsln
-    "CLS / HELP / EXIT" dos_putsln
+    "DIR              list files" con.dos_putsln
+    "TYPE NAME        print a text file" con.dos_putsln
+    "NEW NAME         create an empty file" con.dos_putsln
+    "REN OLD NEW      rename a file" con.dos_putsln
+    "DEL NAME         delete a file" con.dos_putsln
+    "COPY SRC DST     copy between drives (0:NAME.TXT)" con.dos_putsln
+    "EDIT NAME        line editor" con.dos_putsln
+    "HEX NAME         hex editor" con.dos_putsln
+    "FORMAT [N]       format drive N as DSFS" con.dos_putsln
+    "DRV N            select the current drive" con.dos_putsln
+    "FREE             block and file statistics" con.dos_putsln
+    "CLS / HELP / EXIT" con.dos_putsln
 ;
 
 fn dos_cmd_exit () :
-    "BYE" dos_putsln
+    "BYE" con.dos_putsln
     halt
 ;
+!end
 
 # ---------------- line editor ----------------
+!namespace edit -
 
 # Queue an editor message; it is printed under the header on the next redraw
 # (a direct print would be wiped by the redraw in the same loop iteration).
 fn dos_msg_err (msg) :
-    "ERROR: " DOS_MSGBUF dos_strcpy drop
-    msg DOS_MSGBUF 7 add dos_strcpy drop
+    "ERROR: " DOS_MSGBUF con.dos_strcpy drop
+    msg DOS_MSGBUF 7 add con.dos_strcpy drop
     1 >dos_msg
 ;
 
 # Queue plain text for the next interactive redraw.
 fn dos_msg_text (ptr) :
-    ptr DOS_MSGBUF dos_strcpy drop
+    ptr DOS_MSGBUF con.dos_strcpy drop
     1 >dos_msg
 ;
 
@@ -1227,7 +1248,7 @@ fn dos_edit_splice (index mode ptr) :
             # or before it (mode 1); mode 2 deletes without text.
             i index eq if
                 mode 2 neq if
-                    ptr DOS_EDIT_TMP o add dos_strcpy o add >o
+                    ptr DOS_EDIT_TMP o add con.dos_strcpy o add >o
                     10 DOS_EDIT_TMP o add stb
                     o 1 add >o
                 end
@@ -1259,7 +1280,7 @@ fn dos_edit_splice (index mode ptr) :
             1
         end
     end
-    DOS_EDIT_TMP DOS_FILE_BUF o dos_memcpy
+    DOS_EDIT_TMP DOS_FILE_BUF o con.dos_memcpy
     o >dos_text_len
     dos_edit_scan
 ;
@@ -1287,16 +1308,16 @@ fn dos_edit_show () :
     local i 0
     local off 0
     local rows 0
-    dos_cls
-    "LINE EDITOR  " dos_puts
-    DOS_EDIT_TXT dos_puts
-    "  " dos_puts
-    dos_lines dos_putnum
-    " LINE(S)" dos_putsln
-    "N text=replace  I N text=insert  D N=delete  A text=append" dos_putsln
-    "L=list  W=save  Q=quit" dos_putsln
+    con.dos_cls
+    "LINE EDITOR  " con.dos_puts
+    DOS_EDIT_TXT con.dos_puts
+    "  " con.dos_puts
+    dos_lines con.dos_putnum
+    " LINE(S)" con.dos_putsln
+    "N text=replace  I N text=insert  D N=delete  A text=append" con.dos_putsln
+    "L=list  W=save  Q=quit" con.dos_putsln
     dos_msg 0 neq if
-        DOS_MSGBUF dos_putsln
+        DOS_MSGBUF con.dos_putsln
         0 >dos_msg
     end
     0 >rows
@@ -1306,12 +1327,12 @@ fn dos_edit_show () :
         if
             rows 21 ge if
                 0 >rows
-                dos_more
+                con.dos_more
             end
             DOS_EDIT_IDX i 2 shl add ld >off
-            i 1 add dos_putnum
-            "  " dos_puts
-            DOS_FILE_BUF off add dos_putsln
+            i 1 add con.dos_putnum
+            "  " con.dos_puts
+            DOS_FILE_BUF off add con.dos_putsln
             rows 1 add >rows
             i 1 add >i
             0
@@ -1329,12 +1350,12 @@ fn dos_edit_save_cmd () :
     dos_edit_render >len
     len 511 add 9 shr >sectors
     sectors 512 mul len sub >tail
-    DOS_EDIT_TMP len add tail dos_memzero
-    dos_time dsfs.dsfs_set_time
+    DOS_EDIT_TMP len add tail con.dos_memzero
+    disk.dos_time dsfs.dsfs_set_time
     DOS_DIR_BUF DOS_BM_BUF DOS_EDIT_RAW DOS_EDIT_TMP len dsfs.dsfs_write_file 0 neq if "SAVE FAILED" dos_msg_err retn end
-    "SAVED " DOS_MSGBUF dos_strcpy >off
-    len DOS_MSGBUF off add dos_num_text off add >off
-    " BYTES" DOS_MSGBUF off add dos_strcpy drop
+    "SAVED " DOS_MSGBUF con.dos_strcpy >off
+    len DOS_MSGBUF off add con.dos_num_text off add >off
+    " BYTES" DOS_MSGBUF off add con.dos_strcpy drop
     1 >dos_msg
 ;
 
@@ -1349,12 +1370,12 @@ fn dos_edit_list () :
         if
             rows 22 ge if
                 0 >rows
-                dos_more
+                con.dos_more
             end
             DOS_EDIT_IDX i 2 shl add ld >off
-            i 1 add dos_putnum
-            "  " dos_puts
-            DOS_FILE_BUF off add dos_putsln
+            i 1 add con.dos_putnum
+            "  " con.dos_puts
+            DOS_FILE_BUF off add con.dos_putsln
             rows 1 add >rows
             i 1 add >i
             0
@@ -1369,53 +1390,53 @@ fn dos_edit_dispatch (ptr n) :
     local num 0
     n 0 eq if retn end
     DOS_WORD_BUF >w0
-    w0 "L" dos_streq if dos_edit_list retn end
-    w0 "LIST" dos_streq if dos_edit_list retn end
-    w0 "W" dos_streq if dos_edit_save_cmd retn end
-    w0 "SAVE" dos_streq if dos_edit_save_cmd retn end
-    w0 "Q" dos_streq if 1 >dos_quit retn end
-    w0 "QUIT" dos_streq if 1 >dos_quit retn end
-    w0 "A" dos_streq if dos_lines 1 ptr 1 dos_tail dos_edit_splice retn end
-    w0 "APPEND" dos_streq if dos_lines 1 ptr 1 dos_tail dos_edit_splice retn end
-    w0 "I" dos_streq if
+    w0 "L" con.dos_streq if dos_edit_list retn end
+    w0 "LIST" con.dos_streq if dos_edit_list retn end
+    w0 "W" con.dos_streq if dos_edit_save_cmd retn end
+    w0 "SAVE" con.dos_streq if dos_edit_save_cmd retn end
+    w0 "Q" con.dos_streq if 1 >dos_quit retn end
+    w0 "QUIT" con.dos_streq if 1 >dos_quit retn end
+    w0 "A" con.dos_streq if dos_lines 1 ptr 1 names.dos_tail dos_edit_splice retn end
+    w0 "APPEND" con.dos_streq if dos_lines 1 ptr 1 names.dos_tail dos_edit_splice retn end
+    w0 "I" con.dos_streq if
         n 2 lt if "USAGE: I N TEXT" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_dec >num
+        DOS_WORD_BUF 32 add names.dos_parse_dec >num
         num 1 lt if "BAD LINE NUMBER" dos_msg_err retn end
         num 1 sub >num
         num dos_lines gt if "LINE NUMBER TOO LARGE" dos_msg_err retn end
-        num 1 ptr 2 dos_tail dos_edit_splice
+        num 1 ptr 2 names.dos_tail dos_edit_splice
         retn
     end
-    w0 "INSERT" dos_streq if
+    w0 "INSERT" con.dos_streq if
         n 2 lt if "USAGE: INSERT N TEXT" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_dec >num
+        DOS_WORD_BUF 32 add names.dos_parse_dec >num
         num 1 lt if "BAD LINE NUMBER" dos_msg_err retn end
         num 1 sub >num
         num dos_lines gt if "LINE NUMBER TOO LARGE" dos_msg_err retn end
-        num 1 ptr 2 dos_tail dos_edit_splice
+        num 1 ptr 2 names.dos_tail dos_edit_splice
         retn
     end
-    w0 "D" dos_streq if
+    w0 "D" con.dos_streq if
         n 2 lt if "USAGE: D N" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_dec >num
+        DOS_WORD_BUF 32 add names.dos_parse_dec >num
         num 1 lt if "BAD LINE NUMBER" dos_msg_err retn end
         num dos_lines gt if "LINE NUMBER TOO LARGE" dos_msg_err retn end
         num 1 sub 2 0 dos_edit_splice
         retn
     end
-    w0 "DELETE" dos_streq if
+    w0 "DELETE" con.dos_streq if
         n 2 lt if "USAGE: DELETE N" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_dec >num
+        DOS_WORD_BUF 32 add names.dos_parse_dec >num
         num 1 lt if "BAD LINE NUMBER" dos_msg_err retn end
         num dos_lines gt if "LINE NUMBER TOO LARGE" dos_msg_err retn end
         num 1 sub 2 0 dos_edit_splice
         retn
     end
-    w0 dos_parse_dec >num
+    w0 names.dos_parse_dec >num
     num 0 ge if
         num 1 lt if "BAD LINE NUMBER" dos_msg_err retn end
         num dos_lines gt if "LINE NUMBER TOO LARGE" dos_msg_err retn end
-        num 1 sub 0 ptr 1 dos_tail dos_edit_splice
+        num 1 sub 0 ptr 1 names.dos_tail dos_edit_splice
         retn
     end
     "UNKNOWN EDITOR COMMAND" dos_msg_err
@@ -1429,9 +1450,9 @@ fn dos_line_editor () :
         dos_quit 0 eq
         if
             dos_edit_show
-            ":" dos_puts
-            DOS_CMD_BUF DOS_CMD_CAP dos_read_line >n
-            DOS_CMD_BUF n dos_words >w
+            ":" con.dos_puts
+            DOS_CMD_BUF DOS_CMD_CAP kbd.dos_read_line >n
+            DOS_CMD_BUF n names.dos_words >w
             DOS_CMD_BUF w dos_edit_dispatch
             0
         else
@@ -1441,61 +1462,63 @@ fn dos_line_editor () :
 ;
 
 fn dos_cmd_edit (name) :
-    name DOS_EDIT_RAW 11 dos_memcpy
-    DOS_EDIT_RAW DOS_EDIT_TXT dos_name_text
-    dos_ensure 0 neq if retn end
-    dos_edit_load 0 neq if "CANNOT LOAD FILE FOR EDITING" dos_err retn end
+    name DOS_EDIT_RAW 11 con.dos_memcpy
+    DOS_EDIT_RAW DOS_EDIT_TXT names.dos_name_text
+    disk.dos_ensure 0 neq if retn end
+    dos_edit_load 0 neq if "CANNOT LOAD FILE FOR EDITING" con.dos_err retn end
     dos_line_editor
-    "EDITOR CLOSED" dos_putsln
+    "EDITOR CLOSED" con.dos_putsln
 ;
+!end
 
 # ---------------- hex editor ----------------
+!namespace hex -
 
 fn dos_hex_show () :
     local row 0
     local col 0
     local addr 0
     local b 0
-    dos_cls
-    "HEX EDITOR  " dos_puts
-    DOS_HEX_TXT dos_puts
-    "  " dos_puts
-    dos_hex_len dos_putnum
-    " BYTES  OFFSET " dos_puts
-    dos_hex_pos 4 dos_puthex
-    dos_newline
-    "N=next P=prev G addr E addr v.. W=save Q=quit" dos_putsln
+    con.dos_cls
+    "HEX EDITOR  " con.dos_puts
+    DOS_HEX_TXT con.dos_puts
+    "  " con.dos_puts
+    dos_hex_len con.dos_putnum
+    " BYTES  OFFSET " con.dos_puts
+    dos_hex_pos 4 con.dos_puthex
+    con.dos_newline
+    "N=next P=prev G addr E addr v.. W=save Q=quit" con.dos_putsln
     dos_msg 0 neq if
-        DOS_MSGBUF dos_putsln
+        DOS_MSGBUF con.dos_putsln
         0 >dos_msg
     end
-    "        " dos_puts
-    "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F" dos_putsln
+    "        " con.dos_puts
+    "00 01 02 03 04 05 06 07 08 09 0A 0B 0C 0D 0E 0F" con.dos_putsln
     0 >row
     while
         row 16 lt
         if
             dos_hex_pos row 16 mul add >addr
-            addr 4 dos_puthex
-            ": " dos_puts
+            addr 4 con.dos_puthex
+            ": " con.dos_puts
             0 >col
             while
                 col 16 lt
                 if
                     addr col add dos_hex_len lt if
                         addr col add DOS_FILE_BUF add ldb >b
-                        b 2 dos_puthex
+                        b 2 con.dos_puthex
                     else
-                        "  " dos_puts
+                        "  " con.dos_puts
                     end
-                    " " dos_puts
+                    " " con.dos_puts
                     col 1 add >col
                     0
                 else
                     1
                 end
             end
-            "|" dos_puts
+            "|" con.dos_puts
             0 >col
             while
                 col 16 lt
@@ -1503,12 +1526,12 @@ fn dos_hex_show () :
                     addr col add dos_hex_len lt if
                         addr col add DOS_FILE_BUF add ldb >b
                         b 32 ge b 126 le or if
-                            b dos_putc
+                            b con.dos_putc
                         else
-                            46 dos_putc
+                            46 con.dos_putc
                         end
                     else
-                        32 dos_putc
+                        32 con.dos_putc
                     end
                     col 1 add >col
                     0
@@ -1516,7 +1539,7 @@ fn dos_hex_show () :
                     1
                 end
             end
-            "|" dos_putsln
+            "|" con.dos_putsln
             row 1 add >row
             0
         else
@@ -1531,12 +1554,12 @@ fn dos_hex_save () :
     local off 0
     dos_hex_len 511 add 9 shr >sectors
     sectors 512 mul dos_hex_len sub >tail
-    DOS_FILE_BUF dos_hex_len add tail dos_memzero
-    dos_time dsfs.dsfs_set_time
-    DOS_DIR_BUF DOS_BM_BUF DOS_HEX_RAW DOS_FILE_BUF dos_hex_len dsfs.dsfs_write_file 0 neq if "SAVE FAILED" dos_msg_err retn end
-    "SAVED " DOS_MSGBUF dos_strcpy >off
-    dos_hex_len DOS_MSGBUF off add dos_num_text off add >off
-    " BYTES" DOS_MSGBUF off add dos_strcpy drop
+    DOS_FILE_BUF dos_hex_len add tail con.dos_memzero
+    disk.dos_time dsfs.dsfs_set_time
+    DOS_DIR_BUF DOS_BM_BUF DOS_HEX_RAW DOS_FILE_BUF dos_hex_len dsfs.dsfs_write_file 0 neq if "SAVE FAILED" edit.dos_msg_err retn end
+    "SAVED " DOS_MSGBUF con.dos_strcpy >off
+    dos_hex_len DOS_MSGBUF off add con.dos_num_text off add >off
+    " BYTES" DOS_MSGBUF off add con.dos_strcpy drop
     1 >dos_msg
     0 >dos_hex_dirty
 ;
@@ -1552,56 +1575,56 @@ fn dos_hex_dispatch (ptr n) :
         retn
     end
     DOS_WORD_BUF >w0
-    w0 "N" dos_streq if
+    w0 "N" con.dos_streq if
         dos_hex_pos 256 add >dos_hex_pos
         retn
     end
-    w0 "NEXT" dos_streq if
+    w0 "NEXT" con.dos_streq if
         dos_hex_pos 256 add >dos_hex_pos
         retn
     end
-    w0 "P" dos_streq if
+    w0 "P" con.dos_streq if
         dos_hex_pos 256 sub >dos_hex_pos
         dos_hex_pos 0 lt if 0 >dos_hex_pos end
         retn
     end
-    w0 "PREV" dos_streq if
+    w0 "PREV" con.dos_streq if
         dos_hex_pos 256 sub >dos_hex_pos
         dos_hex_pos 0 lt if 0 >dos_hex_pos end
         retn
     end
-    w0 "Q" dos_streq if 1 >dos_quit retn end
-    w0 "QUIT" dos_streq if 1 >dos_quit retn end
-    w0 "W" dos_streq if dos_hex_save retn end
-    w0 "SAVE" dos_streq if dos_hex_save retn end
-    w0 "G" dos_streq if
-        n 2 lt if "USAGE: G ADDRESS" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_hex >addr
-        addr 0 lt if "BAD ADDRESS" dos_msg_err retn end
-        addr dos_hex_len gt if "ADDRESS OUT OF RANGE" dos_msg_err retn end
+    w0 "Q" con.dos_streq if 1 >dos_quit retn end
+    w0 "QUIT" con.dos_streq if 1 >dos_quit retn end
+    w0 "W" con.dos_streq if dos_hex_save retn end
+    w0 "SAVE" con.dos_streq if dos_hex_save retn end
+    w0 "G" con.dos_streq if
+        n 2 lt if "USAGE: G ADDRESS" edit.dos_msg_err retn end
+        DOS_WORD_BUF 32 add names.dos_parse_hex >addr
+        addr 0 lt if "BAD ADDRESS" edit.dos_msg_err retn end
+        addr dos_hex_len gt if "ADDRESS OUT OF RANGE" edit.dos_msg_err retn end
         addr 256 and addr sub >dos_hex_pos
         retn
     end
-    w0 "GOTO" dos_streq if
-        n 2 lt if "USAGE: GOTO ADDRESS" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_hex >addr
-        addr 0 lt if "BAD ADDRESS" dos_msg_err retn end
-        addr dos_hex_len gt if "ADDRESS OUT OF RANGE" dos_msg_err retn end
+    w0 "GOTO" con.dos_streq if
+        n 2 lt if "USAGE: GOTO ADDRESS" edit.dos_msg_err retn end
+        DOS_WORD_BUF 32 add names.dos_parse_hex >addr
+        addr 0 lt if "BAD ADDRESS" edit.dos_msg_err retn end
+        addr dos_hex_len gt if "ADDRESS OUT OF RANGE" edit.dos_msg_err retn end
         addr 256 and addr sub >dos_hex_pos
         retn
     end
-    w0 "E" dos_streq if
-        n 3 lt if "USAGE: E ADDRESS V1 [V2 ...]" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_hex >addr
-        addr 0 lt if "BAD ADDRESS" dos_msg_err retn end
+    w0 "E" con.dos_streq if
+        n 3 lt if "USAGE: E ADDRESS V1 [V2 ...]" edit.dos_msg_err retn end
+        DOS_WORD_BUF 32 add names.dos_parse_hex >addr
+        addr 0 lt if "BAD ADDRESS" edit.dos_msg_err retn end
         2 >k
         while
             k n lt
             if
-                DOS_WORD_BUF k 32 mul add dos_parse_hex >val
-                val 0 lt if "BAD VALUE" dos_msg_err retn end
-                val 255 gt if "VALUE MUST BE A BYTE" dos_msg_err retn end
-                addr dos_hex_len ge if "WRITE PAST END OF FILE" dos_msg_err retn end
+                DOS_WORD_BUF k 32 mul add names.dos_parse_hex >val
+                val 0 lt if "BAD VALUE" edit.dos_msg_err retn end
+                val 255 gt if "VALUE MUST BE A BYTE" edit.dos_msg_err retn end
+                addr dos_hex_len ge if "WRITE PAST END OF FILE" edit.dos_msg_err retn end
                 val DOS_FILE_BUF addr add stb
                 1 >dos_hex_dirty
                 addr 1 add >addr
@@ -1613,18 +1636,18 @@ fn dos_hex_dispatch (ptr n) :
         end
         retn
     end
-    w0 "SET" dos_streq if
-        n 3 lt if "USAGE: SET ADDRESS V1 [V2 ...]" dos_msg_err retn end
-        DOS_WORD_BUF 32 add dos_parse_hex >addr
-        addr 0 lt if "BAD ADDRESS" dos_msg_err retn end
+    w0 "SET" con.dos_streq if
+        n 3 lt if "USAGE: SET ADDRESS V1 [V2 ...]" edit.dos_msg_err retn end
+        DOS_WORD_BUF 32 add names.dos_parse_hex >addr
+        addr 0 lt if "BAD ADDRESS" edit.dos_msg_err retn end
         2 >k
         while
             k n lt
             if
-                DOS_WORD_BUF k 32 mul add dos_parse_hex >val
-                val 0 lt if "BAD VALUE" dos_msg_err retn end
-                val 255 gt if "VALUE MUST BE A BYTE" dos_msg_err retn end
-                addr dos_hex_len ge if "WRITE PAST END OF FILE" dos_msg_err retn end
+                DOS_WORD_BUF k 32 mul add names.dos_parse_hex >val
+                val 0 lt if "BAD VALUE" edit.dos_msg_err retn end
+                val 255 gt if "VALUE MUST BE A BYTE" edit.dos_msg_err retn end
+                addr dos_hex_len ge if "WRITE PAST END OF FILE" edit.dos_msg_err retn end
                 val DOS_FILE_BUF addr add stb
                 1 >dos_hex_dirty
                 addr 1 add >addr
@@ -1636,19 +1659,19 @@ fn dos_hex_dispatch (ptr n) :
         end
         retn
     end
-    "UNKNOWN HEX COMMAND" dos_msg_err
+    "UNKNOWN HEX COMMAND" edit.dos_msg_err
 ;
 
 fn dos_cmd_hex (name) :
     local size 0
-    name DOS_HEX_RAW 11 dos_memcpy
-    DOS_HEX_RAW DOS_HEX_TXT dos_name_text
-    dos_ensure 0 neq if retn end
-    name dos_file_size >size
-    size 0 lt if "NOT FOUND" dos_err retn end
-    size 0 eq if "EMPTY FILE HAS NOTHING TO EDIT" dos_err retn end
-    size DOS_MAX_FILE gt if "FILE TOO LARGE" dos_err retn end
-    DOS_DIR_BUF name DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" dos_err retn end
+    name DOS_HEX_RAW 11 con.dos_memcpy
+    DOS_HEX_RAW DOS_HEX_TXT names.dos_name_text
+    disk.dos_ensure 0 neq if retn end
+    name disk.dos_file_size >size
+    size 0 lt if "NOT FOUND" con.dos_err retn end
+    size 0 eq if "EMPTY FILE HAS NOTHING TO EDIT" con.dos_err retn end
+    size DOS_MAX_FILE gt if "FILE TOO LARGE" con.dos_err retn end
+    DOS_DIR_BUF name DOS_FILE_BUF dsfs.dsfs_read_file 0 neq if "READ ERROR" con.dos_err retn end
     size >dos_hex_len
     0 >dos_hex_pos
     0 >dos_hex_dirty
@@ -1657,9 +1680,9 @@ fn dos_cmd_hex (name) :
         dos_quit 0 eq
         if
             dos_hex_show
-            ":" dos_puts
-            DOS_CMD_BUF DOS_CMD_CAP dos_read_line >size
-            DOS_CMD_BUF size dos_words >size
+            ":" con.dos_puts
+            DOS_CMD_BUF DOS_CMD_CAP kbd.dos_read_line >size
+            DOS_CMD_BUF size names.dos_words >size
             DOS_CMD_BUF size dos_hex_dispatch
             0
         else
@@ -1667,11 +1690,13 @@ fn dos_cmd_hex (name) :
         end
     end
     dos_hex_dirty 0 neq if
-        "UNSAVED CHANGES DISCARDED (W TO SAVE)" dos_putsln
+        "UNSAVED CHANGES DISCARDED (W TO SAVE)" con.dos_putsln
     end
 ;
+!end
 
 # ---------------- shell ----------------
+!namespace shell -
 
 fn dos_dispatch (ptr n) :
     local w0 0
@@ -1682,147 +1707,148 @@ fn dos_dispatch (ptr n) :
     DOS_WORD_BUF >w0
     DOS_WORD_BUF 32 add >w1
     DOS_WORD_BUF 64 add >w2
-    w0 "DIR" dos_streq if dos_cmd_dir retn end
-    w0 "LS" dos_streq if dos_cmd_dir retn end
-    w0 "FILES" dos_streq if dos_cmd_dir retn end
-    w0 "TYPE" dos_streq if
-        n 2 lt if "USAGE: TYPE NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_type
+    w0 "DIR" con.dos_streq if cmds.dos_cmd_dir retn end
+    w0 "LS" con.dos_streq if cmds.dos_cmd_dir retn end
+    w0 "FILES" con.dos_streq if cmds.dos_cmd_dir retn end
+    w0 "TYPE" con.dos_streq if
+        n 2 lt if "USAGE: TYPE NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_type
         retn
     end
-    w0 "CAT" dos_streq if
-        n 2 lt if "USAGE: CAT NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_type
+    w0 "CAT" con.dos_streq if
+        n 2 lt if "USAGE: CAT NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_type
         retn
     end
-    w0 "NEW" dos_streq if
-        n 2 lt if "USAGE: NEW NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_new
+    w0 "NEW" con.dos_streq if
+        n 2 lt if "USAGE: NEW NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_new
         retn
     end
-    w0 "CREATE" dos_streq if
-        n 2 lt if "USAGE: CREATE NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_new
+    w0 "CREATE" con.dos_streq if
+        n 2 lt if "USAGE: CREATE NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_new
         retn
     end
-    w0 "DEL" dos_streq if
-        n 2 lt if "USAGE: DEL NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_delete
+    w0 "DEL" con.dos_streq if
+        n 2 lt if "USAGE: DEL NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_delete
         retn
     end
-    w0 "RM" dos_streq if
-        n 2 lt if "USAGE: RM NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_delete
+    w0 "RM" con.dos_streq if
+        n 2 lt if "USAGE: RM NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A cmds.dos_cmd_delete
         retn
     end
-    w0 "REN" dos_streq if
-        n 3 lt if "USAGE: REN OLD NEW" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD OLD NAME" dos_err retn end
-        DOS_NAME_A DOS_NAME_B 11 dos_memcpy
-        w2 dos_name_from_word 0 neq if "BAD NEW NAME" dos_err retn end
-        DOS_NAME_B DOS_NAME_A dos_cmd_rename
+    w0 "REN" con.dos_streq if
+        n 3 lt if "USAGE: REN OLD NEW" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD OLD NAME" con.dos_err retn end
+        DOS_NAME_A DOS_NAME_B 11 con.dos_memcpy
+        w2 names.dos_name_from_word 0 neq if "BAD NEW NAME" con.dos_err retn end
+        DOS_NAME_B DOS_NAME_A cmds.dos_cmd_rename
         retn
     end
-    w0 "RENAME" dos_streq if
-        n 3 lt if "USAGE: RENAME OLD NEW" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD OLD NAME" dos_err retn end
-        DOS_NAME_A DOS_NAME_B 11 dos_memcpy
-        w2 dos_name_from_word 0 neq if "BAD NEW NAME" dos_err retn end
-        DOS_NAME_B DOS_NAME_A dos_cmd_rename
+    w0 "RENAME" con.dos_streq if
+        n 3 lt if "USAGE: RENAME OLD NEW" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD OLD NAME" con.dos_err retn end
+        DOS_NAME_A DOS_NAME_B 11 con.dos_memcpy
+        w2 names.dos_name_from_word 0 neq if "BAD NEW NAME" con.dos_err retn end
+        DOS_NAME_B DOS_NAME_A cmds.dos_cmd_rename
         retn
     end
-    w0 "COPY" dos_streq if
-        n 3 lt if "USAGE: COPY SRC DST" dos_err retn end
-        w1 w2 dos_cmd_copy
+    w0 "COPY" con.dos_streq if
+        n 3 lt if "USAGE: COPY SRC DST" con.dos_err retn end
+        w1 w2 cmds.dos_cmd_copy
         retn
     end
-    w0 "CP" dos_streq if
-        n 3 lt if "USAGE: CP SRC DST" dos_err retn end
-        w1 w2 dos_cmd_copy
+    w0 "CP" con.dos_streq if
+        n 3 lt if "USAGE: CP SRC DST" con.dos_err retn end
+        w1 w2 cmds.dos_cmd_copy
         retn
     end
-    w0 "EDIT" dos_streq if
-        n 2 lt if "USAGE: EDIT NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_edit
+    w0 "EDIT" con.dos_streq if
+        n 2 lt if "USAGE: EDIT NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A edit.dos_cmd_edit
         retn
     end
-    w0 "HEX" dos_streq if
-        n 2 lt if "USAGE: HEX NAME" dos_err retn end
-        w1 dos_name_from_word 0 neq if "BAD FILE NAME" dos_err retn end
-        DOS_NAME_A dos_cmd_hex
+    w0 "HEX" con.dos_streq if
+        n 2 lt if "USAGE: HEX NAME" con.dos_err retn end
+        w1 names.dos_name_from_word 0 neq if "BAD FILE NAME" con.dos_err retn end
+        DOS_NAME_A hex.dos_cmd_hex
         retn
     end
-    w0 "FORMAT" dos_streq if
+    w0 "FORMAT" con.dos_streq if
         dos_drv >num
         n 2 ge if
-            w1 dos_parse_dec >num
-            num 0 lt if "BAD DRIVE NUMBER" dos_err retn end
+            w1 names.dos_parse_dec >num
+            num 0 lt if "BAD DRIVE NUMBER" con.dos_err retn end
         end
-        num 4 ge if "BAD DRIVE NUMBER" dos_err retn end
-        num dos_cmd_format
+        num 4 ge if "BAD DRIVE NUMBER" con.dos_err retn end
+        num cmds.dos_cmd_format
         num >dos_drv
-        dos_drv dos_mount 0 neq if "FORMATTED BUT MOUNT FAILED" dos_err retn end
+        dos_drv disk.dos_mount 0 neq if "FORMATTED BUT MOUNT FAILED" con.dos_err retn end
         retn
     end
-    w0 "DRV" dos_streq if
-        n 2 lt if "USAGE: DRV N" dos_err retn end
-        w1 dos_parse_dec >num
-        num 0 lt if "BAD DRIVE NUMBER" dos_err retn end
-        num 4 ge if "BAD DRIVE NUMBER" dos_err retn end
+    w0 "DRV" con.dos_streq if
+        n 2 lt if "USAGE: DRV N" con.dos_err retn end
+        w1 names.dos_parse_dec >num
+        num 0 lt if "BAD DRIVE NUMBER" con.dos_err retn end
+        num 4 ge if "BAD DRIVE NUMBER" con.dos_err retn end
         num >dos_drv
-        dos_drv dos_mount 0 neq if
-            "DRIVE " dos_puts
-            dos_drv dos_putnum
-            " IS NOT MOUNTED" dos_putsln
+        dos_drv disk.dos_mount 0 neq if
+            "DRIVE " con.dos_puts
+            dos_drv con.dos_putnum
+            " IS NOT MOUNTED" con.dos_putsln
         else
-            "DRIVE " dos_puts
-            dos_drv dos_putnum
-            " READY" dos_putsln
+            "DRIVE " con.dos_puts
+            dos_drv con.dos_putnum
+            " READY" con.dos_putsln
         end
         retn
     end
-    w0 "FREE" dos_streq if dos_cmd_free retn end
-    w0 "STAT" dos_streq if dos_cmd_free retn end
-    w0 "HELP" dos_streq if dos_cmd_help retn end
-    w0 "CLS" dos_streq if dos_cls retn end
-    w0 "EXIT" dos_streq if dos_cmd_exit retn end
-    w0 "QUIT" dos_streq if dos_cmd_exit retn end
-    w0 "BYE" dos_streq if dos_cmd_exit retn end
-    "UNKNOWN COMMAND - TYPE HELP" dos_err
+    w0 "FREE" con.dos_streq if cmds.dos_cmd_free retn end
+    w0 "STAT" con.dos_streq if cmds.dos_cmd_free retn end
+    w0 "HELP" con.dos_streq if cmds.dos_cmd_help retn end
+    w0 "CLS" con.dos_streq if con.dos_cls retn end
+    w0 "EXIT" con.dos_streq if cmds.dos_cmd_exit retn end
+    w0 "QUIT" con.dos_streq if cmds.dos_cmd_exit retn end
+    w0 "BYE" con.dos_streq if cmds.dos_cmd_exit retn end
+    "UNKNOWN COMMAND - TYPE HELP" con.dos_err
 ;
 
 fn dos_banner () :
-    "CPT32 DOS v1.0 - DSFS / FDD SHELL" dos_putsln
-    "DIR TYPE NEW REN DEL COPY EDIT HEX FORMAT DRV FREE CLS HELP EXIT" dos_putsln
-    dos_newline
+    "CPT32 DOS v1.0 - DSFS / FDD SHELL" con.dos_putsln
+    "DIR TYPE NEW REN DEL COPY EDIT HEX FORMAT DRV FREE CLS HELP EXIT" con.dos_putsln
+    con.dos_newline
 ;
 
 fn dos_repl () :
     local n 0
     local w 0
-    dos_cls
+    con.dos_cls
     dos_banner
-    dos_drv dos_mount 0 neq if
-        "WARNING: DRIVE " dos_puts
-        dos_drv dos_putnum
-        " IS NOT MOUNTED - USE FORMAT" dos_putsln
+    dos_drv disk.dos_mount 0 neq if
+        "WARNING: DRIVE " con.dos_puts
+        dos_drv con.dos_putnum
+        " IS NOT MOUNTED - USE FORMAT" con.dos_putsln
     end
     while
-        dos_drv dos_putnum
-        ">" dos_puts
-        DOS_CMD_BUF DOS_CMD_CAP dos_read_line >n
-        DOS_CMD_BUF n dos_words >w
+        dos_drv con.dos_putnum
+        ">" con.dos_puts
+        DOS_CMD_BUF DOS_CMD_CAP kbd.dos_read_line >n
+        DOS_CMD_BUF n names.dos_words >w
         DOS_CMD_BUF w dos_dispatch
         0
     end
 ;
+!end
 
 fn main () :
     1 DOS_VDP_ENABLE stb
@@ -1830,7 +1856,7 @@ fn main () :
     pcg.col80
     8 irqc.IRQC_PENDING sth
     8 irqc.IRQC_ENABLE sth
-    dos_repl
+    shell.dos_repl
 ;
 
 main

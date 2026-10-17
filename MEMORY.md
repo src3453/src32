@@ -419,3 +419,34 @@
   やらない）。prefix だけ namespace 色になる。
 - 検証済みの制限：実 VS Code のアウトライン表示そのもの（GUI）は未確認。プロトコルとクライアント
   変換コードの契約までを確認した。
+
+## tinybasic.sol / dos.sol の namespace 整理 (2026-10-17)
+- 対象: リポジトリ直下のゲスト 2 本。関数だけを sol の名前空間へ移し、`!const`/`!var` は global のまま
+  残した（解決規則は「現在の namespace → global」なので、global の定数・変数を参照する側は無変更）。
+- 名前空間の境界は既存のセクションコメント（`# ---- LEXER ----`）そのもの。
+  tinybasic: line / vars / con / kbd / lex / ast / parse / prog / eval / exec / emit / run / disk、
+  dos: con / kbd / names / disk / cmds / edit / hex / shell。
+- **`irq3` と `main` は必ず global に残す**。solc は global の `irqN` にしかディスパッチャを生成せず
+  （sol_vm.py の `irq_match = ... if current_namespace is None else None`）、エントリは末尾の `main` を
+  global 解決で呼ぶため。namespace 内に入れると起動も IRQ も無言で壊れる。
+- 越境呼び出しだけ `ns.` を付ける（同一 namespace 内は無修飾のまま）。tinybasic 220 箇所 / dos 388 箇所。
+- 検証（重要）: 生成した `tinybasic.bin` / `dos.bin` は refactor 前と **md5 が一致（バイト単位で同一）**。
+  単一ファイルのゲストでは namespace は内部ラベル `__solc_ns_N_<ns>_M_<name>` を変えるだけで、
+  関数の順序と本体が同じなら配置は変わらないため。すなわち「namespace 整理はコード生成に影響しない」
+  ことの証明になり、既存 .bin に対するテスト結果がそのまま使える。コンパイラ警告（DCE の unused 集合）
+  も前後で完全一致した。
+- 手順の落とし穴: (1) tokenize() で fn 定義範囲を取り、行範囲で帰属を決め、`ns.` 挿入は必ず
+  「修飾（列位置挿入）→ namespace 行挿入（行 index 降順）」の順に行う。逆順だと列位置がずれる。
+  (2) `.bin` を作り直すとき、ソースをサブディレクトリへコピーすると `!include "sol/cpt32/..."` が
+  そのファイル基準で解決されて失敗する。バックアップ検証はリポジトリ root に置く。
+  (3) `!keepfn` は namespace 内の関数には修飾名（`!keepfn a.one`）が必要。
+  (4) `!end` は namespace / raw block の終端で、`if`/`while` の終端は `end`。namespace の中に
+  `!asm`/`!data` があるとその `!end` が namespace を閉じてしまう（今回の 2 ファイルには無い）。
+  (5) リファクタ差分の監査方法: 現行ファイルから `!namespace`/`!end` 行を除去した本文が、
+  ベースラインへ同じ修飾を再適用した結果と一致することを独立スクリプトで確認すると、
+  「プレフィックス挿入以外の変更がない」ことを機械的に証明できる。
+- 既知の失敗: `strek_smoke::probe_strek_tron` は `/Users/src3453/remote/Tiny-Basic/samples/strek-tb.bas`
+  という絶対パスを読むため、この環境では必ず unwrap で落ちる（既存・今回と無関係）。
+- 検証済みテスト（baseline = namespace 整理後も同じ）: tinybasic 5 / dos_smoke 3 / pipeline_guest_boot 1 /
+  tinybasic_load_disk 1 / strek_smoke 2(+1 既知失敗) / strek_micro 5 / strek_verify 1 / tb_load_live 7。
+- .sol は LF、MEMORY.md は CRLF。バイナリは `*.bin`、中間の `*sol.a` は .gitignore 済み。
