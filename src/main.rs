@@ -23,7 +23,7 @@ use cpt32::music::guest::{STREAM_BASE, read_music_stream};
 use gilrs::{
     Axis as GilrsAxis, Button as GilrsButton, EventType as GilrsEventType, GamepadId, Gilrs,
 };
-use imgui::{Condition, ProgressBar, TableFlags, Ui};
+use imgui::{Condition, ProgressBar, StyleColor, TableFlags, Ui};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
@@ -876,6 +876,7 @@ struct PerformanceStats {
     cycle_budget: usize,
     instructions: u128,
     cpu_utilization_percent: f64,
+    runtime_percent: Option<f64>,
     kips: f64,
     ipc: f64,
 }
@@ -883,15 +884,24 @@ struct PerformanceStats {
 impl PerformanceStats {
     fn from_deltas(
         running_cycles: u128,
+        emulated_cycles: u128,
         instructions: u128,
-        elapsed: Duration,
+        emulation_elapsed: Duration,
         cycle_budget: usize,
     ) -> Self {
         let cpu_utilization_percent = running_cycles as f64 * 100.0 / cycle_budget as f64;
-        let kips = if elapsed.is_zero() {
+        let runtime_percent = if emulation_elapsed.is_zero() || emulated_cycles == 0 {
+            None
+        } else {
+            Some(
+                emulation_elapsed.as_secs_f64() * f64::from(cpt32::cpu::CPU_CLOCK) * 100.0
+                    / emulated_cycles as f64,
+            )
+        };
+        let kips = if emulation_elapsed.is_zero() {
             0.0
         } else {
-            instructions as f64 / elapsed.as_secs_f64() / 1_000.0
+            instructions as f64 / emulation_elapsed.as_secs_f64() / 1_000.0
         };
         let ipc = if running_cycles == 0 {
             0.0
@@ -904,10 +914,22 @@ impl PerformanceStats {
             cycle_budget,
             instructions,
             cpu_utilization_percent,
+            runtime_percent,
             kips,
             ipc,
         }
     }
+}
+
+fn realtime_multiplier(runtime_percent: f64) -> f64 {
+    100.0 / runtime_percent
+}
+
+fn runtime_bar_state(runtime_percent: f64) -> (f32, bool) {
+    (
+        (runtime_percent / 100.0).clamp(0.0, 1.0) as f32,
+        runtime_percent > 100.0,
+    )
 }
 
 struct DebugUiState {
@@ -926,6 +948,7 @@ struct DebugUiState {
     mem_count_input: String,
     performance: Option<PerformanceStats>,
     cpu_utilization_history: VecDeque<f32>,
+    runtime_percent_history: VecDeque<f32>,
 }
 
 #[derive(Clone, Copy)]
@@ -966,6 +989,7 @@ impl DebugWindow {
 
 impl DebugUiState {
     const PERFORMANCE_HISTORY_SAMPLES: usize = 120;
+    const RUNTIME_HISTORY_MAX_PERCENT: f32 = 200.0;
 
     fn new(start_paused: bool) -> Self {
         Self {
@@ -986,6 +1010,7 @@ impl DebugUiState {
             mem_count_input: "256".to_string(),
             performance: None,
             cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
+            runtime_percent_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
         }
     }
 
@@ -1197,14 +1222,12 @@ impl DebugUiState {
 
     fn draw_performance(&self, ui: &Ui) {
         ui.window("Performance")
-            .size([560.0, 340.0], Condition::FirstUseEver)
+            .size([560.0, 500.0], Condition::FirstUseEver)
             .build(|| {
                 if let Some(stats) = self.performance {
                     ui.text(format!(
                         "CPU utilization: {:.1}% ({} / {} running cycles per VSync)",
-                        stats.cpu_utilization_percent,
-                        stats.running_cycles,
-                        stats.cycle_budget
+                        stats.cpu_utilization_percent, stats.running_cycles, stats.cycle_budget
                     ));
                     ProgressBar::new(
                         (stats.cpu_utilization_percent / 100.0).clamp(0.0, 1.0) as f32,
@@ -1213,6 +1236,28 @@ impl DebugUiState {
                     .build(ui);
                     ui.same_line();
                     ui.text(format!("{:.1}%", stats.cpu_utilization_percent));
+                    if let Some(runtime_percent) = stats.runtime_percent {
+                        ui.text(format!(
+                            "Runtime: {:.1}% of realtime ({:.3}x emulation; bar max 100%)",
+                            runtime_percent,
+                            realtime_multiplier(runtime_percent)
+                        ));
+                        let (bar_fraction, over_realtime) = runtime_bar_state(runtime_percent);
+                        let runtime_bar = ProgressBar::new(bar_fraction).size([450.0, 18.0]);
+                        if over_realtime {
+                            let red = ui.push_style_color(
+                                StyleColor::PlotHistogram,
+                                [1.0, 0.15, 0.15, 1.0],
+                            );
+                            runtime_bar.build(ui);
+                            red.pop();
+                        } else {
+                            runtime_bar.build(ui);
+                        }
+                    } else {
+                        ui.text("Runtime: N/A (no emulated cycles in this sample)");
+                        ProgressBar::new(0.0).size([450.0, 18.0]).build(ui);
+                    }
                     ui.text(format!("Instruction throughput: {:.1} KIPS", stats.kips));
                     ui.text(format!("IPC: {:.3} instructions/cycle", stats.ipc));
                     ui.text(format!("Instructions this VSync: {}", stats.instructions));
@@ -1220,44 +1265,59 @@ impl DebugUiState {
                     ui.text("Waiting for the first VSync sample...");
                 }
 
-                ui.separator();
-                ui.text("CPU utilization history (last 120 VSync samples, 0-100% of configured cycles/frame)");
-                let size = [500.0, 150.0];
-                let origin = ui.cursor_screen_pos();
-                ui.invisible_button("CPU utilization history", size);
-                let draw = ui.get_window_draw_list();
-                let bottom = origin[1] + size[1];
-                draw.add_rect(
-                    origin,
-                    [origin[0] + size[0], bottom],
-                    [0.08, 0.11, 0.14, 1.0],
-                )
-                .filled(true)
-                .build();
-                for fraction in [0.0, 0.5, 1.0] {
-                    let y = origin[1] + fraction * size[1];
-                    draw.add_line(
-                        [origin[0], y],
-                        [origin[0] + size[0], y],
-                        [0.25, 0.29, 0.33, 1.0],
-                    )
-                    .build();
-                }
-                if self.cpu_utilization_history.len() > 1 {
-                    let last_index = self.cpu_utilization_history.len() - 1;
-                    let mut previous = None;
-                    for (index, utilization) in self.cpu_utilization_history.iter().enumerate() {
-                        let x = origin[0] + index as f32 / last_index as f32 * size[0];
-                        let y = bottom - (utilization / 100.0).clamp(0.0, 1.0) * size[1];
-                        if let Some(point) = previous {
-                            draw.add_line(point, [x, y], [0.35, 0.78, 1.0, 1.0])
-                                .thickness(2.0)
-                                .build();
-                        }
-                        previous = Some([x, y]);
-                    }
-                }
+                Self::draw_performance_history(
+                    ui,
+                    "CPU utilization history (120 VSync samples; 0-100% cycle budget)",
+                    &self.cpu_utilization_history,
+                    100.0,
+                );
+                Self::draw_performance_history(
+                    ui,
+                    "Runtime ratio history (120 active samples; 0-200%, midline=100%)",
+                    &self.runtime_percent_history,
+                    Self::RUNTIME_HISTORY_MAX_PERCENT,
+                );
             });
+    }
+
+    fn draw_performance_history(ui: &Ui, label: &str, history: &VecDeque<f32>, max_value: f32) {
+        ui.separator();
+        ui.text(label);
+        let size = [500.0, 100.0];
+        let origin = ui.cursor_screen_pos();
+        ui.invisible_button(label, size);
+        let draw = ui.get_window_draw_list();
+        let bottom = origin[1] + size[1];
+        draw.add_rect(
+            origin,
+            [origin[0] + size[0], bottom],
+            [0.08, 0.11, 0.14, 1.0],
+        )
+        .filled(true)
+        .build();
+        for fraction in [0.0, 0.5, 1.0] {
+            let y = origin[1] + fraction * size[1];
+            draw.add_line(
+                [origin[0], y],
+                [origin[0] + size[0], y],
+                [0.25, 0.29, 0.33, 1.0],
+            )
+            .build();
+        }
+        if history.len() > 1 {
+            let last_index = history.len() - 1;
+            let mut previous = None;
+            for (index, value) in history.iter().enumerate() {
+                let x = origin[0] + index as f32 / last_index as f32 * size[0];
+                let y = bottom - (*value / max_value).clamp(0.0, 1.0) * size[1];
+                if let Some(point) = previous {
+                    draw.add_line(point, [x, y], [0.35, 0.78, 1.0, 1.0])
+                        .thickness(2.0)
+                        .build();
+                }
+                previous = Some([x, y]);
+            }
+        }
     }
 
     fn draw_compositor(&mut self, ui: &Ui, vdp: &Rc<RefCell<Vdp>>) {
@@ -1444,7 +1504,7 @@ struct DebugGui {
     renderer: Renderer,
     state: DebugUiState,
     last_frame: Instant,
-    last_performance_sample: Option<(Instant, u128, u128)>,
+    last_performance_sample: Option<(u128, u128, u128)>,
     menu_bar_height: f32,
 }
 
@@ -1500,17 +1560,20 @@ impl DebugGui {
         vdp: &Rc<RefCell<Vdp>>,
         presenter: &mut render::WgpuPresenter,
     ) -> Result<(), render::FrameError> {
+        let emulation_start = Instant::now();
         self.state.execute_cpu(cpu);
-        let sample_time = Instant::now();
+        let emulation_elapsed = emulation_start.elapsed();
+        let emulated_cycles = cpu.cycles();
         let running_cycles = cpu.running_cycles();
         let instructions = cpu.instructions_executed();
-        if let Some((last_time, last_running_cycles, last_instructions)) =
+        if let Some((last_running_cycles, last_instructions, last_emulated_cycles)) =
             self.last_performance_sample
         {
             let stats = PerformanceStats::from_deltas(
                 running_cycles.saturating_sub(last_running_cycles),
+                emulated_cycles.saturating_sub(last_emulated_cycles),
                 instructions.saturating_sub(last_instructions),
-                sample_time.duration_since(last_time),
+                emulation_elapsed,
                 self.state.cycles_per_frame(),
             );
             self.state.performance = Some(stats);
@@ -1521,8 +1584,18 @@ impl DebugGui {
             self.state
                 .cpu_utilization_history
                 .push_back(stats.cpu_utilization_percent as f32);
+            if let Some(runtime_percent) = stats.runtime_percent {
+                if self.state.runtime_percent_history.len()
+                    == DebugUiState::PERFORMANCE_HISTORY_SAMPLES
+                {
+                    self.state.runtime_percent_history.pop_front();
+                }
+                self.state
+                    .runtime_percent_history
+                    .push_back(runtime_percent as f32);
+            }
         }
-        self.last_performance_sample = Some((sample_time, running_cycles, instructions));
+        self.last_performance_sample = Some((running_cycles, instructions, emulated_cycles));
 
         let now = Instant::now();
         self.imgui.io_mut().update_delta_time(now - self.last_frame);
@@ -2199,7 +2272,7 @@ mod input_tests {
     }
 
     #[test]
-    fn calculates_utilization_and_realtime_speed_from_distinct_cycle_counts() {
+    fn calculates_utilization_and_runtime_ratio_from_distinct_cycle_counts() {
         let stats = PerformanceStats::from_deltas(
             100_000,
             24_000_000,
@@ -2212,31 +2285,51 @@ mod input_tests {
         assert_eq!(stats.cycle_budget, 200_000);
         assert_eq!(stats.instructions, 5_000);
         assert_eq!(stats.cpu_utilization_percent, 50.0);
-        assert_eq!(stats.emulation_speed_percent, 100.0);
+        assert_eq!(stats.runtime_percent, Some(100.0));
+        assert_eq!(realtime_multiplier(100.0), 1.0);
         assert_eq!(stats.kips, 10.0);
         assert_eq!(stats.ipc, 0.05);
     }
 
     #[test]
-    fn realtime_emulation_speed_can_exceed_100_percent() {
-        let stats = PerformanceStats::from_deltas(
+    fn runtime_ratio_and_multiplier_cover_both_sides_of_realtime() {
+        let slower = PerformanceStats::from_deltas(
+            200_000,
+            12_000_000,
+            5_000,
+            Duration::from_millis(500),
+            200_000,
+        );
+        assert_eq!(slower.runtime_percent, Some(200.0));
+        assert_eq!(realtime_multiplier(200.0), 0.5);
+
+        let faster = PerformanceStats::from_deltas(
             200_000,
             36_000_000,
             5_000,
             Duration::from_millis(500),
             200_000,
         );
-
-        assert_eq!(stats.cpu_utilization_percent, 100.0);
-        assert_eq!(stats.emulation_speed_percent, 150.0);
+        let runtime_percent = faster.runtime_percent.unwrap();
+        assert!((realtime_multiplier(runtime_percent) - 1.5).abs() < 1e-12);
     }
 
     #[test]
-    fn zero_elapsed_time_produces_zero_kips_and_zero_cycle_ipc() {
-        let stats = PerformanceStats::from_deltas(0, 0, 100, Duration::ZERO, 200_000);
-        assert_eq!(stats.kips, 0.0);
-        assert_eq!(stats.ipc, 0.0);
-        assert_eq!(stats.emulation_speed_percent, 0.0);
+    fn runtime_bar_caps_at_100_and_turns_red_above_limit() {
+        assert_eq!(runtime_bar_state(75.0), (0.75, false));
+        assert_eq!(runtime_bar_state(100.0), (1.0, false));
+        assert_eq!(runtime_bar_state(150.0), (1.0, true));
+    }
+
+    #[test]
+    fn zero_elapsed_or_paused_sample_has_no_runtime_ratio() {
+        let zero_elapsed = PerformanceStats::from_deltas(0, 0, 100, Duration::ZERO, 200_000);
+        assert_eq!(zero_elapsed.kips, 0.0);
+        assert_eq!(zero_elapsed.ipc, 0.0);
+        assert_eq!(zero_elapsed.runtime_percent, None);
+
+        let paused = PerformanceStats::from_deltas(0, 0, 0, Duration::from_millis(500), 200_000);
+        assert_eq!(paused.runtime_percent, None);
     }
 
     #[test]
