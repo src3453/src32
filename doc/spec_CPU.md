@@ -1,11 +1,13 @@
 # SRC32 Specification
-Revision 2.4 (2026-10-15)
+Revision 2.5 (2026-10-18)
 
 # Changelog
+- 2.5 (2026-10-18): Added an optional Cached Interpreter mode with a
+  write-coherent instruction decode cache; no ISA change.
 - 2.4 (2026-10-15): Added Extension p (lowercase, Pipelining) as a
   micro-architectural extension; see `doc/spec_CPU_p.md`. No ISA change.
-  Pipelined CPUs report `CPU_FEATURES` bit 7 (`0xBF`); the scalar CPU still
-  reports `0x3F`.
+  Pipelined CPUs report `CPU_FEATURES` bit 7 (`0xBF`); scalar and cached
+  interpreter modes report `0x3F`.
 - 2.3 (2026-09-17): Aligned CPUID, interrupt vectors, implemented extensions, and CPU-reserved MMIO with the Rust CPU.
 - 2.2 (2026-09-17): Added Extension F definitions as a future extension; the current CPU does not implement F.
 - 2.1 (2026-08-09): Added Extension S (Shortened Instructions Format).
@@ -23,6 +25,10 @@ This repository includes:
 - Assembler in Python (`asm.py`)
 
 The goal is clarity and experimentation over micro-architectural complexity.
+
+## 1.1 CPU microarchitectures
+
+`--cpu scalar|cached|pipeline` selects the execution engine; the same value may be set with `cpu.microarchitecture` in `config.yaml`. The pipeline remains the default. Cached interpretation uses a direct-mapped 1024-entry decode cache for devices that expose instruction generations. RAM generations change when bytes in a 4 KiB page are modified, so CPU stores, debugger writes, and DMA writes invalidate cached instructions in that page. Cache hits skip the instruction-fetch bus access; this can change bus arbitration relative to Scalar/Pipeline while leaving decoded instruction semantics unchanged. Non-cacheable devices continue through normal fetch and decode. Cached mode commits simple instructions in one cycle, MUL/MULH in three, and DIV/DIVU/MOD in sixteen; it has no pipeline hazards or branch-flush penalty.
 
 ## 2. Registers
 

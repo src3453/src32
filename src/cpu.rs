@@ -127,6 +127,17 @@ enum PendingInstruction {
     Short(ShortInstruction),
 }
 
+const INSTRUCTION_CACHE_SIZE: usize = 1024;
+
+#[derive(Clone, Copy)]
+struct CachedInstruction {
+    pc: u32,
+    mode: InstructionMode,
+    start_generation: u64,
+    end_generation: u64,
+    instruction: PendingInstruction,
+}
+
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
@@ -152,11 +163,25 @@ pub struct Cpu {
     state: CpuState,
     instruction: Option<PendingInstruction>,
     cycles_left: u32,
+    instruction_cache: Option<Box<[Option<CachedInstruction>]>>,
+    instruction_cache_hits: u128,
+    instruction_cache_misses: u128,
+    defer_register_sync: bool,
 }
 
 impl Cpu {
     pub fn new(bus: Bus) -> Self {
-        let mut bus = bus;
+        Self::new_with_instruction_cache(bus, false)
+    }
+
+    pub(crate) fn new_cached(bus: Bus) -> Self {
+        Self::new_with_instruction_cache(bus, true)
+    }
+
+    fn new_with_instruction_cache(mut bus: Bus, cached: bool) -> Self {
+        if cached {
+            bus.enable_instruction_cache_tracking();
+        }
         let register_block = crate::devices::cpu::connect_cpu_registers(&mut bus);
         let irq_controller = crate::devices::irqc::irqc::connect_irqc(&mut bus);
         bus.attach_irq_controller(Rc::clone(&irq_controller));
@@ -185,6 +210,11 @@ impl Cpu {
             state: CpuState::Fetch,
             instruction: None,
             cycles_left: 0,
+            instruction_cache: cached
+                .then(|| vec![None; INSTRUCTION_CACHE_SIZE].into_boxed_slice()),
+            instruction_cache_hits: 0,
+            instruction_cache_misses: 0,
+            defer_register_sync: false,
         };
         cpu.sync_register_block();
         cpu
@@ -209,6 +239,7 @@ impl Cpu {
         self.state = CpuState::Fetch;
         self.instruction = None;
         self.cycles_left = 0;
+        self.defer_register_sync = false;
         self.bus.reset_expansion_cards();
         self.irq_controller.borrow_mut().reset();
         self.sync_register_block();
@@ -228,13 +259,22 @@ impl Cpu {
         };
     }
 
+    fn trace_cpu_name(&self) -> &'static str {
+        if self.instruction_cache.is_some() {
+            "cached"
+        } else {
+            "scalar"
+        }
+    }
+
     fn sync_from_register_block(&mut self) {
         let block = self.register_block.borrow();
         let irq_enable = block.status & 1 != 0;
         if self.irq_enable != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
             tracing::info!(
                 target: "pec_debug",
-                "[PEC-DBG] CPU status resync cpu=scalar old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
+                "[PEC-DBG] CPU status resync cpu={} old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
+                self.trace_cpu_name(),
                 self.irq_enable,
                 irq_enable,
                 block.pc,
@@ -330,9 +370,16 @@ impl Cpu {
         )
     }
 
-    /// Advance exactly one CPU clock. Memory and arithmetic operations are
-    /// represented as separate bus/functional-unit phases in the FSM.
+    /// Advance one emulated clock using the selected interpreter path.
     pub fn tick(&mut self) {
+        if self.instruction_cache.is_some() {
+            self.tick_cached();
+        } else {
+            self.tick_scalar();
+        }
+    }
+
+    fn tick_scalar(&mut self) {
         self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
@@ -364,7 +411,7 @@ impl Cpu {
                 self.state = CpuState::Decode;
             }
             CpuState::Decode => {
-                self.instruction = self.instruction.map(|i| match i {
+                self.instruction = self.instruction.map(|instruction| match instruction {
                     PendingInstruction::RawNormal(raw) => {
                         PendingInstruction::Normal(Self::decode(raw))
                     }
@@ -373,15 +420,15 @@ impl Cpu {
                     }
                     other => other,
                 });
-                if let Some(insn) = self.instruction {
-                    self.state = if Self::is_load(insn) {
+                if let Some(instruction) = self.instruction {
+                    self.state = if Self::is_load(instruction) {
                         CpuState::MemRead
-                    } else if Self::is_store(insn) {
+                    } else if Self::is_store(instruction) {
                         CpuState::MemWrite
-                    } else if Self::is_mul(insn) {
+                    } else if Self::is_mul(instruction) {
                         self.cycles_left = 3;
                         CpuState::Mul
-                    } else if Self::is_div(insn) {
+                    } else if Self::is_div(instruction) {
                         self.cycles_left = 16;
                         CpuState::Div
                     } else {
@@ -418,6 +465,63 @@ impl Cpu {
         self.sync_register_block();
     }
 
+    fn tick_cached(&mut self) {
+        self.bus.tick_devices();
+        let irq_output = self.irq_controller.borrow().irq_output();
+        self.irqc_line = irq_output.valid;
+        self.irqc_number = irq_output.number;
+        self.refresh_irq_input();
+        if self.state == CpuState::Fetch {
+            self.sync_from_register_block();
+        }
+        if !self.running {
+            self.state = CpuState::Halt;
+            if !self.accept_pending_irq() {
+                self.cycles += 1;
+                return;
+            }
+        }
+        self.cycles += 1;
+        self.running_cycles += 1;
+        match self.state {
+            CpuState::Fetch => {
+                let instruction = self.fetch_cached_instruction();
+                self.instruction = Some(instruction);
+                if Self::is_mul(instruction) {
+                    self.cycles_left = 2;
+                    self.state = CpuState::Mul;
+                } else if Self::is_div(instruction) {
+                    self.cycles_left = 15;
+                    self.state = CpuState::Div;
+                } else {
+                    self.commit_cached_instruction();
+                }
+            }
+            CpuState::Mul | CpuState::Div => {
+                self.cycles_left -= 1;
+                if self.cycles_left == 0 {
+                    self.commit_cached_instruction();
+                }
+            }
+            CpuState::Halt => {}
+            _ => unreachable!("cached interpreter entered a scalar FSM phase"),
+        }
+        self.sync_register_block();
+    }
+
+    fn commit_cached_instruction(&mut self) {
+        self.defer_register_sync = true;
+        self.commit_pending();
+        self.defer_register_sync = false;
+        self.instruction = None;
+        if self.running {
+            self.state = CpuState::Fetch;
+            self.accept_pending_irq();
+        } else {
+            self.state = CpuState::Halt;
+        }
+    }
+
     fn accept_pending_irq(&mut self) -> bool {
         if !self.irq_enable || !self.irq_pending {
             return false;
@@ -426,7 +530,8 @@ impl Cpu {
         if crate::devices::pec::pec::pec_trace_enabled() {
             tracing::info!(
                 target: "pec_debug",
-                "[PEC-DBG] CPU IRQ accept cpu=scalar cause={} pc=0x{:08X} running_cycles={} instructions={}",
+                "[PEC-DBG] CPU IRQ accept cpu={} cause={} pc=0x{:08X} running_cycles={} instructions={}",
+                self.trace_cpu_name(),
                 self.irq_pending_number,
                 self.pc,
                 self.running_cycles,
@@ -552,7 +657,9 @@ impl Cpu {
             return Ok("Warning: Writing to R0 has no effect".into());
         }
         self.reg[reg] = value;
-        self.sync_register_block();
+        if !self.defer_register_sync {
+            self.sync_register_block();
+        }
         Ok("".into())
     }
 
@@ -566,6 +673,68 @@ impl Cpu {
         (hi << 8) | lo
     }
 
+    fn instruction_cache_index(pc: u32, cache_len: usize) -> usize {
+        ((pc >> 1) as usize) & (cache_len - 1)
+    }
+
+    fn fetch_cached_instruction(&mut self) -> PendingInstruction {
+        let pc = self.pc;
+        let mode = self.instr_mode;
+        let instruction_size = match mode {
+            InstructionMode::Normal => INSN_SIZE,
+            InstructionMode::Short => SHORT_INSN_SIZE,
+        };
+        let start_generation = self.bus.instruction_cache_generation(pc);
+        let end_generation = self
+            .bus
+            .instruction_cache_generation(pc.wrapping_add(instruction_size - 1));
+        if let (Some(start_generation), Some(end_generation)) = (start_generation, end_generation) {
+            let cache_len = self.instruction_cache.as_ref().unwrap().len();
+            let index = Self::instruction_cache_index(pc, cache_len);
+            if let Some(entry) = self.instruction_cache.as_ref().unwrap()[index].filter(|entry| {
+                entry.pc == pc
+                    && entry.mode == mode
+                    && entry.start_generation == start_generation
+                    && entry.end_generation == end_generation
+            }) {
+                self.instruction_cache_hits += 1;
+                return entry.instruction;
+            }
+            self.instruction_cache_misses += 1;
+            let instruction = self.read_and_decode_instruction(pc, mode);
+            self.instruction_cache.as_mut().unwrap()[index] = Some(CachedInstruction {
+                pc,
+                mode,
+                start_generation,
+                end_generation,
+                instruction,
+            });
+            instruction
+        } else {
+            self.read_and_decode_instruction(pc, mode)
+        }
+    }
+
+    fn read_and_decode_instruction(
+        &mut self,
+        pc: u32,
+        mode: InstructionMode,
+    ) -> PendingInstruction {
+        match mode {
+            InstructionMode::Normal => {
+                PendingInstruction::Normal(Self::decode(self.bus.read_u32_be(pc)))
+            }
+            InstructionMode::Short => {
+                PendingInstruction::Short(Self::decode_short(self.fetch_u16_at(pc)))
+            }
+        }
+    }
+
+    pub(crate) fn instruction_cache_stats(&self) -> Option<(u128, u128)> {
+        self.instruction_cache
+            .as_ref()
+            .map(|_| (self.instruction_cache_hits, self.instruction_cache_misses))
+    }
     fn decode(raw: u32) -> Instruction {
         let op = ((raw >> 26) & 0x3F) as u8;
         let rd = ((raw >> 21) & 0x1F) as u8;
@@ -952,7 +1121,8 @@ impl Cpu {
                 if crate::devices::pec::pec::pec_trace_enabled() {
                     tracing::info!(
                         target: "pec_debug",
-                        "[PEC-DBG] CPU IRET cpu=scalar pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
+                        "[PEC-DBG] CPU IRET cpu={} pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
+                        self.trace_cpu_name(),
                         self.pc,
                         self.epc,
                         self.cause,

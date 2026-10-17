@@ -40,22 +40,24 @@ python3 tools/asm/asm.py program.asm -o program.wax --entry start
 
 デバッグ GUI を有効にするには `--debug-gui` を指定します。デバッグ GUI 起動時に一時停止する場合は `--start-paused` も指定してください。
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
-`Performance` ウィンドウではCPU使用率のプログレスバーと履歴グラフ、命令実行速度、IPC（instructions per cycle）を確認できます。使用率の最大値は `Debug Controls` の `Cycles / frame` 設定に連動します。
+`Performance` ウィンドウでは、設定した `Cycles / frame` に対するCPU使用率と、実時間比を確認できます。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
 `Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止します。ゲストRAMの内容は保持します。
 
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
 ```
 
-エミュレータは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU に切り替えるには `--cpu scalar` を指定します（`--cpu pipeline` で明示も可）。`config.yaml` の `cpu.microarchitecture` でも既定値を変えられます（CLI が優先）。
+エミュレーターは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU は `--cpu scalar`、Cached Interpreter は `--cpu cached` で選択します。`--cpu pipeline` でパイプラインを明示できます。`config.yaml` の `cpu.microarchitecture` でも指定でき、CLI が優先されます。
 
-Scalar CPU とパイプライン CPU の性能を同じ合成ワークロードで比較するには、リリースビルドでベンチマークを実行します。位置引数は順にワークロード反復数と測定サンプル数です（既定値: `10000`, `5`）。実行ごとにレジスタ・PC・データメモリ・完了命令数を照合し、差異があれば失敗します。
+Cached Interpreter は RAM 上の命令を直接マップ型のデコードキャッシュに保持します。RAM の該当 4 KiB ページが書き換わるとキャッシュを無効化します。キャッシュヒット時は命令フェッチのバスアクセスを省略します。通常命令は1サイクル、MUL/MULHは3サイクル、DIV/DIVU/MODは16サイクルです。既定 CPU は変更していません。
+
+3種類の CPU を同じループワークロードで比較するには、リリースビルドでベンチマークを実行します。位置引数は順にループ反復数と測定サンプル数です（既定値: `10000`, `5`）。実行ごとにレジスター・PC・データメモリー・完了命令数を照合し、差異があれば失敗します。
 
 ```sh
 cargo run --release --bin cpu_bench -- 10000 5
 ```
 
-ワークロードは依存する ALU 演算、MUL とその直後の利用、ストア／ロード、および load-use 依存を含みます。出力の wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンタです。
+ワークロードは繰り返し実行される依存 ALU 演算、MUL とその直後の利用、ストア／ロード、load-use 依存、ループ分岐を含みます。出力は各モードの中央値、命令キャッシュ hit/miss、Cached の Scalar／Pipeline に対する speedup を示します。wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンターです。
 
 ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
 
@@ -75,7 +77,7 @@ pcg:
 CPU の対話型モニターは次のように起動します。
 
 ```sh
-cargo run --release --bin cpt32 -- monitor [program.bin] [--cpu scalar|pipeline]
+cargo run --release --bin cpt32 -- monitor [program.bin] [--cpu scalar|cached|pipeline]
 ```
 
 ## CPT32 DOS（DSFS シェル）

@@ -29,7 +29,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");

@@ -5,10 +5,11 @@ translation_of: ../spec_CPU.md
 
 # SRC32仕様
 
-Revision 2.4 (2026-10-15)
+Revision 2.5 (2026-10-18)
 
 # 変更履歴
-- 2.4 (2026-10-15): 拡張p（小文字、パイプライン処理）をマイクロアーキテクチャ拡張として追加。[[doc/ja/spec_CPU_p|拡張p仕様]]を参照。ISAの変更はありません。パイプラインCPUは`CPU_FEATURES` bit 7（`0xBF`）を報告し、スカラCPUは引き続き`0x3F`を報告します。
+- 2.5 (2026-10-18): 書き込み整合性を持つ命令デコードキャッシュを使うCached Interpreterモードを追加しました。ISAは変更しません。
+- 2.4 (2026-10-15): 拡張p（小文字、パイプライン処理）をマイクロアーキテクチャ拡張として追加。[[doc/ja/spec_CPU_p|拡張p仕様]]を参照。ISAの変更はありません。パイプラインCPUは`CPU_FEATURES` bit 7（`0xBF`）を報告し、scalarおよびcached interpreterは`0x3F`を報告します。
 - 2.3 (2026-09-17): CPUID、割り込みベクター、実装済み拡張、CPU予約MMIOをRust CPUに合わせた。
 - 2.2 (2026-09-17): 将来の拡張として拡張Fの定義を追加。現行CPUはFを実装していない。
 - 2.1 (2026-08-09): 拡張S（短縮命令形式）を追加。
@@ -26,6 +27,10 @@ Normal Modeでは固定長32ビット命令を使用し、拡張Sは16ビット�
 - Python製アセンブラー（`asm.py`）
 
 マイクロアーキテクチャの複雑さよりも、明快さと実験を重視します。
+
+## 1.1 CPUマイクロアーキテクチャ
+
+`--cpu scalar|cached|pipeline`で実行方式を選択できます。`config.yaml`の`cpu.microarchitecture`でも指定でき、既定はpipelineです。Cached Interpreterは、命令世代を公開するデバイスに対して1024エントリーの直接マップ型デコードキャッシュを使います。RAMの4 KiBページ内のbyteが変更されると世代が変わり、そのページ内のキャッシュ命令は再取得・再デコードされます。CPU store、デバッガー書き込み、DMA書き込みがこの無効化を行います。キャッシュヒットでは命令フェッチのバスアクセスを省くため、Scalar/Pipelineとバス調停タイミングが異なる場合があります。キャッシュ非対応デバイスは通常のfetch/decodeを続けます。Cachedは通常命令を1サイクル、MUL/MULHを3サイクル、DIV/DIVU/MODを16サイクルでcommitし、pipeline由来のhazardや分岐flush遅延はありません。
 
 ## 2. レジスター
 

@@ -94,17 +94,20 @@ link value participates in forwarding.
   mixed program; directed tests assert the exact single-cycle load-use stall,
   branch flush behavior, store forwarding, and exact stalls plus dependent
   results for `MUL`, `MULH`, `DIV`, `DIVU`, and `MOD`.
-- The emulator boots on `PipelineCpu` by default. Selection lives in
-  `src/cpu_select.rs` (`AnyCpu` over `Cpu`/`PipelineCpu`, same harness API):
-  `--cpu scalar|pipeline` CLI flag first, then the `cpu.microarchitecture`
-  key in `config.yaml`, then the pipeline default. The scalar `Cpu` stays as
-  the behavioral reference and for differential testing.
+- The emulator boots on `PipelineCpu` by default. `src/cpu_select.rs` exposes
+  `--cpu scalar|cached|pipeline` and `cpu.microarchitecture` through `AnyCpu`;
+  Cached mode reuses scalar instruction semantics in a dedicated
+  single-instruction-per-tick interpreter with a write-coherent decode cache;
+  it does not advertise Extension p.
+  Cache hits skip RAM instruction-fetch bus access; pipeline remains the
+  default, and CPU mode choice should be based on measurements for the target
+  workload and host.
 
 ## 4. Files
 
 - `src/cpu_pipeline.rs` — implementation.
 - `tests/cpu_pipeline.rs` — regression suite (15 tests).
 - `doc/spec_CPU.md` — ISA source of truth (unchanged semantics).
-- `src/bin/cpu_bench.rs` — paired Scalar/Pipeline host-time benchmark;
-  `cargo run --release --bin cpu_bench -- [iterations [samples]]` runs an
-  ALU/multiply/memory dependency workload and rejects architectural divergence.
+- `src/bin/cpu_bench.rs` — three-way Scalar/Pipeline/Cached comparison; the
+  loop workload checks architectural state and reports median wall time,
+  cache hit/miss counts, and Cached speedup against both reference modes.
