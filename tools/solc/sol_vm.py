@@ -12,6 +12,8 @@ from dataclasses import dataclass, field
 from typing import NamedTuple, Optional
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+# An optional `namespace.` qualifier in front of a function, variable or constant name.
+QUALIFIED_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)?$")
 FLOAT_RE = re.compile(
     r"^-?(?:[0-9]+\.[0-9]*(?:[eE][+-]?[0-9]+)?|\.[0-9]+(?:[eE][+-]?[0-9]+)?|[0-9]+[eE][+-]?[0-9]+|inf|nan)[fF]$"
 )
@@ -400,8 +402,8 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     labels: dict[str, int] = {}
     read_only_data: list[tuple[int, bytes]] = []
 
-    constants: dict[str, int] = {}
-    variables: dict[str, int] = {}
+    constants: dict[tuple[str | None, str], int] = {}
+    variables: dict[tuple[str | None, str], int] = {}
     macros: dict[str, list[str]] = {}
     next_var_addr = var_base
     functions: dict[str, dict] = {}
@@ -421,6 +423,20 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 return None
             return function_symbols.get((qualifier, function_name))
         return function_symbols.get((namespace, name)) or function_symbols.get((None, name))
+
+    def resolve_symbol(table: dict[tuple[str | None, str], int], name: str, namespace: str | None) -> int | None:
+        """Resolve a variable/constant name: qualified names hit that namespace
+        only; unqualified names search the current namespace, then the global scope."""
+        if "." in name:
+            qualifier, symbol_name = name.split(".", 1)
+            if not LABEL_RE.fullmatch(qualifier) or not LABEL_RE.fullmatch(symbol_name):
+                return None
+            return table.get((qualifier, symbol_name))
+        scoped = (namespace, name)
+        if scoped in table:
+            return table[scoped]
+        return table.get((None, name))
+
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
     forced_stack_size_seen = False
@@ -521,7 +537,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
         "halt",
     }
 
-    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, args_list: list[str] | None, location: SourceLocation | None) -> bool:
+    def store_target(name: str, locals_list: list[tuple[str, int | None]] | None, args_list: list[str] | None, location: SourceLocation | None, namespace: str | None) -> bool:
         if locals_list is not None:
             for local_index, (local_name, _) in enumerate(locals_list):
                 if local_name == name:
@@ -534,8 +550,9 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     instructions.append(Instruction("arg_addr", arg_index, location=location))
                     instructions.append(Instruction("st", location=location))
                     return True
-        if name in variables:
-            instructions.append(Instruction("push", variables[name], location=location))
+        variable_addr = resolve_symbol(variables, name, namespace)
+        if variable_addr is not None:
+            instructions.append(Instruction("push", variable_addr, location=location))
             instructions.append(Instruction("st", location=location))
             return True
         return False
@@ -670,9 +687,10 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if not NUMBER_RE.match(val_tok):
                         raise SolVMError(f"invalid constant value: {val_tok}")
                     value = parse_number(val_tok)
-                    if name in constants:
+                    symbol = (word_namespace, name)
+                    if symbol in constants:
                         raise SolVMError(f"duplicate constant: {name}")
-                    constants[name] = value
+                    constants[symbol] = value
                     i += 3
                     continue
 
@@ -687,11 +705,12 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     if i + 2 < len(words) and NUMBER_RE.match(words[i + 2]):
                         init_value = parse_number(words[i + 2])
                         consumed = 3
-                    if name in variables:
+                    symbol = (word_namespace, name)
+                    if symbol in variables:
                         raise SolVMError(f"duplicate variable: {name}")
                     addr = next_var_addr
                     next_var_addr += 4
-                    variables[name] = addr
+                    variables[symbol] = addr
                     instructions.append(Instruction("push", init_value, location=location))
                     instructions.append(Instruction("push", addr, location=location))
                     instructions.append(Instruction("st", location=location))
@@ -775,9 +794,9 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
 
             if tok.startswith(">"):
                 name = tok[1:]
-                if not LABEL_RE.match(name):
+                if not QUALIFIED_RE.match(name):
                     raise SolVMError(f"invalid variable name for store: {name}")
-                if not store_target(name, locals_list, args_list, location):
+                if not store_target(name, locals_list, args_list, location, word_namespace):
                     raise error(f"undefined variable: {name}")
                 i += 1
                 continue
@@ -798,13 +817,15 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                 i += 1
                 continue
 
-            if tok in constants:
-                emit("push", constants[tok])
+            constant_value = resolve_symbol(constants, tok, word_namespace)
+            if constant_value is not None:
+                emit("push", constant_value)
                 i += 1
                 continue
 
-            if LABEL_RE.match(tok) and tok in variables:
-                emit("push", variables[tok])
+            variable_addr = resolve_symbol(variables, tok, word_namespace)
+            if variable_addr is not None:
+                emit("push", variable_addr)
                 emit("ld")
                 i += 1
                 continue

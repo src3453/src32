@@ -1,4 +1,5 @@
 # IRQC registers (16-bit pending and enable masks, big-endian MMIO)
+!namespace irqc -
 !var IRQC_PENDING 0xFFFF0040
 !var IRQC_ENABLE 0xFFFF0044
 
@@ -23,3 +24,4 @@ fn irqc_irq_number () :
         active 0 eq
     end
 ;
+!end

@@ -118,6 +118,8 @@ DMAC の IDC READ 設定は source=`DATA` fixed、destination=`BUFFER` increment
 
 WRITE は転送方向を反転します。DMAC source を RAM buffer に、destination を IDC `DATA` にします。`CH0_CONTROL` は WIDTH=8-bit、source increment、destination fixed、START を持つ `0x110` です。IDC 側では `COMMAND=2` を書き、byte count は引き続き `SECTOR_COUNT × 512` にします。接続 media が read-only でないことを確認してください。完全に受信し、sector の transfer time が到来した sector だけが raw image に commit されます。
 
+この転送プロトコルの実装は `sol/cpt32/idc.sol`（`idc.idc_read` / `idc.idc_write`）として利用できます。ライブラリは名前空間 `idc` / `dsfs` を宣言しているため、`!include` した側は修飾名で呼び出します。DSFS イメージの操作は `sol/cpt32/dsfs.sol` と `doc/spec_DSFS.md` §12 を参照してください。
+
 ## 6. IRQ を使う
 
 Polling の代わりに IRQ を使うには、対象デバイスと IRQC の両方を設定します。

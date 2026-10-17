@@ -367,16 +367,16 @@ fn tb_input_value () :
 
 fn tb_putc (char) :
     char 13 eq if retn end
-    char 10 eq if _pcg_ln retn end
+    char 10 eq if pcg._pcg_ln retn end
     char 8 eq if
-        pcg_cur_x 0 gt if
-            pcg_cur_x 1 sub pcg_cur_y locate
-            32 putcscr
-            pcg_cur_x 1 sub pcg_cur_y locate
+        pcg.pcg_cur_x 0 gt if
+            pcg.pcg_cur_x 1 sub pcg.pcg_cur_y pcg.locate
+            32 pcg.putcscr
+            pcg.pcg_cur_x 1 sub pcg.pcg_cur_y pcg.locate
         end
         retn
     end
-    char putcscr
+    char pcg.putcscr
 ;
 
 fn tb_print_string (ptr) :
@@ -472,7 +472,7 @@ fn tb_report_error () :
 # clearing IRQC pending here keeps the line low so the next event
 # latches a fresh rising edge at the CPU input.
 fn irq3 () :
-    8 IRQC_PENDING sth
+    8 irqc.IRQC_PENDING sth
     retn
 ;
 
@@ -1550,7 +1550,7 @@ fn tb_eval_call (func argnode) :
         0 ret
     end
     value 0 le if 0 ret end
-    rand 0x7fffffff and value mod 1 add ret
+    pec_rng.rand 0x7fffffff and value mod 1 add ret
 ;
 
 fn tb_eval (node) :
@@ -2055,8 +2055,8 @@ fn tb_direct_line () :
 
 fn tb_cls () :
     local i 0
-    0 >pcg_scroll_y
-    0 >pcg_vram_row
+    0 >pcg.pcg_scroll_y
+    0 >pcg.pcg_vram_row
     0 0x8000f00e stb
     0 0x8000f00f stb
     while
@@ -2071,7 +2071,7 @@ fn tb_cls () :
             1
         end
     end
-    0 0 locate
+    0 0 pcg.locate
 ;
 
 fn tb_repl () :
@@ -2352,11 +2352,11 @@ fn tb_load_disk_lines (bytes) :
 
 fn main () :
     1 0x80000000 stb
-    initPCG
-    initPRNG
-    col80
-    8 IRQC_PENDING sth
-    8 IRQC_ENABLE sth
+    pcg.initPCG
+    pec_rng.initPRNG
+    pcg.col80
+    8 irqc.IRQC_PENDING sth
+    8 irqc.IRQC_ENABLE sth
     tb_repl
 ;
 

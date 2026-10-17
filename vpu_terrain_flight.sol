@@ -192,7 +192,7 @@ fn set_projection_matrix () :
 
 # Acknowledge the VDP frame interrupt so HALT resumes for the next frame.
 fn irq0 () :
-    1 IRQC_PENDING sth
+    1 irqc.IRQC_PENDING sth
     retn
 ;
 
@@ -202,8 +202,8 @@ fn main () :
     0 VDP_BORDER stb
     0x01000002 emit
     0 emit 1 emit # Gouraud vertex-color interpolation
-    1 IRQC_PENDING sth
-    1 IRQC_ENABLE sth
+    1 irqc.IRQC_PENDING sth
+    1 irqc.IRQC_ENABLE sth
     local phase 0
     while
         clear_frame

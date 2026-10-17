@@ -95,7 +95,7 @@ fn irq5 () :
 ;
 ```
 
-`sol/cpt32/irqc.sol` の `irqc_irq_number` は IRQC の有効な保留ビットを調べ、最も番号の小さい IRQ 番号を返す。該当する IRQ がない場合は `-1` を返す。
+`sol/cpt32/irqc.sol` を `!include` すると `irqc.irqc_irq_number` を呼び出せる。これは IRQC の有効な保留ビットを調べ、最も番号の小さい IRQ 番号を返す。該当する IRQ がない場合は `-1` を返す。
 
 例:
 ```
@@ -107,7 +107,7 @@ fn add_two_numbers (a b) :
 
 # 呼び出し側
 1 2 add_two_numbers
-prn  # 出力: 3
+print.prn  # 出力: 3
 ```
 
 # スタックへの値のプッシュ
@@ -248,7 +248,7 @@ TODO: 番号を変更する
 ディレクティブの先頭には`!`が付く。ディレクティブは、コンパイラに対して特定の指示を与えるために使用される。
 | ディレクティブ | 説明 |
 | --- | --- |
-| `!include "filename" [as namespace]` | 指定されたファイルをインクルードする。`as namespace`を付けると、含まれる関数を名前空間に配置する。 |
+| `!include "filename" [as namespace]` | 指定されたファイルをインクルードする。`as namespace`を付けると、含まれる関数・定数・変数を名前空間に配置する。 |
 | `!define MACRO_NAME value` | マクロを定義する |
 | `!undef MACRO_NAME` | マクロを未定義にする |
 | `!const CONST_NAME value` | 定数を定義する |
@@ -263,12 +263,12 @@ TODO: 番号を変更する
 | `!stack_top address` | 実行時スタックの初期位置を指定する（1回のみ。既定値は0x000FFFFC）。 |
 | `!var_base address` | グローバル変数の割当ベースアドレスを指定する（1回のみ。既定値は0x00100000）。 |
 | `!rodata_base address` | 読み取り専用データの割当ベースアドレスを指定する（1回のみ。既定値は0x00020000）。 |
-| `!namespace name -` | 名前空間ブロックを開始する。ブロックは `!end` で終了する。 |
+| `!namespace name -` | 名前空間ブロックを開始する。ブロック内の関数・定数・変数は名前空間 `name` に属する。ブロックは `!end` で終了する。 |
 
 これらの値はコンパイル時の配置に使われる。solcの`--stack-top`、`--var-base`、`--read-only-data-base`オプションで同じ値を指定した場合は、コマンドラインオプションがソース内のディレクティブより優先される。指定したアドレスは`0..0xFFFFFFFF`の範囲とし、ディレクティブは対応するスタック・変数・読み取り専用データを使う前に記述する。
 
-名前空間内の関数は同じ名前空間に属する関数を非修飾名で呼び出せる。名前空間外からは `namespace.function` で呼び出す。名前空間付き `!include` も同じ規則で関数を配置する。関数名の解決と未定義参照の検証はコンパイル時に行い、名前空間自体は実行時の状態や呼び出し規約を追加しない。
-名前空間内の非修飾関数呼び出しは、まず現在の名前空間を検索し、該当する関数がなければグローバル関数を検索する。名前空間ブロックは入れ子にできない。
+名前空間内の関数・定数・変数は同じ名前空間に属する。名前空間内の非修飾名は、まず現在の名前空間を検索し、該当する名前がなければグローバルな関数・定数・変数を検索する。名前空間外からは `namespace.name` と修飾して参照し、名前空間内の変数への代入は `>namespace.name` と書く。名前空間付き `!include` も同じ規則で関数・定数・変数を配置する。
+名前解決と未定義参照の検証はコンパイル時に行い、名前空間自体は実行時の状態や呼び出し規約を追加しない。グローバル名と各名前空間の名前は独立に定義できるため、同じ名前を別の名前空間で再利用しても衝突しない。同じスコープでの重複定義（関数・定数・変数）はエラーになる。マクロ (`!define`) はテキスト置換であり名前空間の対象外で、常にグローバルである。名前空間ブロックは入れ子にできない。
 
 ## `!asm`
 `!asm`ディレクティブは、以降の行をアセンブリコードとして扱うことを指定する。`!end`ディレクティブが現れるまで、すべての行はアセンブリコードとして解釈される。
@@ -352,13 +352,14 @@ STB [R1], R2 ; Set VDP to text mode
 定数は、`!const` ディレクティブを使用して定義される。定数は、プログラムの実行中に変更することはできない。
 変数は、`!var` ディレクティブを使用して定義される。変数は、プログラムの実行中に変更することができる。
 変数への値の格納は、`>` 接頭辞を使用して行う。
+定数と変数も名前空間に属させることができる。名前空間ブロック内で定義した定数・変数は外部から `namespace.NAME` で参照し、代入は `>namespace.NAME` と書く（[コンパイラ・ディレクティブ]の名前空間の項を参照）。
 例:
 ```
 !const PI 3.14159
 !var num 3
-PI prn
+PI print.prn
 num PI mul >num  # numにPIを掛けた値を格納
-num prn  # 出力: 9.42477
+num print.prn  # 出力: 9.42477
 ```
 
 # ローカル変数
@@ -373,7 +374,7 @@ fn example_function (a b) :
     a b add >c  # aとbを加算し、結果をローカル変数cに格納
     c 2 mul  # ローカル変数cの値を2倍する
 ;
-1 2 example_function prn  # 出力: 6
+1 2 example_function print.prn  # 出力: 6
 ```
 
 # 変数スコープ
@@ -399,12 +400,47 @@ fn example_function (a b) :
 solは`solc`というコンパイラを使用して、SRC32のアセンブリにコンパイルされる。`solc`は、ソースコードを解析し、構文エラーや型エラーを検出する。エラーが検出された場合、コンパイルは中止され、エラーメッセージが表示される。
 
 # 標準ライブラリ
-solには、標準ライブラリ(`solstd`)が含まれており、基本的な入出力操作や文字列操作、数学関数などが提供される。標準ライブラリは、`!include` ディレクティブを使用してインクルードすることができる。
-TODO: 標準ライブラリの仕様を追加する
+solには、標準ライブラリ(`sol/solstd`)とCPT32用ライブラリ(`sol/cpt32`)が含まれ、基本的な入出力操作やコンソール描画、乱数、デバイス操作などが提供される。各ライブラリは`!include`ディレクティブで取り込み、ファイル自身が名前空間を宣言しているため、関数・定数・変数は `名前空間.名前` で参照する。
 
-## 1. 出力 (solstd_print.sol)
-| オペレーター | オペランド数 | スタック操作 | 説明 |
+| ファイル | 名前空間 | 主な内容 |
+| --- | --- | --- |
+| `sol/solstd/array.sol` | `array` | `aget` / `aset` / `arevcp` / `acopy` |
+| `sol/solstd/prng_software.sol` | `prng_software` | `rand_lfsr` と LFSR 状態 `lfsr` |
+| `sol/solstd/softfloat.sol` | `softfloat` | binary32 の `sf32_*` 演算と整数変換 |
+| `sol/cpt32/print.sol` | `print` | `putc` / `prn` / `prnln`（UART出力） |
+| `sol/cpt32/pcg.sol` | `pcg` | PCGテキスト画面の `initPCG` / `locate` / `putcscr` / `prnscr` / `prnlnscr` / `colorfg` / `colorbg` / `col40` / `col80` / `cls` と状態変数 `pcg_*` |
+| `sol/cpt32/colors.sol` | `colors` | `tocolor`（`hsv2color` は未実装のスタブ） |
+| `sol/cpt32/irqc.sol` | `irqc` | `irqc_irq_number` と `IRQC_PENDING` / `IRQC_ENABLE` |
+| `sol/cpt32/pec_rng.sol` | `pec_rng` | `initPRNG` / `rand` / `randT` |
+| `sol/cpt32/idc.sol` | `idc` | IDCドライバ（`idc_read` など）と `IDC_*` 定数 |
+| `sol/cpt32/dsfs.sol` | `dsfs` | DSFS操作（`dsfs_mount` など）と `DSFS_*` 定数 |
+| `sol/cpt32/vpu.sol` | `vpu` | VPUのFIFOコマンドヘルパ |
+
+例:
+```
+!include "sol/cpt32/pcg.sol"
+!include "sol/cpt32/print.sol"
+
+pcg.initPCG
+pcg.col80
+"hello" pcg.prnlnscr
+0x3f pcg.colorfg
+"UART output" print.prnln
+```
+
+## 1. 出力 (sol/cpt32/print.sol, 名前空間 `print`)
+| 関数 | オペランド数 | スタック操作 | 説明 |
 | --- | --- | --- | --- |
-| `prn` | 1 | a -> | スタックのトップの値を文字列へのポインタとして、標準出力に出力する |
-| `prnln` | 1 | a -> | スタックのトップの値をポインタとして、標準出力に出力し、改行する |
-| `putc` | 1 | a -> | スタックのトップの値を文字として標準出力に出力する |
+| `print.prn` | 1 | a -> | スタックのトップの値を文字列へのポインタとして、標準出力に出力する |
+| `print.prnln` | 1 | a -> | スタックのトップの値をポインタとして、標準出力に出力し、改行する |
+| `print.putc` | 1 | a -> | スタックのトップの値を文字として標準出力に出力する |
+
+## 2. 浮動小数点 (sol/solstd/softfloat.sol, 名前空間 `softfloat`)
+IEEE 754 binary32 の値を、浮動小数点リテラル (`1.0f` など) がスタックに置く32ビット表現のまま整数演算で扱う。`softfloat.sf32_add`、`softfloat.sf32_sub`、`softfloat.sf32_mul`、`softfloat.sf32_div`、`softfloat.sf32_neg`、`softfloat.sf32_abs`、`softfloat.sf32_eq`、`softfloat.sf32_lt` と、次の整数変換を提供する。比較は `0` が真、`1` が偽である。NaN は順序付けできないため、`softfloat.sf32_eq` と `softfloat.sf32_lt` はどちらも偽を返す。
+
+| 関数 | スタック操作 | 説明 |
+| --- | --- | --- |
+| `softfloat.sf32_toint` | x -> n | binary32 のビット列を int32 へ0方向への切り捨てで変換する |
+| `softfloat.sf32_tofloat` | n -> x | int32 を最近接 binary32 のビット列へ丸める (近接偶数丸め) |
+
+変換はすべての入力に対して定義され、トラップも未定義値も生じない。`softfloat.sf32_toint` は NaN を `0`、`0x7FFFFFFF` を超える値と `+∞` を `0x7FFFFFFF`、`-0x80000000` を下回る値と `-∞` を `0x80000000` (`-2^31`) へ飽和させ、`|x| < 1` は `0` にする。丸めは0方向への切り捨てなので、`sf32_toint(1.9f)` は `1`、`sf32_toint(-1.9f)` は `-1` になる。`softfloat.sf32_tofloat` は `2^24` 未満の大きさの整数を厳密に変換し、それ以上は近接偶数丸めで丸める。`0` は `+0.0` (`0x00000000`)、`0x80000000` (`-2^31`) は厳密に表現できる。

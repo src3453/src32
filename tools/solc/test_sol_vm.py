@@ -376,6 +376,61 @@ def test_namespace_rejects_unknown_qualified_function():
         compile_program("absent.function")
 
 
+def test_namespaced_variables_and_constants_resolve_inside_and_outside_the_namespace():
+    source = """
+!namespace state -
+!const LIMIT 5
+!var count 0
+fn bump () : count 1 add >count count ret ;
+!end
+state.bump
+state.count
+state.LIMIT
+9 >state.count
+state.count
+"""
+    assert SolVM().run_source(source) == [1, 1, 5, 9]
+
+
+def test_namespace_symbol_lookup_falls_back_to_the_global_scope():
+    source = """
+!const BASE 10
+!var total 4
+!namespace math -
+fn scaled () : BASE total add ret ;
+!end
+math.scaled
+"""
+    assert SolVM().run_source(source) == [14]
+
+
+def test_namespaced_symbols_shadow_globals_without_colliding():
+    source = """
+!const K 1
+!var n 7
+!namespace a -
+!const K 2
+!var n 8
+fn read_k () : K ret ;
+fn read_n () : n ret ;
+!end
+a.read_k a.read_n K n
+"""
+    assert SolVM().run_source(source) == [2, 8, 1, 7]
+
+
+@pytest.mark.parametrize("source,message", [
+    ("!namespace m -\n!const K 1\n!const K 2\n!end\n", "duplicate constant: K"),
+    ("!namespace m -\n!var v 0\n!var v 1\n!end\n", "duplicate variable: v"),
+    ("!namespace m -\n!const K 1\n!end\nm.NOPE\n", "unknown word: m.NOPE"),
+    ("!namespace m -\n!var v 0\n!end\n99 >m.nope\n", "undefined variable: m.nope"),
+    ("!namespace m -\n!const K 1\n!end\nNOPE\n", "unknown word: NOPE"),
+])
+def test_namespaced_symbol_errors(source, message):
+    with pytest.raises(SolVMError, match=message):
+        compile_program(source)
+
+
 def test_nested_function_calls():
     vm = SolVM()
     src = """
@@ -568,14 +623,14 @@ def test_raw_assembly_requires_terminator_at_start_location(tmp_path):
 def test_pcg_console_scrolls_and_clears_only_reused_ring_row():
     repo = Path(__file__).resolve().parents[2]
     pcg_path = repo / "sol/cpt32/pcg.sol"
-    source = f'''!include "{pcg_path}"
-initPCG
+    source = f'''!include "{pcg_path.as_posix()}"
+pcg.initPCG
 65 0x10000028 stb
 1 0x10001028 stb
 2 0x10002028 stb
-0 29 locate
-_pcg_ln
-88 putcscr
+0 29 pcg.locate
+pcg._pcg_ln
+88 pcg.putcscr
 '''
     vm = SolVM()
     vm.run_source(source, source_path=str(pcg_path.parent / "ring_buffer_test.sol"))
@@ -600,14 +655,14 @@ _pcg_ln
 def test_pcg_console_wraps_scroll_and_reuses_rows_after_full_rotation():
     repo = Path(__file__).resolve().parents[2]
     pcg_path = repo / "sol/cpt32/pcg.sol"
-    source = f'''!include "{pcg_path}"
-initPCG
-0 29 locate
-_pcg_ln
-88 putcscr
+    source = f'''!include "{pcg_path.as_posix()}"
+pcg.initPCG
+0 29 pcg.locate
+pcg._pcg_ln
+88 pcg.putcscr
 '''
-    source += "_pcg_ln\n" * 29
-    source += "89 putcscr\n"
+    source += "pcg._pcg_ln\n" * 29
+    source += "89 pcg.putcscr\n"
     vm = SolVM()
     vm.run_source(source, source_path=str(pcg_path.parent / "ring_rotation_test.sol"))
 
@@ -619,13 +674,13 @@ _pcg_ln
 def test_pcg_cursor_register_follows_tilemap_row_when_scrolled():
     repo = Path(__file__).resolve().parents[2]
     pcg_path = repo / "sol/cpt32/pcg.sol"
-    source = f'''!include "{pcg_path}"
-initPCG
+    source = f'''!include "{pcg_path.as_posix()}"
+pcg.initPCG
 '''
     # 33 newlines wrap three times: scroll_y advances to 32 pixels (4 rows)
     # while the logical cursor stays on the bottom row.
-    source += "_pcg_ln\n" * 33
-    source += "12 15 locate\n"
+    source += "pcg._pcg_ln\n" * 33
+    source += "12 15 pcg.locate\n"
     vm = SolVM()
     vm.run_source(source, source_path=str(pcg_path.parent / "cursor_tilemap_test.sol"))
 

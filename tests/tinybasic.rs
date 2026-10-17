@@ -46,7 +46,7 @@ fn load_cpu() -> (Cpu, Rc<RefCell<Vdp>>) {
 fn tinybasic_boot_renders_help_and_prompt() {
     let (mut cpu, vdp) = load_cpu();
 
-    // Boot: initPCG, print the help banner, then the REPL reaches
+    // Boot: pcg.initPCG, print the help banner, then the REPL reaches
     // its first "OK" / "> " prompt and busy-waits for keyboard input.
     for _ in 0..8 {
         vdp.borrow_mut().tick();

@@ -3,6 +3,7 @@
 # Pointer arguments below refer to word-aligned 32-bit CPU memory. The pointed
 # to words use the same order and bit representation as the VPU command stream.
 
+!namespace vpu -
 !const VPU_FIFO_DATA 0x8003002C
 !const VPU_STATUS 0x80030004
 
@@ -195,3 +196,4 @@ fn vpu_set_target (ptr) :
         i 6 lt
     end
 ;
+!end

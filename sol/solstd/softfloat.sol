@@ -4,11 +4,30 @@
 # sol float literals such as 1.0f). Public operations:
 #   sf32_add(a b), sf32_sub(a b), sf32_mul(a b), sf32_div(a b)
 #   sf32_neg(x), sf32_abs(x), sf32_eq(a b), sf32_lt(a b)
+#   sf32_toint(x), sf32_tofloat(n)
 # Comparisons use sol's boolean convention: 0 is true and 1 is false.
 # Arithmetic rounds to nearest, ties to even, and supports subnormals,
 # infinities, and NaNs. NaN arithmetic returns the canonical quiet NaN.
+#
+# Conversions between binary32 bit patterns and 32-bit integers are total:
+# every input, NaN and infinities included, maps to a defined integer or a
+# defined bit pattern, so a conversion never traps and never returns a value
+# the caller cannot interpret.
+#   sf32_toint(x): binary32 bits -> int32, rounded toward zero.
+#       NaN                        -> 0
+#       +infinity, x > 0x7FFFFFFF  -> 0x7FFFFFFF
+#       -infinity, x < -0x80000000 -> 0x80000000 (that is, -2^31)
+#       |x| < 1                    -> 0
+#     Rounding is toward zero, so sf32_toint(1.9f) is 1 and
+#     sf32_toint(-1.9f) is -1. The saturation bounds are the only clamp:
+#     values inside [-(2^31), 2^31-1] convert exactly.
+#   sf32_tofloat(n): int32 -> binary32 bits, rounded to nearest, ties to
+#     even, the same rounding the arithmetic uses. Magnitudes below 2^24
+#     convert exactly, larger ones round, and n = 0x80000000 (-2^31) is
+#     exact. n = 0 yields +0.0 (0x00000000).
 
 # Internal classification: 0 finite nonzero, 1 zero, 2 infinity, 3 NaN.
+!namespace softfloat -
 fn sf32_kind (x) :
     local exp
     local frac
@@ -492,3 +511,90 @@ fn sf32_lt (a b) :
     end
     mag_a mag_b lt ret
 ;
+
+# binary32 bits -> int32, truncated toward zero. See the file header for the
+# full contract; NaN and |x| < 1 give 0 and the saturation bounds are
+# 0x7FFFFFFF and 0x80000000.
+fn sf32_toint (x) :
+    local kind
+    local sign
+    local exp_field
+    local e
+    local sig
+    local mag
+    x sf32_kind >kind
+    kind 3 eq if
+        0 ret
+    end
+    x 0x80000000 and >sign
+    kind 2 eq if
+        sign 0 neq if
+            0x80000000 ret
+        end
+        0x7FFFFFFF ret
+    end
+    kind 1 eq if
+        0 ret
+    end
+    x 23 shr 255 and >exp_field
+    x 0x007FFFFF and >sig
+    exp_field 0 eq if
+        -126 >e
+    else
+        sig 0x00800000 or >sig
+        exp_field 127 sub >e
+    end
+    e 0 lt if
+        0 ret
+    end
+    e 31 ge if
+        sign 0 neq if
+            0x80000000 ret
+        end
+        0x7FFFFFFF ret
+    end
+    e 22 gt if
+        sig e 23 sub shl >mag
+    else
+        sig 23 e sub shr >mag
+    end
+    sign 0 neq if
+        0 mag sub ret
+    end
+    mag ret
+;
+
+# int32 -> binary32 bits, rounded to nearest, ties to even. See the file
+# header for the full contract.
+fn sf32_tofloat (n) :
+    local sign
+    local mag
+    local e
+    local probe
+    local sig
+    n 0x80000000 and >sign
+    sign 0 neq if
+        0 n sub >mag
+    else
+        n >mag
+    end
+    mag 0 eq if
+        0 ret
+    end
+    mag 0 lt if
+        0xCF000000 ret
+    end
+    0 >e
+    mag 1 shr >probe
+    while probe 0 neq
+        probe 1 shr >probe
+        e 1 add >e
+    end
+    e 26 gt if
+        mag e 26 sub sf32_shift_jam >sig
+    else
+        mag 26 e sub shl >sig
+    end
+    sign e sig sf32_pack ret
+;
+!end

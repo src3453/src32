@@ -1,3 +1,4 @@
+!namespace pec_rng -
 !var PRNG_ADDR 0x80040010
 !var PRNG_SEED_ADDR 0x80040014
 !var TRNG_ADDR 0x80040018
@@ -15,3 +16,4 @@ fn rand () :
 fn randT () :
    TRNG_ADDR ld ret 
 ;
+!end

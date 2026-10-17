@@ -291,3 +291,78 @@
 - `tests/tb_load_live.rs` は**元コードでも 4/7 が失敗する**（`list_and_run`×2, `alive_after_load`×2）。フレーム数予算依存で flaky なので、LOAD 正しさの検証は wait-for-condition 方式（`load`→`LOADED` 待ち→`list`→画面に `10 print 99` 出現を待つ）が確実。`tools/solc/test_sol_language_server.py::test_lsp_accepts_assignment_to_function_arguments` は LSP の Content-Length framing で元々失敗する（codegen 変更と無関係）。`tools/vscode-sol-syntax/server/*.py` は `tools/solc/` より古い別系（`org` 引数や IRQ dispatcher が無い）で、非意味論的 compiler 変更の同期は不要。
 - DSFSは仕様と host ツール・テストを整備（`doc/spec_DSFS.md`、日本語・`doc/spec_IDC.md` 風、索引は `doc/Software.md`、ツールとテストは下記）。契約の要点: (1) block=512B=IDC LBA、整数は big-endian（`doc/spec_CPU.md` Endianness に合わせた。`spec_COW.md` の little-endian は host 側 sidecar 専用で参考にしない）。(2) レイアウトは block0 ブート（byte510に必須 `0x55 AA`、コード領域510BはFS非解釈）、block1 スーパーブロック、block2〜 ビットマップ（`bitmap_blocks=ceil(total_blocks/4096)`）、続く16 blocks ディレクトリ（256×32B）、残りデータ領域。式と superblock 記録値の一致を mount 検証で強制する。(3) 連続 first-fit 割り当て＋ビットマップのみなので、ファイルは連続領域1つ。断片化で総空きがあっても失敗しうる（仕様上の既知の制限）。(4) crash 後も mount 可能を保つ更新順序: 「ビット占有→データ→エントリ占有」「エントリ解放→ビット解放」の逆は禁止。異常終了で残るのは主張されない1bit（leak）だけで、これは mount 拒否しない。逆に used 領域の0bit・領域重複・小文字name・reserved非0・padding bit は mount 拒否（strict、WAX 流儀）。(5) 空きエントリは32B全0、name はドットbyteなしの11B space-padding 大文字（A-Z0-9_-のみ）、`size=0` なら `start=0`、最終blockの size 以降は0埋めが canonical。
 - DSFS ツールは `tools/dsfs/dsfs.py`（Python 標準ライブラリのみ、argparse は tools/wax/wax.py 流儀）で mkfs/info/ls/put/get/cat/rm/rename/verify の9コマンド。検証は `python3 -m pytest tools/dsfs/test_dsfs.py`（14件、CLI部分は実 subprocess）。実装契約: 書き込み系は保存前に §7 check() を通し、更新は §8 順序（ビット占有→データ+末尾0埋め→エントリ更新→旧領域の解放、delete はエントリ全0→ビット解放）をコード順で守る。first-fit 連続割り当てで詰まると "no contiguous run" エラー（総空きが十分でも断片化では失敗する）。メタデータビット0化（§7-10）と padding bit（§7-11）はツール実装時に仕様へ追記した項目。leak は ls/info/verify が件数表示しエラーにしない。verify は違反を stdout に列挙して終了1、他エラーは stderr の `dsfs: ...` で終了1。Windows のこの開発環境では pytest 内の subprocess.run に stdin=subprocess.DEVNULL が必須（無いと WinError 6 で親の stdin ハンドル複製に失敗）。
+- DSFS の sol ゲストライブラリは `sol/cpt32/idc.sol`（DMAC ch0 polled 転送、戻り値 0/1/2 = ok/DMAC err/IDC err、W1C クリアと busy polling を毎回実施）と `sol/cpt32/dsfs.sol`（mount は LBA1 読込＋§7 検証＋geometry キャッシュ、write は §8 順序・最終 sector in-place 0埋め・timestamp は `dsfs_set_time`（既定0）、buffer 契約は dir 8192B / bitmap bitmap_blocks×512B）。回帰は `tools/dsfs/dsfs_smoke.sol`（冒頭にビルド手順）→ src32_testbench と `cargo test --test dsfs_guest`（画像を Rust 側で生成し R1=0 ＋オンデマンド byte 級 assert、`dsfs_guest.bin` は `*.bin` gitignore なのでローカルビルド必須）。**sol の truth 代数の罠（2回踏んだ）**: 比較は sol-truth(0=true)なので複数述語の論理 AND は `or`、論理 OR は `and`（bitwise）で表現する。通常の and/or 感覚で書くと条件が逆になり、write_file の reuse/release gate が壊れて guest 書き込み画像が host 側 strict 検証で leak 違反になった。`and`/`or` を bitwise マスク以外で使ったら必ず疑う。solc のバグも1件修正: while が関数先頭だとループラベルが prologue より前に出て frame save を毎 iteration 再実行し saved frame pointer を破壊する → `sol_compiler.py` で function label＋prologue を先に emit（VS Code 拡張 server コピー同期、`test_sol_compiler.py::test_while_at_function_start_emits_prologue_before_loop_label` で回帰）。guest の magic 定数タイプミス（"DSFS"=0x44534653 の末尾を 0x46 に誤る）は R1 エラー値での段階 bisect（identify→mount→…）が最も速い診断だった。
+- `sol/solstd/softfloat.sol` に `sf32_toint`（binary32 ビット列→int32、0方向へ切り捨て。NaN は 0、`+∞` と `0x7FFFFFFF` 超は `0x7FFFFFFF`、`-∞` と `-0x80000000` 未満は `0x80000000`、`|x|<1` は 0）と `sf32_tofloat`（int32→最近接 binary32、近接偶数丸め。`0x80000000` は厳密に `0xCF000000`、`0x01000003` は同点なので偶数側 `0x4B800002`）を追加した。丸めは既存 `sf32_pack` の3ビット丸めにそのまま乗せ、`e>26` の桁落ちは `sf32_shift_jam` で bit0 に jam すれば近接偶数丸めになる（追加の丸め処理は不要）。契約と例外時の挙動はファイル先頭のコメントと `doc/spec_sol.md` の「## 2. 浮動小数点」に記載。回帰は `tools/solc/test_softfloat.py::test_softfloat_integer_conversions`（34ケース。期待値は Python `struct` の IEEE 参照実装と突き合わせ済み）。
+- src32_testbench の落とし穴3点。(1) リポジトリ root の `config.yaml` は `bios.image` を設定しているため、`src32_testbench PROGRAM.bin` は BIOS から起動して RAM 0 のプログラムを実行しない。この状態では `--expect-mem-u8` も R1 期待値も常に 0 を返し検証が無効化される（`tools/solc/bench_solc.py` の R1 期待値が現在失敗するのはこれが原因で、softfloat の変更とは無関係）。RAM から直接実行するには BIOS セクションの無い `config.yaml` を置いたディレクトリで testbench を実行する。(2) `ST` は `write_u32_be` のビッグエンディアンなので、`--expect-mem-u8` で 32bit store の結果を見るときはアドレス+3 のバイトを見る。(3) BIOS 無しで実行すればデータスタック先頭は R1 に残る（`5 3 sub` → R1=2、`ret` した戻り値も同じ）。
+- sol の `eq`/`neq` は 0=真の述語で、`neq` は等しくないとき 0、等しいとき 1 を返す。不一致件数を数えるには `1 <expr> <want> neq sub` のように 1 から述語を引く（`fails add >fails` で加算）。
+
+## sol ライブラリの名前空間 (2026-10-17)
+
+- `!namespace name -` ... `!end` と `!include "file" as ns` は `tools/solc/sol_vm.py` の
+  トークン展開段で実装されている。関数だけでなく `!const` / `!var` も `(namespace, name)` で
+  登録されるため、ライブラリの定数・変数も `ns.NAME` で読み、代入は `>ns.NAME` と書く。
+  非修飾名は「現在の名前空間 → グローバル」の順に解決し、`ns.` 修飾名はその名前空間だけを
+  見る。マクロ (`!define`) はテキスト置換で名前空間の対象外（常にグローバル）。名前空間は
+  入れ子にできず、`!namespace name` 末尾の `-` は省略可能な区切りトークンである。
+- `sol/solstd/*.sol` と `sol/cpt32/*.sol` はファイル全体を1つの名前空間
+  (`array` / `prng_software` / `softfloat` / `print` / `pcg` / `colors` / `irqc` / `pec_rng` /
+  `idc` / `dsfs` / `vpu`) で宣言する。ライブラリ内の相互呼び出しは非修飾のままで動く。
+  呼び出し側 (`tinybasic.sol`, `3d_cube.sol`, `mouse_cursor.sol`, `vpu_*.sol`, `sol/bios.sol`,
+  `tools/dsfs/dsfs_smoke.sol`, テスト) は `pcg.prnscr` / `softfloat.sf32_add` / `idc.idc_read`
+  のような修飾名に移行済み。新しいライブラリ関数・定数を呼ぶときは必ず `名前空間.` を付ける。
+- 実装の要点: 内部関数名が `__solc_ns_<len(ns)>_<ns>_<len(name)>_<name>` に改名されるため
+  配置アドレスが動く。変更後は `assets/bios.rom` と各 `.bin` を再ビルドする（BIOS は
+  `solc.py compile --org 0xFF000000 --read-only-data-base 0xFF008000 sol/bios.sol` →
+  `asm.py --strip -o assets/bios.rom`; 33101 bytes でサイズ不変）。
+- 回帰: `tools/solc/test_sol_vm.py` の namespace テスト（修飾/非修飾の解決順、名前空間内の
+  定数・変数の参照と代入、修飾名の未知関数・未定義変数の拒否、`irqc` 経由の
+  `irqc_irq_number`）。実機は `cargo test --test tinybasic`(5) / `--test dsfs_guest`(1) /
+  `--test bios_rom`(8)、ツールチェインは `python3 -m pytest tools/solc -q`
+  (149 passed、失敗1件は既知の LSP Content-Length framing)。
+- `tools/vscode-sol-syntax/server/sol_vm.py` は拡張同梱コピー。名前空間の意味論は同期済み
+  だが、`!stack_top` / `!var_base` / `!rodata_base` や IRQ dispatcher などは元から分岐した
+  古い系列なので、無関係な差分を消さないこと。
+## CPT32 DOS (dos.sol) と IDC ライブラリの修正 (2026-10-17)
+
+- `dos.sol`（リポジトリ root、`tinybasic.sol` と同じゲストプログラム）は DSFS/FDD の
+  シェル。DIR/TYPE/NEW/REN/DEL/COPY/EDIT/HEX/FORMAT/DRV/FREE/CLS/HELP/EXIT を実装し、
+  文字は PCG コンソール、入力は PeC FIFO を IRQC source 3 で待つ（`fn irq3` で HALT →
+  起床 → FIFO ドレイン）。ビルドは `solc.py compile dos.sol -o dos.sol.a` →
+  `asm.py dos.sol.a -o dos.bin`（`*.bin` と `*sol.a` は gitignore 済み）。回帰は
+  `cargo test --test dos_smoke`（3件 = 2ドライブ操作／no-media／write-protected。実機の PeC
+  キー入力、PCG テキストプレーンの needle 待ち、書き込み画像のバイト検査で約95秒）。
+  README に「CPT32 DOS（DSFS シェル）」節を追加した。
+- ゲスト GUI のテストは `tests/dos_smoke.rs` の流儀が使える: Rust 側で DSFS 画像と
+  `bios` 無しの `config.yaml` を作り、Bus に IDC を接続して PeC FIFO へキーを押し込み、
+  PCG テキストプレーンを needle で待つ。`src32_testbench` にはキー入力が無いので、
+  キーボードを伴う検証はこのハーネスで行う。
+- `sol/cpt32/idc.sol` のエラー検査が壊れていた: `IDC_STATUS IDC_BIT_ERROR and 0 neq` の
+  ように `ld` が抜けており、`idc_identify` は no-media でも -1 を返さず、`idc_read`/
+  `idc_write` の戻り値 1/2（DMAC err / IDC err）も絶対に返らなかった。5箇所へ `ld` を
+  補い、コメントどおりの契約に直した（no-media の identify は -1、no-media の read は
+  DMAC エラーが先に立つので 1）。idc.sol を含む成果物（`dos.bin`, `dsfs_guest.bin`）は
+  再ビルドが必要。回帰は `dos_smoke` の write-protected テスト（`read_only: true` の
+  スロットで `NEW` → "CREATE FAILED" を待ち、画像にエントリが増えていないことを確認）。
+  修正前は書き込み失敗が成功として報告され、このテストは timeout する（実測で
+  before/after を確認）。
+- 8.3 名は必ず**空白 padding**（`doc/spec_DSFS.md` §6.2）。`dos_name_build` が
+  `dos_memzero` で埋めていたため "EMPTY\0\0\0TXT" になり、`dos_name_text` が NUL で
+  切れて "CREATED EMPTY" と表示された（host の `dsfs.py verify` も拒否する領域）。
+  `dos_memfill` で 32 を書くよう修正。
+- `dos_strcpy` は**コピーした長さ**を返す（新しいオフセットではない）。エディタの
+  splice で `... dos_strcpy >o` と足し込みを忘れて dos_text_len が 1 バイト足りず、
+  行末の改行が NUL 化されず行が壊れた。`o add >o` と書くこと。
+- ラインエディタの splice は mode 0=置換, 1=挿入, 2=削除。挿入・置換テキストへ `\n` を
+  付ける位置と、旧行を捨てる条件 `i index eq mode 0 eq or`（mode 0 しか落ちない）の
+  両方が誤っており、削除が効かず挿入が行を壊していた。現在は「i == index かつ
+  mode != 1 のときだけ旧行を捨てる」= `i index neq mode 1 eq and` に統一。
+- エディタのエラー・保存メッセージは `dos_msg_err` / `dos_msg_text` で `DOS_MSGBUF` に
+  溜め、各エディタの再描画（`dos_cls` を含む）の直後に出す。直接 `dos_puts` すると
+  同じループ反復の再描画で消えて人間には読めない（テストの `wait_text` は frame 単位で
+  拾えることがあるため、この不具合はテストでは見つかりにくい）。
+- sol の 0=真 述語では「述語の AND は `or`、OR は `and`」で、`if` は 0 のとき then を
+  実行する。この取り違えが上記 splice の削除条件の原因だった。
+- 検証: `cargo test --test dos_smoke --test dsfs_guest`（3件）、
+  `python3 -m pytest tools/dsfs/test_dsfs.py`（14件）、さらにゲストが書いた画像を
+  `tools/dsfs/dsfs.py verify/info/ls` に通して §7/§6.2 を host 側から確認した
+  （disk0 = 編集後 2 file/0 leak、disk1 = FORMAT + COPY で 1 file/0 leak）。

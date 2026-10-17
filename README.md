@@ -6,8 +6,9 @@ SRC32 CPU をベースにしたレトロ・モダン系ファンタジーコン�
 
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
 - **SRC32** — 32-bit RISC CPU。命令セット仕様は [`doc/spec_CPU.md`](doc/spec_CPU.md)。
-- **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。
+- **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。標準ライブラリ（`sol/solstd`、`sol/cpt32`）は名前空間を宣言しており、`pcg.prnscr` や `softfloat.sf32_add` のように `名前空間.名前` で参照します（[`doc/spec_sol.md`](doc/spec_sol.md)）。
 - **開発サンプル** — [`3d_cube.sol`](3d_cube.sol)、[`mouse_cursor.sol`](mouse_cursor.sol)、[`vpu_tnl_triangle.sol`](vpu_tnl_triangle.sol) など。
+- **CPT32 DOS** — DSFS／フロッピーを操作するシェル（[`dos.sol`](dos.sol)）。
 
 ## ビルドと実行
 
@@ -75,6 +76,36 @@ CPU の対話型モニターは次のように起動します。
 ```sh
 cargo run --release --bin cpt32 -- monitor [program.bin] [--cpu scalar|pipeline]
 ```
+
+## CPT32 DOS（DSFS シェル）
+
+`dos.sol` は DSFS ボリュームを操作する小さなシェルです。文字は PCG コンソールに表示し、キーボードは PeC の入力 FIFO を IRQC source 3 で待って読みます。ファイルはドライブ 0／1 の DSFS ボリューム（`doc/spec_DSFS.md`）として扱われ、`FORMAT` はゲスト自身が superblock・bitmap・directory を書きます。
+
+```sh
+python3 tools/solc/solc.py compile dos.sol -o dos.sol.a
+python3 tools/asm/asm.py dos.sol.a -o dos.bin
+```
+
+ボリュームは `tools/dsfs/dsfs.py` で用意し、スロットに接続して起動します。`config.yaml` に `bios` があると BIOS が起動して RAM のプログラムは実行されないため、`src32_testbench` で直接動かす場合は `bios` のない directory から実行します。
+
+```sh
+python3 tools/dsfs/dsfs.py mkfs disk0.img --sectors 2880
+python3 tools/dsfs/dsfs.py put disk0.img HELLO.TXT hello.txt
+cd path/to/config-dir && cargo run --release --bin src32_testbench -- /path/to/dos.bin
+```
+
+| コマンド | 内容 |
+|---|---|
+| `DIR` | ファイル一覧（サイズとブロック数） |
+| `TYPE NAME` | テキストとして表示 |
+| `NEW NAME` / `REN OLD NEW` / `DEL NAME` | 作成・名前変更（時刻は保持）・削除 |
+| `COPY SRC DST` | ドライブ間コピー（`COPY 0:A.TXT 1:A.TXT`） |
+| `EDIT NAME` | ラインエディタ（`L` 一覧、`<n> テキスト` 置換、`I n テキスト` 挿入、`D n` 削除、`A テキスト` 追加、`W` 保存、`Q` 終了） |
+| `HEX NAME` | HEX エディタ（`N`/`P` ページ、`G` 移動、`E` 書き換え、`W` 保存、`Q` 終了） |
+| `FORMAT [N]` | ドライブ N を DSFS でフォーマット |
+| `DRV N` / `FREE` / `CLS` / `HELP` / `EXIT` | ドライブ選択・空き容量・画面消去・ヘルプ・終了 |
+
+名前は 8.3 形式（大文字、`N:NAME.EXT` でドライブ指定）で、ファイルは 1 個 64 KiB までです。回帰テストは `tests/dos_smoke.rs`（`cargo test --test dos_smoke`、`dos.bin` のローカルビルドが必要）です。
 
 ## SGU Music Editor
 

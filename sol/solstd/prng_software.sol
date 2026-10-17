@@ -1,6 +1,7 @@
 # prng_software.sol
 # 32-bit Galois LFSR pseudo-random number generator
 
+!namespace prng_software -
 !var lfsr 0xACE1
 
 fn rand_lfsr () :
@@ -21,3 +22,4 @@ fn rand_lfsr () :
 
     lfsr ret
 ;
+!end

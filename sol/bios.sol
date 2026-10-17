@@ -37,9 +37,9 @@ fn irq0 () :
 
 fn prnhexch (n) :
     n 10 lt if
-        n 0x30 add putcscr retn
+        n 0x30 add pcg.putcscr retn
     end
-    n 0x37 add putcscr
+    n 0x37 add pcg.putcscr
 ;
 
 fn prnhex8 (v) :
@@ -57,18 +57,18 @@ fn prnhex2 (v) :
 ;
 
 fn ok () :
-    0x2A colorfg "OK" prnscr 0x3f colorfg
+    0x2A pcg.colorfg "OK" pcg.prnscr 0x3f pcg.colorfg
 ;
 
 fn ng () :
-    0x15 colorfg "NG" prnscr 0x3f colorfg
+    0x15 pcg.colorfg "NG" pcg.prnscr 0x3f pcg.colorfg
     fails 1 add >fails
 ;
 
 # Print value as 8 hex digits, then OK/NG against expect.
 fn report (value expect) :
     value prnhex8
-    " " prnscr
+    " " pcg.prnscr
     value expect eq if
         ok retn
     end
@@ -99,109 +99,109 @@ fn sgutest (base) :
     1 ret
 ;
 
-initPCG col40
-0xc colorfg "CPT32 BIOS v0.3 POST+IPL" prnlnscr
-0x3f colorfg "CPU: SRC32 @48MHz" prnlnscr
-"MEM: RAM16M VRAM4M PCM1M" prnlnscr
+pcg.initPCG pcg.col40
+0xc pcg.colorfg "CPT32 BIOS v0.3 POST+IPL" pcg.prnlnscr
+0x3f pcg.colorfg "CPU: SRC32 @48MHz" pcg.prnlnscr
+"MEM: RAM16M VRAM4M PCM1M" pcg.prnlnscr
 
-"VDP status=" prnscr
+"VDP status=" pcg.prnscr
 0x80000002 ldb >tmp
 tmp prnhex2
-" " prnscr
+" " pcg.prnscr
 tmp 0 eq if ok else ng end
-_pcg_ln
+pcg._pcg_ln
 
-"SGC id=" prnscr
+"SGC id=" pcg.prnscr
 0x80010000 ld >tmp
 tmp 0x53474331 report
-_pcg_ln
-"SGC status=" prnscr
+pcg._pcg_ln
+"SGC status=" pcg.prnscr
 0x80010008 ld >tmp
 tmp prnhex8
-" " prnscr
+" " pcg.prnscr
 tmp 0x1E and 0 eq if ok else ng end
-_pcg_ln
+pcg._pcg_ln
 
-"VPU id=" prnscr
+"VPU id=" pcg.prnscr
 0x80030000 ld >tmp
 tmp 0x56505531 report
-_pcg_ln
-"VPU status=" prnscr
+pcg._pcg_ln
+"VPU status=" pcg.prnscr
 0x80030004 ld >tmp
 tmp prnhex8
-" " prnscr
+" " pcg.prnscr
 tmp 0x2C and 0 eq if ok else ng end
-_pcg_ln
+pcg._pcg_ln
 
-"SGU0 wave=" prnscr
+"SGU0 wave=" pcg.prnscr
 0x80020000 sgutest if ok else ng end
-" SGU1 wave=" prnscr
+" SGU1 wave=" pcg.prnscr
 0x80021000 sgutest if ok else ng end
-_pcg_ln
+pcg._pcg_ln
 
-"PeC seed=" prnscr
+"PeC seed=" pcg.prnscr
 0x80040014 ld >tmp
 tmp 0x55555555 report
-_pcg_ln
-"PeC trng=" prnscr
+pcg._pcg_ln
+"PeC trng=" pcg.prnscr
 0x80040018 ld prnhex8
-" ev=" prnscr
+" ev=" pcg.prnscr
 0x80040034 ld prnhex8
-_pcg_ln
+pcg._pcg_ln
 
-"DMAC id=" prnscr
+"DMAC id=" pcg.prnscr
 0x80050000 ld >tmp
 tmp 0x444D4101 report
-_pcg_ln
-"BMC id=" prnscr
+pcg._pcg_ln
+"BMC id=" pcg.prnscr
 0x80060000 ld >tmp
 tmp 0x424D4301 report
-_pcg_ln
+pcg._pcg_ln
 
-"IDC id=" prnscr
+"IDC id=" pcg.prnscr
 0x80041000 ld >tmp
 tmp 0x49444301 report
-_pcg_ln
-"IDC cap=" prnscr
+pcg._pcg_ln
+"IDC cap=" pcg.prnscr
 0x80041030 ld prnhex8
-" sz=" prnscr
+" sz=" pcg.prnscr
 0x8004102C ld prnhex8
-_pcg_ln
+pcg._pcg_ln
 
 # IRQC pending/enable is event-driven (VBlank etc. fire during
 # POST), so a nonzero value is normal. Display only, never fail.
-"IRQC=" prnscr
+"IRQC=" pcg.prnscr
 0xFFFF0040 ld prnhex8
-_pcg_ln
+pcg._pcg_ln
 
-"RAM=" prnscr
+"RAM=" pcg.prnscr
 0x00F00000 ramtest32 if ok else ng end
-" VRAM=" prnscr
+" VRAM=" pcg.prnscr
 0x10300000 ramtest32 if ok else ng end
-_pcg_ln
-"UART/TIMER/EXP: skipped" prnlnscr
+pcg._pcg_ln
+"UART/TIMER/EXP: skipped" pcg.prnlnscr
 
 fails 0 eq if
-    0xc colorfg "POST OK" prnlnscr
+    0xc pcg.colorfg "POST OK" pcg.prnlnscr
 else
-    0x15 colorfg "POST FAIL" prnlnscr
+    0x15 pcg.colorfg "POST FAIL" pcg.prnlnscr
 end
-0x3f colorfg
+0x3f pcg.colorfg
 
 !var i 0
 while
-    i colorbg
-    " " prnscr
+    i pcg.colorbg
+    " " pcg.prnscr
     i 1 add >i
     i 16 mod if
-        _pcg_ln
+        pcg._pcg_ln
     end
     i 16 neq
 end
-0 colorbg
-0x3f colorfg
+0 pcg.colorbg
+0x3f pcg.colorfg
 
-"IPL: hold POST 120 frames..." prnlnscr
+"IPL: hold POST 120 frames..." pcg.prnlnscr
 # One host frame runs the whole POST+IPL, so without waiting the survey
 # above is never rendered. HALT sleeps until the next enabled IRQ, hence
 # each loop iteration spans one VBlank (~1/60s) on the emulator and on
@@ -216,7 +216,7 @@ end
 0 IRQC_ENABLE sth
 1 IRQC_PENDING sth
 
-"IPL: boot from 0x00000000..." prnlnscr
+"IPL: boot from 0x00000000..." pcg.prnlnscr
 # Far jump via register: JMP encodes a 16-bit PC-relative offset and
 # cannot reach 0x0 from the ROM window, so load the target and use JR.
 # This form works at any load origin and never returns (R1 may clobber

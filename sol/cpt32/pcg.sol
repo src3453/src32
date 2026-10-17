@@ -1,3 +1,4 @@
+!namespace pcg -
 !var pcg_cur_x 0
 !var pcg_cur_y 0
 !var pcg_width 40
@@ -140,3 +141,4 @@ fn colorfg (color) :
 fn colorbg (color) :
     color >pcg_bg_color
 ;
+!end

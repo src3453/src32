@@ -203,10 +203,10 @@ def test_compile_rejects_irq_handler_return_value():
 
 def test_compile_cpt32_irqc_irq_number_helper():
     irqc_path = Path(__file__).resolve().parents[2] / "sol" / "cpt32" / "irqc.sol"
-    source = f'!include "{irqc_path.as_posix()}"\n0 irqc_irq_number'
+    source = f'!include "{irqc_path.as_posix()}"\n0 irqc.irqc_irq_number'
     asm = compile_to_src32_asm(source, use_short_mode=False)
 
-    assert "irqc_irq_number:" in asm
+    assert "__solc_ns_4_irqc_15_irqc_irq_number:" in asm
     assert "0xFFFF0040" not in asm  # library variable is loaded as split immediates
     assert "0xFFFF0044" not in asm
     Assembler().assemble(asm)
@@ -513,3 +513,28 @@ def test_empty_raw_assembly_is_allowed_and_stack_effect_is_zero():
     assert "HALT" in compile_to_src32_asm("!asm\n!end")
     with pytest.raises(SolCompileError, match="stack underflow"):
         compile_to_src32_asm("!asm\nNOP\n!end\nadd")
+
+
+def test_while_at_function_start_emits_prologue_before_loop_label():
+    # A `while` as the first statement shares the function's first pc. The
+    # generated prologue must come before the loop label; otherwise every
+    # iteration re-runs the frame save and overwrites the saved caller frame
+    # pointer with the current frame pointer.
+    source = (
+        "fn spin (addr) :\n"
+        "    while\n"
+        "        addr ld 0 neq\n"
+        "    end\n"
+        ";\n"
+        "fn main () :\n"
+        "    0x1000 spin\n"
+        ";\n"
+        "main\n"
+    )
+    asm = compile_to_src32_asm(source)
+    lines = [line.strip() for line in asm.splitlines()]
+    spin = lines.index("spin:")
+    loop = next(i for i, line in enumerate(lines) if line.startswith("__solc_while_start"))
+    prologue = lines.index("ST R3, [R28 + 0]", spin)
+    assert spin < prologue < loop
+    assert Assembler().assemble(asm)

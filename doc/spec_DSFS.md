@@ -191,3 +191,14 @@ dsfs.py verify IMAGE                            §7 の検証。違反があれ�
 - 書き込み系コマンドは保存前に §7 の mount 検証を通し、操作は §8 の更新順序に従う。違反・形式エラーは `dsfs: ...` を stderr に出して終了コード1。
 - `ls` / `info` / `verify` は leak を件数として報告するが、エラーにはしない。
 - テストは `python3 -m pytest tools/dsfs/test_dsfs.py`。
+
+## 12. ゲストライブラリ
+
+ゲストは `sol/cpt32/idc.sol` と `sol/cpt32/dsfs.sol` で DSFS を扱う。両ライブラリは名前空間を宣言しているため、関数・定数は `idc.` / `dsfs.` を付けて参照する。
+
+- `sol/cpt32/idc.sol`（名前空間 `idc`）: IDC ドライバ。DMAC channel 0 と IDC `DATA` endpoint による polled 転送で、`idc.idc_enable` / `idc.idc_identify` / `idc.idc_read` / `idc.idc_write` / `idc.idc_error_code` を提供する。転送関数は 0=成功、1=DMAC error、2=IDC error を返す。IRQ は使わない。
+- `sol/cpt32/dsfs.sol`（名前空間 `dsfs`）: DSFS 操作。`dsfs.dsfs_mount` が LBA 1 のスーパーブロックを読んで §7 相当の検証と geometry のキャッシュを行い、`dsfs.dsfs_dir_load` / `dsfs.dsfs_find` / `dsfs.dsfs_count` / `dsfs.dsfs_read_file` / `dsfs.dsfs_write_file` / `dsfs.dsfs_delete_file`、エントリ accessor、bitmap 操作を提供する。書き込みは §8 の更新順序に従い、最終 sector の残り byte は in-place で0埋めする。新規/更新エントリの timestamp は `dsfs.dsfs_set_time` の指定値（既定0）である。
+- バッファ契約: mount/ディレクトリ buffer は8192 bytes 以上（同一 buffer を `dsfs.dsfs_mount` と `dsfs.dsfs_dir_load` に流用できる）、bitmap buffer は `dsfs.dsfs_bitmap_blocks*512` bytes（16 MiB までの volume なら512 bytes）、file buffer は `sectors*512` bytes。
+- エラー値: `dsfs.DSFS_OK` 0、`dsfs.DSFS_ERR_IO` 1、`dsfs.DSFS_ERR_MAGIC` 2、`dsfs.DSFS_ERR_VERSION` 3、`dsfs.DSFS_ERR_LAYOUT` 4、`dsfs.DSFS_ERR_NOT_FOUND` 5、`dsfs.DSFS_ERR_FULL` 6、`dsfs.DSFS_ERR_ARGS` 7。
+
+回帰テストは `tools/dsfs/dsfs_smoke.sol`（ビルド手順はファイル冒頭）と `tests/dsfs_guest.rs`（`cargo test --test dsfs_guest`、`dsfs_guest.bin` のローカルビルドを必要とする）。

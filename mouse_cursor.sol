@@ -45,7 +45,7 @@ fn draw_cursor (x y) :
 
 # IRQ0 is the VDP VSync; acknowledge it so HALT waits for the next frame.
 fn irq0 () :
-    1 IRQC_PENDING sth
+    1 irqc.IRQC_PENDING sth
     retn
 ;
 
@@ -56,8 +56,8 @@ fn main () :
     2 SGC_CONTROL st
     1 SGC_OUTPUT_GP st
     1 SGC_CONTROL st
-    1 IRQC_PENDING sth
-    1 IRQC_ENABLE sth
+    1 irqc.IRQC_PENDING sth
+    1 irqc.IRQC_ENABLE sth
 
     local x
     local y

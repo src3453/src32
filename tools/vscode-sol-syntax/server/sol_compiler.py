@@ -837,7 +837,13 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
         if labels_here:
             cache.flush()
             cache.reset_empty()
-        for label_name in labels_here:
+        # A loop label can share the function's first pc when the body
+        # starts with `while`. The generated prologue must come first:
+        # otherwise every loop iteration re-runs the frame save and
+        # overwrites the saved caller frame pointer with the current one.
+        ordered_labels = sorted(
+            labels_here, key=lambda name: (name not in program.functions, name))
+        for label_name in ordered_labels:
             lines.append(f"{label_name}:")
             # if this label is a function, switch current_func
             if label_name in program.functions:

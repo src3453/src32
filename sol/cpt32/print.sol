@@ -1,5 +1,6 @@
 # print.sol - sol Standard Library (solstd): Print operations
 
+!namespace print -
 !var UART_ADDR 0x80040000
 
 fn putc (char) :
@@ -26,3 +27,4 @@ fn prnln (ptr) :
     0x0d putc # put CR
     0x0a putc # put LF
 ;
+!end

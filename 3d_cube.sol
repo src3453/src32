@@ -134,7 +134,7 @@ fn sin_deg (angle) :
 # Generate one opaque grayscale RGBA4444 noise texel from the hardware RNG.
 fn noise_texel () :
     local n
-    rand 15 and >n
+    pec_rng.rand 15 and >n
     n 12 shl n 8 shl or n 4 shl or 15 or ret
 ;
 
@@ -155,7 +155,7 @@ fn setup_gp_noise () :
     end
     0 >i
     while
-        rand 255 and 192 mod 64 add GP0_BITMAP i add stb
+        pec_rng.rand 255 and 192 mod 64 add GP0_BITMAP i add stb
         i 1 add >i
         i GP0_BITMAP_PIXELS lt
     end
@@ -416,7 +416,7 @@ fn poll_keyboard () :
 ;
 
 fn irq0 () :
-    1 IRQC_PENDING sth
+    1 irqc.IRQC_PENDING sth
     retn
 ;
 
@@ -429,15 +429,15 @@ fn main () :
     7 SGC_OUTPUT_GP st
     0 VDP_BITMAP_COLOR_MODE stb
     1 SGC_CONTROL st
-    initPRNG
+    pec_rng.initPRNG
     setup_gp_noise
     setup_noise_texture
     camera_distance set_view_matrix
     set_projection_matrix
     light_red light_green light_blue setup_light
     draw_overlay
-    1 IRQC_PENDING sth
-    1 IRQC_ENABLE sth
+    1 irqc.IRQC_PENDING sth
+    1 irqc.IRQC_ENABLE sth
     local yaw 25
     local pitch 20
     while

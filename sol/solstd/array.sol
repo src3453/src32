@@ -1,5 +1,6 @@
 # array.sol - sol Standard Library (solstd): Array operations
 
+!namespace array -
 fn aget (ptr n) :
     local off
     local addr
@@ -42,3 +43,4 @@ fn acopy (ptr len ptr2) :
         i len neq
     end
 ;
+!end

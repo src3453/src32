@@ -40,14 +40,30 @@ class Server:
         return diagnostics
     def tokens(self, text, uri):
         out=[]; toks=tokenize(text,self.path(uri)); fn_names=set(); params=set(); locals_=set(); consts=set(); vars_=set()
+        namespace=None; block_stack=[]
         for i,t in enumerate(toks):
+            if t == "!namespace" and i+1 < len(toks):
+                namespace=str(toks[i+1]); block_stack.append("namespace")
+                continue
+            if t in {"!asm","!data","!db"}:
+                block_stack.append(str(t))
+                continue
+            if t == "!end":
+                if block_stack and block_stack.pop() == "namespace": namespace=None
+                continue
             if t == "fn" and i+1 < len(toks):
-                fn_names.add(str(toks[i+1])); j=i+2
+                name=str(toks[i+1]); fn_names.add(name)
+                if namespace: fn_names.add(namespace+"."+name)
+                j=i+2
                 while j < len(toks) and toks[j] != ")":
                     if toks[j] != "(": params.add(str(toks[j]))
                     j += 1
-            if t=="!const" and i+1<len(toks): consts.add(str(toks[i+1]))
-            if t=="!var" and i+1<len(toks): vars_.add(str(toks[i+1]))
+            if t=="!const" and i+1<len(toks):
+                name=str(toks[i+1]); consts.add(name)
+                if namespace: consts.add(namespace+"."+name)
+            if t=="!var" and i+1<len(toks):
+                name=str(toks[i+1]); vars_.add(name)
+                if namespace: vars_.add(namespace+"."+name)
             if t=="local" and i+1<len(toks): locals_.add(str(toks[i+1]))
         for t in toks:
             s=str(t); typ=None
