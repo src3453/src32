@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 2.9 (2026-10-18)
+Revision 3.0 (2026-10-18)
 
 # Changelog
+- 3.0 (2026-10-18): Added host-side GUI CPU execution policies; no ISA change.
 - 2.9 (2026-10-18): JIT batches validated warm native instructions inside idle-device windows; no ISA change.
 - 2.8 (2026-10-18): JIT also uses bounded idle-device batching; no ISA change.
 - 2.7 (2026-10-18): Added experimental opt-in `cached-relaxed` idle-device batching; no ISA change.
@@ -109,6 +110,30 @@ while active block/code-byte counts describe the current cache.
 
 This is an experimental implementation, with no guaranteed speedup over Cached.
 See `doc/cpu-jit-design.md` for validation and measurement details.
+
+## 1.3 Host CPU execution policies
+
+These policies govern CPU scheduling in the GUI host loop; they do not change
+instruction semantics or per-instruction cycle costs. Select a policy with
+`--cpu-execution strict|best-effort|cycle-independent`. The default is
+`best-effort`. The Debug Controls window can change the policy while running.
+
+- `strict` executes exactly the configured `Cycles / frame` budget. It preserves
+  the existing cycle count but may block GUI input and rendering when CPU work
+  exceeds the frame interval.
+- `best-effort` executes up to that cycle budget or the wall-time slice,
+  whichever comes first. The unexecuted cycle remainder is dropped, not carried
+  into later frames; overload slows guest progress instead of accumulating GUI
+  catch-up work.
+- `cycle-independent` ignores `Cycles / frame` and executes until its wall-time
+  slice expires. Its cycle count depends on host performance.
+
+`--cpu-time-slice-ms` sets the time slice from 1 to 16 ms (default 8 ms); the
+same value is editable in Debug Controls. Timed policies check the deadline
+between batches of at most 256 CPU cycles, so one batch may cross the requested
+time. This is a soft GUI-work limit, not a hard real-time guarantee. Strict mode
+does not use the time slice. Performance reports cycle-budget utilization as
+N/A in cycle-independent mode.
 
 ## 2. Registers
 

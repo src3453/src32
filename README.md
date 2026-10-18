@@ -41,13 +41,22 @@ python3 tools/asm/asm.py program.asm -o program.wax --entry start
 ```
 
 デバッグ GUI を有効にするには `--debug-gui` を指定します。デバッグ GUI 起動時に一時停止する場合は `--start-paused` も指定してください。
+
+CPU実行ポリシーは `--cpu-execution strict|best-effort|cycle-independent` で選びます。既定は `best-effort` です。`Strict` は `Cycles / frame` を正確に実行し、処理が重いとGUIも遅れます。`Best-effort` はサイクル上限または時間上限の早い方で停止し、未実行分を次フレームへ繰り越しません。`Cycle-independent` はサイクル上限を無視し、時間スライス内で実行します。時間上限は `--cpu-time-slice-ms` で1〜16 ms（既定8 ms）に設定でき、デバッグGUIの `Debug Controls` でも切り替えられます。時間上限は256サイクル単位で確認するソフト上限であり、1バッチ分だけ超えることがあります。
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
-`Performance` ウィンドウでは、設定した `Cycles / frame` に対するCPU使用率と実時間比を確認できます。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
+`Performance` ウィンドウでは、Strict／Best-effort の `Cycles / frame` に対するCPU使用率と実時間比を確認できます。Cycle-independent では固定サイクル予算がないため、サイクル使用率は N/A です。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
 CPU内部とフレーム処理の時間内訳を取るには `--profile-cpu` を指定します。このオプションはデバッグGUIを有効にして `Performance` を開き、直近フレームと直近120フレーム平均を表示します。CPU内訳は Device/IRQ、Fetch、Decode、Execute、Memory、Commit、Other に分かれます。Cached Interpreter は Fetch にcache lookupとdecodeを含みます。フレーム内訳はVDP/VSync IRQ、CPU、CPU側の描画送信、音声合成、音声キュー投入です。GPU実行時間とVSync待ちは計測しません。`--debug-gui` だけではこれらの追加計測は動かず、計測器の時間計測は `--profile-cpu` 指定時のみ有効です。プロファイラー有効時はCPU実行が遅くなるため、絶対時間ではなく処理段階の比較に使ってください。
 `Debug Controls` はCPUの状態、PC、モード、合計サイクル数、合計実行命令数を表示します。`Reset` はCPUのサイクル数・稼働サイクル数・実行命令数をゼロにしてアドレス `0x00000000` から再初期化し、一時停止します。IRQコントローラの保留要求・許可・入力レベルも消去します。ゲストRAMとバスのシステム時刻は保持します。
 
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
+```
+
+GUIの処理負荷を抑える実行例:
+
+```sh
+cargo run --release --bin cpt32 -- path/to/program.bin --cpu-execution best-effort --cpu-time-slice-ms 8
+cargo run --release --bin cpt32 -- path/to/program.bin --cpu-execution cycle-independent
 ```
 `--profile-cpu` は `--debug-gui` の代わりに指定でき、Performance ウィンドウを開いてCPU内訳を計測します。
 ```sh

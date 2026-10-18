@@ -112,14 +112,120 @@ class LaunchPipelineTests(unittest.TestCase):
             for exe in ("", str(executable)):
                 with self.subTest(mode=mode, exe=exe):
                     values = dict(executable=exe, workspace=str(launcher.REPO), build_kind="release", cpu="jit", run_mode=mode, debug_gui=False, profile_cpu=False, start_paused=False, music_stream="")
+                    values.update(cpu_execution_mode="cycle-independent", cpu_time_slice_ms="12")
                     ui = SimpleNamespace(**{key: SimpleNamespace(get=lambda value=value: value) for key, value in values.items()})
                     command = launcher.Launcher._launch_command(ui, self.run_dir, binary)
                     self.assertIn(binary, command)
                     self.assertNotIn(source, command)
                     self.assertEqual("--monitor" in command, mode == "monitor")
+                    if mode == "gui":
+                        self.assertEqual(command[command.index("--cpu-execution") + 1], "cycle-independent")
+                        self.assertEqual(command[command.index("--cpu-time-slice-ms") + 1], "12")
+                    else:
+                        self.assertNotIn("--cpu-execution", command)
+                        self.assertNotIn("--cpu-time-slice-ms", command)
                     if not exe:
                         self.assertIn("--features", command)
 
 
+    def test_cpu_time_slice_validation_rejects_out_of_range_and_non_numeric_values(self):
+        executable = self.base / "cpt32.exe"
+        executable.touch()
+        for time_slice in ("0", "17", "invalid"):
+            with self.subTest(time_slice=time_slice):
+                values = dict(
+                    executable=str(executable),
+                    workspace=str(launcher.REPO),
+                    build_kind="release",
+                    cpu="pipeline",
+                    run_mode="gui",
+                    debug_gui=False,
+                    profile_cpu=False,
+                    start_paused=False,
+                    music_stream="",
+                    cpu_execution_mode="best-effort",
+                    cpu_time_slice_ms=time_slice,
+                )
+                ui = SimpleNamespace(
+                    **{
+                        key: SimpleNamespace(get=lambda value=value: value)
+                        for key, value in values.items()
+                    }
+                )
+                with self.assertRaises(launcher.ConfigError):
+                    launcher.Launcher._launch_command(ui, self.run_dir, str(self.base / "game.bin"))
+
+    def test_execution_settings_round_trip_through_saved_profile(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        values = {
+            "config_source": "config.yaml",
+            "program": "game.bin",
+            "cpu": "pipeline",
+            "run_mode": "gui",
+            "debug_gui": False,
+            "profile_cpu": False,
+            "start_paused": False,
+            "music_stream": "",
+            "build_kind": "release",
+            "log_level": "info",
+            "workspace": str(launcher.REPO),
+            "executable": "",
+            "cpu_execution_mode": "cycle-independent",
+            "cpu_time_slice_ms": "12",
+        }
+        ui = SimpleNamespace(
+            **{key: Variable(value) for key, value in values.items()},
+            _effective_document=lambda: {},
+            _populate_from_document=lambda: None,
+        )
+        profile = launcher.Launcher._collect_profile(ui)
+        profile["config_yaml"] = "config: {}\n"
+        self.assertEqual(profile["cpu_time_slice_ms"], "12")
+
+        launcher.Launcher._apply_profile(ui, profile)
+        self.assertEqual(ui.cpu_execution_mode.get(), "cycle-independent")
+        self.assertEqual(ui.cpu_time_slice_ms.get(), "12")
+
+        legacy_profile = dict(profile)
+        legacy_profile.pop("cpu_execution_mode")
+        legacy_profile.pop("cpu_time_slice_ms")
+        launcher.Launcher._apply_profile(ui, legacy_profile)
+        self.assertEqual(ui.cpu_execution_mode.get(), launcher.DEFAULT_CPU_EXECUTION_MODE)
+        self.assertEqual(ui.cpu_time_slice_ms.get(), str(launcher.DEFAULT_CPU_TIME_SLICE_MS))
+
+    def test_execution_policy_command_has_no_effect_on_monitor_mode(self):
+        executable = self.base / "cpt32.exe"
+        executable.touch()
+        values = dict(
+            executable=str(executable),
+            workspace=str(launcher.REPO),
+            build_kind="release",
+            cpu="pipeline",
+            run_mode="monitor",
+            debug_gui=False,
+            profile_cpu=False,
+            start_paused=False,
+            music_stream="",
+            cpu_execution_mode="cycle-independent",
+            cpu_time_slice_ms="8",
+        )
+        ui = SimpleNamespace(
+            **{key: SimpleNamespace(get=lambda value=value: value) for key, value in values.items()}
+        )
+
+        command = launcher.Launcher._launch_command(ui, self.run_dir, None)
+
+        self.assertIn("--monitor", command)
+        self.assertNotIn("--cpu-execution", command)
+        self.assertNotIn("--cpu-time-slice-ms", command)
 if __name__ == "__main__":
     unittest.main()
