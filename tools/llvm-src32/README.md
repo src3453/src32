@@ -99,7 +99,7 @@ stdio、malloc、ファイル、OS API は付属しません。標準ヘッダ�
 
 ## SRC32 ABI とメモリ配置
 
-- R0 はゼロ、R28 は SP、R29 は FP、R31 は LR。その他のレジスタは caller-saved。
+- R0 はゼロ、R28 は SP、R29 は FP、R31 は LR。IRQライブラリ使用時はR30がベクタの分岐先用に予約されます。その他のレジスタは caller-saved。
 - スタックは下向き、呼出境界は8-byte整列。引数は呼出時 SP から順に4-byte単位で格納。i64 と aggregate は big-endian の連続 word。
 - callee は旧 FP、LR を8 byte保存し、その位置を FP とする。第1引数は FP+8。SSA 値・ローカルは FP より下の独立スロット。
 - 32-bit戻り値は R1。64-bit戻り値は low=R1、high=R2。8 byte超の aggregate 戻り値は LLVM の sret ポインタを使用。
@@ -107,6 +107,8 @@ stdio、malloc、ファイル、OS API は付属しません。標準ヘッダ�
 - 起動時 SP がイメージ内に入る配置は拒否。ただし再帰／VLAによる実行時スタック枯渇の自動検出はありません。十分な RAM とスタック余白を確保してください。
 - 分岐・呼出は絶対アドレスをロードして JR/JALR。大きなコードでも相対16-bit距離へ依存しません。
 - 全 SSA 値を spill する正しさ優先の実装。ネイティブ LLVM ターゲット並みのコード密度・実行速度は保証しません。
+
+[`sdk/cpt32`](../../sdk/cpt32/README.md) のCライブラリを利用できます。`void irqc_dispatch(void)`がリンクされる場合は、起動時に全16 IRQベクタを登録します。共通入口は128-byteの8-byte整列フレームにSP以外の全レジスタを保存し、dispatcher呼出し後に復元して`IRET`します。SPはフレーム解放で復元します。通常のC関数をベクタへ直接置いたり、R30を任意のアセンブリで破壊したりしないでください。ライブラリ検証は`python sdk/cpt32/smoke/run.py --clang PATH`。
 
 ## 実行検証
 

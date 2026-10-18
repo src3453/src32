@@ -1,0 +1,8 @@
+cmake_minimum_required(VERSION 3.20)
+project(cpt32_c_smoke LANGUAGES NONE)
+add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/.." cpt32)
+src32_add_executable(display SOURCES display.c LIBRARIES cpt32_display OPTIMIZATION 0)
+src32_add_executable(irqc SOURCES irqc.c LIBRARIES cpt32_irqc OPTIMIZATION 0)
+src32_add_executable(sgub SOURCES sgub.c LIBRARIES cpt32_music OPTIMIZATION 0)
+src32_add_executable(storage SOURCES storage.c LIBRARIES cpt32_storage OPTIMIZATION 0)
+src32_add_executable(wax SOURCES wax.c LIBRARIES cpt32_storage OPTIMIZATION 0)

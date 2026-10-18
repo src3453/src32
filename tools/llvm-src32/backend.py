@@ -1098,12 +1098,39 @@ class _Module:
         c.label("__llvm_src32_start")
         c.imm(28, self.stack_top)
         c.move(29, 0)
+        irq_dispatch = self.definitions.get("irqc_dispatch")
+        if irq_dispatch is not None:
+            if list(irq_dispatch.arguments) or str(irq_dispatch.global_value_type.get_function_return()) != "void":
+                raise CompileError("IRQ dispatcher must have signature void irqc_dispatch(void)")
+            # Vector slots execute one instruction. R30 is reserved as their
+            # indirect branch target; ordinary lowering never uses this register.
+            c.imm(11, 0xFFFF0044)
+            c.mem("STH", 0, 11)
+            c.imm(30, ("label", "__llvm_src32_irq_entry"))
+            c.imm(11, 0xFFFF0100)
+            c.imm(10, (0x0B << 26) | (30 << 21))  # JR R30
+            for line in range(16):
+                c.mem("ST", 10, 11, line * 4)
         c.imm(12, ("label", symbol(self.entry)))
         c.emit("JALR R12")
         c.emit("HALT")
         stop = c.fresh("stop")
         c.label(stop)
         c.jump(stop)
+        if irq_dispatch is not None:
+            c.label("__llvm_src32_irq_entry")
+            # Preserve all interrupted registers, with an 8-byte-aligned frame.
+            c.add_const(28, 28, -128)
+            for register in range(1, 32):
+                if register != 28:
+                    c.mem("ST", register, 28, (register - 1) * 4)
+            c.imm(12, ("label", symbol("irqc_dispatch")))
+            c.emit("JALR R12")
+            for register in range(1, 32):
+                if register != 28:
+                    c.mem("LD", register, 28, (register - 1) * 4)
+            c.add_const(28, 28, 128)
+            c.emit("IRET")
         for function in self.definitions.values():
             linkage = function.linkage.name
             if linkage not in ("external", "internal", "private"):
