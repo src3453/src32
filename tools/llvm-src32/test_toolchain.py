@@ -76,6 +76,36 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_cpt32_halt_waits_for_irq_then_resumes(self):
+        source = self.work / 'halt.c'
+        source.write_text('''
+#include <cpt32/cpu.h>
+#include <stdint.h>
+
+#define IRQC_PENDING (*(volatile uint16_t *)0xFFFF0040u)
+#define IRQC_ENABLE (*(volatile uint16_t *)0xFFFF0044u)
+static volatile uint32_t wake_count;
+
+void irqc_dispatch(void) {
+    if ((IRQC_PENDING & IRQC_ENABLE & 1u) != 0u) {
+        IRQC_PENDING = 1u;
+        ++wake_count;
+    }
+}
+
+int main(void) {
+    IRQC_PENDING = 0xFFFFu;
+    IRQC_ENABLE = 1u;
+    cpt32_halt();
+    IRQC_ENABLE = 0u;
+    return wake_count != 0u ? 42 : 101;
+}
+''', encoding='utf-8')
+        image = self.work / 'halt.wax'
+        self.driver(source, '-I', ROOT / 'sdk/cpt32/include', '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+
     def test_phi_parallel_copy_on_backedge(self):
         source = self.ir('''
 define i32 @main() {

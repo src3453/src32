@@ -1,10 +1,13 @@
-//! Smoke tests for the sol TinyBASIC interpreter on the real SRC32 CPU.
+//! Smoke tests for the TinyBASIC interpreter on the real SRC32 CPU.
+//! Set `TINYBASIC_GUEST_IMAGE` to run the same keyboard/disk scenarios
+//! against another raw guest image, such as the LLVM/SRC32 C port.
 //!
 //! The interpreter boots, initializes the PCG console, renders its
 //! help banner and REPL prompt, and executes a program typed through
 //! PeC keyboard events. The PCG text plane (legacy mode) stores one
 //! ASCII byte per cell, so the rendered output can be read back
 //! directly from VRAM.
+//!
 use cpt32::bus::{Bus, connect_devices_with_vdp};
 use cpt32::cpu::{CYCLES_PER_FRAME, Cpu};
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
@@ -14,6 +17,16 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
+
+fn guest_image() -> Vec<u8> {
+    let path = std::env::var_os("TINYBASIC_GUEST_IMAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
+        });
+    std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()))
+}
 
 /// Read the legacy PCG text plane (40x30 cells, one byte per cell)
 /// as an ASCII string.
@@ -36,8 +49,7 @@ fn load_cpu() -> (Cpu, Rc<RefCell<Vdp>>) {
     connect_rng(&mut bus);
     let vdp = connect_devices_with_vdp(&mut bus);
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = guest_image();
     cpu.load_program(0, &image);
     (cpu, vdp)
 }
@@ -98,8 +110,7 @@ fn tinybasic_runs_program_from_keyboard_input() {
     let vdp = connect_devices_with_vdp(&mut bus);
 
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = guest_image();
     cpu.load_program(0, &image);
 
     // Queue a program and RUN it before the CPU starts: the REPL
@@ -151,8 +162,7 @@ fn tinybasic_error_reports_line_number() {
     let vdp = connect_devices_with_vdp(&mut bus);
 
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = guest_image();
     cpu.load_program(0, &image);
 
     // Queue a program whose line 10 divides by zero, then RUN
@@ -193,8 +203,7 @@ fn tinybasic_print_field_width() {
     let vdp = connect_devices_with_vdp(&mut bus);
 
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = guest_image();
     cpu.load_program(0, &image);
 
     // Queue a program using the PRINT #N field-width
@@ -268,8 +277,7 @@ fn tinybasic_halts_until_input_irq() {
     let vdp = connect_devices_with_vdp(&mut bus);
 
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let image = guest_image();
     cpu.load_program(0, &image);
 
     // Boot until the REPL reaches its prompt. tb_read_line must

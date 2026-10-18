@@ -1,5 +1,5 @@
-//! Regression test for TinyBASIC LOAD from a small disk
-//! image.
+//! Regression test for TinyBASIC LOAD from a small disk image.
+//! `TINYBASIC_GUEST_IMAGE` can select a raw C guest binary for this test.
 //!
 //! `LOAD` used to default to 128 sectors (64 KiB), which
 //! exceeded the capacity of any small image and made the
@@ -61,8 +61,13 @@ fn tinybasic_load_from_small_nonaligned_image() {
     connect_idc(&mut bus, drives);
 
     let mut cpu = Cpu::new(bus);
-    let image = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
-        .expect("tinybasic.bin missing; assemble tinybasic.sol first");
+    let path = std::env::var_os("TINYBASIC_GUEST_IMAGE")
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| {
+            std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/tinybasic.bin"))
+        });
+    let image = std::fs::read(&path)
+        .unwrap_or_else(|error| panic!("failed to read {}: {error}", path.display()));
     cpu.load_program(0, &image);
 
     // HID: letters a..z are 4..29, Enter is 40.

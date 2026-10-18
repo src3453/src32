@@ -9,9 +9,9 @@ Windows／Linuxで起動設定を操作できるPython GUIランチャーを用�
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
 - **SRC32** — 32-bit RISC CPU。命令セット仕様は [`doc/spec_CPU.md`](doc/spec_CPU.md)。
 - **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。標準ライブラリ（`sol/solstd`、`sol/cpt32`）は名前空間を宣言しており、`pcg.prnscr` や `softfloat.sf32_add` のように `名前空間.名前` で参照します（[`doc/spec_sol.md`](doc/spec_sol.md)）。
-- **CPT32 Cライブラリ** — sol版の描画・IRQ・乱数・IDC/DSFS・WAX・SGUBをLLVM/SRC32用のCへ移植。APIと検証手順は [`sdk/cpt32`](sdk/cpt32/README.md)、描画サンプルは [`examples/3d-cube-c`](examples/3d-cube-c/README.md)。
+- **CPT32 Cライブラリ** — sol版の描画・IRQ・ストレージ・音楽APIを、LLVM/SRC32向けfreestanding Cへ移植。SDKは [`sdk/cpt32`](sdk/cpt32/README.md)、サンプルは [`3D Cube`](examples/3d-cube-c/README.md)、[`DOS`](examples/dos-c/README.md)、[`TinyBASIC`](examples/tinybasic-c/README.md)。
 - **開発サンプル** — [`3d_cube.sol`](3d_cube.sol)、[`mouse_cursor.sol`](mouse_cursor.sol)、[`vpu_tnl_triangle.sol`](vpu_tnl_triangle.sol) など。
-- **CPT32 DOS** — DSFS／フロッピーを操作するシェル（[`dos.sol`](dos.sol)）。
+- **CPT32 DOS / TinyBASIC** — sol版 [`dos.sol`](dos.sol)、[`tinybasic.sol`](tinybasic.sol) と、freestanding C移植 [`DOS`](examples/dos-c/README.md)・[`TinyBASIC`](examples/tinybasic-c/README.md)。
 
 ## ビルドと実行
 
@@ -120,6 +120,7 @@ cargo run --release --bin cpt32 -- monitor [program.bin] [--cpu scalar|cached|pi
 ## CPT32 DOS（DSFS シェル）
 
 `dos.sol` は DSFS ボリュームを操作する小さなシェルです。文字は PCG コンソールに表示し、キーボードは PeC の入力 FIFO を IRQC source 3 で待って読みます。ファイルはドライブ 0／1 の DSFS ボリューム（`doc/spec_DSFS.md`）として扱われ、`FORMAT` はゲスト自身が superblock・bitmap・directory を書きます。
+同じシェルのfreestanding C移植は [`examples/dos-c/README.md`](examples/dos-c/README.md) を参照してください。LLVM/SRC32ツールチェーンと `sdk/cpt32` を使い、`csc` は使いません。
 
 ```sh
 python3 tools/solc/solc.py compile dos.sol -o dos.sol.a
@@ -149,6 +150,11 @@ cd path/to/config-dir && cargo run --release --bin src32_testbench -- /path/to/d
 プロンプトは `0> ` の形式です。
 
 名前は 8.3 形式（大文字、`N:NAME.EXT` でドライブ指定）で、ファイルは 1 個 64 KiB までです。回帰テストは `tests/dos_smoke.rs`（`cargo test --test dos_smoke`、`dos.bin` のローカルビルドが必要）です。
+
+## TinyBASIC
+
+[`tinybasic.sol`](tinybasic.sol) は PCG コンソールと PeC キーボードを使う sol 版インタプリタです。freestanding C 移植の機能・ビルド・実行方法は [`examples/tinybasic-c/README.md`](examples/tinybasic-c/README.md) を参照してください。C 版は LLVM/SRC32 ツールチェーンと `sdk/cpt32` を使い、`csc` は使いません。
+
 
 ## SGU Music Editor
 
