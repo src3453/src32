@@ -115,3 +115,7 @@ Furnace の現在の ROM exporter は v2 を出力し、次のpool化を行う�
 `sol/cpt32/sgu_music_driver.sol` を `solc.py compile -O speed` でコンパイルし、`tools/asm/asm.py` でbinaryにする。v2非対応の古いdriverや、以前Music EditorがSGUBと同じ場所に出力したdriverのコピーは最新版に更新する。SGUBファイル自体の再exportは不要。
 
 初期化は全検証が通ってから実行し、完了後にIRQ0を有効にする。FILL/COPY_POOLは制御レジスタに触れない契約なので32-bitのまとめ読み書きで処理し、端数だけbyte単位で処理する。通常のWRITEは順序と副作用を維持する。size最適化でコンパイルしたdriverでは大量のresetを含む先頭frameが1 VSyncのCPU予算を超える場合があるため、再生用binaryにはspeed最適化を推奨する。
+
+## ImHex パターン
+
+`tools/imhex/sgub_v2.hexpat` はヘッダー、pool directory と payload、可変長の初期化／frame 操作、各 frame を可視化する。`StreamPlayer` による検証の代替ではない。

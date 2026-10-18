@@ -69,3 +69,7 @@ Example playback with an existing guest:
 ```sh
 cargo run --release --bin cpt32 -- dos.wax --music-stream song.sgub
 ```
+
+## ImHex pattern
+
+`tools/imhex/sgub_v1.hexpat` visualizes the header, initialization records, and counted frame records. It does not replace `StreamPlayer` validation.

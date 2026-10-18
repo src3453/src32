@@ -191,6 +191,7 @@ dsfs.py verify IMAGE                            §7 の検証。違反があれ�
 - 書き込み系コマンドは保存前に §7 の mount 検証を通し、操作は §8 の更新順序に従う。違反・形式エラーは `dsfs: ...` を stderr に出して終了コード1。
 - `ls` / `info` / `verify` は leak を件数として報告するが、エラーにはしない。
 - テストは `python3 -m pytest tools/dsfs/test_dsfs.py`。
+- ImHex パターン `tools/imhex/dsfs.hexpat` は、ブートセクタ、スーパーブロック、ビットマップ、256個のディレクトリエントリ、および範囲内にあるファイルデータを可視化する。マウント検証は行わないため、§7 の検査には `dsfs.py verify IMAGE` を使う。
 
 ## 12. ゲストライブラリ
 
