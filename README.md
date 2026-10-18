@@ -81,9 +81,10 @@ Cached Interpreter は RAM 上の命令を直接マップ型のデコードキ�
 
 ```sh
 cargo run --release --bin cpu_bench -- 10000 5
+cargo run --release --bin cpu_bench -- 10000 5 --platform
 ```
 
-ワークロードは繰り返し実行される依存 ALU 演算、MUL とその直後の利用、ストア／ロード、load-use 依存、ループ分岐を含みます。出力は各モードの中央値、命令キャッシュ hit/miss、Cached の Scalar／Pipeline に対する speedup を示します。wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンターです。
+ワークロードは繰り返し実行される依存 ALU 演算、MUL とその直後の利用、ストア／ロード、load-use 依存、ループ分岐を含みます。出力は各モードの中央値、命令キャッシュ hit/miss、Cached の Scalar／Pipeline に対する speedup を示します。実効MHzは稼働サイクル数÷CPU実行秒÷100万で、48 MHz目標への達成率も表示します。既定はRAMのみ、`--platform`では待機中のBMC／DMAC／SGU／VDP／PeC入力・timer／RNG／未接続IDCも接続します。active DMA・disk・拡張カード、描画・音声処理は含みません。wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンターです。
 
 Headless ゲスト実行で CPU stage の内訳を採るには `src32_testbench` に `--profile-cpu` を付けます。計測器の時間計測は実行を遅くするため、内訳採取と wall-clock 比較は別々に実行してください。ホスト固有の計測結果と改善手順は [エミュレータ性能調査と改善計画](doc/emulator-performance-plan.md) を参照してください。
 
