@@ -6,7 +6,7 @@
 // same architectural state (registers, PC, mode, memory).
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::devices::cpu::CpuRegisterBlock;
+use crate::devices::cpu::{BUS_ERROR_VECTOR, CpuRegisterBlock};
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -1468,6 +1468,28 @@ impl PipelineCpu {
         true
     }
 
+    fn enter_bus_error(&mut self, fault_pc: u32) {
+        self.epc = fault_pc;
+        self.irq_return_mode = self.retire_mode;
+        self.cause = 2;
+        self.irq_enable = false;
+        self.irq_pending = false;
+        self.fetch_mode = InstructionMode::Normal;
+        self.retire_mode = InstructionMode::Normal;
+        let vector = self.bus.read_u32_be(BUS_ERROR_VECTOR);
+        self.fetch_pc = vector;
+        self.retire_pc = vector;
+        self.if_id.valid = false;
+        self.id_ex = invalid_id_ex();
+        self.ex_mem = invalid_ex_mem();
+        self.mem_wb = invalid_mem_wb();
+        self.ex_cycles_left = 0;
+        self.ex_armed = false;
+        self.running = vector != BUS_ERROR_VECTOR;
+        self.sync_register_block();
+        tracing::error!(pc = format_args!("0x{fault_pc:08X}"), "CPU Bus Error");
+    }
+
     fn commit_mem_wb(&mut self, wb: MemWb) {
         if !wb.valid {
             return;
@@ -1603,6 +1625,10 @@ impl PipelineCpu {
         }
         self.cycles += 1;
         self.running_cycles += 1;
+        if self.bus.take_bus_error() {
+            self.enter_bus_error(self.retire_pc);
+            return;
+        }
 
         // ---- WB (commit oldest first) ----
         // NOTE: do NOT clear mem_wb here. All stages in a tick must read the
@@ -1619,6 +1645,7 @@ impl PipelineCpu {
         // ---- MEM ----
         let mut next_mem_wb = invalid_mem_wb();
         let memory_start = Self::profile_start::<PROFILE>();
+        let mut bus_fault_pc = None;
         if self.ex_mem.valid {
             let em = self.ex_mem;
             next_mem_wb.valid = true;
@@ -1662,9 +1689,16 @@ impl PipelineCpu {
                 next_mem_wb.value = em.alu_result;
                 next_mem_wb.writeback = em.writeback;
             }
+            if self.bus.take_bus_error() {
+                bus_fault_pc = Some(em.pc);
+            }
         }
         if let Some(start) = memory_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Memory, start.elapsed());
+        }
+        if let Some(fault_pc) = bus_fault_pc {
+            self.enter_bus_error(fault_pc);
+            return;
         }
 
         // ---- EX delay countdown (multi-cycle MUL/DIV) ----

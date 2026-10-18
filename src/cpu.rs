@@ -4,7 +4,7 @@
 // Features: SRC32-ALMSI
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::devices::cpu::CpuRegisterBlock;
+use crate::devices::cpu::{BUS_ERROR_VECTOR, CpuRegisterBlock};
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -814,6 +814,7 @@ impl Cpu {
     }
 
     fn commit_pending(&mut self) {
+        let instruction_pc = self.pc;
         match self.instruction {
             Some(PendingInstruction::Normal(instruction)) => {
                 self.instructions_executed += 1;
@@ -825,6 +826,26 @@ impl Cpu {
             }
             _ => {}
         }
+        if self.bus.take_bus_error() {
+            self.enter_bus_error(instruction_pc);
+        }
+    }
+
+    fn enter_bus_error(&mut self, fault_pc: u32) {
+        self.epc = fault_pc;
+        self.irq_return_mode = self.instr_mode;
+        self.cause = 2;
+        self.irq_enable = false;
+        self.irq_pending = false;
+        self.instr_mode = InstructionMode::Normal;
+        self.pc = self.bus.read_u32_be(BUS_ERROR_VECTOR);
+        self.instruction = None;
+        self.state = CpuState::Fetch;
+        self.running = self.pc != BUS_ERROR_VECTOR;
+        if !self.running {
+            self.state = CpuState::Halt;
+        }
+        tracing::error!(pc = format_args!("0x{fault_pc:08X}"), "CPU Bus Error");
     }
 
     pub fn epc(&self) -> u32 {

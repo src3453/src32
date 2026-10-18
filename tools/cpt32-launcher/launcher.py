@@ -443,8 +443,8 @@ class Launcher(tk.Tk):
         ttk.Label(advanced, text="メインRAM (MiB)").grid(row=0, column=0, sticky="w", pady=6)
         ttk.Spinbox(advanced, textvariable=self.ram_mib, from_=1, to=256, width=8).grid(row=0, column=1, sticky="w")
         ttk.Label(advanced, text="VRAM (MiB)").grid(row=1, column=0, sticky="w", pady=6)
-        ttk.Spinbox(advanced, textvariable=self.vram_mib, from_=4, to=256, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜256 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Spinbox(advanced, textvariable=self.vram_mib, from_=4, to=128, width=8).grid(row=1, column=1, sticky="w")
+        ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜128 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         cards_tab = ttk.Frame(self.tabs, padding=12)
         cards_tab.columnconfigure(1, weight=1)
         self.tabs.add(cards_tab, text="WASM拡張カード")
@@ -592,10 +592,10 @@ class Launcher(tk.Tk):
         memory = document.get("memory") or {}
         if not isinstance(memory, dict):
             raise ConfigError("`memory` はmappingで指定してください")
-        for key, control, minimum in (("ram_mib", self.ram_mib, 1), ("vram_mib", self.vram_mib, 4)):
+        for key, control, minimum, maximum in (("ram_mib", self.ram_mib, 1, 256), ("vram_mib", self.vram_mib, 4, 128)):
             raw = control.get().strip()
-            if not raw.isdecimal() or not minimum <= int(raw) <= 256:
-                raise ConfigError(f"`memory.{key}` は{minimum}〜256 MiBの整数で入力してください")
+            if not raw.isdecimal() or not minimum <= int(raw) <= maximum:
+                raise ConfigError(f"`memory.{key}` は{minimum}〜{maximum} MiBの整数で入力してください")
             value = int(raw)
             if value == (16 if key == "ram_mib" else 4):
                 memory.pop(key, None)

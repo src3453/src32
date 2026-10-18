@@ -664,11 +664,8 @@ impl Bus {
             return value;
         }
         self.bus_error = true;
-        if self.access_source == BusAccessSource::Debugger {
-            self.release_cpu_access();
-            return 0;
-        }
-        panic!("Invalid I/O read: 0x{:08X}", addr);
+        self.release_cpu_access();
+        0
     }
 
     /// Read a byte for a debugger view. `None` represents an open bus.
@@ -702,11 +699,7 @@ impl Bus {
             return;
         }
         self.bus_error = true;
-        if self.access_source == BusAccessSource::Debugger {
-            self.release_cpu_access();
-            return;
-        }
-        panic!("Invalid I/O write: 0x{:08X}", addr);
+        self.release_cpu_access();
     }
 
     fn overlaps_idc_data(address: u32, width: u32) -> bool {

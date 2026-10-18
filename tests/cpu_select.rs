@@ -1,6 +1,7 @@
 use cpt32::bus::Bus;
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind};
-use cpt32::devices::ram::connect_ram;
+use cpt32::devices::cpu::BUS_ERROR_VECTOR;
+use cpt32::devices::ram::{connect_ram, connect_ram_with_size};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 fn encode_r(op: u8, rd: u8, rs1: u8, rs2: u8) -> [u8; 4] {
@@ -15,6 +16,83 @@ fn encode_i(op: u8, rd: u8, rs1: u8, imm: i16) -> [u8; 4] {
     raw.to_be_bytes()
 }
 
+#[test]
+fn unmapped_store_enters_bus_error_handler_for_each_cpu_kind() {
+    for kind in [
+        CpuKind::Scalar,
+        CpuKind::Cached,
+        CpuKind::CachedRelaxed,
+        CpuKind::Pipelined,
+    ] {
+        let mut bus = Bus::new();
+        connect_ram_with_size(&mut bus, 1024 * 1024);
+        let mut cpu = AnyCpu::new(kind, bus);
+        cpu.write_mem_u32_be(BUS_ERROR_VECTOR, 0x100);
+        let mut program = Vec::new();
+        program.extend_from_slice(&encode_i(0x3D, 1, 0, 0x10)); // LDIH R1, 0x10
+        program.extend_from_slice(&encode_i(0x02, 0, 1, 0)); // ST R0, [R1]
+        cpu.load_program(0, &program);
+        cpu.load_program(0x100, &encode_r(0x3F, 0, 0, 0)); // HALT in exception handler
+
+        cpu.run(128);
+
+        assert!(
+            !cpu.is_running(),
+            "{kind:?} pc={:08X} epc={:08X} cause={}",
+            cpu.pc(),
+            cpu.epc(),
+            cpu.irq_cause()
+        );
+        assert_eq!(cpu.epc(), 4, "{kind:?}");
+        assert_eq!(cpu.irq_cause(), 2, "{kind:?}");
+        assert_eq!(cpu.pc(), 0x104, "{kind:?}");
+    }
+}
+
+#[test]
+fn unmapped_load_enters_bus_error_handler_for_each_cpu_kind() {
+    for kind in [
+        CpuKind::Scalar,
+        CpuKind::Cached,
+        CpuKind::CachedRelaxed,
+        CpuKind::Pipelined,
+    ] {
+        let mut bus = Bus::new();
+        connect_ram_with_size(&mut bus, 1024 * 1024);
+        let mut cpu = AnyCpu::new(kind, bus);
+        cpu.write_mem_u32_be(BUS_ERROR_VECTOR, 0x100);
+        let mut program = Vec::new();
+        program.extend_from_slice(&encode_i(0x3D, 1, 0, 0x10)); // LDIH R1, 0x10
+        program.extend_from_slice(&encode_i(0x01, 2, 1, 0)); // LD R2, [R1]
+        cpu.load_program(0, &program);
+        cpu.load_program(0x100, &encode_r(0x3F, 0, 0, 0));
+
+        cpu.run(128);
+
+        assert!(!cpu.is_running(), "{kind:?}");
+        assert_eq!(cpu.epc(), 4, "{kind:?}");
+        assert_eq!(cpu.irq_cause(), 2, "{kind:?}");
+        assert_eq!(cpu.pc(), 0x104, "{kind:?}");
+    }
+}
+
+#[test]
+fn unmapped_store_without_bus_error_handler_stops_cpu_without_host_panic() {
+    let mut bus = Bus::new();
+    connect_ram_with_size(&mut bus, 1024 * 1024);
+    let mut cpu = AnyCpu::new(CpuKind::CachedRelaxed, bus);
+    let mut program = Vec::new();
+    program.extend_from_slice(&encode_i(0x3D, 1, 0, 0x10)); // LDIH R1, 0x10
+    program.extend_from_slice(&encode_i(0x02, 0, 1, 0)); // ST R0, [R1]
+    cpu.load_program(0, &program);
+
+    cpu.run(64);
+
+    assert!(!cpu.is_running());
+    assert_eq!(cpu.epc(), 4);
+    assert_eq!(cpu.irq_cause(), 2);
+    assert_eq!(cpu.pc(), BUS_ERROR_VECTOR);
+}
 #[test]
 fn cpu_modes_parse_and_keep_pipeline_as_default() {
     assert_eq!(CpuKind::default(), CpuKind::Pipelined);

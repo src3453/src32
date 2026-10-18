@@ -18,7 +18,7 @@
 #  image: "assets/bios.rom"
 
 # Main RAM and VDP VRAM capacities. Omit either key to use its default.
-# RAM supports 1..256 MiB. VRAM supports 4..256 MiB (4 MiB default).
+# RAM supports 1..256 MiB. VRAM supports 4..128 MiB (4 MiB default).
 #memory:
 #  ram_mib: 16
 #  vram_mib: 4

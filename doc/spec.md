@@ -70,7 +70,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - ワークバッファ
 
 ### VRAM
-- 容量: 既定 4 MiB。`config.yaml` の `memory.vram_mib` で 4〜256 MiB に設定できる。
+- 容量: 既定 4 MiB。`config.yaml` の `memory.vram_mib` で 4〜128 MiB に設定できる。
 - 用途:
   - フレームバッファ
   - Zバッファ
@@ -79,7 +79,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - スプライトデータ
   - 3Dモデルデータ
 
-両設定を省略した場合は従来の容量を使用する。VRAM のアドレス窓では PCMRAM 領域を除き、VRAM 内オフセットを維持して分割マッピングする。
+両設定を省略した場合は従来の容量を使用する。VRAM の上限はアドレス窓がPCMRAMと重ならない128 MiB。
 
 ### PCMRAM
 - 容量: 1MB
@@ -217,7 +217,7 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 | Address Range | Size | Description | Attributes |
 |--------------|------|------------|-----------|
 | 0x00000000 - (0x00000000 + configured size - 1) | 1–256 MiB | Main RAM (default 16 MiB) | RWC |
-| 0x10000000 - 0x1FFFFFFF excluding PCMRAM | up to 256 MiB configured VRAM | VRAM (default 4 MiB) | RW |
+| 0x10000000 - 0x17FFFFFF | up to 128 MiB configured VRAM | VRAM (default 4 MiB) | RW |
 | 0x18000000 - 0x180FFFFF | 1MB | PCMRAM | RW |
 
 ### MMIO

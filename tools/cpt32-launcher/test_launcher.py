@@ -184,6 +184,10 @@ class LaunchPipelineTests(unittest.TestCase):
         saved = launcher.Launcher._effective_document(ui)
         restored = launcher.parse_yaml(launcher.dump_yaml(saved))
         self.assertEqual(restored["memory"], {"ram_mib": 96, "vram_mib": 128})
+
+        ui.vram_mib.set("129")
+        with self.assertRaises(launcher.ConfigError):
+            launcher.Launcher._effective_document(ui)
     def test_execution_settings_round_trip_through_saved_profile(self):
         class Variable:
             def __init__(self, value):
