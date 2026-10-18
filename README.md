@@ -9,6 +9,7 @@ Windows／Linuxで起動設定を操作できるPython GUIランチャーを用�
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
 - **SRC32** — 32-bit RISC CPU。命令セット仕様は [`doc/spec_CPU.md`](doc/spec_CPU.md)。
 - **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。標準ライブラリ（`sol/solstd`、`sol/cpt32`）は名前空間を宣言しており、`pcg.prnscr` や `softfloat.sf32_add` のように `名前空間.名前` で参照します（[`doc/spec_sol.md`](doc/spec_sol.md)）。
+- **CPT32 Cライブラリ** — sol版の描画・IRQ・乱数・IDC/DSFS・WAX・SGUBをLLVM/SRC32用のCへ移植。APIと検証手順は [`sdk/cpt32`](sdk/cpt32/README.md)、描画サンプルは [`examples/3d-cube-c`](examples/3d-cube-c/README.md)。
 - **開発サンプル** — [`3d_cube.sol`](3d_cube.sol)、[`mouse_cursor.sol`](mouse_cursor.sol)、[`vpu_tnl_triangle.sol`](vpu_tnl_triangle.sol) など。
 - **CPT32 DOS** — DSFS／フロッピーを操作するシェル（[`dos.sol`](dos.sol)）。
 
