@@ -751,3 +751,5 @@
 ## CPU Bus Error behavior (2026-10-18)
 - Unmapped CPU reads/writes set the Bus Error latch; they must not panic the host. Scalar/Cached execution consumes it at instruction commit, records the faulting instruction PC in EPC, sets CAUSE=2, masks IRQ, and jumps through `0xFFFF0008`. Pipeline detects data-access faults in MEM and flushes younger stages. An unchanged default self-vector halts at that vector instead of repeatedly decoding it.
 - Regression: `tests/cpu_select.rs::unmapped_store_enters_bus_error_handler_for_each_cpu_kind` exercises a 1 MiB RAM fault and custom handler for Scalar, Cached, CachedRelaxed, and Pipeline CPUs.
+
+- Debugger-originated reads/writes use `BusAccessSource::Debugger`; unmapped addresses and faulted devices must not latch a CPU Bus Error or redirect guest execution. Open-bus debug byte reads return `None`; equivalent CPU-originated accesses still latch Bus Error. Regression: `tests/cpu_select.rs::debugger_memory_reads_do_not_raise_cpu_bus_error_for_any_cpu_kind`.

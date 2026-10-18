@@ -546,6 +546,12 @@ impl Bus {
     pub fn access_source(&self) -> BusAccessSource {
         self.access_source
     }
+
+    fn latch_bus_error(&mut self) {
+        if self.access_source == BusAccessSource::Cpu {
+            self.bus_error = true;
+        }
+    }
     pub fn take_bus_error(&mut self) -> bool {
         let error = self.bus_error;
         self.bus_error = false;
@@ -657,13 +663,13 @@ impl Bus {
         if let Some((device, offset)) = self.find_device(addr) {
             let value = device.read(offset);
             if device.is_faulted() {
-                self.bus_error = true;
+                self.latch_bus_error();
             }
             self.refresh_device_irqs();
             self.release_cpu_access();
             return value;
         }
-        self.bus_error = true;
+        self.latch_bus_error();
         self.release_cpu_access();
         0
     }
@@ -677,12 +683,12 @@ impl Bus {
             let value = device.read(offset);
             let faulted = device.is_faulted();
             if faulted {
-                self.bus_error = true;
+                self.latch_bus_error();
             }
             self.refresh_device_irqs();
             return Some(value);
         }
-        self.bus_error = true;
+        self.latch_bus_error();
         Some(0).filter(|_| self.access_source != BusAccessSource::Debugger)
     }
 
@@ -692,13 +698,13 @@ impl Bus {
         if let Some((device, offset)) = self.find_device_mut(addr) {
             device.write(offset, value);
             if device.is_faulted() {
-                self.bus_error = true;
+                self.latch_bus_error();
             }
             self.refresh_device_irqs();
             self.release_cpu_access();
             return;
         }
-        self.bus_error = true;
+        self.latch_bus_error();
         self.release_cpu_access();
     }
 
@@ -716,7 +722,7 @@ impl Bus {
     pub fn read_u32_be(&mut self, addr: u32) -> u32 {
         if Self::invalid_idc_u32_access(addr) {
             self.flush_relaxed_devices();
-            self.bus_error = true;
+            self.latch_bus_error();
             return 0;
         }
         let b0 = self.read_u8(addr) as u32;
@@ -729,7 +735,7 @@ impl Bus {
     pub fn write_u32_be(&mut self, addr: u32, value: u32) {
         if Self::invalid_idc_u32_access(addr) {
             self.flush_relaxed_devices();
-            self.bus_error = true;
+            self.latch_bus_error();
             return;
         }
         self.write_u8(addr, ((value >> 24) & 0xFF) as u8);
