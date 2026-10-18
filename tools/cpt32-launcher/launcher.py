@@ -353,6 +353,7 @@ class Launcher(tk.Tk):
         self.sound_root = tk.StringVar()
         self.sound_volume = tk.StringVar(value="1.0")
         self.fdd_profile = tk.StringVar()
+        self.hdd_profile = tk.StringVar()
         self.ram_mib = tk.StringVar(value="16")
         self.vram_mib = tk.StringVar(value="4")
         self.log_level = tk.StringVar(value="info")
