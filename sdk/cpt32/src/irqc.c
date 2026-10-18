@@ -42,10 +42,10 @@ void irqc_dispatch(void) {
   int line;
   while ((line = irqc_irq_number()) >= 0) {
     irqc_handler handler = handlers[line];
-    irqc_ack((uint16_t)(1u << line));
     if (line == 0)
       ++vsyncs;
     if (handler)
       handler();
+    irqc_ack((uint16_t)(1u << line));
   }
 }

@@ -11,10 +11,11 @@ static const uint8_t name[DSFS_NAME_BYTES] = {'S', 'M', 'O', 'K', 'E', ' ',
 
 int main(void) {
   uint32_t i;
+  uint32_t capacity;
   uint32_t first_start;
   int32_t index;
   uint8_t *entry;
-  if (idc_identify(0u) != 64)
+  if (idc_identify(0u, &capacity) != 0u || capacity != 64u)
     return 101;
   if (dsfs_mount(0u, directory) != DSFS_OK)
     return 102;

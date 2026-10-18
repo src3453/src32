@@ -53,7 +53,7 @@ int main(void) {
 
 - LLVM/SRC32バックエンドは`void irqc_dispatch(void)`がリンクされている場合、`main`より前に全16ベクタへ`JR R30`を設定します。R30はdispatcher入口用に予約されます。
 - IRQ入口は128-byteの8-byte整列フレームへSP以外の全汎用レジスタを保存し、C dispatcherを呼び、復元して`IRET`します。SPはフレーム解放で元へ戻ります。
-- Dispatcherは有効な保留IRQを優先度順に全件処理し、callbackの前に各pending bitをackします。下位優先度のIRQが保留されたままIRETするとCPUのエッジ検出が再度立ち上がらないため、この処理が必要です。
+- Dispatcherは有効な保留IRQを優先度順に全件処理します。登録済みcallbackの後にpending bitをackするため、callbackではdevice固有の割り込み条件を先に解除してください。callback未登録IRQはdispatcherがackします。下位優先度のIRQもIRET前に処理し、CPUのエッジ検出が再度立ち上がらない状態を防ぎます。
 - callbackで割り込みのネストを有効にしないでください。callbackは引数なし・戻り値なしの通常のC関数です。SGUBの再生はcallbackから`sgub_step()`を呼ぶか、VSync待機後に呼びます。
 - `irqc_wait_vsync()`は次のIRQ0をカウンタで待ちます。CPUは実行を続けます。CPUサイクル由来の独自VSyncや、ハンドラ未登録のIRQ有効化は使いません。
 
@@ -62,6 +62,7 @@ int main(void) {
 - MMIOはvolatileアクセス。CPUのword/halfwordとファイル整数はbig-endian。PCG scroll MMIOのbyte laneはlow byteからです。
 - VPUの配列長・テクスチャサイズなどの前提条件は元のsol APIと同じです。APIコメントを確認してください。
 - DSFSは単一mountです。ディレクトリbufferは8192 byte、bitmapは`dsfs_bitmap_blocks()*512` byte、ファイルbufferはsector切り上げサイズが必要です。書込みは入力bufferの最終sector末尾をゼロ埋めします。名前はドットなし・space-paddingの大文字11 byteです。
+- `idc_identify(slot, &capacity)`は成功時0、失敗時1を返し、全範囲の`uint32_t`セクタ数を出力引数へ格納します。失敗時は出力を変更しません。
 - DSFS mountは元のsol版同様superblockのmagic/version/layoutを検査します。完全な不正媒体検査ではありません。未信頼画像は先に`tools/dsfs/dsfs.py verify`で検査してください。更新順はbitmap占有→payload→entry更新→旧領域解放、削除はentry解除→bitmap解放です。
 - WAX loaderは元の16 MiB RAMゲストの予約域を維持します。`0x00FE0000..0x00FFFFFF`をstaging/span map/trampolineに使用するため、16 MiB以上のRAMが必要です。最大ファイル64 KiB、予約域へのloadは拒否。ロード時に全IRQC sourceを無効化・ackします。成功したプログラム切替は呼出元に戻りません。
 - SGUBはcaller所有の不変streamと正確なbyte数を受け取り、全ヘッダー・pool・操作・frameを検証してから初期MMIOを書きます。`sgub_init`後は`sgub_step`で1フレームずつ適用します。repeatで初期化列を再実行せず、非repeat終端の次stepで全voiceを停止します。
