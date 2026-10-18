@@ -364,9 +364,12 @@ Rules:
 ## 6. Memory Model (Current Emulator)
 
 - Address space: 32-bit
-- Implemented RAM: `0x00000000..0x00FFFFFF` (16 MiB) (Can be extended)
-- Bus performs bounds/device checks and panics on unmapped access.
-
+- Implemented RAM: configured from 1 to 256 MiB; default 16 MiB.
+- CPU reads and writes to unmapped addresses raise the Bus Error exception.
+- Bus Error entry records the faulting instruction address in EPC, sets CAUSE
+  to 2, masks interrupts, and transfers to the handler address stored at
+  `0xFFFF0008`. If the vector retains its default self-reference, the CPU halts
+  at the Bus Error vector instead of panicking the host process.
 Endianness:
 
 - Byte-addressable memory
