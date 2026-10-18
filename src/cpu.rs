@@ -241,6 +241,8 @@ pub struct Cpu {
     instruction_cache_misses: u128,
     defer_register_sync: bool,
     profile: Option<CpuProfile>,
+    pub(crate) relaxed_devices: bool,
+    relaxed_run: bool,
     #[cfg(feature = "jit")]
     jit: Option<jit::JitEngine>,
 }
@@ -307,6 +309,8 @@ impl Cpu {
             instruction_cache_misses: 0,
             defer_register_sync: false,
             profile: None,
+            relaxed_devices: false,
+            relaxed_run: false,
             #[cfg(feature = "jit")]
             jit: None,
         };
@@ -315,6 +319,8 @@ impl Cpu {
     }
 
     pub fn reset(&mut self, pc: u32) {
+        self.bus.flush_relaxed_devices();
+        self.relaxed_run = false;
         self.reg = [0; 32];
         self.pc = pc;
         self.running = true;
@@ -651,11 +657,16 @@ impl Cpu {
         }
     }
 
-    // Shared by the interpreter and native blocks. Ordering is architectural:
-    // devices/DMA, IRQ inputs, register-block sync, then instruction execution.
+    // Shared by the interpreter and native blocks. Strict ordering is devices/DMA,
+    // IRQ inputs, register-block sync, then execution. Only cached-relaxed run()
+    // batches idle device progress; native JIT and direct ticks stay strict.
     fn begin_cached_cycle<const PROFILE: bool>(&mut self) -> bool {
         let device_start = Self::profile_start::<PROFILE>();
-        self.bus.tick_devices();
+        if self.relaxed_run {
+            self.bus.tick_relaxed_devices();
+        } else {
+            self.bus.tick_devices();
+        }
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
         self.irqc_number = irq_output.number;
@@ -1358,9 +1369,11 @@ impl Cpu {
                 let _ = self.write_reg(REG_FEATURES, CPU_FEATURES);
             }
             Instruction::Halt => {
+                self.bus.flush_relaxed_devices();
                 self.running = false;
             }
             Instruction::Iret => {
+                self.bus.flush_relaxed_devices();
                 if crate::devices::pec::pec::pec_trace_enabled() {
                     tracing::info!(
                         target: "pec_debug",
@@ -1608,6 +1621,7 @@ impl Cpu {
     }
 
     fn run_inner<const PROFILE: bool>(&mut self, max_cycles: usize) {
+        self.relaxed_run = self.relaxed_devices && !PROFILE;
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
@@ -1620,6 +1634,16 @@ impl Cpu {
                 jit.record_fallback_cycle();
             }
             self.tick_with_profile::<PROFILE>();
+            if self.relaxed_run && !self.running {
+                self.bus.flush_relaxed_devices();
+                let output = self.irq_controller.borrow().irq_output();
+                self.irqc_line = output.valid;
+                self.irqc_number = output.number;
+                self.refresh_irq_input();
+                if self.accept_pending_irq() {
+                    self.sync_register_block();
+                }
+            }
             if !self.running && !self.bus.has_pending_dma() {
                 let remaining = end_cycles - self.cycles;
                 if remaining != 0 {
@@ -1635,5 +1659,7 @@ impl Cpu {
                 }
             }
         }
+        self.bus.flush_relaxed_devices();
+        self.relaxed_run = false;
     }
 }

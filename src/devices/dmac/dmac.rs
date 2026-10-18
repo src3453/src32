@@ -241,6 +241,13 @@ impl Dmac {
                 .iter()
                 .any(|channel| channel.status & STATUS_BUSY != 0)
     }
+
+    pub(crate) fn can_batch_idle(&self) -> bool {
+        // Even a globally disabled busy channel may need abort processing.
+        self.channels
+            .iter()
+            .all(|channel| channel.status & STATUS_BUSY == 0)
+    }
     pub(crate) fn process_idc_abort_boundaries(&mut self) {
         for index in 0..CHANNEL_COUNT {
             let channel = &self.channels[index];

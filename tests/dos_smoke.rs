@@ -393,6 +393,20 @@ fn dos_jit_hex_returns_to_shell_at_default_cycles_per_frame() {
 }
 
 #[test]
+fn dos_relaxed_hex_returns_to_shell_at_default_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(
+        CYCLES_PER_FRAME as usize,
+        CpuKind::CachedRelaxed,
+        "hex-relaxed-default",
+    );
+}
+
+#[test]
+fn dos_relaxed_hex_returns_to_shell_at_low_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(800, CpuKind::CachedRelaxed, "hex-relaxed-slow");
+}
+
+#[test]
 fn dos_dir_columns_align_in_40_and_80_column_modes() {
     let root = temp_root("dir-columns");
     let hello = b"HELLO FROM DSFS\n";

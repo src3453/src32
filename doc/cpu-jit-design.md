@@ -1,5 +1,7 @@
 # Cranelift Dynarec 導入案
 
+関連する後続実験として `--cpu cached-relaxed` を追加した。Cached側で待機中のdevice処理を最大32 cyclesにまとめるモードで、JITの各命令同期契約は変更しない。[性能調査の結果](emulator-performance-plan.md#実験的cached-relaxedモード)を参照。
+
 2026-10-18。初期実装済み。以下に実装状況と設計方針を記録する。
 
 ## 初期実装の状況

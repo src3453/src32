@@ -2213,7 +2213,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 }
                 cpu = Some(
                     args.next()
-                        .ok_or("--cpu requires 'scalar', 'cached', 'jit' (feature required), or 'pipeline'")?
+                        .ok_or("--cpu requires 'scalar', 'cached', 'cached-relaxed', 'jit' (feature required), or 'pipeline'")?
                         .parse::<CpuKind>()?,
                 );
             }
@@ -2274,13 +2274,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }

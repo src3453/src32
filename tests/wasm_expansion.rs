@@ -447,6 +447,28 @@ fn halted_cpu_wakes_for_card_deadline_irq() {
     fs::remove_dir_all(dir).unwrap();
 }
 
+#[test]
+fn relaxed_cached_cpu_observes_expansion_deadline_irq() {
+    use cpt32::cpu_select::{AnyCpu, CpuKind};
+    for halt in [false, true] {
+        let dir = temporary_directory();
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        install_package(&mut bus, &dir, 0, IRQ_CARD, &[]);
+        let mut cpu = AnyCpu::new(CpuKind::CachedRelaxed, bus);
+        // HALT or an active branch loop, followed by the same card IRQ handler.
+        cpu.load_program(0, &if halt { 0xfc00_0000u32 } else { 0x2400_fffcu32 }.to_be_bytes());
+        cpu.write_mem_u8(IRQC_BASE + 5, 1 << 5);
+        cpu.write_mem_u32_be(0xffff_0114, 0x1020_002a);
+        cpu.write_mem_u32_be(0xffff_0118, 0xfc00_0000);
+        cpu.run(20);
+        assert_eq!(cpu.read_reg(1), 42);
+        assert!(!cpu.is_running());
+        assert_eq!(cpu.cycles(), 20);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
 fn generated_card_module(
     abi_version: i32,
     read_result_type: &str,

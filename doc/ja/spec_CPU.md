@@ -5,9 +5,10 @@ translation_of: ../spec_CPU.md
 
 # SRC32仕様
 
-Revision 2.6 (2026-10-18)
+Revision 2.7 (2026-10-18)
 
 # 変更履歴
+- 2.7 (2026-10-18): 待機中のデバイス処理をまとめる実験的な任意選択モード `cached-relaxed` を追加しました。ISAは変更しません。
 - 2.6 (2026-10-18): Cachedの命令意味・タイミングを基準にした、任意選択の実験的Cranelift JITを追加しました。ISAは変更しません。
 - 2.5 (2026-10-18): 書き込み整合性を持つ命令デコードキャッシュを使うCached Interpreterモードを追加しました。ISAは変更しません。
 - 2.4 (2026-10-15): 拡張p（小文字、パイプライン処理）をマイクロアーキテクチャ拡張として追加。[[doc/ja/spec_CPU_p|拡張p仕様]]を参照。ISAの変更はありません。パイプラインCPUは`CPU_FEATURES` bit 7（`0xBF`）を報告し、scalarおよびcached interpreterは`0x3F`を報告します。
@@ -32,6 +33,12 @@ Normal Modeでは固定長32ビット命令を使用し、拡張Sは16ビット�
 ## 1.1 CPUマイクロアーキテクチャ
 
 `--cpu scalar|cached|pipeline`で実行方式を選択できます。`config.yaml`の`cpu.microarchitecture`でも指定でき、既定はpipelineです。Cached Interpreterは、命令世代を公開するデバイスに対して1024エントリーの直接マップ型デコードキャッシュを使います。RAMの4 KiBページ内のbyteが変更されると世代が変わり、そのページ内のキャッシュ命令は再取得・再デコードされます。CPU store、デバッガー書き込み、DMA書き込みがこの無効化を行います。キャッシュヒットでは命令フェッチのバスアクセスを省くため、Scalar/Pipelineとバス調停タイミングが異なる場合があります。キャッシュ非対応デバイスは通常のfetch/decodeを続けます。Cachedは通常命令を1サイクル、MUL/MULHを3サイクル、DIV/DIVU/MODを16サイクルでcommitし、pipeline由来のhazardや分岐flush遅延はありません。
+
+### 実験的cached-relaxedタイミング
+
+`--cpu cached-relaxed` またはYAMLの `cpu.microarchitecture: cached-relaxed` で選択します。JIT featureは不要です。命令とCPUID（`0x3F`）はCachedと同じですが、待機中のデバイス更新を最大32 CPUサイクル単位にまとめます。RAM・cold fetchを含むバス読み書き、タイマーIRQ期限、HALT／IRET、`run` の予算終端で未処理サイクルを同期します。CPUのサイクル予算と乗除算の遅延は維持します。busyなDMAチャネル（全体disable中を含む）、動作中のIDCコマンド、拡張カードがある場合は毎サイクル処理に戻します。待機中のIDC内部時刻も経過分だけ進め、動作中のIDC更新やDMA調停をシステム時刻の加算だけで代用しません。
+
+このモードはホスト入力IRQの観測遅延と、待機中のバス調停履歴の変化を許容します。IRQ pendingの記録・ACK・入力レベル遷移と入力キューは維持し、既知のタイマー期限ではバッチを分割します。VSync／IRQ0は引き続きホストのフレームループから発生します。profilerと直接tick／デバッグの単命令実行は通常の毎サイクル処理を使うため、profilerでは一括処理の速度を測れません。既定はPipelineで、JITとは別の選択肢です。
 
 ## 1.2 実験的Cranelift JIT
 

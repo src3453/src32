@@ -29,7 +29,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--profile-cpu] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -44,6 +44,7 @@ fn main() {
     let mut music_stream = None;
     let mut frames = None;
     let mut profile_cpu = false;
+    let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
     let mut options = args.iter().skip(1);
     while let Some(option) = options.next() {
@@ -58,6 +59,7 @@ fn main() {
                 frames = Some(integer(options.next().expect("--frames requires N")) as usize)
             }
             "--profile-cpu" => profile_cpu = true,
+            "--skip-render-checks" => skip_render_checks = true,
             "--expect-mem-u8" => {
                 let (address, value) = options
                     .next()
@@ -74,6 +76,10 @@ fn main() {
         }
     }
     let image = fs::read(path).expect("failed to read program binary");
+    assert!(
+        !skip_render_checks || !(expect_sgc_overlay || expect_gp_noise_background),
+        "--skip-render-checks conflicts with explicit rendering expectations"
+    );
     let stream = music_stream
         .map(|path| read_music_stream(Path::new(path), image.len()).expect("invalid music stream"));
 
@@ -160,7 +166,14 @@ fn main() {
         "program did not halt (pc=0x{:08X})",
         cpu.pc()
     );
-    if allow_running && profile_cpu {
+    if skip_render_checks {
+        println!(
+            "EXECUTED: {path}; frames={frame_count}; cycles={}; pc=0x{:08X}; R1={result}; running={}",
+            cpu.cycles(),
+            cpu.pc(),
+            cpu.is_running()
+        );
+    } else if allow_running && profile_cpu {
         println!(
             "PROFILED: {path}; frames={frame_count}; cycles={}",
             cpu.cycles()

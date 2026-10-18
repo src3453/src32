@@ -85,6 +85,8 @@ pub struct Bus {
     cycle_clock: Rc<Cell<u64>>,
     expansion_devices: [Option<usize>; 8],
     has_expansion_cards: bool,
+    relaxed_cycles: u64,
+    relaxed_limit: u64,
 }
 
 impl Bus {
@@ -103,6 +105,8 @@ impl Bus {
             cycle_clock: Rc::new(Cell::new(0)),
             expansion_devices: [None; 8],
             has_expansion_cards: false,
+            relaxed_cycles: 0,
+            relaxed_limit: 0,
         }
     }
 
@@ -284,6 +288,39 @@ impl Bus {
         }
         self.refresh_device_irqs();
         self.service_dma_request(false);
+    }
+
+    /// Experimental idle-device batching. Active transfers and expansion cards
+    /// retain the ordinary cycle-by-cycle path. Bus accesses flush the batch.
+    pub(crate) fn tick_relaxed_devices(&mut self) {
+        if self.relaxed_cycles == 0 {
+            if self.has_expansion_cards
+                || self.has_pending_dma()
+                || self
+                    .dmac
+                    .as_ref()
+                    .is_some_and(|dmac| !dmac.borrow().can_batch_idle())
+            {
+                self.tick_devices();
+                return;
+            }
+            self.relaxed_limit = self.cycles_until_next_event().unwrap_or(32).clamp(1, 32);
+        }
+        self.relaxed_cycles += 1;
+        if self.relaxed_cycles >= self.relaxed_limit {
+            self.flush_relaxed_devices();
+        }
+    }
+
+    pub(crate) fn flush_relaxed_devices(&mut self) {
+        let cycles = std::mem::take(&mut self.relaxed_cycles);
+        if cycles != 0 {
+            // No IDC command/DMA can start without an intervening bus access.
+            if let Some(idc) = &self.idc {
+                idc.borrow_mut().advance_idle_cycles(cycles);
+            }
+            self.advance_system_cycles(cycles);
+        }
     }
 
     pub fn has_pending_dma(&self) -> bool {
@@ -586,6 +623,7 @@ impl Bus {
     }
 
     pub fn read_u8(&mut self, addr: u32) -> u8 {
+        self.flush_relaxed_devices();
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device(addr) {
             let value = device.read(offset);
@@ -623,6 +661,7 @@ impl Bus {
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
+        self.flush_relaxed_devices();
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device_mut(addr) {
             device.write(offset, value);
@@ -654,6 +693,7 @@ impl Bus {
 
     pub fn read_u32_be(&mut self, addr: u32) -> u32 {
         if Self::invalid_idc_u32_access(addr) {
+            self.flush_relaxed_devices();
             self.bus_error = true;
             return 0;
         }
@@ -666,6 +706,7 @@ impl Bus {
 
     pub fn write_u32_be(&mut self, addr: u32, value: u32) {
         if Self::invalid_idc_u32_access(addr) {
+            self.flush_relaxed_devices();
             self.bus_error = true;
             return;
         }
@@ -712,5 +753,53 @@ mod expansion_dma_boundary_tests {
             None
         );
         assert_eq!(Bus::expansion_slot_for_beat(0xB000_0000, 0xB000_0001), None);
+    }
+}
+
+#[cfg(test)]
+mod relaxed_device_tests {
+    use super::*;
+    use crate::devices::pec::timing::connect_pec_timer_rtc;
+
+    #[test]
+    fn relaxed_ticks_batch_but_bus_access_and_budget_flush_time() {
+        let mut bus = Bus::new();
+        crate::devices::ram::connect_ram(&mut bus);
+        for _ in 0..31 {
+            bus.tick_relaxed_devices();
+        }
+        assert_eq!(bus.system_cycles(), 0);
+        bus.tick_relaxed_devices();
+        assert_eq!(bus.system_cycles(), 32);
+        bus.tick_relaxed_devices();
+        bus.write_u8(0, 7);
+        assert_eq!(bus.system_cycles(), 33);
+        bus.tick_relaxed_devices();
+        assert_eq!(bus.read_u8(0), 7);
+        assert_eq!(bus.system_cycles(), 34);
+        bus.tick_relaxed_devices();
+        bus.flush_relaxed_devices();
+        assert_eq!(bus.system_cycles(), 35);
+    }
+
+    #[test]
+    fn relaxed_ticks_stop_at_timer_deadline_and_disable_for_cards() {
+        let mut bus = Bus::new();
+        connect_pec_timer_rtc(&mut bus);
+        let irq = crate::devices::irqc::irqc::connect_irqc(&mut bus);
+        bus.attach_irq_controller(Rc::clone(&irq));
+        bus.write_u32_be(0x8004_0184, 1);
+        bus.write_u32_be(0x8004_0410, 7);
+        bus.write_u32_be(0x8004_0400, 12);
+        for _ in 0..6 {
+            bus.tick_relaxed_devices();
+        }
+        assert_eq!(irq.borrow().pending(), 0);
+        bus.tick_relaxed_devices();
+        assert_eq!(bus.system_cycles(), 7);
+        assert_ne!(irq.borrow().pending() & (1 << 4), 0);
+        bus.has_expansion_cards = true;
+        bus.tick_relaxed_devices();
+        assert_eq!(bus.system_cycles(), 8);
     }
 }

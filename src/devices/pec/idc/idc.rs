@@ -960,6 +960,11 @@ impl Idc {
         self.active.is_some()
     }
 
+    pub(crate) fn advance_idle_cycles(&mut self, cycles: u64) {
+        assert!(self.active.is_none(), "cannot batch active IDC commands");
+        self.cycle = self.cycle.saturating_add(u128::from(cycles));
+    }
+
     fn read_data_byte(&mut self) -> u8 {
         let Some(active) = self.active.as_mut() else {
             return 0;

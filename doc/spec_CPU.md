@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 2.6 (2026-10-18)
+Revision 2.7 (2026-10-18)
 
 # Changelog
+- 2.7 (2026-10-18): Added experimental opt-in `cached-relaxed` idle-device batching; no ISA change.
 - 2.6 (2026-10-18): Added an opt-in experimental Cranelift JIT engine using
   Cached timing and instruction semantics; no ISA change.
 - 2.5 (2026-10-18): Added an optional Cached Interpreter mode with a
@@ -31,6 +32,26 @@ The goal is clarity and experimentation over micro-architectural complexity.
 ## 1.1 CPU microarchitectures
 
 `--cpu scalar|cached|pipeline` selects the execution engine; the same value may be set with `cpu.microarchitecture` in `config.yaml`. The pipeline remains the default. Cached interpretation uses a direct-mapped 1024-entry decode cache for devices that expose instruction generations. RAM generations change when bytes in a 4 KiB page are modified, so CPU stores, debugger writes, and DMA writes invalidate cached instructions in that page. Cache hits skip the instruction-fetch bus access; this can change bus arbitration relative to Scalar/Pipeline while leaving decoded instruction semantics unchanged. Non-cacheable devices continue through normal fetch and decode. Cached mode commits simple instructions in one cycle, MUL/MULH in three, and DIV/DIVU/MOD in sixteen; it has no pipeline hazards or branch-flush penalty.
+
+### Experimental cached-relaxed timing
+
+Select `--cpu cached-relaxed` or YAML `cpu.microarchitecture: cached-relaxed`
+without requiring the JIT feature. This uses Cached instructions and CPUID
+(`0x3F`), but batches idle device progression in groups of at most 32 CPU
+cycles. All bus reads/writes (including RAM and cold fetches), timer IRQ
+deadlines, HALT/IRET, and `run` budget exits flush deferred cycles. CPU cycle
+budgets and multiply/divide latency remain unchanged. DMA channels that are
+busy (even when globally disabled), active IDC commands, and any installed
+expansion card retain per-cycle device processing. Idle IDC time advances by
+the complete elapsed amount; batching must not substitute system-clock advance
+for active IDC ticks or DMA arbitration.
+
+This mode permits delayed host-input IRQ observation and altered idle bus
+arbitration history. IRQ pending latches, acknowledgments, and source-level
+transitions are retained; input queues are not discarded. Known timer deadlines
+still split batches. VSync/IRQ0 remains host-frame driven. Profiling and direct
+ticks/debug steps use ordinary per-cycle processing, so profiling does not
+measure the batched engine. Pipeline remains the default; JIT stays separate.
 
 ## 1.2 Experimental Cranelift JIT
 

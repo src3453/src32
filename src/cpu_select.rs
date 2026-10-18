@@ -17,6 +17,7 @@ use crate::cpu_pipeline::PipelineCpu;
 pub enum CpuKind {
     Scalar,
     Cached,
+    CachedRelaxed,
     Jit,
     #[default]
     Pipelined,
@@ -27,6 +28,7 @@ impl CpuKind {
         match self {
             CpuKind::Scalar => "scalar",
             CpuKind::Cached => "cached",
+            CpuKind::CachedRelaxed => "cached-relaxed",
             CpuKind::Jit => "jit",
             CpuKind::Pipelined => "pipeline",
         }
@@ -44,11 +46,12 @@ impl FromStr for CpuKind {
         match text.to_ascii_lowercase().as_str() {
             "scalar" => Ok(CpuKind::Scalar),
             "cached" => Ok(CpuKind::Cached),
+            "cached-relaxed" => Ok(CpuKind::CachedRelaxed),
             "jit" if cfg!(feature = "jit") => Ok(CpuKind::Jit),
             "jit" => Err("CPU JIT requires a build with --features jit".into()),
             "pipeline" | "pipelined" => Ok(CpuKind::Pipelined),
             _ => Err(format!(
-                "unknown CPU micro-architecture '{text}' (expected 'scalar', 'cached', 'jit' (feature required), or 'pipeline')"
+                "unknown CPU micro-architecture '{text}' (expected 'scalar', 'cached', 'cached-relaxed', 'jit' (feature required), or 'pipeline')"
             )),
         }
     }
@@ -104,7 +107,7 @@ pub fn split_cpu_arg(args: &[String]) -> Result<(Vec<String>, Option<CpuKind>), 
                 return Err("Duplicate --cpu".into());
             }
             let value = iter.next().ok_or(
-                "--cpu requires 'scalar', 'cached', 'jit' (feature required), or 'pipeline'",
+                "--cpu requires 'scalar', 'cached', 'cached-relaxed', 'jit' (feature required), or 'pipeline'",
             )?;
             selected = Some(value.parse::<CpuKind>()?);
         } else if let Some(value) = arg.strip_prefix("--cpu=") {
@@ -141,6 +144,11 @@ impl AnyCpu {
         match kind {
             CpuKind::Scalar => AnyCpu::Scalar(Cpu::new(bus)),
             CpuKind::Cached => AnyCpu::Cached(Cpu::new_cached(bus)),
+            CpuKind::CachedRelaxed => {
+                let mut cpu = Cpu::new_cached(bus);
+                cpu.relaxed_devices = true;
+                AnyCpu::Cached(cpu)
+            }
             CpuKind::Jit => {
                 #[cfg(feature = "jit")]
                 {
@@ -158,7 +166,13 @@ impl AnyCpu {
     pub fn kind(&self) -> CpuKind {
         match self {
             AnyCpu::Scalar(_) => CpuKind::Scalar,
-            AnyCpu::Cached(_) => CpuKind::Cached,
+            AnyCpu::Cached(cpu) => {
+                if cpu.relaxed_devices {
+                    CpuKind::CachedRelaxed
+                } else {
+                    CpuKind::Cached
+                }
+            }
             AnyCpu::Jit(_) => CpuKind::Jit,
             AnyCpu::Pipelined(_) => CpuKind::Pipelined,
         }

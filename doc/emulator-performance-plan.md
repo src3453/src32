@@ -63,3 +63,24 @@ Bus のデバイス構成別の差は各経路を同じ合成テストで比較�
 5. **変更を一つずつ評価する。** 同じゲスト、同じ release 設定、同じ CPU モード、同じサンプル数で前後を比較する。wall timeとstage shareに加え、guest architecture、cycles、IRQ、DMA、描画結果が一致する回帰確認を行い、実時間比とフレーム落ちで利用者への改善を判定する。
 
 次の計測は、3d_cubeをframeごとに区切ったstartup/steady-state比較、DOSのページ単位のDIR計測、同じROMでのGUI CPU-frame/render-submit時間、IRQ controllerとactive DMA/diskを含むBus構成を優先する。GPU側present経路と2 chip + IDC audioも別途測る。実ROMではFetch/Device/IRQが大きいが、これだけでユーザーが見るUI stallの最終原因とは断定せず、GUI frame profileとGPU側計測を合わせて修正順を決める。
+## 実験的cached-relaxedモード
+
+2026-10-18。`--cpu cached-relaxed` を追加した。待機中のデバイス更新を最大32サイクルにまとめるCached派生モードで、JITとは別に選択する。RAMを含むバスアクセス、既知のタイマーIRQ期限、HALT／IRET、`run` 終端で同期する。DMA busy／IDC active／拡張カードありでは従来処理を使う。単命令stepとprofilerは通常のCached処理に戻る。入力IRQの観測遅延と待機中のBMC調停履歴の違いを許容し、デバイスのIRQ記録や転送内容は維持する。
+
+同じWindows x64ホスト、release、profiler無効で比較した。倍率はCached時間÷relaxed時間。
+
+| 対象 | Cached | cached-relaxed | 倍率 |
+|---|---:|---:|---:|
+| 合成ALU＋branch、800,000 cycles | 80.902 ms | 16.595 ms | 4.875x |
+| 合成ALU＋RAM、800,000 cycles | 128.049 ms | 75.737 ms | 1.691x |
+| 作業ツリーのdos.wax、起動5 frames | 54.624 ms | 33.532 ms | 1.629x |
+| 現在の3d_cube.sol、起動10 frames | 982.097 ms | 365.282 ms | 2.689x |
+| 同cube、60 frames、描画完了＋HALT後の進行 | 1661.848 ms | 687.675 ms | 2.417x |
+
+合成比較は `cargo run --release --bin cpu_relaxed_bench -- 800000 9`、9 samplesの中央値。CPU作成・program load・1,024 cyclesのcache warmupは計測外。BMC／DMAC／PeC入力・timer／空IDCを接続し、active DMA／disk／expansionはない。実行順を交互にして同じcycle予算でregisters、PC、retired instructions、RAM結果を照合する。メモリアクセスでも同期するため、ALUだけのケースほどの改善は期待しない。
+
+実ゲストは `src32_testbench` のprocess起動込み、7 samplesの中央値、空configのdirectoryから起動し、1 frameは800,000 cycles。各sampleで実行順を交互にした。cubeは現在のsourceをsolc→asm（`--strip`）でraw binaryにした。DOS／cubeの起動途中には `--allow-running --frames N --skip-render-checks` を使い、PC・cycles・停止状態を照合した。DOSのR1も一致する。cubeはhost TRNGからnoise seedを取るため、R1の一致とbit単位の描画一致は要求していない。
+
+60-frame cubeは `--allow-running --frames 60 --expect-sgc-overlay --expect-gp-noise-background` で両モードともGP noise・VPU cube・白いSGC glyphの描画assertionを通過し、停止状態も一致した。これは初期化とHALT後のclock進行を含む測定であり、定常アニメーションのframe latencyではない。GUI／GPU／音声の実時間性能や入力体感は未測定。これらの結果からJITやactive disk／DMAの改善率は推定しない。
+
+回帰確認は専用CPUテスト（予算途中、乗算、MMIO時刻、timer IRQ、HALT／IRET、DMAによるcode変更とIRQ、profile／step／reset）、Bus batchingテスト、DOS HEX→Q→HELP→EXIT（800 cyclesと通常予算）、実WASMカードのactive loop／HALTからのIRQ復帰を含む。HALT後に追加でIRQを受理する経路ではCPU MMIOのPC/statusも同期しないと、次cycleでhandler位置を古い値に上書きするので注意する。

@@ -54,6 +54,10 @@ cargo run --release --bin cpt32 -- path/to/program.bin --profile-cpu
 
 エミュレーターは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU は `--cpu scalar`、Cached Interpreter は `--cpu cached` で選択します。`--cpu pipeline` でパイプラインを明示できます。`config.yaml` の `cpu.microarchitecture` でも指定でき、CLI が優先されます。
 
+実験的な高速モードは `cargo run --release --bin cpt32 -- dos.wax --cpu cached-relaxed` で試せます。YAML では `cpu.microarchitecture: cached-relaxed` を指定します。Cached の命令実行を使い、待機中のデバイス更新・入力IRQ確認を最大32サイクル単位にまとめます。バスアクセス（RAMを含む）、タイマーIRQ期限、HALT／IRET、`run` の終了で同期し、DMA／IDC転送中や拡張カードがある場合は毎サイクル処理に戻します。入力IRQの観測時刻と一部のバス調停状態は通常の Cached と異なるため、厳密なタイミング検証には通常モードを使ってください。VSync／IRQ0は引き続きホストのフレームループから発生します。`--profile-cpu` とデバッグの単命令実行では通常の毎サイクル処理に戻るため、速度比較は profiler 無効で行います。既定は引き続き Pipeline です。
+
+合成比較は `cargo run --release --bin cpu_relaxed_bench -- 800000 9` で実行できます。待機中のBMC／DMAC／PeC／timer／IDCを接続し、命令キャッシュを温めてから測定します。汎用ゲストや起動途中のheadless比較には `src32_testbench PROGRAM --allow-running --frames N --skip-render-checks --cpu cached-relaxed` が使えます。`--skip-render-checks` は描画assertionを省き、実行位置・R1・停止状態を報告します。停止条件と明示的なメモリ検査は維持します。[測定結果と制約](doc/emulator-performance-plan.md#実験的cached-relaxedモード)も参照してください。
+
 実験的な Cranelift JIT は `cargo run --release --features jit --bin cpt32 -- program.bin --cpu jit` で利用できます。同じ build なら YAML の `cpu.microarchitecture: jit` でも指定できます。Normal mode の整数演算・分岐などを最大16命令のブロックとしてコンパイルし、メモリアクセス・乗除算・Short mode・割り込み復帰などは Cached 経路で実行します。各サイクルのデバイス処理とコード変更の確認を維持する初期実装で、高速化は保証しません。`--profile-cpu` とデバッガーの単一ステップでは Cached 経路を使います。JIT feature がない build は `--cpu jit` をエラーにします。
 
 比較は `cargo run --release --features jit --bin cpu_jit_bench -- 400000 7` で実行できます。compile を含む cold 時間と、同じ CPU を継続実行する warm 時間を別々に表示し、Cached とレジスタ・PC・実行命令数・メモリ結果を照合します。[JIT の設計と制約](doc/cpu-jit-design.md)も参照してください。

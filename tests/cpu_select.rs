@@ -21,6 +21,7 @@ fn cpu_modes_parse_and_keep_pipeline_as_default() {
     assert_eq!("pipeline".parse::<CpuKind>().unwrap(), CpuKind::Pipelined);
     assert_eq!("scalar".parse::<CpuKind>().unwrap(), CpuKind::Scalar);
     assert_eq!("cached".parse::<CpuKind>().unwrap(), CpuKind::Cached);
+    assert_eq!("cached-relaxed".parse::<CpuKind>().unwrap(), CpuKind::CachedRelaxed);
     if cfg!(feature = "jit") {
         assert_eq!("jit".parse::<CpuKind>().unwrap(), CpuKind::Jit);
         assert_eq!(run_guest(CpuKind::Jit), run_guest(CpuKind::Cached));
