@@ -47,7 +47,11 @@ fn guest_driver() -> &'static [u8] {
             vec![
                 repo.join("tools/solc/solc.py"),
                 "compile".into(),
-                repo.join("sol/cpt32/sgu_music_driver.sol"),
+                // Match the existing launcher profile's source entry point.
+                // The root entry must include the canonical v1/v2 driver.
+                repo.join("sgu_music_driver.sol"),
+                "-O".into(),
+                "speed".into(),
                 "-o".into(),
                 asm.clone(),
             ],
@@ -96,7 +100,12 @@ fn boot_guest(stream: &[u8]) -> Guest {
             return (cpu, vdp);
         }
     }
-    panic!("SGUB guest did not validate and initialize within 50 million cycles");
+    panic!(
+        "SGUB guest did not validate and initialize within 50 million cycles: pc={:x}, running={}, valid={}",
+        cpu.pc(),
+        cpu.is_running(),
+        cpu.read_mem_u32_be(0x100000)
+    );
 }
 
 fn guest_vsync((cpu, vdp): &mut Guest) {
@@ -134,6 +143,29 @@ fn guest_driver_plays_real_furnace_v2_offsets_and_full_pcm_fill() {
     }
     guest_vsync(&mut guest);
     assert_eq!(guest.0.read_mem_u8(0x80020803), 255);
+}
+
+#[test]
+fn guest_driver_plays_furnace_pcm_export() {
+    let stream = include_bytes!("fixtures/furnace_pcm_v2.sgub");
+    let chips = std::array::from_fn(|_| Rc::new(RefCell::new(S3w2Sound::new())));
+    let mut reference = StreamPlayer::from_bytes(stream).unwrap();
+    let mut guest = boot_guest(stream);
+    for frame in 0..8 {
+        reference.advance_vsync(&chips).unwrap();
+        guest_vsync(&mut guest);
+        for chip in 0..2 {
+            for addr in 0x800..=0x8ff {
+                assert_eq!(
+                    guest
+                        .0
+                        .read_mem_u8(0x80020000 + chip as u32 * 0x1000 + addr),
+                    chips[chip].borrow_mut().read_register(addr),
+                    "frame {frame}, chip {chip}, register {addr:x}"
+                );
+            }
+        }
+    }
 }
 
 #[test]
