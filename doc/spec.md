@@ -387,8 +387,8 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 `Host frame work by stage` とCPU内部のFetch/Decode/Execute/Memory/Commit/Otherは `--profile-cpu` 指定時だけ計測する。このオプションは `--debug-gui` を含み、Performanceウィンドウを起動時に開く。通常の `--debug-gui` では、追加のCPU/フレーム内訳計測は行わない。フレーム内訳はVDP tick/VSync IRQ、CPU実行、Video+ImGuiのCPU側描画送信、音声合成、音声キュー投入を最新フレームと直近120フレーム平均で表示する。CPU内訳はDevice/IRQ、Fetch、Decode、Execute、Memory、Commit、Otherのホスト時間を集計し、各段階の比率は測定されたCPU段階時間合計に対する割合である。Cached InterpreterはFetch内で命令cache lookupとdecodeも行う。描画の値はCPU側送信時間であり、GPU実行時間、VSync待ち、event-loop idleを含まない。計測自体の影響でCPUは遅くなるため、絶対性能値ではなく処理段階の相対比較に使う。
 デバッグ GUI 有効時は ImGui のメインメニューバーが画面上部に描画されるため、ゲーム画面はメニューバーの高さ分だけ下にずらして表示し、メニューと重ならないようにする。マウス座標からゲスト座標への変換も同じずらし量を使う。
 
-`Windows > Debug Controls` の `Run CPU (Realtime)` チェックボックス、および Pause / Run / Step ボタンは、エミュレーション全体の実行可否（`DebugUiState::running`）を制御する。Step 系ボタンは実行を停止した状態で少量だけ進めるため、ステップ後は Run で再開する必要がある。
-`Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止する。ゲストRAMの内容は保持する。
+`Windows > Debug Controls` はCPU状態、PC、命令モード、合計サイクル数、合計実行命令数を表示する。`Run CPU (Realtime)` チェックボックスと Pause / Run / Step ボタンはエミュレーション全体の実行可否（`DebugUiState::running`）を制御する。Step 系ボタンは実行を停止した状態で少量だけ進めるため、ステップ後は Run で再開する必要がある。
+`Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、CPUの総サイクル数・稼働サイクル数・実行命令数を0にし、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止する。ゲストRAMとバスのシステム時刻は保持する。
 
 ここは以前ドキュメントに書かれておらず、あいまいだった点を明記する:
 

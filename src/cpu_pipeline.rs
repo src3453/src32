@@ -322,6 +322,9 @@ impl PipelineCpu {
         self.fetch_pc = pc;
         self.fetch_mode = InstructionMode::Normal;
         self.running = true;
+        self.cycles = 0;
+        self.running_cycles = 0;
+        self.instructions_executed = 0;
         self.epc = 0;
         self.irq_return_mode = InstructionMode::Normal;
         self.cause = 0;

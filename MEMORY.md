@@ -563,9 +563,11 @@
 - `dos.sol` の `MODE 40` / `MODE 80` は `pcg.col40` / `pcg.col80` を呼び、画面を消去して選択幅を表示する。コマンドは `shell.dos_dispatch`、ヘルプ／起動画面も更新する。
 - REPL prompt はドライブ番号の後に `> `（スペース1個）。`tests/dos_smoke.rs` は両モード切替後の確認表示と `0> ` をPCG text planeで検査する。
 
-## デバッグ GUI の Reset と IRQ 状態 (2026-10-17)
-- `Debug Controls > Reset` は `AnyCpu::reset(0)` を呼び、実行を一時停止して未実行ステップを破棄する。通常のゲストRAMは保持される（GUIの回帰テストでアドレス `0x100` の値を確認）。
-- scalar / pipeline CPU の reset は CPU 内IRQラッチに加え共有 `IrqController` の pending・enable・source_level を消去する。カード reset が IRQ 状態を再駆動しないよう、controller の reset は `bus.reset_expansion_cards()` の後に行う。
+## Debug GUI Reset counters and IRQ state (2026-10-18)
+- `Debug Controls` displays `cpu.cycles()` and `cpu.instructions_executed()` as total cycles and total executed instructions. `Reset` invokes `AnyCpu::reset(0)`, pauses execution, and drops queued steps.
+- Scalar/cached and pipeline reset `cycles`, `running_cycles`, and `instructions_executed` to zero. Bus system time and guest RAM remain unchanged; IRQ controller pending/enable/source levels are cleared after resetting expansion cards so cards cannot reassert stale IRQ state.
+- Regression tests: `tests/cpu_select.rs::cpu_reset_clears_cycle_and_instruction_totals_for_all_modes` covers Scalar/Cached/Pipeline, and `src/main.rs::debug_reset_restarts_cpu_paused_without_clearing_ram` covers the Debug Controls reset path.
+- Verification: `cargo test --test cpu_select` passed (11); `cargo test --bin cpt32 debug_reset_restarts_cpu_paused_without_clearing_ram` passed; focused `rustfmt --check` passed. Native Debug Controls window was not opened for visual inspection.
 
 ## 低速 DOS の PeC/IRQC 手動プローブ (2026-10-17)
 - `--debug-gui` の `Debug Controls > Cycles / frame` を 800 にすると、画面上で設定値 800 を確認できる。DOS の `HELP` 実行中は Performance 表示が `CPU utilization: 100.0% (800 / 800 running cycles per VSync)`、`Instructions this VSync: 693` となった。

@@ -279,6 +279,9 @@ impl Cpu {
         self.reg = [0; 32];
         self.pc = pc;
         self.running = true;
+        self.cycles = 0;
+        self.running_cycles = 0;
+        self.instructions_executed = 0;
         self.instr_mode = InstructionMode::Normal;
         self.epc = 0;
         self.irq_return_mode = InstructionMode::Normal;

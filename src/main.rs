@@ -1520,6 +1520,10 @@ impl DebugUiState {
                 ui.text(format!("PC: 0x{:08X}", cpu.pc()));
                 ui.text(format!("Mode: {:?}", cpu.instruction_mode()));
                 ui.text(format!("Total cycles: {}", cpu.cycles()));
+                ui.text(format!(
+                    "Total instructions executed: {}",
+                    cpu.instructions_executed()
+                ));
 
                 for base in (0..32).step_by(4) {
                     ui.text(format!(
@@ -2313,12 +2317,18 @@ mod input_tests {
         bus.write_u8(0x100, 0xA5);
         let mut cpu = AnyCpu::new(CpuKind::Scalar, bus);
         cpu.set_pc(0x40);
+        cpu.run(12);
+        assert!(cpu.cycles() > 0);
+        assert!(cpu.instructions_executed() > 0);
         let mut state = DebugUiState::new(false);
         state.queued_steps = 7;
 
         state.reset_cpu(&mut cpu);
 
         assert_eq!(cpu.pc(), 0);
+        assert_eq!(cpu.cycles(), 0);
+        assert_eq!(cpu.running_cycles(), 0);
+        assert_eq!(cpu.instructions_executed(), 0);
         assert_eq!(cpu.read_mem_u8(0x100), 0xA5);
         assert!(!state.running);
         assert_eq!(state.queued_steps, 0);

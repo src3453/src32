@@ -291,3 +291,22 @@ fn cpu_stage_profile_is_opt_in_and_preserves_all_microarchitectures() {
         assert!(next_profile.total().is_zero(), "{kind:?}");
     }
 }
+
+#[test]
+fn cpu_reset_clears_cycle_and_instruction_totals_for_all_modes() {
+    for kind in [CpuKind::Scalar, CpuKind::Cached, CpuKind::Pipelined] {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        let mut cpu = AnyCpu::new(kind, bus);
+        cpu.load_program(0, &[0; 256]);
+        cpu.run(40);
+
+        assert!(cpu.cycles() > 0, "{kind:?}");
+        assert!(cpu.running_cycles() > 0, "{kind:?}");
+        assert!(cpu.instructions_executed() > 0, "{kind:?}");
+        cpu.reset(0);
+        assert_eq!(cpu.cycles(), 0, "{kind:?}");
+        assert_eq!(cpu.running_cycles(), 0, "{kind:?}");
+        assert_eq!(cpu.instructions_executed(), 0, "{kind:?}");
+    }
+}
