@@ -241,6 +241,36 @@ fn native_irq_iret_and_debugger_register_sync_match_cached() {
 }
 
 #[test]
+fn native_blocked_cpu_batches_idle_devices_but_observes_timer_irq_deadline() {
+    use cpt32::devices::pec::timing::connect_pec_timer_rtc;
+    fn machine(kind: CpuKind) -> AnyCpu {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        connect_pec_timer_rtc(&mut bus);
+        let mut cpu = AnyCpu::new(kind, bus);
+        // Increment R1 in a native-eligible loop. IRQ4 increments R2 and IRETs.
+        let words = [i(4, 1, 1, 1), i(9, 0, 0, -8)];
+        let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+        cpu.load_program(0, &image);
+        cpu
+    }
+    let mut jit = machine(CpuKind::Jit);
+    assert_eq!(jit.kind(), CpuKind::Jit);
+    jit.write_mem_u32_be(0xffff_0110, i(4, 2, 2, 1));
+    jit.write_mem_u32_be(0xffff_0114, 0x8000_0000); // IRET
+    jit.write_mem_u8(0xffff_0045, 1 << 4);
+    jit.write_mem_u32_be(0x8004_0184, 1);
+    jit.write_mem_u32_be(0x8004_0410, 73);
+    jit.write_mem_u32_be(0x8004_0400, 12);
+    jit.run(500);
+    native_ran(&jit);
+    assert_eq!(jit.irq_cause(), 4);
+    assert!(jit.irq_enabled());
+    assert!(jit.read_reg(1) > 0);
+    assert_eq!(jit.read_reg(2), 1);
+}
+
+#[test]
 fn profiling_and_debug_steps_remain_cached_and_observable() {
     let words = [i(0x04, 1, 1, 1), i(0x09, 0, 0, -8)];
     let mut cached = boot(CpuKind::Cached, 0, &words);
@@ -374,4 +404,91 @@ fn long_cold_paths_do_not_evict_hot_native_blocks() {
     assert_eq!(after.cache_resets, before.cache_resets);
     assert_eq!(after.compilations, before.compilations);
     assert_eq!(after.native_instructions, before.native_instructions + 16);
+}
+
+#[test]
+fn idle_native_batches_preserve_prefix_budgets_mmio_and_late_code_changes() {
+    let mut words = vec![i(4, 1, 1, 1); 15];
+    words.push(i(9, 0, 0, -64));
+    // Exercise an unaligned instruction crossing a page, every possible prefix
+    // budget, and code replacement late enough to follow a multi-instruction prefix.
+    for base in [0, 4094] {
+        let mut cached = boot(CpuKind::Cached, base, &words);
+        let mut jit = boot(CpuKind::Jit, base, &words);
+        cached.run(4096);
+        jit.run(4096);
+        same(&cached, &jit);
+        let stats = jit.jit_stats().unwrap();
+        assert!(
+            stats.native_batches > 0 && stats.batched_instructions > 1000,
+            "{stats:?}"
+        );
+        for budget in 1..=65 {
+            cached.run(budget);
+            jit.run(budget);
+            same(&cached, &jit);
+            assert_eq!(jit.read_mem_u32_be(0xffff_0280), jit.pc());
+            assert_eq!(jit.read_mem_u32_be(0xffff_0204), jit.read_reg(1));
+        }
+        let before = jit.jit_stats().unwrap().invalidations;
+        for cpu in [&mut cached, &mut jit] {
+            cpu.write_mem_u32_be(base + 40, i(4, 1, 1, 9));
+            cpu.set_pc(base);
+            cpu.run(128);
+        }
+        same(&cached, &jit);
+        assert!(jit.jit_stats().unwrap().invalidations > before);
+    }
+}
+
+#[test]
+fn idle_native_batches_stop_before_every_timer_deadline_and_pending_external_irq() {
+    use cpt32::devices::pec::timing::connect_pec_timer_rtc;
+    fn machine(kind: CpuKind) -> AnyCpu {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        connect_pec_timer_rtc(&mut bus);
+        let mut cpu = AnyCpu::new(kind, bus);
+        let mut words = vec![i(4, 1, 1, 1); 15];
+        words.push(i(9, 0, 0, -64));
+        cpu.load_program(
+            0,
+            &words
+                .iter()
+                .flat_map(|w| w.to_be_bytes())
+                .collect::<Vec<_>>(),
+        );
+        cpu.write_mem_u32_be(0xffff_0110, i(4, 2, 2, 1));
+        cpu.write_mem_u32_be(0xffff_0114, 0x8000_0000);
+        cpu.write_mem_u32_be(0xffff_010c, 0x8000_0000);
+        cpu.run(4096);
+        cpu
+    }
+    for deadline in 1..=65 {
+        let mut cached = machine(CpuKind::Cached);
+        let mut jit = machine(CpuKind::Jit);
+        assert!(jit.jit_stats().unwrap().native_batches > 0);
+        for cpu in [&mut cached, &mut jit] {
+            cpu.write_mem_u8(0xffff_0045, 1 << 4);
+            cpu.write_mem_u32_be(0x8004_0184, 1);
+            cpu.write_mem_u32_be(0x8004_0410, deadline);
+            cpu.write_mem_u32_be(0x8004_0400, 12);
+            cpu.run(deadline as usize);
+        }
+        same(&cached, &jit);
+        assert_eq!(jit.irq_cause(), 4);
+        for cpu in [&mut cached, &mut jit] {
+            cpu.run(128);
+            // Mask the still-latched timer source and sample its low level
+            // before creating a fresh external edge (CPU IRQ is edge-triggered).
+            cpu.write_mem_u8(0xffff_0045, 0);
+            cpu.run(1);
+            cpu.set_irq_input(true, 3);
+            cpu.run(16);
+            cpu.set_irq_input(false, 3);
+        }
+        same(&cached, &jit);
+        assert_eq!(jit.read_reg(2), 1);
+        assert_eq!(jit.irq_cause(), 3);
+    }
 }

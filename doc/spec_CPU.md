@@ -1,7 +1,9 @@
 # SRC32 Specification
-Revision 2.7 (2026-10-18)
+Revision 2.9 (2026-10-18)
 
 # Changelog
+- 2.9 (2026-10-18): JIT batches validated warm native instructions inside idle-device windows; no ISA change.
+- 2.8 (2026-10-18): JIT also uses bounded idle-device batching; no ISA change.
 - 2.7 (2026-10-18): Added experimental opt-in `cached-relaxed` idle-device batching; no ISA change.
 - 2.6 (2026-10-18): Added an opt-in experimental Cranelift JIT engine using
   Cached timing and instruction semantics; no ISA change.
@@ -51,7 +53,9 @@ arbitration history. IRQ pending latches, acknowledgments, and source-level
 transitions are retained; input queues are not discarded. Known timer deadlines
 still split batches. VSync/IRQ0 remains host-frame driven. Profiling and direct
 ticks/debug steps use ordinary per-cycle processing, so profiling does not
-measure the batched engine. Pipeline remains the default; JIT stays separate.
+measure the batched engine. JIT enables the same idle-device batching while
+retaining its per-instruction native-code validation and CPU budget checks.
+Pipeline remains the default.
 
 ## 1.2 Experimental Cranelift JIT
 
@@ -65,25 +69,40 @@ After 16 dispatch visits, supported Normal-mode integer ALU, half-immediate,
 CPUID, and branch/call/return operations are compiled into native blocks of at
 most 16 instructions. Memory, multiply/divide, Short mode, mode transitions,
 HALT, IRET, and non-previewable instruction memory use Cached execution.
-Only memory exposing an explicit side-effect-free preview and generation
-tracking is previewed. Each executed instruction uses the Cached fetch path
+Single-instruction blocks remain interpreted because native dispatch costs
+outweigh their arithmetic work. Only memory exposing an explicit side-effect-free preview and generation
+tracking is previewed. The conservative native path uses Cached fetch
 after device/DMA progress; its validated decoded identity must match the compiled
 instruction. A mismatch executes the actual instruction in Cached mode and
 invalidates the native block. This preserves cold-fetch bus effects and covers
 RAM changes from CPU stores, DMA, debugger writes, and program loading, including
 page crossings and modifications during a block.
 
-Native code never spans an unchecked cycle boundary. IRQ sampling, register
-MMIO synchronization, VSync from the host frame loop, and exact `run` budgets
-are retained. Single stepping and `--profile-cpu` use Cached execution rather
-than native blocks; profiling therefore describes the fallback engine.
+At 128 dispatch visits a second native variant is compiled for sustained hot
+blocks. Within a bus-free idle window, it executes a validated
+prefix of at most 16 warm instructions without per-instruction Rust calls.
+All instructions must already hit the decode cache with matching identity and
+both endpoint generations. Cold fetches and changed code use the conservative
+path. The window ends BEFORE the next device update or known timer deadline,
+with no active DMA/IDC or installed expansion cards. Pending enabled CPU IRQs
+also prohibit batching. No device or CPU store can change code or register MMIO
+inside that window; CPU IRQ sampling and register synchronization are shared
+at its boundaries. Exact prefix cycle budgets and decode-cache hit counts are
+retained. Idle device progression still batches up to 32 cycles using the
+experimental `cached-relaxed` policy. MMIO, timer deadlines, active DMA/IDC,
+expansion cards, HALT/IRET, and run-budget exit force synchronization.
+VSync remains host-frame driven. Single stepping and `--profile-cpu` use Cached
+execution and strict per-cycle device updates; profiling therefore describes
+the fallback engine rather than batched native execution.
 Compilation errors fall back to Cached and are counted/logged. Dispatch entries
 and accumulated native definitions are bounded at 1024 each. Cold uncompiled
 entries are pruned first; if compiled/failed entries still fill dispatch, or
-native definitions reach the limit, the module is reset only after native
+native block definitions reach the limit (each can own conservative and batch
+functions), the module is reset only after native
 execution returns. CPU reset also
 clears native dispatch and releases generated code. `jit_stats()` reports
-compilation time/count, native instructions, fallback cycles, invalidations,
+compilation time/count, second-tier compilation count, native instructions,
+native batches and batched instructions, fallback cycles, invalidations,
 cache resets, active blocks, and live native instruction bytes (excluding
 allocator padding and metadata). JIT counters are cumulative across CPU reset,
 while active block/code-byte counts describe the current cache.

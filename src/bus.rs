@@ -312,6 +312,35 @@ impl Bus {
         }
     }
 
+    /// Cycles that cannot cause device progress, IRQ changes, or DMA writes.
+    /// Leave the deadline cycle to the ordinary per-instruction path. A batch
+    /// must contain no bus accesses, and may only be reserved by exclusive CPU run.
+    #[cfg(feature = "jit")]
+    pub(crate) fn native_idle_budget(&self) -> u64 {
+        if self.relaxed_cycles != 0 {
+            return self.relaxed_limit.saturating_sub(self.relaxed_cycles + 1);
+        }
+        if self.has_expansion_cards
+            || self.has_pending_dma()
+            || self
+                .dmac
+                .as_ref()
+                .is_some_and(|dmac| !dmac.borrow().can_batch_idle())
+        {
+            return 0;
+        }
+        self.cycles_until_next_event().unwrap_or(32).clamp(1, 32) - 1
+    }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn defer_native_idle_cycles(&mut self, cycles: u64) {
+        debug_assert!(cycles <= self.native_idle_budget());
+        if self.relaxed_cycles == 0 {
+            self.relaxed_limit = self.cycles_until_next_event().unwrap_or(32).clamp(1, 32);
+        }
+        self.relaxed_cycles += cycles;
+    }
+
     pub(crate) fn flush_relaxed_devices(&mut self) {
         let cycles = std::mem::take(&mut self.relaxed_cycles);
         if cycles != 0 {

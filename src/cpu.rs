@@ -17,6 +17,10 @@ mod jit;
 /// JIT compilation and execution counters; compile time is included in run time.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct JitStats {
+    /// Second-tier pure native variants (included in compile_time/code bytes).
+    pub batch_compilations: u64,
+    pub native_batches: u64,
+    pub batched_instructions: u64,
     pub compilations: u64,
     pub compile_time: Duration,
     pub compile_failures: u64,
@@ -259,6 +263,10 @@ impl Cpu {
     #[cfg(feature = "jit")]
     pub(crate) fn new_jit(bus: Bus) -> Self {
         let mut cpu = Self::new_cached(bus);
+        // Native blocks use the same bounded idle-device batching as the
+        // experimental relaxed Cached engine. Pure native batches fit entirely
+        // inside bus-free windows; other native execution validates each cycle.
+        cpu.relaxed_devices = true;
         cpu.jit = Some(jit::JitEngine::new());
         cpu
     }
@@ -658,8 +666,8 @@ impl Cpu {
     }
 
     // Shared by the interpreter and native blocks. Strict ordering is devices/DMA,
-    // IRQ inputs, register-block sync, then execution. Only cached-relaxed run()
-    // batches idle device progress; native JIT and direct ticks stay strict.
+    // IRQ inputs, register-block sync, then execution. Cached-relaxed and JIT
+    // run() batch idle device progress; direct ticks stay strict.
     fn begin_cached_cycle<const PROFILE: bool>(&mut self) -> bool {
         let device_start = Self::profile_start::<PROFILE>();
         if self.relaxed_run {
@@ -1626,7 +1634,13 @@ impl Cpu {
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
             #[cfg(feature = "jit")]
-            if !PROFILE && self.jit.is_some() && self.run_jit_block(end_cycles - self.cycles) {
+            if !PROFILE
+                && self.jit.is_some()
+                && self.running
+                && self.state == CpuState::Fetch
+                && self.instr_mode == InstructionMode::Normal
+                && self.run_jit_block(end_cycles - self.cycles)
+            {
                 continue;
             }
             #[cfg(feature = "jit")]

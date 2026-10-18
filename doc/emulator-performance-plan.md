@@ -1,5 +1,23 @@
 # エミュレータ性能調査と改善計画
 
+## JITの追加改善（2026-10-18）
+
+待機device batching導入後のJITから、bus-free区間のnative命令を最大16個まとめ、Rust helper／CPU register同期の往復を削減した。cold fetch、code変更、DMA／IDC／拡張カード、IRQ pendingとtimer期限には保守的処理を残す。通常nativeは16 visits、一括用は128 visitsで段階的にcompileし、1命令blockは解釈実行する。Short modeや乗除算待ちのJIT呼出しも省いた。追加の精度緩和は行っていない。
+
+変更前JITからの比較（同一Windowsホスト、release、profilerなし）:
+
+| 対象 | 変更前 | 変更後 | 解釈 |
+|---|---:|---:|---|
+| 合成ALU、warm 800k cycles | 19.099 ms | 11.877 ms | 約1.61倍 |
+| 合成ALU＋MUL＋memory、warm 800k cycles | 37.705 ms | 32.318 ms | 約1.17倍 |
+| DOS boot、5 frames | 53.791 ms | 54.442 ms | ほぼ横ばい |
+| cube startup、10 frames | 458.432 ms | 434.584 ms | 約5%短縮 |
+| cube完了、60 frames | 926.754 ms | 867.300 ms | 約6%短縮 |
+
+合成は9 samples、guestは7 samplesの中央値。guestは保存した変更前exeと変更後exe、cached-relaxedの実行順を巡回し、process起動込み。cubeはhost TRNGのR1以外の実行状態と各方式の描画assertionを確認した。60-frameはHALT後を含む。GUI/GPUは未測定、ホスト負荷による分散も残る。実ゲストのcached-relaxedはDOS 34.085 ms、cube 372.873 / 764.259 msで依然JITより速い。
+
+最終cube smokeのnative 1,795,618命令／fallback 11,136,733 cyclesが示す通り、残る改善対象はShort mode・memory・乗除算のfallbackとdispatch。通常Cachedに対する倍率だけではJIT固有の効果を判断できないため、`cpu_jit_bench`はcached-relaxed比較と、待機platform deviceを付ける`--platform`を追加した。条件・安全な一括実行の根拠・検証結果は[cpu-jit-design.md](cpu-jit-design.md#jit往復削減と段階的compile)を参照。以下はそれ以前の調査記録。
+
 ## 今回の計測
 
 Windows の同一ホストで release build を使い、中央値を比較した。数値はこのホストと今回のゲストに限る。
@@ -65,7 +83,17 @@ Bus のデバイス構成別の差は各経路を同じ合成テストで比較�
 次の計測は、3d_cubeをframeごとに区切ったstartup/steady-state比較、DOSのページ単位のDIR計測、同じROMでのGUI CPU-frame/render-submit時間、IRQ controllerとactive DMA/diskを含むBus構成を優先する。GPU側present経路と2 chip + IDC audioも別途測る。実ROMではFetch/Device/IRQが大きいが、これだけでユーザーが見るUI stallの最終原因とは断定せず、GUI frame profileとGPU側計測を合わせて修正順を決める。
 ## 実験的cached-relaxedモード
 
-2026-10-18。`--cpu cached-relaxed` を追加した。待機中のデバイス更新を最大32サイクルにまとめるCached派生モードで、JITとは別に選択する。RAMを含むバスアクセス、既知のタイマーIRQ期限、HALT／IRET、`run` 終端で同期する。DMA busy／IDC active／拡張カードありでは従来処理を使う。単命令stepとprofilerは通常のCached処理に戻る。入力IRQの観測遅延と待機中のBMC調停履歴の違いを許容し、デバイスのIRQ記録や転送内容は維持する。
+JITも同じ一括処理を自動で使う。profiler無効、JIT feature付きの同一release buildで、process起動込み7-sample medianを再計測した。倍率は通常Cached時間 / 対象モード時間。
+
+| 対象 | Cached | cached-relaxed | JIT | JIT倍率 |
+|---|---:|---:|---:|---:|
+| DOS起動、5 frames | 59.950 ms | 37.092 ms | 61.639 ms | 0.973x |
+| cube起動、10 frames | 978.480 ms | 367.928 ms | 449.574 ms | 2.176x |
+| cube描画完了、60 frames | 1671.373 ms | 712.581 ms | 867.408 ms | 1.927x |
+
+この同一buildではJITは通常Cachedよりcubeで速いが、cached-relaxed単体よりcube起動で約22%、60 framesで約22%遅い。DOSではJITが通常Cachedより約3%遅い。したがってJITに一括処理を接続したことと、JITが最速であることは別の結果である。CPU JIT合成ベンチ (`cargo run --release --features jit --bin cpu_jit_bench -- 800000 9`) は、ALU＋branch warmでCached 87.088 ms / JIT 22.456 ms（3.878x）、ALU＋MUL＋memory warmで82.822 / 40.355 ms（2.052x）。cold compileも別に出力する。
+
+2026-10-18。`--cpu cached-relaxed` を追加した。待機中のデバイス更新を最大32サイクルにまとめるCached派生モードで、JITも同じ一括処理を使う。RAMを含むバスアクセス、既知のタイマーIRQ期限、HALT／IRET、`run` 終端で同期する。DMA busy／IDC active／拡張カードありでは従来処理を使う。単命令stepとprofilerは通常のCached処理に戻る。入力IRQの観測遅延と待機中のBMC調停履歴の違いを許容し、デバイスのIRQ記録や転送内容は維持する。
 
 同じWindows x64ホスト、release、profiler無効で比較した。倍率はCached時間÷relaxed時間。
 
@@ -81,6 +109,6 @@ Bus のデバイス構成別の差は各経路を同じ合成テストで比較�
 
 実ゲストは `src32_testbench` のprocess起動込み、7 samplesの中央値、空configのdirectoryから起動し、1 frameは800,000 cycles。各sampleで実行順を交互にした。cubeは現在のsourceをsolc→asm（`--strip`）でraw binaryにした。DOS／cubeの起動途中には `--allow-running --frames N --skip-render-checks` を使い、PC・cycles・停止状態を照合した。DOSのR1も一致する。cubeはhost TRNGからnoise seedを取るため、R1の一致とbit単位の描画一致は要求していない。
 
-60-frame cubeは `--allow-running --frames 60 --expect-sgc-overlay --expect-gp-noise-background` で両モードともGP noise・VPU cube・白いSGC glyphの描画assertionを通過し、停止状態も一致した。これは初期化とHALT後のclock進行を含む測定であり、定常アニメーションのframe latencyではない。GUI／GPU／音声の実時間性能や入力体感は未測定。これらの結果からJITやactive disk／DMAの改善率は推定しない。
+60-frame cubeは `--allow-running --frames 60 --expect-sgc-overlay --expect-gp-noise-background` でCached・cached-relaxed・JITの3方式がGP noise・VPU cube・白いSGC glyphの描画assertionを通過し、実行停止状態も一致した。これは初期化とHALT後のclock進行を含む測定であり、定常アニメーションのframe latencyではない。GUI／GPU／音声の実時間性能や入力体感は未測定。active disk／DMAの改善率もここからは推定しない。
 
 回帰確認は専用CPUテスト（予算途中、乗算、MMIO時刻、timer IRQ、HALT／IRET、DMAによるcode変更とIRQ、profile／step／reset）、Bus batchingテスト、DOS HEX→Q→HELP→EXIT（800 cyclesと通常予算）、実WASMカードのactive loop／HALTからのIRQ復帰を含む。HALT後に追加でIRQを受理する経路ではCPU MMIOのPC/statusも同期しないと、次cycleでhandler位置を古い値に上書きするので注意する。

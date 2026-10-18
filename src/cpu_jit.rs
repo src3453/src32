@@ -1,5 +1,5 @@
-//! Conservative native blocks. Rust owns every cycle boundary; generated code
-//! only accesses the explicit [u32; 32] register array between those boundaries.
+//! Native blocks with a conservative per-cycle path and a bus-free idle path.
+//! Generated code only accesses the explicit [u32; 32] register array.
 use super::*;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value, condcodes::IntCC, types};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
@@ -12,8 +12,17 @@ use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 const MAX_INSTRUCTIONS: usize = 16;
 const MAX_BLOCKS: usize = 1024;
 const HOT_THRESHOLD: u32 = 16;
+const BATCH_THRESHOLD: u32 = 128;
 
 type NativeBlock = unsafe extern "C" fn(*mut Runtime, u64);
+type NativeBatch = unsafe extern "C" fn(*mut u32, u32) -> u32;
+
+#[derive(Clone, Copy)]
+struct NativeFunctions {
+    strict: NativeBlock,
+    batch: Option<NativeBatch>,
+    serial: usize,
+}
 
 #[derive(Clone, Copy)]
 struct BlockInstruction {
@@ -24,7 +33,7 @@ struct BlockInstruction {
 struct Entry {
     instructions: Box<[BlockInstruction]>,
     visits: u32,
-    function: Option<NativeBlock>,
+    function: Option<NativeFunctions>,
     failed: bool,
     invalid: bool,
 }
@@ -101,7 +110,11 @@ impl JitEngine {
         self.stats.fallback_cycles += 1;
     }
 
-    fn lookup(&mut self, bus: &Bus, pc: u32) -> Option<(NativeBlock, *const BlockInstruction)> {
+    fn lookup(
+        &mut self,
+        bus: &Bus,
+        pc: u32,
+    ) -> Option<(NativeFunctions, *const BlockInstruction, usize)> {
         self.module.as_ref()?;
         if self.entries.get(&pc).is_some_and(|entry| entry.invalid) {
             self.entries.remove(&pc);
@@ -125,7 +138,8 @@ impl JitEngine {
             failed: false,
             invalid: false,
         });
-        if entry.instructions.is_empty() || entry.failed {
+        // A one-instruction native block cannot amortize dispatch/ABI costs.
+        if entry.instructions.len() < 2 || entry.failed {
             return None;
         }
         entry.visits = entry.visits.saturating_add(1);
@@ -135,7 +149,17 @@ impl JitEngine {
                 self.module.as_mut().unwrap(),
                 self.definitions,
                 &entry.instructions,
-            );
+            )
+            .map(|(strict, bytes)| {
+                (
+                    NativeFunctions {
+                        strict,
+                        batch: None,
+                        serial: self.definitions,
+                    },
+                    bytes,
+                )
+            });
             self.stats.compile_time += start.elapsed();
             self.definitions += 1;
             match result {
@@ -151,7 +175,36 @@ impl JitEngine {
                 }
             }
         }
-        Some((entry.function?, entry.instructions.as_ptr()))
+        // Compile the pure variant only for sustained hot code. Briefly warm
+        // startup blocks otherwise pay compilation twice without amortizing it.
+        if entry.visits == BATCH_THRESHOLD {
+            if let Some(functions) = &mut entry.function {
+                let start = Instant::now();
+                match compile_batch(
+                    self.module.as_mut().unwrap(),
+                    functions.serial,
+                    &entry.instructions,
+                ) {
+                    Ok((batch, bytes)) => {
+                        functions.batch = Some(batch);
+                        self.stats.batch_compilations += 1;
+                        self.stats.native_code_bytes += bytes;
+                    }
+                    Err(error) => {
+                        self.stats.compile_failures += 1;
+                        tracing::warn!(
+                            "CPU JIT batch at {pc:#010x} failed; using conservative native code: {error}"
+                        );
+                    }
+                }
+                self.stats.compile_time += start.elapsed();
+            }
+        }
+        Some((
+            entry.function?,
+            entry.instructions.as_ptr(),
+            entry.instructions.len(),
+        ))
     }
 }
 
@@ -243,10 +296,20 @@ impl Cpu {
         {
             return false;
         }
-        let Some((function, instructions)) = self.jit.as_mut().unwrap().lookup(&self.bus, self.pc)
+        let Some((functions, instructions, length)) =
+            self.jit.as_mut().unwrap().lookup(&self.bus, self.pc)
         else {
             return false;
         };
+        // SAFETY: lookup metadata remains allocated until the next lookup/reset.
+        // Neither the preflight nor native batch can mutate the JIT cache.
+        let items = unsafe { std::slice::from_raw_parts(instructions, length) };
+        if functions
+            .batch
+            .is_some_and(|batch| self.run_native_idle_batch(batch, items, budget))
+        {
+            return true;
+        }
         let start_cycles = self.cycles;
         let mut runtime = Runtime {
             cpu: self,
@@ -257,11 +320,80 @@ impl Cpu {
         // SAFETY: the module and instruction array remain owned by this CPU for
         // the whole call. Helpers never evict/reset them, and all borrows from
         // lookup have ended. Native code uses only registers returned by prepare.
-        unsafe { function(&mut runtime, budget.min(u128::from(u64::MAX)) as u64) };
+        unsafe { (functions.strict)(&mut runtime, budget.min(u128::from(u64::MAX)) as u64) };
         if let Some(panic) = runtime.panic {
             resume_unwind(panic);
         }
         self.cycles != start_cycles
+    }
+
+    fn run_native_idle_batch(
+        &mut self,
+        function: NativeBatch,
+        items: &[BlockInstruction],
+        budget: u128,
+    ) -> bool {
+        if !self.relaxed_run || budget < 2 {
+            return false;
+        }
+        let limit = budget
+            .min(u128::from(self.bus.native_idle_budget()))
+            .min(items.len() as u128) as usize;
+        if limit < 2 {
+            return false;
+        }
+        self.sync_from_register_block();
+        let output = self.irq_controller.borrow().irq_output();
+        self.irqc_line = output.valid;
+        self.irqc_number = output.number;
+        self.refresh_irq_input();
+        if self.pc != items[0].pc
+            || self.instr_mode != InstructionMode::Normal
+            || (self.irq_enable && self.irq_pending)
+        {
+            return false;
+        }
+        // Only cache HITS are eligible: cold fetches have bus/IRQ side effects.
+        // No device progresses, no CPU store executes, and exclusive run owns
+        // the bus, so these generations cannot change during the native call.
+        let cache = self.instruction_cache.as_ref().unwrap();
+        let count = items
+            .iter()
+            .take(limit)
+            .take_while(|item| {
+                let index = Self::instruction_cache_index(item.pc, cache.len());
+                cache[index].is_some_and(|entry| {
+                    entry.pc == item.pc
+                        && entry.mode == InstructionMode::Normal
+                        && entry.instruction == PendingInstruction::Normal(item.instruction)
+                        && self.bus.instruction_cache_generation(item.pc)
+                            == Some(entry.start_generation)
+                        && self
+                            .bus
+                            .instruction_cache_generation(item.pc.wrapping_add(3))
+                            == Some(entry.end_generation)
+                })
+            })
+            .count();
+        if count != limit {
+            return false;
+        }
+        // SAFETY: the native function has no helpers, memory accesses other
+        // than this live register array, or trapping arithmetic. count is a
+        // validated nonempty prefix and cannot cross a branch or event boundary.
+        let next_pc = unsafe { function(self.reg.as_mut_ptr(), count as u32) };
+        self.bus.defer_native_idle_cycles(count as u64);
+        self.pc = next_pc;
+        self.cycles += count as u128;
+        self.running_cycles += count as u128;
+        self.instructions_executed += count as u128;
+        self.instruction_cache_hits += count as u128;
+        let stats = &mut self.jit.as_mut().unwrap().stats;
+        stats.native_instructions += count as u128;
+        stats.batched_instructions += count as u64;
+        stats.native_batches += 1;
+        self.sync_register_block();
+        true
     }
 }
 
@@ -560,4 +692,65 @@ fn compile(
         unsafe { std::mem::transmute::<*const u8, NativeBlock>(code) },
         bytes,
     ))
+}
+
+/// Pure ALU/branch function; all observation and validation happens in Rust
+/// before entry. Each early exit returns the PC of the executed prefix.
+fn compile_batch(
+    module: &mut JITModule,
+    serial: usize,
+    instructions: &[BlockInstruction],
+) -> Result<(NativeBatch, usize), String> {
+    let mut context = module.make_context();
+    let pointer = module.target_config().pointer_type();
+    context.func.signature.params = vec![AbiParam::new(pointer), AbiParam::new(types::I32)];
+    context
+        .func
+        .signature
+        .returns
+        .push(AbiParam::new(types::I32));
+    let id = module
+        .declare_function(
+            &format!("src32_batch_{serial}"),
+            Linkage::Local,
+            &context.func.signature,
+        )
+        .map_err(|e| e.to_string())?;
+    let mut frontend = FunctionBuilderContext::new();
+    let mut builder = FunctionBuilder::new(&mut context.func, &mut frontend);
+    let entry = builder.create_block();
+    let exit = builder.create_block();
+    builder.append_block_param(exit, types::I32);
+    builder.append_block_params_for_function_params(entry);
+    builder.switch_to_block(entry);
+    let registers = builder.block_params(entry)[0];
+    let count = builder.block_params(entry)[1];
+    for (index, item) in instructions.iter().enumerate() {
+        let next_pc = emit(&mut builder, registers, *item);
+        if index + 1 == instructions.len() {
+            builder.ins().jump(exit, &[next_pc]);
+        } else {
+            let next = builder.create_block();
+            let more =
+                builder
+                    .ins()
+                    .icmp_imm(IntCC::UnsignedGreaterThan, count, (index + 1) as i64);
+            builder.ins().brif(more, next, &[], exit, &[next_pc]);
+            builder.switch_to_block(next);
+        }
+    }
+    builder.switch_to_block(exit);
+    let pc = builder.block_params(exit)[0];
+    builder.ins().return_(&[pc]);
+    builder.seal_all_blocks();
+    builder.finalize();
+    module
+        .define_function(id, &mut context)
+        .map_err(|e| e.to_string())?;
+    let bytes = context.compiled_code().unwrap().code_buffer().len();
+    module.finalize_definitions().map_err(|e| e.to_string())?;
+    // SAFETY: signature matches NativeBatch and module ownership stays in JitEngine.
+    let function =
+        unsafe { std::mem::transmute::<*const u8, NativeBatch>(module.get_finalized_function(id)) };
+    Ok((function, bytes))
 }
