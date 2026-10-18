@@ -40,11 +40,16 @@ python3 tools/asm/asm.py program.asm -o program.wax --entry start
 
 デバッグ GUI を有効にするには `--debug-gui` を指定します。デバッグ GUI 起動時に一時停止する場合は `--start-paused` も指定してください。
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
-`Performance` ウィンドウでは、設定した `Cycles / frame` に対するCPU使用率と、実時間比を確認できます。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
+`Performance` ウィンドウでは、設定した `Cycles / frame` に対するCPU使用率と実時間比を確認できます。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
+CPU内部とフレーム処理の時間内訳を取るには `--profile-cpu` を指定します。このオプションはデバッグGUIを有効にして `Performance` を開き、直近フレームと直近120フレーム平均を表示します。CPU内訳は Device/IRQ、Fetch、Decode、Execute、Memory、Commit、Other に分かれます。Cached Interpreter は Fetch にcache lookupとdecodeを含みます。フレーム内訳はVDP/VSync IRQ、CPU、CPU側の描画送信、音声合成、音声キュー投入です。GPU実行時間とVSync待ちは計測しません。`--debug-gui` だけではこれらの追加計測は動かず、計測器の時間計測は `--profile-cpu` 指定時のみ有効です。プロファイラー有効時はCPU実行が遅くなるため、絶対時間ではなく処理段階の比較に使ってください。
 `Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止します。ゲストRAMの内容は保持します。
 
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
+```
+`--profile-cpu` は `--debug-gui` の代わりに指定でき、Performance ウィンドウを開いてCPU内訳を計測します。
+```sh
+cargo run --release --bin cpt32 -- path/to/program.bin --profile-cpu
 ```
 
 エミュレーターは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU は `--cpu scalar`、Cached Interpreter は `--cpu cached` で選択します。`--cpu pipeline` でパイプラインを明示できます。`config.yaml` の `cpu.microarchitecture` でも指定でき、CLI が優先されます。

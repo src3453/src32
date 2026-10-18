@@ -80,6 +80,7 @@ pub struct Bus {
     system_cycles: u64,
     cycle_clock: Rc<Cell<u64>>,
     expansion_devices: [Option<usize>; 8],
+    has_expansion_cards: bool,
 }
 
 impl Bus {
@@ -97,6 +98,7 @@ impl Bus {
             system_cycles: 0,
             cycle_clock: Rc::new(Cell::new(0)),
             expansion_devices: [None; 8],
+            has_expansion_cards: false,
         }
     }
 
@@ -137,8 +139,10 @@ impl Bus {
 
     pub fn advance_system_cycles(&mut self, cycles: u64) {
         let target = self.system_cycles.saturating_add(cycles);
-        self.run_due_expansion_events();
-        self.refresh_device_irqs();
+        let event_at_start = self.run_due_expansion_events();
+        if cycles == 0 || target == self.system_cycles || event_at_start {
+            self.refresh_device_irqs();
+        }
         while self.system_cycles < target {
             let now = self.system_cycles;
             let mut next_cycle = target;
@@ -180,6 +184,9 @@ impl Bus {
     }
 
     fn next_expansion_event_cycle(&self) -> Option<u64> {
+        if !self.has_expansion_cards {
+            return None;
+        }
         self.expansion_devices
             .iter()
             .flatten()
@@ -187,8 +194,12 @@ impl Bus {
             .min()
     }
 
-    fn run_due_expansion_events(&mut self) {
+    fn run_due_expansion_events(&mut self) -> bool {
         let cycle = self.system_cycles;
+        if !self.has_expansion_cards {
+            return false;
+        }
+        let mut event_ran = false;
         for slot in 0..usize::from(EXPANSION_SLOT_COUNT) {
             if let Some(index) = self.expansion_devices[slot] {
                 let device = &mut self.devices[index].device;
@@ -197,9 +208,11 @@ impl Bus {
                     .is_some_and(|deadline| deadline <= cycle)
                 {
                     device.run_scheduled_event(cycle);
+                    event_ran = true;
                 }
             }
         }
+        event_ran
     }
 
     pub fn reset_expansion_cards(&mut self) {
@@ -244,6 +257,7 @@ impl Bus {
             let address = EXPANSION_BASE + u32::from(slot) * EXPANSION_SLOT_SIZE;
             self.add_device(address, "WASM expansion card", Box::new(card));
             self.expansion_devices[usize::from(slot)] = Some(self.devices.len() - 1);
+            self.has_expansion_cards = true;
         }
         self.refresh_device_irqs();
         Ok(())
@@ -415,10 +429,14 @@ impl Bus {
             .pec_timing
             .as_ref()
             .is_some_and(|state| state.borrow().irq_asserted());
-        let expansion_pending: [bool; 8] = std::array::from_fn(|slot| {
-            self.expansion_devices[slot]
-                .is_some_and(|index| self.devices[index].device.irq_asserted())
-        });
+        let expansion_pending = if self.has_expansion_cards {
+            std::array::from_fn(|slot| {
+                self.expansion_devices[slot]
+                    .is_some_and(|index| self.devices[index].device.irq_asserted())
+            })
+        } else {
+            [false; 8]
+        };
         if let Some(irq) = &self.irq_controller {
             let mut irq = irq.borrow_mut();
             irq.set_source(1, dmac_pending);

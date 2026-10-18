@@ -10,8 +10,11 @@ use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::Instant;
 
-use crate::cpu::{DecodedInstruction, IRQ_VECTOR_BASE, InstructionMode};
+use crate::cpu::{
+    CpuProfile, CpuProfileStage, DecodedInstruction, IRQ_VECTOR_BASE, InstructionMode,
+};
 
 const REG_ZERO: usize = 0;
 const REG_CPUID: usize = 1;
@@ -203,6 +206,7 @@ pub struct PipelineCpu {
     mem_wb: MemWb,
     ex_cycles_left: u32,
     ex_armed: bool,
+    profile: Option<CpuProfile>,
 }
 
 fn invalid_id_ex() -> IdEx {
@@ -307,6 +311,7 @@ impl PipelineCpu {
             mem_wb: invalid_mem_wb(),
             ex_cycles_left: 0,
             ex_armed: false,
+            profile: None,
         };
         cpu.sync_register_block();
         cpu
@@ -435,6 +440,14 @@ impl PipelineCpu {
 
     pub fn instructions_executed(&self) -> u128 {
         self.instructions_executed
+    }
+
+    pub fn enable_profiling(&mut self, enabled: bool) {
+        self.profile = enabled.then(CpuProfile::default);
+    }
+
+    pub fn take_profile(&mut self) -> Option<CpuProfile> {
+        self.profile.as_mut().map(std::mem::take)
     }
 
     pub fn stall_cycles(&self) -> u128 {
@@ -1527,19 +1540,63 @@ impl PipelineCpu {
         }
     }
 
+    #[inline(always)]
+    fn profile_start<const PROFILE: bool>() -> Option<Instant> {
+        if PROFILE { Some(Instant::now()) } else { None }
+    }
+
+    #[inline(always)]
+    fn record_profile_time<const PROFILE: bool>(
+        &mut self,
+        stage: CpuProfileStage,
+        duration: std::time::Duration,
+    ) {
+        if PROFILE {
+            if let Some(profile) = self.profile.as_mut() {
+                profile.record(stage, duration);
+            }
+        }
+    }
+
     /// Advance exactly one pipeline clock.
     pub fn tick(&mut self) {
+        if self.profile.is_some() {
+            self.tick_with_profile::<true>();
+        } else {
+            self.tick_with_profile::<false>();
+        }
+    }
+
+    #[inline(always)]
+    fn tick_with_profile<const PROFILE: bool>(&mut self) {
+        let device_start = Self::profile_start::<PROFILE>();
         self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
         self.irqc_number = irq_output.number;
         self.refresh_irq_input();
+        if let Some(start) = device_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::DeviceIrq, start.elapsed());
+        }
+        if PROFILE {
+            if let Some(profile) = self.profile.as_mut() {
+                profile.ticks += 1;
+            }
+        }
         if self.pipeline_empty() {
+            let sync_start = Self::profile_start::<PROFILE>();
             self.sync_from_register_block();
+            if let Some(start) = sync_start {
+                self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+            }
         }
         if !self.running {
+            let idle_start = Self::profile_start::<PROFILE>();
             if !self.accept_pending_irq() {
                 self.cycles += 1;
+                if let Some(start) = idle_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
                 return;
             }
         }
@@ -1552,11 +1609,15 @@ impl PipelineCpu {
         // MEM/WB entry for forwarding in this same tick. It is overwritten
         // with next_mem_wb at the end of the tick.
         let wb = self.mem_wb;
+        let wb_start = Self::profile_start::<PROFILE>();
         self.commit_mem_wb(wb);
         let halted_by_commit = wb.valid && wb.halt;
-
+        if let Some(start) = wb_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Commit, start.elapsed());
+        }
         // ---- MEM ----
         let mut next_mem_wb = invalid_mem_wb();
+        let memory_start = Self::profile_start::<PROFILE>();
         if self.ex_mem.valid {
             let em = self.ex_mem;
             next_mem_wb.valid = true;
@@ -1601,8 +1662,12 @@ impl PipelineCpu {
                 next_mem_wb.writeback = em.writeback;
             }
         }
+        if let Some(start) = memory_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Memory, start.elapsed());
+        }
 
         // ---- EX delay countdown (multi-cycle MUL/DIV) ----
+        let execute_start = Self::profile_start::<PROFILE>();
         // When armed, the op in ID/EX stays while MEM/WB drain. The counter
         // holds remaining EX ticks including the executing tick; when it
         // reaches 1 the op executes this tick (fall through, no re-arm).
@@ -1617,8 +1682,14 @@ impl PipelineCpu {
                     self.accept_pending_irq();
                 }
                 // Publish the vector PC and masked status before the next empty-pipeline
-                // tick reloads architectural state from the register block.
+                if let Some(start) = execute_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
+                }
+                let sync_start = Self::profile_start::<PROFILE>();
                 self.sync_register_block();
+                if let Some(start) = sync_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
                 if halted_by_commit {
                     self.if_id.valid = false;
                     self.id_ex = invalid_id_ex();
@@ -1627,6 +1698,9 @@ impl PipelineCpu {
                 return;
             }
             self.ex_cycles_left = 0;
+            if let Some(start) = execute_start {
+                self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
+            }
             self.ex_armed = false;
             delay_done = true;
         }
@@ -1658,7 +1732,14 @@ impl PipelineCpu {
                     self.accept_pending_irq();
                 }
                 // Keep IRQ acceptance ordered before register-block synchronization.
+                let sync_start = Self::profile_start::<PROFILE>();
                 self.sync_register_block();
+                if let Some(start) = execute_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
+                }
+                if let Some(start) = sync_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
                 if halted_by_commit {
                     self.if_id.valid = false;
                     self.id_ex = invalid_id_ex();
@@ -1679,8 +1760,12 @@ impl PipelineCpu {
             next_ex_mem = em;
             redirect = redir;
         }
+        if let Some(start) = execute_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
+        }
 
         // ---- ID ----
+        let decode_start = Self::profile_start::<PROFILE>();
         let mut next_id_ex = invalid_id_ex();
         if self.if_id.valid && !load_use_stall {
             next_id_ex = self.decode_id(&self.if_id);
@@ -1690,8 +1775,12 @@ impl PipelineCpu {
             next_id_ex = invalid_id_ex();
             self.stall_cycles += 1;
         }
+        if let Some(start) = decode_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Decode, start.elapsed());
+        }
 
         // ---- IF ----
+        let fetch_start = Self::profile_start::<PROFILE>();
         let mut next_if_id = self.if_id;
         if load_use_stall {
             // Hold fetch: do not re-issue the bus request.
@@ -1735,7 +1824,11 @@ impl PipelineCpu {
             // Mode-switch commits architecturally at WB via branch_new_mode;
             // set fetch mode now so the next fetch uses the new width.
         }
+        if let Some(start) = fetch_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Fetch, start.elapsed());
+        }
 
+        let other_start = Self::profile_start::<PROFILE>();
         self.if_id = next_if_id;
         self.id_ex = next_id_ex;
         self.ex_mem = next_ex_mem;
@@ -1751,6 +1844,9 @@ impl PipelineCpu {
             self.accept_pending_irq();
         }
         self.sync_register_block();
+        if let Some(start) = other_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+        }
     }
 
     pub fn step_once(&mut self) -> bool {
@@ -1778,11 +1874,19 @@ impl PipelineCpu {
     }
 
     pub fn run(&mut self, max_cycles: usize) {
+        if self.profile.is_some() {
+            self.run_inner::<true>(max_cycles);
+        } else {
+            self.run_inner::<false>(max_cycles);
+        }
+    }
+
+    fn run_inner<const PROFILE: bool>(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
             let empty = self.pipeline_empty();
-            self.tick();
+            self.tick_with_profile::<PROFILE>();
             if !self.running && empty && self.pipeline_empty() && !self.bus.has_pending_dma() {
                 let remaining = end_cycles - self.cycles;
                 if remaining != 0 {

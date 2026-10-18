@@ -8,6 +8,7 @@ use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
@@ -119,6 +120,58 @@ pub enum CpuState {
     Halt,
 }
 
+pub const CPU_PROFILE_STAGE_NAMES: [&str; 7] = [
+    "Device / IRQ",
+    "Instruction fetch",
+    "Decode / issue",
+    "Execute",
+    "Memory access",
+    "Commit / writeback",
+    "Stall / bookkeeping",
+];
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(usize)]
+pub enum CpuProfileStage {
+    DeviceIrq,
+    Fetch,
+    Decode,
+    Execute,
+    Memory,
+    Commit,
+    Other,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct CpuProfile {
+    pub ticks: u128,
+    pub stages: [Duration; CPU_PROFILE_STAGE_NAMES.len()],
+}
+
+impl CpuProfile {
+    pub fn total(self) -> Duration {
+        self.stages.into_iter().sum()
+    }
+
+    pub fn accumulate(&mut self, other: Self) {
+        self.ticks += other.ticks;
+        for (total, duration) in self.stages.iter_mut().zip(other.stages) {
+            *total += duration;
+        }
+    }
+
+    pub fn divided(self, count: u32) -> Self {
+        Self {
+            ticks: self.ticks / u128::from(count),
+            stages: self.stages.map(|duration| duration / count),
+        }
+    }
+
+    pub(crate) fn record(&mut self, stage: CpuProfileStage, duration: Duration) {
+        self.stages[stage as usize] += duration;
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 enum PendingInstruction {
     RawNormal(u32),
@@ -167,6 +220,7 @@ pub struct Cpu {
     instruction_cache_hits: u128,
     instruction_cache_misses: u128,
     defer_register_sync: bool,
+    profile: Option<CpuProfile>,
 }
 
 impl Cpu {
@@ -215,6 +269,7 @@ impl Cpu {
             instruction_cache_hits: 0,
             instruction_cache_misses: 0,
             defer_register_sync: false,
+            profile: None,
         };
         cpu.sync_register_block();
         cpu
@@ -335,6 +390,14 @@ impl Cpu {
         self.instructions_executed
     }
 
+    pub fn enable_profiling(&mut self, enabled: bool) {
+        self.profile = enabled.then(CpuProfile::default);
+    }
+
+    pub fn take_profile(&mut self) -> Option<CpuProfile> {
+        self.profile.as_mut().map(std::mem::take)
+    }
+
     pub fn state(&self) -> CpuState {
         self.state
     }
@@ -372,33 +435,84 @@ impl Cpu {
 
     /// Advance one emulated clock using the selected interpreter path.
     pub fn tick(&mut self) {
-        if self.instruction_cache.is_some() {
-            self.tick_cached();
+        if self.profile.is_some() {
+            self.tick_with_profile::<true>();
         } else {
-            self.tick_scalar();
+            self.tick_with_profile::<false>();
         }
     }
 
-    fn tick_scalar(&mut self) {
+    #[inline(always)]
+    fn tick_with_profile<const PROFILE: bool>(&mut self) {
+        if self.instruction_cache.is_some() {
+            self.tick_cached::<PROFILE>();
+        } else {
+            self.tick_scalar::<PROFILE>();
+        }
+    }
+
+    #[inline(always)]
+    fn profile_start<const PROFILE: bool>() -> Option<Instant> {
+        if PROFILE { Some(Instant::now()) } else { None }
+    }
+
+    #[inline(always)]
+    fn record_profile_time<const PROFILE: bool>(
+        &mut self,
+        stage: CpuProfileStage,
+        duration: std::time::Duration,
+    ) {
+        if PROFILE {
+            if let Some(profile) = self.profile.as_mut() {
+                profile.record(stage, duration);
+            }
+        }
+    }
+
+    fn tick_scalar<const PROFILE: bool>(&mut self) {
+        let device_start = Self::profile_start::<PROFILE>();
         self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
         self.irqc_number = irq_output.number;
         self.refresh_irq_input();
-        if self.state == CpuState::Fetch {
-            self.sync_from_register_block();
+        if let Some(start) = device_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::DeviceIrq, start.elapsed());
         }
+        if PROFILE {
+            if let Some(profile) = self.profile.as_mut() {
+                profile.ticks += 1;
+            }
+        }
+
+        if self.state == CpuState::Fetch {
+            let sync_start = Self::profile_start::<PROFILE>();
+            self.sync_from_register_block();
+            if let Some(start) = sync_start {
+                self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+            }
+        }
+        let idle_start = if !self.running {
+            Self::profile_start::<PROFILE>()
+        } else {
+            None
+        };
         if !self.running {
             self.state = CpuState::Halt;
             if !self.accept_pending_irq() {
                 // HALT still consumes clock cycles so run() can poll IRQ inputs.
                 self.cycles += 1;
+                if let Some(start) = idle_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
                 return;
             }
         }
         self.cycles += 1;
         self.running_cycles += 1;
-        match self.state {
+        let phase = self.state;
+        let phase_start = Self::profile_start::<PROFILE>();
+        match phase {
             CpuState::Fetch => {
                 let raw = match self.instr_mode {
                     InstructionMode::Normal => self.fetch_u32(),
@@ -462,31 +576,70 @@ impl Cpu {
             }
             CpuState::Halt => {}
         }
+        if let Some(start) = phase_start {
+            let stage = match phase {
+                CpuState::Fetch => CpuProfileStage::Fetch,
+                CpuState::Decode => CpuProfileStage::Decode,
+                CpuState::Execute => CpuProfileStage::Execute,
+                CpuState::MemRead | CpuState::MemWrite => CpuProfileStage::Memory,
+                CpuState::Mul | CpuState::Div if self.cycles_left == 0 => CpuProfileStage::Execute,
+                CpuState::Mul | CpuState::Div | CpuState::Halt => CpuProfileStage::Other,
+                CpuState::Writeback => CpuProfileStage::Commit,
+            };
+            self.record_profile_time::<PROFILE>(stage, start.elapsed());
+        }
+        let sync_start = Self::profile_start::<PROFILE>();
         self.sync_register_block();
+        if let Some(start) = sync_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+        }
     }
 
-    fn tick_cached(&mut self) {
+    fn tick_cached<const PROFILE: bool>(&mut self) {
+        let device_start = Self::profile_start::<PROFILE>();
         self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
         self.irqc_line = irq_output.valid;
         self.irqc_number = irq_output.number;
         self.refresh_irq_input();
+        if let Some(start) = device_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::DeviceIrq, start.elapsed());
+        }
+        if PROFILE {
+            if let Some(profile) = self.profile.as_mut() {
+                profile.ticks += 1;
+            }
+        }
+
         if self.state == CpuState::Fetch {
+            let sync_start = Self::profile_start::<PROFILE>();
             self.sync_from_register_block();
+            if let Some(start) = sync_start {
+                self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+            }
         }
         if !self.running {
             self.state = CpuState::Halt;
+            let idle_start = Self::profile_start::<PROFILE>();
             if !self.accept_pending_irq() {
                 self.cycles += 1;
+                if let Some(start) = idle_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
                 return;
             }
         }
         self.cycles += 1;
         self.running_cycles += 1;
-        match self.state {
+        let phase = self.state;
+        match phase {
             CpuState::Fetch => {
+                let fetch_start = Self::profile_start::<PROFILE>();
                 let instruction = self.fetch_cached_instruction();
                 self.instruction = Some(instruction);
+                if let Some(start) = fetch_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Fetch, start.elapsed());
+                }
                 if Self::is_mul(instruction) {
                     self.cycles_left = 2;
                     self.state = CpuState::Mul;
@@ -494,19 +647,45 @@ impl Cpu {
                     self.cycles_left = 15;
                     self.state = CpuState::Div;
                 } else {
+                    let execute_start = Self::profile_start::<PROFILE>();
                     self.commit_cached_instruction();
+                    if let Some(start) = execute_start {
+                        self.record_profile_time::<PROFILE>(
+                            CpuProfileStage::Execute,
+                            start.elapsed(),
+                        );
+                    }
                 }
             }
             CpuState::Mul | CpuState::Div => {
+                let stall_start = Self::profile_start::<PROFILE>();
                 self.cycles_left -= 1;
                 if self.cycles_left == 0 {
+                    let execute_start = Self::profile_start::<PROFILE>();
                     self.commit_cached_instruction();
+                    if let Some(start) = execute_start {
+                        self.record_profile_time::<PROFILE>(
+                            CpuProfileStage::Execute,
+                            start.elapsed(),
+                        );
+                    }
+                } else if let Some(start) = stall_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
                 }
             }
-            CpuState::Halt => {}
+            CpuState::Halt => {
+                let idle_start = Self::profile_start::<PROFILE>();
+                if let Some(start) = idle_start {
+                    self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+                }
+            }
             _ => unreachable!("cached interpreter entered a scalar FSM phase"),
         }
+        let sync_start = Self::profile_start::<PROFILE>();
         self.sync_register_block();
+        if let Some(start) = sync_start {
+            self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+        }
     }
 
     fn commit_cached_instruction(&mut self) {
@@ -1357,10 +1536,18 @@ impl Cpu {
     }
 
     pub fn run(&mut self, max_cycles: usize) {
+        if self.profile.is_some() {
+            self.run_inner::<true>(max_cycles);
+        } else {
+            self.run_inner::<false>(max_cycles);
+        }
+    }
+
+    fn run_inner<const PROFILE: bool>(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
-            self.tick();
+            self.tick_with_profile::<PROFILE>();
             if !self.running && !self.bus.has_pending_dma() {
                 let remaining = end_cycles - self.cycles;
                 if remaining != 0 {

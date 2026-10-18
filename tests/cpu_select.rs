@@ -242,3 +242,52 @@ fn resolve_rejects_unknown_microarchitecture() {
     assert!(resolve_cpu_kind(None, &bad_cfg).is_err());
     std::fs::remove_file(&bad_cfg).ok();
 }
+
+#[test]
+fn cpu_stage_profile_is_opt_in_and_preserves_all_microarchitectures() {
+    for kind in [CpuKind::Scalar, CpuKind::Cached, CpuKind::Pipelined] {
+        let mut profiled = AnyCpu::new(kind, {
+            let mut bus = Bus::new();
+            connect_ram(&mut bus);
+            bus
+        });
+        let mut reference = AnyCpu::new(kind, {
+            let mut bus = Bus::new();
+            connect_ram(&mut bus);
+            bus
+        });
+        let program = [0u8; 256];
+        profiled.load_program(0, &program);
+        reference.load_program(0, &program);
+
+        assert!(profiled.take_profile().is_none());
+        profiled.enable_profiling(true);
+        profiled.run(40);
+        reference.run(40);
+
+        let profile = profiled.take_profile().unwrap();
+        assert_eq!(profile.ticks, 40, "{kind:?}");
+        assert!(!profile.total().is_zero(), "{kind:?}");
+        assert!(
+            profile.stages[1..]
+                .iter()
+                .any(|duration| !duration.is_zero())
+        );
+        assert_eq!(profiled.cycles(), reference.cycles(), "{kind:?}");
+        assert_eq!(
+            profiled.instructions_executed(),
+            reference.instructions_executed(),
+            "{kind:?}"
+        );
+        for register in 0..32 {
+            assert_eq!(
+                profiled.read_reg(register),
+                reference.read_reg(register),
+                "{kind:?} R{register}"
+            );
+        }
+        let next_profile = profiled.take_profile().unwrap();
+        assert_eq!(next_profile.ticks, 0, "{kind:?}");
+        assert!(next_profile.total().is_zero(), "{kind:?}");
+    }
+}

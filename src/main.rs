@@ -10,6 +10,7 @@ use std::time::{Duration, Instant};
 
 use cpt32::bus::Bus;
 use cpt32::cpu::InstructionMode;
+use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input, pec_trace_enabled};
@@ -606,6 +607,7 @@ struct GuiApp {
     window: Option<Window>,
     presenter: Option<render::WgpuPresenter>,
     debug_gui: Option<DebugGui>,
+    frame_profiler: Option<FrameProfiler>,
     cpu_kind: CpuKind,
     enable_debug_gui: bool,
     start_paused: bool,
@@ -619,11 +621,14 @@ impl GuiApp {
         program_path: &str,
         display_handle: OwnedDisplayHandle,
         enable_debug_gui: bool,
+        profile_cpu: bool,
         start_paused: bool,
         music_stream: Option<&Path>,
         cpu_kind: CpuKind,
     ) -> Result<Self, String> {
-        let machine = build_guest_machine(Path::new(program_path), music_stream, None, cpu_kind)?;
+        let mut machine =
+            build_guest_machine(Path::new(program_path), music_stream, None, cpu_kind)?;
+        machine.cpu.enable_profiling(profile_cpu);
         let (gilrs, gamepad_slots) = match Gilrs::new() {
             Ok(gilrs) => {
                 let slots = initial_gamepad_slots(&gilrs, &machine.input_sender);
@@ -660,6 +665,7 @@ impl GuiApp {
             window: None,
             presenter: None,
             debug_gui: None,
+            frame_profiler: profile_cpu.then(FrameProfiler::new),
             cpu_kind,
             enable_debug_gui,
             start_paused,
@@ -920,6 +926,71 @@ impl PerformanceStats {
         }
     }
 }
+const FRAME_PROFILE_STAGE_NAMES: [&str; 5] = [
+    "VDP tick + VSync IRQ",
+    "CPU emulation",
+    "Video + ImGui submit",
+    "Audio synthesis",
+    "Audio output queue",
+];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct FrameProfile {
+    stages: [Duration; FRAME_PROFILE_STAGE_NAMES.len()],
+    cpu: CpuProfile,
+}
+
+impl FrameProfile {
+    fn total(self) -> Duration {
+        self.stages.into_iter().sum()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FrameProfileSummary {
+    latest: FrameProfile,
+    average: FrameProfile,
+    samples: usize,
+}
+
+struct FrameProfiler {
+    history: VecDeque<FrameProfile>,
+}
+
+impl FrameProfiler {
+    const HISTORY_SAMPLES: usize = 120;
+
+    fn new() -> Self {
+        Self {
+            history: VecDeque::with_capacity(Self::HISTORY_SAMPLES),
+        }
+    }
+
+    fn record(&mut self, profile: FrameProfile) -> FrameProfileSummary {
+        if self.history.len() == Self::HISTORY_SAMPLES {
+            self.history.pop_front();
+        }
+        self.history.push_back(profile);
+
+        let mut totals = [Duration::ZERO; FRAME_PROFILE_STAGE_NAMES.len()];
+        let mut cpu_total = CpuProfile::default();
+        for sample in &self.history {
+            for (total, duration) in totals.iter_mut().zip(sample.stages) {
+                *total += duration;
+            }
+            cpu_total.accumulate(sample.cpu);
+        }
+        let count = self.history.len() as u32;
+        FrameProfileSummary {
+            latest: profile,
+            average: FrameProfile {
+                stages: totals.map(|total| total / count),
+                cpu: cpu_total.divided(count),
+            },
+            samples: self.history.len(),
+        }
+    }
+}
 
 fn realtime_multiplier(runtime_percent: f64) -> f64 {
     100.0 / runtime_percent
@@ -947,6 +1018,7 @@ struct DebugUiState {
     mem_base_input: String,
     mem_count_input: String,
     performance: Option<PerformanceStats>,
+    frame_profile: Option<FrameProfileSummary>,
     cpu_utilization_history: VecDeque<f32>,
     runtime_percent_history: VecDeque<f32>,
 }
@@ -1009,6 +1081,7 @@ impl DebugUiState {
             mem_base_input: "0x00000000".to_string(),
             mem_count_input: "256".to_string(),
             performance: None,
+            frame_profile: None,
             cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
             runtime_percent_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
         }
@@ -1222,7 +1295,7 @@ impl DebugUiState {
 
     fn draw_performance(&self, ui: &Ui) {
         ui.window("Performance")
-            .size([560.0, 500.0], Condition::FirstUseEver)
+            .size([560.0, 660.0], Condition::FirstUseEver)
             .build(|| {
                 if let Some(stats) = self.performance {
                     ui.text(format!(
@@ -1265,6 +1338,9 @@ impl DebugUiState {
                     ui.text("Waiting for the first VSync sample...");
                 }
 
+                if let Some(profile) = self.frame_profile {
+                    Self::draw_cpu_profile(ui, profile);
+                }
                 Self::draw_performance_history(
                     ui,
                     "CPU utilization history (120 VSync samples; 0-100% cycle budget)",
@@ -1277,7 +1353,61 @@ impl DebugUiState {
                     &self.runtime_percent_history,
                     Self::RUNTIME_HISTORY_MAX_PERCENT,
                 );
+                if let Some(profile) = self.frame_profile {
+                    Self::draw_frame_profile(ui, profile);
+                }
             });
+    }
+
+    fn draw_cpu_profile(ui: &Ui, profile: FrameProfileSummary) {
+        let cpu_total = profile.average.cpu.total();
+        ui.separator();
+        ui.text("CPU internal stages (latest and average; share of measured CPU stage time)");
+        ui.text(format!(
+            "CPU ticks: last {} | average {} | average measured {:.3} ms",
+            profile.latest.cpu.ticks,
+            profile.average.cpu.ticks,
+            cpu_total.as_secs_f64() * 1_000.0
+        ));
+        for (index, name) in CPU_PROFILE_STAGE_NAMES.iter().enumerate() {
+            let latest_ms = profile.latest.cpu.stages[index].as_secs_f64() * 1_000.0;
+            let average_ms = profile.average.cpu.stages[index].as_secs_f64() * 1_000.0;
+            let share = if cpu_total.is_zero() {
+                0.0
+            } else {
+                profile.average.cpu.stages[index].as_secs_f64() * 100.0 / cpu_total.as_secs_f64()
+            };
+            ui.text(format!(
+                "{name:<24} last {latest_ms:>7.3} ms | avg {average_ms:>7.3} ms ({share:>5.1}%)"
+            ));
+        }
+        ui.text("Cached interpreter combines instruction fetch, cache lookup, and decode.");
+    }
+
+    fn draw_frame_profile(ui: &Ui, profile: FrameProfileSummary) {
+        ui.separator();
+        ui.text("Host frame work by stage (latest and 120-sample average)");
+        ui.text("Video timing is CPU-side submission; GPU execution and VSync wait are excluded.");
+
+        let average_total = profile.average.total();
+        ui.text(format!(
+            "Frame work: last {:.3} ms | average {:.3} ms ({} samples)",
+            profile.latest.total().as_secs_f64() * 1_000.0,
+            average_total.as_secs_f64() * 1_000.0,
+            profile.samples
+        ));
+        for (index, name) in FRAME_PROFILE_STAGE_NAMES.iter().enumerate() {
+            let latest_ms = profile.latest.stages[index].as_secs_f64() * 1_000.0;
+            let average_ms = profile.average.stages[index].as_secs_f64() * 1_000.0;
+            let share = if average_total.is_zero() {
+                0.0
+            } else {
+                profile.average.stages[index].as_secs_f64() * 100.0 / average_total.as_secs_f64()
+            };
+            ui.text(format!(
+                "{name:<24} last {latest_ms:>7.3} ms | avg {average_ms:>7.3} ms ({share:>5.1}%)"
+            ));
+        }
     }
 
     fn draw_performance_history(ui: &Ui, label: &str, history: &VecDeque<f32>, max_value: f32) {
@@ -1509,7 +1639,12 @@ struct DebugGui {
 }
 
 impl DebugGui {
-    fn new(window: &Window, presenter: &render::WgpuPresenter, start_paused: bool) -> Self {
+    fn new(
+        window: &Window,
+        presenter: &render::WgpuPresenter,
+        start_paused: bool,
+        profile_cpu: bool,
+    ) -> Self {
         let mut imgui = imgui::Context::create();
         imgui.set_ini_filename(None);
         let mut platform = WinitPlatform::new(&mut imgui);
@@ -1524,11 +1659,15 @@ impl DebugGui {
             },
         );
 
+        let mut state = DebugUiState::new(start_paused);
+        if profile_cpu {
+            state.visible_windows[DebugWindow::Performance as usize] = true;
+        }
         Self {
             imgui,
             platform,
             renderer,
-            state: DebugUiState::new(start_paused),
+            state,
             last_frame: Instant::now(),
             last_performance_sample: None,
             menu_bar_height: 0.0,
@@ -1559,7 +1698,7 @@ impl DebugGui {
         cpu: &mut AnyCpu,
         vdp: &Rc<RefCell<Vdp>>,
         presenter: &mut render::WgpuPresenter,
-    ) -> Result<(), render::FrameError> {
+    ) -> (Duration, Duration, Result<(), render::FrameError>) {
         let emulation_start = Instant::now();
         self.state.execute_cpu(cpu);
         let emulation_elapsed = emulation_start.elapsed();
@@ -1597,50 +1736,55 @@ impl DebugGui {
         }
         self.last_performance_sample = Some((running_cycles, instructions, emulated_cycles));
 
-        let now = Instant::now();
-        self.imgui.io_mut().update_delta_time(now - self.last_frame);
-        self.last_frame = now;
-        self.platform
-            .prepare_frame(self.imgui.io_mut(), window)
-            .map_err(|err| {
-                render::FrameError::Overlay(format!("ImGui frame prepare failed: {err}"))
-            })?;
+        let rendering_start = Instant::now();
+        let render_result = (|| -> Result<(), render::FrameError> {
+            let now = Instant::now();
+            self.imgui.io_mut().update_delta_time(now - self.last_frame);
+            self.last_frame = now;
+            self.platform
+                .prepare_frame(self.imgui.io_mut(), window)
+                .map_err(|err| {
+                    render::FrameError::Overlay(format!("ImGui frame prepare failed: {err}"))
+                })?;
 
-        let ui = self.imgui.frame();
-        self.menu_bar_height = ui.frame_height();
-        self.state.draw_windows(ui, cpu, vdp);
-        self.platform.prepare_render(ui, window);
-        let framebuffer_scale = f64::from(self.imgui.io().display_framebuffer_scale[1]);
-        let top_reserve_px = (f64::from(self.menu_bar_height) * framebuffer_scale).max(0.0);
-        let draw_data = self.imgui.render();
+            let ui = self.imgui.frame();
+            self.menu_bar_height = ui.frame_height();
+            self.state.draw_windows(ui, cpu, vdp);
+            self.platform.prepare_render(ui, window);
+            let framebuffer_scale = f64::from(self.imgui.io().display_framebuffer_scale[1]);
+            let top_reserve_px = (f64::from(self.menu_bar_height) * framebuffer_scale).max(0.0);
+            let draw_data = self.imgui.render();
 
-        presenter.render_with_overlay(
-            vdp,
-            top_reserve_px,
-            |device, queue, encoder, surface_view| {
-                let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
-                    label: Some("CPT32 ImGui Overlay Pass"),
-                    color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                        view: surface_view,
-                        depth_slice: None,
-                        resolve_target: None,
-                        ops: wgpu::Operations {
-                            load: wgpu::LoadOp::Load,
-                            store: wgpu::StoreOp::Store,
-                        },
-                    })],
-                    depth_stencil_attachment: None,
-                    occlusion_query_set: None,
-                    timestamp_writes: None,
-                    multiview_mask: None,
-                });
-                self.renderer
-                    .render(draw_data, queue, device, &mut render_pass)
-                    .map_err(|err| {
-                        render::FrameError::Overlay(format!("ImGui render failed: {err}"))
-                    })
-            },
-        )
+            presenter.render_with_overlay(
+                vdp,
+                top_reserve_px,
+                |device, queue, encoder, surface_view| {
+                    let mut render_pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
+                        label: Some("CPT32 ImGui Overlay Pass"),
+                        color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                            view: surface_view,
+                            depth_slice: None,
+                            resolve_target: None,
+                            ops: wgpu::Operations {
+                                load: wgpu::LoadOp::Load,
+                                store: wgpu::StoreOp::Store,
+                            },
+                        })],
+                        depth_stencil_attachment: None,
+                        occlusion_query_set: None,
+                        timestamp_writes: None,
+                        multiview_mask: None,
+                    });
+                    self.renderer
+                        .render(draw_data, queue, device, &mut render_pass)
+                        .map_err(|err| {
+                            render::FrameError::Overlay(format!("ImGui render failed: {err}"))
+                        })
+                },
+            )
+        })();
+        let rendering_elapsed = rendering_start.elapsed();
+        (emulation_elapsed, rendering_elapsed, render_result)
     }
 }
 
@@ -1664,7 +1808,12 @@ impl ApplicationHandler for GuiApp {
             .expect("Missing display handle for rendering");
         let presenter = render::WgpuPresenter::new(&window, Box::new(display_handle));
         let debug_gui = if self.enable_debug_gui {
-            Some(DebugGui::new(&window, &presenter, self.start_paused))
+            Some(DebugGui::new(
+                &window,
+                &presenter,
+                self.start_paused,
+                self.frame_profiler.is_some(),
+            ))
         } else {
             None
         };
@@ -1856,22 +2005,46 @@ impl ApplicationHandler for GuiApp {
                     return;
                 }
                 self.next_frame_deadline = now + FRAME_INTERVAL;
+                let mut profile = self
+                    .frame_profiler
+                    .as_ref()
+                    .map(|_| FrameProfile::default());
+                let device_start = profile.as_ref().map(|_| Instant::now());
                 self.vdp.borrow_mut().tick();
                 self.cpu.set_irq_source(0, true);
                 self.cpu.set_irq_source(0, false);
+                if let (Some(profile), Some(start)) = (profile.as_mut(), device_start) {
+                    profile.stages[0] = start.elapsed();
+                }
                 if let (Some(window), Some(presenter)) =
                     (self.window.as_ref(), self.presenter.as_mut())
                 {
                     let render_result = if let Some(debug_gui) = self.debug_gui.as_mut() {
-                        debug_gui.render_frame(window, &mut self.cpu, &self.vdp, presenter)
+                        let (cpu_elapsed, render_elapsed, result) =
+                            debug_gui.render_frame(window, &mut self.cpu, &self.vdp, presenter);
+                        if let Some(profile) = profile.as_mut() {
+                            profile.stages[1] = cpu_elapsed;
+                            profile.stages[2] = render_elapsed;
+                        }
+                        result
                     } else {
+                        let cpu_start = profile.as_ref().map(|_| Instant::now());
                         self.cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
-                        presenter.render(&self.vdp)
+                        if let (Some(profile), Some(start)) = (profile.as_mut(), cpu_start) {
+                            profile.stages[1] = start.elapsed();
+                        }
+                        let render_start = profile.as_ref().map(|_| Instant::now());
+                        let result = presenter.render(&self.vdp);
+                        if let (Some(profile), Some(start)) = (profile.as_mut(), render_start) {
+                            profile.stages[2] = start.elapsed();
+                        }
+                        result
                     };
 
                     if let Some(audio_host) = self.audio_host.as_ref() {
                         let sample_rate = audio_host.sample_rate();
                         let sample_count = (sample_rate / cpt32::sys::FRAME_RATE) as usize;
+                        let audio_start = profile.as_ref().map(|_| Instant::now());
                         self.audio_left.resize(sample_count, 0);
                         self.audio_right.resize(sample_count, 0);
                         self.audio_left.fill(0);
@@ -1887,7 +2060,14 @@ impl ApplicationHandler for GuiApp {
                                 &mut self.audio_right,
                             );
                         }
+                        if let (Some(profile), Some(start)) = (profile.as_mut(), audio_start) {
+                            profile.stages[3] = start.elapsed();
+                        }
+                        let queue_start = profile.as_ref().map(|_| Instant::now());
                         audio_host.push_samples_i16(&self.audio_left, &self.audio_right);
+                        if let (Some(profile), Some(start)) = (profile.as_mut(), queue_start) {
+                            profile.stages[4] = start.elapsed();
+                        }
                     }
 
                     match render_result {
@@ -1902,6 +2082,15 @@ impl ApplicationHandler for GuiApp {
                         Err(render::FrameError::Overlay(message)) => {
                             tracing::error!(message = %message, "Render overlay error");
                         }
+                    }
+                    if let (Some(profile), Some(profiler), Some(debug_gui)) = (
+                        profile,
+                        self.frame_profiler.as_mut(),
+                        self.debug_gui.as_mut(),
+                    ) {
+                        let mut profile = profile;
+                        profile.cpu = self.cpu.take_profile().unwrap_or_default();
+                        debug_gui.state.frame_profile = Some(profiler.record(profile));
                     }
                 }
             }
@@ -1954,6 +2143,7 @@ impl ApplicationHandler for GuiApp {
 struct GuiLaunchOptions {
     program_path: String,
     enable_debug_gui: bool,
+    profile_cpu: bool,
     start_paused: bool,
     music_stream: Option<PathBuf>,
     cpu: Option<CpuKind>,
@@ -1990,6 +2180,7 @@ fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
 fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     let mut positional = Vec::new();
     let mut enable_debug_gui = false;
+    let mut profile_cpu = false;
     let mut start_paused = false;
 
     let mut music_stream = None;
@@ -1998,6 +2189,10 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--debug-gui" | "--imgui-debug" => enable_debug_gui = true,
+            "--profile-cpu" => {
+                profile_cpu = true;
+                enable_debug_gui = true;
+            }
             "--start-paused" | "--pause-on-start" => start_paused = true,
             "--music-stream" => {
                 if music_stream.is_some() {
@@ -2038,6 +2233,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     Ok(GuiLaunchOptions {
         program_path: positional[0].clone(),
         enable_debug_gui,
+        profile_cpu,
         start_paused,
         music_stream,
         cpu,
@@ -2073,13 +2269,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }
@@ -2095,6 +2291,7 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
         &options.program_path,
         display_handle,
         options.enable_debug_gui,
+        options.profile_cpu,
         options.enable_debug_gui && options.start_paused,
         options.music_stream.as_deref(),
         cpu_kind,
@@ -2197,6 +2394,21 @@ mod input_tests {
         assert_eq!(normalize_stick(1.0), i16::MAX);
         assert_eq!(normalize_trigger(0.0), 0);
         assert_eq!(normalize_trigger(1.0), u16::MAX);
+    }
+
+    #[test]
+    fn cpu_profile_option_enables_debug_gui_but_default_does_not_profile() {
+        let normal = parse_gui_args(&["guest.wax".into()]).unwrap();
+        assert!(!normal.profile_cpu);
+        assert!(!normal.enable_debug_gui);
+
+        let debug = parse_gui_args(&["guest.wax".into(), "--debug-gui".into()]).unwrap();
+        assert!(debug.enable_debug_gui);
+        assert!(!debug.profile_cpu);
+
+        let profile = parse_gui_args(&["guest.wax".into(), "--profile-cpu".into()]).unwrap();
+        assert!(profile.profile_cpu);
+        assert!(profile.enable_debug_gui);
     }
 
     #[test]
@@ -2333,6 +2545,30 @@ mod input_tests {
     }
 
     #[test]
+    fn frame_profiler_averages_recent_samples_and_evicts_oldest() {
+        let mut profiler = FrameProfiler::new();
+        let mut summary = None;
+        for millis in 1..=121 {
+            summary = Some(profiler.record(FrameProfile {
+                stages: [
+                    Duration::from_millis(millis),
+                    Duration::from_millis(2),
+                    Duration::from_millis(3),
+                    Duration::from_millis(4),
+                    Duration::from_millis(5),
+                ],
+                cpu: CpuProfile::default(),
+            }));
+        }
+
+        let summary = summary.unwrap();
+        assert_eq!(summary.samples, FrameProfiler::HISTORY_SAMPLES);
+        assert_eq!(summary.latest.stages[0], Duration::from_millis(121));
+        assert_eq!(summary.average.stages[0], Duration::from_micros(61_500));
+        assert_eq!(summary.average.total(), Duration::from_micros(75_500));
+    }
+
+    #[test]
     fn package_guest_builder_loads_program_at_address_zero() {
         let package_path = std::env::temp_dir().join(format!(
             "cpt32-main-package-{}.cpt32pkg",
@@ -2454,6 +2690,7 @@ mod input_tests {
             window: None,
             presenter: None,
             debug_gui: None,
+            frame_profiler: None,
             cpu_kind: CpuKind::Scalar,
             enable_debug_gui: true,
             start_paused: true,

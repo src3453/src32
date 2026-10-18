@@ -384,6 +384,7 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 - DMAベース設計
 
 エミュレータのGUIデバッグ表示は `--debug-gui` で有効にする。ImGuiの `Windows > Performance` では、VSyncごとのCPU稼働サイクル数を設定サイクル予算で割った使用率、および実時間比を表示する。実時間比は各フレームでCPU実行に要した時間（VSync待ちと描画を除く）をエミュレーション時間で割って100倍する。100%がリアルタイム、100%未満はそれより速く、100%超は遅いことを示す。速度倍率は`100 / 実時間比`（例: 50%は2.00x、200%は0.50x）である。両指標はプログレスバーと直近120サンプルの折れ線グラフで表示する。実時間比バーは100%で満杯になり、100%超では赤色にする。折れ線グラフは0～200%に正規化し、数値表示には上限を設けない。命令実行速度（KIPS）も表示する。
+`Host frame work by stage` とCPU内部のFetch/Decode/Execute/Memory/Commit/Otherは `--profile-cpu` 指定時だけ計測する。このオプションは `--debug-gui` を含み、Performanceウィンドウを起動時に開く。通常の `--debug-gui` では、追加のCPU/フレーム内訳計測は行わない。フレーム内訳はVDP tick/VSync IRQ、CPU実行、Video+ImGuiのCPU側描画送信、音声合成、音声キュー投入を最新フレームと直近120フレーム平均で表示する。CPU内訳はDevice/IRQ、Fetch、Decode、Execute、Memory、Commit、Otherのホスト時間を集計し、各段階の比率は測定されたCPU段階時間合計に対する割合である。Cached InterpreterはFetch内で命令cache lookupとdecodeも行う。描画の値はCPU側送信時間であり、GPU実行時間、VSync待ち、event-loop idleを含まない。計測自体の影響でCPUは遅くなるため、絶対性能値ではなく処理段階の相対比較に使う。
 デバッグ GUI 有効時は ImGui のメインメニューバーが画面上部に描画されるため、ゲーム画面はメニューバーの高さ分だけ下にずらして表示し、メニューと重ならないようにする。マウス座標からゲスト座標への変換も同じずらし量を使う。
 
 `Windows > Debug Controls` の `Run CPU (Realtime)` チェックボックス、および Pause / Run / Step ボタンは、エミュレーション全体の実行可否（`DebugUiState::running`）を制御する。Step 系ボタンは実行を停止した状態で少量だけ進めるため、ステップ後は Run で再開する必要がある。

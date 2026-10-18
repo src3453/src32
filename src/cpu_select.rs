@@ -8,7 +8,7 @@ use std::path::Path;
 use std::str::FromStr;
 
 use crate::bus::{Bus, BusRegion};
-use crate::cpu::{Cpu, DecodedInstruction, InstructionMode};
+use crate::cpu::{Cpu, CpuProfile, DecodedInstruction, InstructionMode};
 use crate::cpu_pipeline::PipelineCpu;
 
 /// Which micro-architecture backs the emulator. Case-sensitive extension
@@ -154,6 +154,20 @@ impl AnyCpu {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.instruction_cache_stats(),
             AnyCpu::Pipelined(_) => None,
+        }
+    }
+
+    pub fn enable_profiling(&mut self, enabled: bool) {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.enable_profiling(enabled),
+            AnyCpu::Pipelined(cpu) => cpu.enable_profiling(enabled),
+        }
+    }
+
+    pub fn take_profile(&mut self) -> Option<CpuProfile> {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.take_profile(),
+            AnyCpu::Pipelined(cpu) => cpu.take_profile(),
         }
     }
 
