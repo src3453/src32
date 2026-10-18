@@ -22,3 +22,4 @@ tmp.*
 .pytest_cache
 *.wax
 !examples/
+build/**
