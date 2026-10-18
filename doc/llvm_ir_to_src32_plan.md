@@ -2,7 +2,19 @@
 
 - 作成日: 2026-08-21
 - 対象リポジトリ: `/mnt/c/users/y2k34/remote/src32`
-- 状態: 事前調査に基づく初期計画
+- 状態: 初期調査の履歴。2026-10-18 の独立実装は下記を参照。
+
+## 現行実装（2026-10-18）
+
+ユーザー指定により、`csc` を改修する方針ではなく、独立した `tools/llvm-src32/` に実装した。現行の ABI・対応範囲・使い方は [ツールの README](../tools/llvm-src32/README.md) を参照。
+
+- Clang → LLVM公式パーサ／検証器／モジュールリンク（llvmlite）→ SRC32 ASM → WAX。
+- freestanding C の整数・ポインタ・配列／構造体・再帰・関数ポインタ・VLA・複数翻訳単位を対象とする。旧 `CodeEmitter` へは依存しない。
+- CMake 用 `SRC32.cmake` はソースライブラリと WAX 実行ファイルのターゲット定義、include／define、ヘッダー依存による再ビルドを提供する。
+- `examples/conformance` の4翻訳単位を O0/O1/O2 でビルドし、Scalar/Cached/CachedRelaxed/Pipeline で戻り値42を検証する。
+- 浮動小数点・SIMD・atomic・可変長引数・hosted libc 等は非対応。LLVM/C 全仕様への対応を示すものではない。
+
+以下は実装前の調査・提案であり、現行 API や環境の仕様ではない。
 
 ## 1. 目的
 
