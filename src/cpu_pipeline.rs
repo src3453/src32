@@ -1375,16 +1375,16 @@ impl PipelineCpu {
         id_srcs.contains(&dest)
     }
 
-    fn id_sources(&self, if_id: &IfId) -> Vec<usize> {
-        // Decode cheaply to get source regs without sampling values.
+    fn id_sources(&self, if_id: &IfId) -> [usize; 2] {
+        // At most two sources; R0 pads unused entries and cannot hazard.
         match if_id.raw {
             RawInstr::Normal(raw) => match Self::decode(raw) {
                 Instruction::Ld { base, .. }
                 | Instruction::Ldb { base, .. }
-                | Instruction::Ldh { base, .. } => vec![base as usize],
+                | Instruction::Ldh { base, .. } => [base as usize, REG_ZERO],
                 Instruction::St { rd, base, .. }
                 | Instruction::Stb { rd, base, .. }
-                | Instruction::Sth { rd, base, .. } => vec![base as usize, rd as usize],
+                | Instruction::Sth { rd, base, .. } => [base as usize, rd as usize],
                 Instruction::Add { rs1, rs2, .. }
                 | Instruction::Sub { rs1, rs2, .. }
                 | Instruction::Slt { rs1, rs2, .. }
@@ -1400,35 +1400,33 @@ impl PipelineCpu {
                 | Instruction::Div { rs1, rs2, .. }
                 | Instruction::Mod { rs1, rs2, .. }
                 | Instruction::Mulh { rs1, rs2, .. }
-                | Instruction::Divu { rs1, rs2, .. } => vec![rs1 as usize, rs2 as usize],
-                Instruction::Addi { rs1, .. } => vec![rs1 as usize],
+                | Instruction::Divu { rs1, rs2, .. } => [rs1 as usize, rs2 as usize],
+                Instruction::Addi { rs1, .. } => [rs1 as usize, REG_ZERO],
                 Instruction::Beq { rs1, rs2, .. } | Instruction::Bne { rs1, rs2, .. } => {
-                    vec![rs1 as usize, rs2 as usize]
+                    [rs1 as usize, rs2 as usize]
                 }
-                Instruction::Jr { rd } | Instruction::Jrs { rd } => vec![rd as usize],
-                Instruction::Jalr { rd } | Instruction::Jalrs { rd } => vec![rd as usize],
+                Instruction::Jr { rd } | Instruction::Jrs { rd } => [rd as usize, REG_ZERO],
+                Instruction::Jalr { rd } | Instruction::Jalrs { rd } => [rd as usize, REG_ZERO],
                 Instruction::Ldil { rd, .. } | Instruction::Ldih { rd, .. } => {
-                    vec![rd as usize]
+                    [rd as usize, REG_ZERO]
                 }
-                _ => vec![],
+                _ => [REG_ZERO, REG_ZERO],
             },
             RawInstr::Short(raw) => match Self::decode_short(raw) {
-                ShortInstruction::Mov { rs1, .. } => {
-                    vec![Self::short_reg_to_gpr(rs1)]
-                }
+                ShortInstruction::Mov { rs1, .. } => [Self::short_reg_to_gpr(rs1), REG_ZERO],
                 ShortInstruction::Add { rs1, rs2, .. } => {
-                    vec![Self::short_reg_to_gpr(rs1), Self::short_reg_to_gpr(rs2)]
+                    [Self::short_reg_to_gpr(rs1), Self::short_reg_to_gpr(rs2)]
                 }
-                ShortInstruction::Addi { rd, .. } => vec![Self::short_reg_to_gpr(rd)],
-                ShortInstruction::Ld { rs1, .. } => vec![Self::short_reg_to_gpr(rs1)],
+                ShortInstruction::Addi { rd, .. } => [Self::short_reg_to_gpr(rd), REG_ZERO],
+                ShortInstruction::Ld { rs1, .. } => [Self::short_reg_to_gpr(rs1), REG_ZERO],
                 ShortInstruction::St { rd, rs1 } => {
-                    vec![Self::short_reg_to_gpr(rd), Self::short_reg_to_gpr(rs1)]
+                    [Self::short_reg_to_gpr(rd), Self::short_reg_to_gpr(rs1)]
                 }
                 ShortInstruction::Bz { rd, .. } | ShortInstruction::Bnz { rd, .. } => {
-                    vec![Self::short_reg_to_gpr(rd)]
+                    [Self::short_reg_to_gpr(rd), REG_ZERO]
                 }
-                ShortInstruction::Jr { rd } => vec![Self::short_reg_to_gpr(rd)],
-                _ => vec![],
+                ShortInstruction::Jr { rd } => [Self::short_reg_to_gpr(rd), REG_ZERO],
+                _ => [REG_ZERO, REG_ZERO],
             },
         }
     }
@@ -1714,7 +1712,7 @@ impl PipelineCpu {
         // bubble into ID/EX, but still advance the load EX -> MEM this tick
         // so the hazard clears.
         let mut load_use_stall = false;
-        if self.if_id.valid && self.id_ex.valid {
+        if self.if_id.valid && self.id_ex.valid && self.id_ex.is_load {
             let srcs = self.id_sources(&self.if_id);
             if Self::load_use_hazard(&self.id_ex, &srcs) {
                 load_use_stall = true;
@@ -1904,6 +1902,52 @@ impl PipelineCpu {
                     }
                 }
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod hazard_tests {
+    use super::*;
+
+    #[test]
+    fn hazard_sources_match_decoder_for_normal_and_all_short_encodings() {
+        let cpu = PipelineCpu::new(Bus::new());
+        let check = |raw| {
+            let instruction = IfId {
+                valid: true,
+                pc: 0,
+                mode: InstructionMode::Normal,
+                raw,
+            };
+            let decoded = cpu.decode_id(&instruction);
+            let sources = cpu.id_sources(&instruction);
+            for register in 0..32 {
+                let mut load = invalid_id_ex();
+                load.valid = true;
+                load.is_load = true;
+                load.dest = Some(register);
+                assert_eq!(
+                    PipelineCpu::load_use_hazard(&load, &sources),
+                    register != REG_ZERO
+                        && decoded.srcs[..decoded.n_srcs as usize].contains(&register),
+                    "{raw:?}, R{register}"
+                );
+            }
+        };
+        // Exercise every opcode and GPR field, including R0 and R31.
+        for opcode in 0u32..64 {
+            for register in 0u32..32 {
+                check(RawInstr::Normal(
+                    (opcode << 26)
+                        | (register << 21)
+                        | (((register + 1) % 32) << 16)
+                        | (((register + 2) % 32) << 11),
+                ));
+            }
+        }
+        for raw in 0..=u16::MAX {
+            check(RawInstr::Short(raw));
         }
     }
 }

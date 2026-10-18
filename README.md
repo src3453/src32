@@ -64,6 +64,16 @@ cargo run --release --bin cpu_bench -- 10000 5
 
 ワークロードは繰り返し実行される依存 ALU 演算、MUL とその直後の利用、ストア／ロード、load-use 依存、ループ分岐を含みます。出力は各モードの中央値、命令キャッシュ hit/miss、Cached の Scalar／Pipeline に対する speedup を示します。wall-clock 性能はホスト環境依存です。CPU サイクル数と CPI はゲスト側のカウンターです。
 
+Headless ゲスト実行で CPU stage の内訳を採るには `src32_testbench` に `--profile-cpu` を付けます。計測器の時間計測は実行を遅くするため、内訳採取と wall-clock 比較は別々に実行してください。ホスト固有の計測結果と改善手順は [エミュレータ性能調査と改善計画](doc/emulator-performance-plan.md) を参照してください。
+
+CPU以外の主要コンポーネントを切り分けて測るには、release ビルドで次を実行します。
+
+```sh
+cargo run --release --bin emulator_component_bench
+```
+
+Bus tick（デバイス構成別）、VDP/PCG合成、SGCのfill/sprite、VPU三角形、SGUの無音/ノイズ音声をそれぞれ測ります。GPU upload、disk/DMA動作、IDC disk audio は含まれないため、利用環境の frame profile と合わせて判断してください。
+
 ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
 
 ```sh

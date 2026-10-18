@@ -4,7 +4,7 @@ use std::fs;
 
 use cpt32::bus::Bus;
 use cpt32::bus::connect_devices_with_vdp;
-use cpt32::cpu::CYCLES_PER_FRAME;
+use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CYCLES_PER_FRAME, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
@@ -29,7 +29,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--profile-cpu] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -43,6 +43,7 @@ fn main() {
     let mut expected = 0;
     let mut music_stream = None;
     let mut frames = None;
+    let mut profile_cpu = false;
     let mut memory_expectations = Vec::new();
     let mut options = args.iter().skip(1);
     while let Some(option) = options.next() {
@@ -56,6 +57,7 @@ fn main() {
             "--frames" => {
                 frames = Some(integer(options.next().expect("--frames requires N")) as usize)
             }
+            "--profile-cpu" => profile_cpu = true,
             "--expect-mem-u8" => {
                 let (address, value) = options
                     .next()
@@ -85,6 +87,7 @@ fn main() {
     let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
         .expect("Invalid BIOS configuration");
     let mut cpu = AnyCpu::new(cpu_kind, bus);
+    cpu.enable_profiling(profile_cpu);
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
         assert!(!img.is_lib, ".wal library is not runnable");
@@ -110,15 +113,42 @@ fn main() {
         5_000_000
     };
     let frame_count = frames.unwrap_or((cycle_budget + cycles_per_frame - 1) / cycles_per_frame);
+    let mut cpu_profile = CpuProfile::default();
     for frame in 0..frame_count {
         vdp.borrow_mut().tick();
         cpu.set_irq_source(0, true);
         cpu.set_irq_source(0, false);
         cpu.run(cycles_per_frame);
+        if let Some(profile) = cpu.take_profile() {
+            cpu_profile.accumulate(profile);
+        }
         for &(address, expected) in &memory_expectations {
             let actual = cpu.read_mem_u8(address);
             assert_eq!(actual, expected, "frame {frame}: memory 0x{address:08X}");
         }
+    }
+
+    if profile_cpu {
+        let total = cpu_profile.total();
+        println!(
+            "CPU profile: ticks={} measured={:.3} ms",
+            cpu_profile.ticks,
+            total.as_secs_f64() * 1_000.0
+        );
+        for (name, duration) in CPU_PROFILE_STAGE_NAMES.iter().zip(cpu_profile.stages) {
+            let share = if total.is_zero() {
+                0.0
+            } else {
+                duration.as_secs_f64() * 100.0 / total.as_secs_f64()
+            };
+            println!(
+                "  {name:<24} {:>7.3} ms ({share:>5.1}%)",
+                duration.as_secs_f64() * 1_000.0
+            );
+        }
+        println!(
+            "  Profiling adds per-stage timing overhead; do not use this run for wall-clock comparisons."
+        );
     }
 
     let result = cpu.read_reg(1);
@@ -127,7 +157,12 @@ fn main() {
         "program did not halt (pc=0x{:08X})",
         cpu.pc()
     );
-    if allow_running && music_stream.is_some() {
+    if allow_running && profile_cpu {
+        println!(
+            "PROFILED: {path}; frames={frame_count}; cycles={}",
+            cpu.cycles()
+        );
+    } else if allow_running && music_stream.is_some() {
         println!(
             "PASS: {path} music stream; frames={frame_count}; memory checks={}; cycles={}",
             memory_expectations.len(),
