@@ -68,8 +68,15 @@ fn make_dsfs(files: &[(&[u8; 11], &[u8])]) -> Vec<u8> {
         image[entry] = 1;
         image[entry + 1..entry + 12].copy_from_slice(*name);
         let blocks = data.len().div_ceil(SECTOR) as u32;
-        assert!(next + blocks <= TOTAL as u32, "test files exceed DSFS capacity");
-        be32(&mut image, entry + 16, if data.is_empty() { 0 } else { next });
+        assert!(
+            next + blocks <= TOTAL as u32,
+            "test files exceed DSFS capacity"
+        );
+        be32(
+            &mut image,
+            entry + 16,
+            if data.is_empty() { 0 } else { next },
+        );
         be32(&mut image, entry + 20, data.len() as u32);
         be32(&mut image, entry + 24, 1_700_000_000);
         be32(&mut image, entry + 28, 1_700_000_000);
@@ -171,9 +178,8 @@ impl Harness {
         let vdp = connect_devices_with_vdp(&mut bus);
         connect_idc(&mut bus, drives);
         let mut cpu = AnyCpu::new(cpu_kind, bus);
-        let guest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/dos.bin")).expect(
-            "dos.bin is missing; build it from dos.sol (see the module comment)",
-        );
+        let guest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/dos.bin"))
+            .expect("dos.bin is missing; build it from dos.sol (see the module comment)");
         cpu.load_program(0, &guest);
         Harness {
             cpu,
@@ -330,11 +336,7 @@ fn temp_root(tag: &str) -> PathBuf {
     root
 }
 
-fn hex_returns_to_shell_at_budget(
-    cycles_per_frame: usize,
-    cpu_kind: CpuKind,
-    tag: &str,
-) {
+fn hex_returns_to_shell_at_budget(cycles_per_frame: usize, cpu_kind: CpuKind, tag: &str) {
     let root = temp_root(tag);
     let contents = b"0123456789ABCD";
     std::fs::write(
@@ -355,7 +357,10 @@ fn hex_returns_to_shell_at_budget(
     h.frames(render_frames);
     let text = h.screen();
     assert_hex_columns(&text);
-    assert!(text.contains("00F0:"), "HEX rendering did not finish:\n{text}");
+    assert!(
+        text.contains("00F0:"),
+        "HEX rendering did not finish:\n{text}"
+    );
     h.command("Q", "0>", command_frames);
     h.command("HELP", "COPY SRC DST", render_frames);
     h.command("EXIT", "BYE", command_frames);
@@ -499,7 +504,11 @@ fn dos_runs_sparse_wax_and_rejects_invalid_images() {
         wrap(&h.screen())
     );
     assert_eq!(h.cpu.read_mem_u8(0x0001_0001), 0x00);
-    assert_eq!(h.cpu.read_mem_u8(0x0080_0000), 0, "sparse hole was modified");
+    assert_eq!(
+        h.cpu.read_mem_u8(0x0080_0000),
+        0,
+        "sparse hole was modified"
+    );
     assert!(!h.cpu.is_running(), "WAX HALT should stop the guest CPU");
     std::fs::remove_dir_all(&root).unwrap();
 }
@@ -537,7 +546,11 @@ fn dos_shell_manages_files_on_two_drives() {
     let image = h.image("disk0.img");
     assert_eq!(entry(&image, 1)[0], 1, "EMPTY.TXT entry not used");
     assert_eq!(&entry(&image, 1)[1..12], b"EMPTY   TXT");
-    assert_eq!(entry_field(&image, 1, 16), 0, "empty file must not use blocks");
+    assert_eq!(
+        entry_field(&image, 1, 16),
+        0,
+        "empty file must not use blocks"
+    );
     assert_eq!(entry_field(&image, 1, 20), 0);
 
     // REN changes only the name; timestamps and allocation are untouched.
@@ -585,11 +598,15 @@ fn dos_shell_manages_files_on_two_drives() {
         "metadata bits only"
     );
     assert!(
-        image[BITMAP_OFFSET + 4..BITMAP_OFFSET + SECTOR].iter().all(|&b| b == 0),
+        image[BITMAP_OFFSET + 4..BITMAP_OFFSET + SECTOR]
+            .iter()
+            .all(|&b| b == 0),
         "padding bits must stay clear"
     );
     assert!(
-        image[DIR_OFFSET..DIR_OFFSET + 16 * SECTOR].iter().all(|&b| b == 0),
+        image[DIR_OFFSET..DIR_OFFSET + 16 * SECTOR]
+            .iter()
+            .all(|&b| b == 0),
         "directory must be empty"
     );
 
@@ -606,7 +623,11 @@ fn dos_shell_manages_files_on_two_drives() {
         "created/modified use the same RTC timestamp"
     );
     assert_eq!(&image[19 * SECTOR..19 * SECTOR + hello.len()], hello);
-    assert!(image[19 * SECTOR + hello.len()..20 * SECTOR].iter().all(|&b| b == 0));
+    assert!(
+        image[19 * SECTOR + hello.len()..20 * SECTOR]
+            .iter()
+            .all(|&b| b == 0)
+    );
     assert_eq!(image[BITMAP_OFFSET + 2], 0xF0, "copied block marked used");
 
     // HEX edits bytes in place and saves them.

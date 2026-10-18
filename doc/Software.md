@@ -27,6 +27,9 @@ tags:
 - [[doc/spec_DSFS|DSFS 仕様]] — フロッピーディスク用シンプルファイルシステム（ツール: `tools/dsfs/dsfs.py`、ゲストライブラリ: `sol/cpt32/idc.sol`, `sol/cpt32/dsfs.sol`）
 - [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v1/v2 specification]] / [[doc/ja/squeezvox/squeezvox4_spec_stub|日本語版]]
 
+- [[doc/spec_SGUB|SGUB v1 music stream]] — 60 Hz SGU レジスタ列、Furnace ROM エクスポート
+- [[doc/spec_SGUB_v2|SGUB v2 音楽ストリーム仕様案]] — pool ID参照と連続領域操作を使う Draft形式
+
 ## 開発 SDK と拡張
 
 - [[doc/spec_WASM_expansion_card|WASM Expansion Card ABI v1]]

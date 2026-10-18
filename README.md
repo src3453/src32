@@ -4,7 +4,7 @@ SRC32 CPU をベースにしたレトロ・モダン系ファンタジーコン�
 [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/src3453/src32)
 ## 主な内容
 
-Windows／Linuxで起動設定を操作できるPython GUIランチャーを用意しています。`python tools/cpt32-launcher/launcher.py` で開き、ROM・CPU方式・BIOS・ディスク・WASMカード・音声・music streamを選択して起動できます。設定とNamed profileは画面から保存します。[使い方と設定](tools/cpt32-launcher/README.md)を参照してください。
+Windows／Linuxで起動設定を操作できるPython GUIランチャーを用意しています。`python tools/cpt32-launcher/launcher.py` で開き、ROM・CPU方式・BIOS・ディスク・WASMカード・音声・music streamを選択して起動できます。ROMに `.sol` を指定すると自動でコンパイルして実行します。設定とNamed profileは画面から保存します。[使い方と設定](tools/cpt32-launcher/README.md)を参照してください。
 
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
 - **SRC32** — 32-bit RISC CPU。命令セット仕様は [`doc/spec_CPU.md`](doc/spec_CPU.md)。
@@ -181,15 +181,17 @@ FX tempo は `1E`〜`96`（30〜150 BPM）。VOL は独立した音量指定な�
 - 保存形式は YAML schema v1。`format_version`, `tempo_bpm`, `ticks_per_row`, `repeat`, `orders`, `patterns`, `instruments` を持ちます。pattern はそれぞれ1〜256行×16 channelで、YAML の `rows` 配列の長さが有効な行数です。旧 project は従来どおり64行で読み込み、新規 pattern も64行です。Pattern の Rows を短くすると末尾行を削除し、長くすると空行を追加します。ID は0始まりです。
 - 欠損／不正 PCM の曲も保存できますが、preview／Export はエラーになります。Export は `.sgub` と同じ directory の汎用 `sgu_music_driver.sol` を出力します。既存ファイルの置換は確認後、両方の temporary file が書き込めてから実行します。
 
-### SGUB v1 とゲスト再生
+### SGUB v1/v2 とゲスト再生
 
 SGUB header は20 byte: `SGUB`, version=1, voices=16, flags（bit0 repeat）, reserved=0、big-endian u32 の frame count / initial record count / total size。
 initial record の後に各 frame の big-endian u16 record count と record を格納します。
 record は target u8 / address u24 big-endian / value u8 の5 byte。target 0/1 は各 SGU の offset `0..8FF`、target 2 は共有 PCMRAM の offset `0..FFFFF`。
 不正 header、範囲外 address、切り詰め、余剰 byte は再生前に拒否します。VSYNC は60 Hz、tracker tick は accumulator に BPM を加え150ごとに発生します。
 
+Music Editorはv1を出力し、FurnaceのROM exporterはpool参照方式のv2を出力します。共通driverは両方に対応します。v2の詳細は [SGUB v2仕様](doc/spec_SGUB_v2.md) を参照してください。古いdriver binaryやSGUBと同じ場所にあるdriver sourceのコピーを使用している場合は、最新の `sol/cpt32/sgu_music_driver.sol` に更新し再コンパイルしてください。SGUBの再exportは不要です。
+
 ```sh
-python3 tools/solc/solc.py compile sol/cpt32/sgu_music_driver.sol --out target/sgu_music_driver.asm
+python3 tools/solc/solc.py compile sol/cpt32/sgu_music_driver.sol -O speed --out target/sgu_music_driver.asm
 python3 tools/asm/asm.py target/sgu_music_driver.asm -o target/sgu_music_driver.bin
 cargo run -- target/sgu_music_driver.bin --music-stream path/to/song.sgub
 cargo run --bin src32_testbench -- target/sgu_music_driver.bin --allow-running --music-stream path/to/song.sgub --frames 3 --expect-mem-u8 0x80020800=0x01 --expect-mem-u8 0x80020801=0xB8

@@ -303,6 +303,24 @@ def user_profile_path() -> Path:
     return base / "CPT32" / "Launcher" / "profiles.json"
 
 
+def prepare_program(program: str | None, workspace: Path, run_dir: Path):
+    """Plan source compilation without changing the selected source or its directory."""
+    if not program or Path(program).suffix.lower() != ".sol":
+        return program, []
+    compiler = workspace / "tools" / "solc" / "solc.py"
+    assembler = workspace / "tools" / "asm" / "asm.py"
+    for tool in (compiler, assembler):
+        if not tool.is_file():
+            raise ConfigError(f"solのビルドツールが見つかりません: {tool}")
+    assembly = run_dir / "program.asm"
+    binary = run_dir / "program.bin"
+    steps = [
+        ("solをコンパイルしています…", [sys.executable, str(compiler), "compile", program, "-o", str(assembly)]),
+        ("アセンブルしています…", [sys.executable, str(assembler), str(assembly), "-o", str(binary)]),
+    ]
+    return str(binary), steps
+
+
 class Launcher(tk.Tk):
     def __init__(self):
         super().__init__()
@@ -311,6 +329,9 @@ class Launcher(tk.Tk):
         self.minsize(820, 680)
         self.result_queue: queue.Queue = queue.Queue()
         self.process: subprocess.Popen | None = None
+        self.running = False
+        self.stop_requested = threading.Event()
+        self.process_lock = threading.Lock()
         self.run_directory: Path | None = None
         self.document: dict = {}
         self.config_source = tk.StringVar(value=str(REPO / "config.yaml"))
@@ -346,7 +367,7 @@ class Launcher(tk.Tk):
         top = ttk.Frame(self, padding=(12, 10, 12, 5))
         top.grid(row=0, column=0, sticky="ew")
         top.columnconfigure(1, weight=1)
-        ttk.Label(top, text="ROM / カートリッジ").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
+        ttk.Label(top, text="ROM / sol / カートリッジ").grid(row=0, column=0, sticky="w", padx=(0, 8), pady=4)
         ttk.Entry(top, textvariable=self.program).grid(row=0, column=1, sticky="ew", pady=4)
         ttk.Button(top, text="選択…", command=self._choose_program).grid(row=0, column=2, padx=(6, 0))
         ttk.Label(top, text="設定 YAML").grid(row=1, column=0, sticky="w", padx=(0, 8), pady=4)
@@ -384,7 +405,7 @@ class Launcher(tk.Tk):
         ttk.Checkbutton(checks, text="一時停止で開始", variable=self.start_paused).pack(side="left")
         ttk.Label(general, text="ログレベル").grid(row=5, column=0, sticky="w", pady=(14, 5))
         ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=5, column=1, sticky="w", pady=(14, 5))
-        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg を指定できます。monitor起動ではROMを省略できます。", foreground="#555").grid(row=6, column=0, columnspan=2, sticky="w", pady=(16, 4))
+        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=6, column=0, columnspan=2, sticky="w", pady=(16, 4))
         hardware = ttk.Frame(self.tabs, padding=12)
         hardware.columnconfigure(1, weight=1)
         self.tabs.add(hardware, text="ROM・ディスク・拡張")
@@ -447,7 +468,7 @@ class Launcher(tk.Tk):
             variable.set(path)
 
     def _choose_program(self):
-        self._choose_into(self.program, "CPT32 ROM / cartridge", "*.bin *.wax *.cpt32pkg")
+        self._choose_into(self.program, "CPT32 ROM / sol / cartridge", "*.bin *.wax *.cpt32pkg *.sol")
 
     def _choose_config(self):
         self._choose_into(self.config_source, "設定 YAML", "*.yaml *.yml")
@@ -794,7 +815,7 @@ class Launcher(tk.Tk):
         return command
 
     def start_emulator(self):
-        if self.process is not None:
+        if self.running:
             messagebox.showinfo("起動中", "エミュレーターは既に起動しています", parent=self)
             return
         try:
@@ -810,12 +831,17 @@ class Launcher(tk.Tk):
                 raise ConfigError(f"ROMが見つかりません: {program_path}")
             self.run_directory = Path(tempfile.mkdtemp(prefix="cpt32-launch-"))
             (self.run_directory / "config.yaml").write_text(dump_yaml(staged), encoding="utf-8")
+            program_path, steps = prepare_program(
+                program_path, Path(self.workspace.get()).expanduser().resolve(), self.run_directory,
+            )
             command = self._launch_command(self.run_directory, program_path)
-            self._log("$ " + subprocess.list2cmdline(command))
-            self.status.set("エミュレーターを起動しています…")
+            steps.append(("エミュレーターを起動しています…", command))
+            self.status.set(steps[0][0])
             self.start_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
-            self.worker = threading.Thread(target=self._spawn_and_read, args=(command, self.run_directory), daemon=True)
+            self.stop_requested.clear()
+            self.running = True
+            self.worker = threading.Thread(target=self._spawn_and_read, args=(steps, self.run_directory), daemon=True)
             self.worker.start()
         except (OSError, ConfigError) as error:
             if self.run_directory and self.process is None:
@@ -823,13 +849,29 @@ class Launcher(tk.Tk):
                 self.run_directory = None
             messagebox.showerror("起動できません", str(error), parent=self)
 
-    def _spawn_and_read(self, command, cwd):
+    def _spawn_and_read(self, steps, cwd):
         try:
-            self.process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
-            self.result_queue.put(("started", self.process.pid))
-            for line in self.process.stdout:
-                self.result_queue.put(("line", line.rstrip()))
-            code = self.process.wait()
+            code = 0
+            for index, (label, command) in enumerate(steps):
+                # Serialize stop with process creation, including between build stages.
+                with self.process_lock:
+                    if self.stop_requested.is_set():
+                        break
+                    self.process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
+                    process = self.process
+                self.result_queue.put(("line", "$ " + subprocess.list2cmdline(command)))
+                self.result_queue.put(("phase", label))
+                if index == len(steps) - 1:
+                    self.result_queue.put(("started", process.pid))
+                with process.stdout:
+                    for line in process.stdout:
+                        self.result_queue.put(("line", line.rstrip()))
+                code = process.wait()
+                if self.stop_requested.is_set():
+                    break
+                if code != 0 and index < len(steps) - 1:
+                    self.result_queue.put(("error", f"{label} 失敗 (終了コード {code})。ログを確認してください。"))
+                    return
             self.result_queue.put(("exited", code))
         except (OSError, subprocess.SubprocessError) as error:
             self.result_queue.put(("error", str(error)))
@@ -840,6 +882,8 @@ class Launcher(tk.Tk):
                 kind, value = self.result_queue.get_nowait()
                 if kind == "line":
                     self._log(value)
+                elif kind == "phase":
+                    self.status.set(value)
                 elif kind == "started":
                     self.status.set(f"起動中 (PID {value})")
                 elif kind == "exited":
@@ -855,6 +899,7 @@ class Launcher(tk.Tk):
 
     def _finish_process(self):
         self.process = None
+        self.running = False
         self.start_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         if self.run_directory:
@@ -862,27 +907,30 @@ class Launcher(tk.Tk):
             self.run_directory = None
 
     def stop_emulator(self):
-        if self.process is not None and self.process.poll() is None:
+        with self.process_lock:
+            self.stop_requested.set()
+            process = self.process
+        if process is not None and process.poll() is None:
             if os.name == "nt":
                 subprocess.run(
-                    ["taskkill", "/T", "/F", "/PID", str(self.process.pid)],
+                    ["taskkill", "/T", "/F", "/PID", str(process.pid)],
                     stdout=subprocess.DEVNULL,
                     stderr=subprocess.DEVNULL,
                     check=False,
                 )
             else:
-                self.process.terminate()
+                process.terminate()
             self.status.set("停止しています…")
 
     def _on_close(self):
-        process = self.process
-        if self.process is not None and self.process.poll() is None:
+        if self.running:
             if not messagebox.askyesno("終了", "起動中のエミュレーターを停止してランチャーを閉じますか？", parent=self):
                 return
             self.stop_emulator()
             if self.run_directory:
                 run_directory = self.run_directory
-                threading.Thread(target=lambda: (process.wait(), shutil.rmtree(run_directory, ignore_errors=True)), daemon=True).start()
+                worker = self.worker
+                threading.Thread(target=lambda: (worker.join(), shutil.rmtree(run_directory, ignore_errors=True)), daemon=True).start()
         try:
             PROFILE_FILE.parent.mkdir(parents=True, exist_ok=True)
             data = json.loads(PROFILE_FILE.read_text(encoding="utf-8")) if PROFILE_FILE.is_file() else {"profiles": {}}

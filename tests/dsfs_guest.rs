@@ -77,11 +77,7 @@ fn dsfs_guest_reads_writes_and_deletes() {
     let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
     connect_idc(&mut bus, drives);
     let mut cpu = Cpu::new(bus);
-    let guest = std::fs::read(concat!(
-        env!("CARGO_MANIFEST_DIR"),
-        "/dsfs_guest.bin"
-    ))
-    .expect(
+    let guest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/dsfs_guest.bin")).expect(
         "dsfs_guest.bin is missing; build it from tools/dsfs/dsfs_smoke.sol \
          (see the module comment)",
     );

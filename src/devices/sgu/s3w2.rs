@@ -45,6 +45,8 @@ pub enum ModulationType {
     Ring = 2,
     HardSync = 3,
     Window = 4,
+    SlewRate = 5,
+    SlewStep = 6,
 }
 
 impl From<u8> for ModulationType {
@@ -54,6 +56,8 @@ impl From<u8> for ModulationType {
             2 => ModulationType::Ring,
             3 => ModulationType::HardSync,
             4 => ModulationType::Window,
+            5 => ModulationType::SlewRate,
+            6 => ModulationType::SlewStep,
             _ => ModulationType::None,
         }
     }
@@ -96,6 +100,7 @@ pub struct Channel {
     pub phase: f64,
     pub last_sample: i16,
     pub active: bool,
+    slew_current: i32,
 
     // Wavetable data (256 bytes)
     pub wavetable: [u8; WAVETABLE_SIZE],
@@ -132,6 +137,7 @@ impl Default for Channel {
             phase: 0.0,
             last_sample: 0,
             active: true,
+            slew_current: 0,
             wavetable: [0x80; WAVETABLE_SIZE],
         };
         ch.reset();
@@ -160,8 +166,24 @@ impl Channel {
         self.last_sample = 0;
         self.lfsr_state = 0x12D4_803C;
         self.active = true;
+        self.slew_current = 0;
         self.wavetable.fill(0x80);
     }
+    // Unsigned Q8.8 accumulator, updated at the 192 kHz internal clock.
+    fn apply_slew(&mut self, sample: u8) -> u8 {
+        let difference = (i32::from(sample) << 8) - self.slew_current;
+        let step = i32::from(self.modulation_param_1);
+        self.slew_current = match self.modulation_type {
+            ModulationType::SlewRate => self.slew_current + difference.clamp(-step, step),
+            ModulationType::SlewStep => {
+                self.slew_current + if difference > 0 { step } else { -step }
+            }
+            _ => return sample,
+        }
+        .clamp(0, 255 << 8);
+        (self.slew_current >> 8) as u8
+    }
+
     fn invalidate_sqv4(&mut self) {
         self.sqv4_validated = false;
         self.sqv4_version = 0;
@@ -329,6 +351,7 @@ impl S3w2Sound {
             }
             0x0A => {
                 c.phase = 0.0;
+                c.slew_current = 0;
                 c.invalidate_sqv4();
                 c.lfsr_state = 0x12D4_803C;
             }
@@ -528,7 +551,7 @@ impl S3w2Sound {
             }
         }
 
-        (sample8 as i32 - 128) as i16
+        (i32::from(c.apply_slew(sample8)) - 128) as i16
     }
 
     fn generate_pcm_sample(&mut self, ch: usize) -> i16 {
@@ -550,7 +573,7 @@ impl S3w2Sound {
 
         let addr = ((phase + c.pcm_start_addr as u64) as usize) & (PCM_RAM_SIZE - 1);
         let sample8 = self.pcm_ram.borrow()[addr];
-        let mut out = (sample8 as i32 - 128) as i16;
+        let mut out = (i32::from(self.channels[ch].apply_slew(sample8)) - 128) as i16;
 
         let c = &mut self.channels[ch];
         if (addr as u32) >= c.pcm_end_addr {
@@ -708,7 +731,8 @@ impl S3w2Sound {
             c.lfsr_state = (c.lfsr_state >> 1) | (bit << 22);
         }
 
-        if (c.lfsr_state & 1) != 0 { 127 } else { -128 }
+        let sample = if (c.lfsr_state & 1) != 0 { 255 } else { 0 };
+        (i32::from(c.apply_slew(sample)) - 128) as i16
     }
 
     fn generate_dma_pcm_sample(&mut self, _ch: usize) -> i16 {
@@ -771,6 +795,56 @@ impl S3w2Sound {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn slew_modes_keep_existing_ids_and_limit_internal_samples() {
+        assert_eq!(ModulationType::from(3), ModulationType::HardSync);
+        assert_eq!(ModulationType::from(4), ModulationType::Window);
+        for waveform in [
+            WaveformType::Wavetable,
+            WaveformType::Pcm,
+            WaveformType::Noise,
+        ] {
+            for mode in [ModulationType::SlewRate, ModulationType::SlewStep] {
+                let mut sound = S3w2Sound::new();
+                sound.write_pcm_ram(0, 255);
+                let c = &mut sound.channels[0];
+                c.waveform_type = waveform;
+                c.wavetable.fill(255);
+                c.lfsr_state = 1;
+                c.volume = 4;
+                c.pcm_end_addr = 16;
+                c.modulation_type = mode;
+                c.modulation_param_1 = 256;
+                assert_eq!(sound.generate_sample(0), -127);
+                assert_eq!(sound.generate_sample(0), -126);
+                sound.write_register(0x80a, 0);
+                assert_eq!(sound.channels[0].slew_current, 0);
+                sound.channels[0].lfsr_state = 1;
+                assert_eq!(sound.generate_sample(0), -127);
+                sound.reset();
+                assert_eq!(sound.channels[0].slew_current, 0);
+            }
+        }
+    }
+
+    #[test]
+    fn slew_rate_settles_and_step_oscillates_with_saturation() {
+        let mut c = Channel::default();
+        c.modulation_type = ModulationType::SlewRate;
+        c.modulation_param_1 = 256;
+        assert_eq!(c.apply_slew(1), 1);
+        assert_eq!(c.apply_slew(1), 1);
+        c.modulation_type = ModulationType::SlewStep;
+        // Like the Furnace stub, equality takes a negative step.
+        assert_eq!(c.apply_slew(1), 0);
+        assert_eq!(c.apply_slew(1), 1);
+        c.modulation_param_1 = 65535;
+        assert_eq!(c.apply_slew(255), 255);
+        assert_eq!(c.apply_slew(0), 0);
+        c.modulation_param_1 = 0;
+        assert_eq!(c.apply_slew(255), 0);
+    }
 
     #[test]
     fn test_initialization() {

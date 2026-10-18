@@ -110,7 +110,6 @@ fn run_until_halted(
     assert!(!cpu.is_running(), "CPU did not return to its input wait");
 }
 
-
 fn read_text_plane_any(cpu: &mut cpt32::cpu_select::AnyCpu) -> String {
     let mut text = String::new();
     for cell in 0..80 * 30 {
@@ -396,7 +395,6 @@ fn tb_repl_accepts_input_after_list_and_run() {
         "keyboard input queued during LIST was not accepted"
     );
 
-
     run_frames(&mut cpu, &vdp, &input, "run\n", 16);
     run_until_halted(&mut cpu, &vdp, 256);
     assert!(
@@ -410,7 +408,6 @@ fn tb_repl_accepts_input_after_list_and_run() {
         "keyboard input was not accepted after RUN"
     );
 }
-
 
 #[test]
 fn tb_repl_accepts_input_after_list_and_run_pipelined() {
@@ -470,7 +467,10 @@ fn wait_pipeline_halted(
         cpu.set_irq_source(0, false);
         cpu.run(CYCLES_PER_FRAME as usize);
     }
-    assert!(!cpu.is_running(), "pipeline CPU did not return to input wait");
+    assert!(
+        !cpu.is_running(),
+        "pipeline CPU did not return to input wait"
+    );
 }
 #[test]
 fn tb_repl_accepts_input_after_configured_hdd_load() {
