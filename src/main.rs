@@ -41,6 +41,103 @@ mod render;
 const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
+const CPU_RUN_BATCH_CYCLES: usize = 256;
+const DEFAULT_CPU_TIME_SLICE_MS: i32 = 8;
+const MAX_CPU_TIME_SLICE_MS: i32 = 16;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum CpuExecutionMode {
+    Strict,
+    BestEffort,
+    CycleIndependent,
+}
+
+impl CpuExecutionMode {
+    const ALL: [Self; 3] = [Self::Strict, Self::BestEffort, Self::CycleIndependent];
+    const LABELS: [&'static str; 3] = ["Strict", "Best-effort", "Cycle-independent"];
+
+    fn parse(value: &str) -> Result<Self, String> {
+        match value.to_ascii_lowercase().as_str() {
+            "strict" => Ok(Self::Strict),
+            "best-effort" => Ok(Self::BestEffort),
+            "cycle-independent" => Ok(Self::CycleIndependent),
+            _ => Err(format!(
+                "unknown CPU execution mode '{value}' (expected 'strict', 'best-effort', or 'cycle-independent')"
+            )),
+        }
+    }
+
+    fn selection_index(self) -> usize {
+        match self {
+            Self::Strict => 0,
+            Self::BestEffort => 1,
+            Self::CycleIndependent => 2,
+        }
+    }
+
+    fn from_selection_index(index: usize) -> Self {
+        Self::ALL[index.min(Self::ALL.len() - 1)]
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct CpuExecutionSettings {
+    mode: CpuExecutionMode,
+    time_slice_ms: i32,
+}
+
+impl Default for CpuExecutionSettings {
+    fn default() -> Self {
+        Self {
+            mode: CpuExecutionMode::BestEffort,
+            time_slice_ms: DEFAULT_CPU_TIME_SLICE_MS,
+        }
+    }
+}
+
+impl CpuExecutionSettings {
+    fn time_slice(self) -> Duration {
+        Duration::from_millis(self.time_slice_ms.clamp(1, MAX_CPU_TIME_SLICE_MS) as u64)
+    }
+
+    fn cycle_budget(self, configured_cycles: usize) -> Option<usize> {
+        match self.mode {
+            CpuExecutionMode::Strict | CpuExecutionMode::BestEffort => Some(configured_cycles),
+            CpuExecutionMode::CycleIndependent => None,
+        }
+    }
+
+    fn run(self, cpu: &mut AnyCpu, max_cycles: usize) {
+        match self.mode {
+            CpuExecutionMode::Strict => cpu.run(max_cycles),
+            CpuExecutionMode::BestEffort => {
+                run_cpu_with_time_slice(cpu, Some(max_cycles), self.time_slice());
+            }
+            CpuExecutionMode::CycleIndependent => {
+                run_cpu_with_time_slice(cpu, None, self.time_slice());
+            }
+        }
+    }
+}
+
+fn run_cpu_with_time_slice(cpu: &mut AnyCpu, cycle_limit: Option<usize>, time_slice: Duration) {
+    let start = Instant::now();
+    let mut scheduled_cycles = 0usize;
+    loop {
+        if scheduled_cycles != 0 && start.elapsed() >= time_slice {
+            break;
+        }
+        let remaining = cycle_limit
+            .map(|limit| limit.saturating_sub(scheduled_cycles))
+            .unwrap_or(CPU_RUN_BATCH_CYCLES);
+        if remaining == 0 {
+            break;
+        }
+        let batch = remaining.min(CPU_RUN_BATCH_CYCLES);
+        cpu.run(batch);
+        scheduled_cycles += batch;
+    }
+}
 
 fn load_program_data(
     data: &[u8],
@@ -609,6 +706,7 @@ struct GuiApp {
     debug_gui: Option<DebugGui>,
     frame_profiler: Option<FrameProfiler>,
     cpu_kind: CpuKind,
+    cpu_execution: CpuExecutionSettings,
     enable_debug_gui: bool,
     start_paused: bool,
     music_stream: Option<PathBuf>,
@@ -625,6 +723,7 @@ impl GuiApp {
         start_paused: bool,
         music_stream: Option<&Path>,
         cpu_kind: CpuKind,
+        cpu_execution: CpuExecutionSettings,
     ) -> Result<Self, String> {
         let mut machine =
             build_guest_machine(Path::new(program_path), music_stream, None, cpu_kind)?;
@@ -667,6 +766,7 @@ impl GuiApp {
             debug_gui: None,
             frame_profiler: profile_cpu.then(FrameProfiler::new),
             cpu_kind,
+            cpu_execution,
             enable_debug_gui,
             start_paused,
             music_stream: music_stream.map(Path::to_path_buf),
@@ -879,9 +979,9 @@ impl GuiApp {
 #[derive(Clone, Copy, Debug, PartialEq)]
 struct PerformanceStats {
     running_cycles: u128,
-    cycle_budget: usize,
+    cycle_budget: Option<usize>,
     instructions: u128,
-    cpu_utilization_percent: f64,
+    cpu_utilization_percent: Option<f64>,
     runtime_percent: Option<f64>,
     kips: f64,
     ipc: f64,
@@ -893,9 +993,10 @@ impl PerformanceStats {
         emulated_cycles: u128,
         instructions: u128,
         emulation_elapsed: Duration,
-        cycle_budget: usize,
+        cycle_budget: Option<usize>,
     ) -> Self {
-        let cpu_utilization_percent = running_cycles as f64 * 100.0 / cycle_budget as f64;
+        let cpu_utilization_percent =
+            cycle_budget.map(|budget| running_cycles as f64 * 100.0 / budget as f64);
         let runtime_percent = if emulation_elapsed.is_zero() || emulated_cycles == 0 {
             None
         } else {
@@ -1110,10 +1211,20 @@ impl DebugUiState {
             10_000_000,
         )
     }
+    fn record_cpu_utilization(&mut self, utilization: Option<f64>) {
+        let Some(utilization) = utilization else {
+            self.cpu_utilization_history.clear();
+            return;
+        };
+        if self.cpu_utilization_history.len() == Self::PERFORMANCE_HISTORY_SAMPLES {
+            self.cpu_utilization_history.pop_front();
+        }
+        self.cpu_utilization_history.push_back(utilization as f32);
+    }
 
-    fn execute_cpu(&mut self, cpu: &mut AnyCpu) {
+    fn execute_cpu(&mut self, cpu: &mut AnyCpu, settings: CpuExecutionSettings) {
         if self.running {
-            cpu.run(self.cycles_per_frame());
+            settings.run(cpu, self.cycles_per_frame());
         } else if self.queued_steps > 0 {
             for _ in 0..self.queued_steps {
                 if !cpu.step_once() {
@@ -1130,7 +1241,13 @@ impl DebugUiState {
         self.queued_steps = 0;
     }
 
-    fn draw_windows(&mut self, ui: &Ui, cpu: &mut AnyCpu, vdp: &Rc<RefCell<Vdp>>) {
+    fn draw_windows(
+        &mut self,
+        ui: &Ui,
+        cpu: &mut AnyCpu,
+        vdp: &Rc<RefCell<Vdp>>,
+        cpu_execution: &mut CpuExecutionSettings,
+    ) {
         ui.main_menu_bar(|| {
             ui.menu("Windows", || {
                 for window in DebugWindow::ALL {
@@ -1148,7 +1265,7 @@ impl DebugUiState {
         });
 
         if self.visible_windows[DebugWindow::Controls as usize] {
-            self.draw_controls(ui, cpu);
+            self.draw_controls(ui, cpu, cpu_execution);
         }
         if self.visible_windows[DebugWindow::Disassembly as usize] {
             self.draw_disassembly(ui, cpu);
@@ -1298,17 +1415,21 @@ impl DebugUiState {
             .size([560.0, 660.0], Condition::FirstUseEver)
             .build(|| {
                 if let Some(stats) = self.performance {
-                    ui.text(format!(
-                        "CPU utilization: {:.1}% ({} / {} running cycles per VSync)",
-                        stats.cpu_utilization_percent, stats.running_cycles, stats.cycle_budget
-                    ));
-                    ProgressBar::new(
-                        (stats.cpu_utilization_percent / 100.0).clamp(0.0, 1.0) as f32,
-                    )
-                    .size([450.0, 18.0])
-                    .build(ui);
-                    ui.same_line();
-                    ui.text(format!("{:.1}%", stats.cpu_utilization_percent));
+                    if let (Some(utilization), Some(budget)) =
+                        (stats.cpu_utilization_percent, stats.cycle_budget)
+                    {
+                        ui.text(format!(
+                            "CPU utilization: {utilization:.1}% ({} / {budget} running cycles per VSync)",
+                            stats.running_cycles
+                        ));
+                        ProgressBar::new((utilization / 100.0).clamp(0.0, 1.0) as f32)
+                            .size([450.0, 18.0])
+                            .build(ui);
+                        ui.same_line();
+                        ui.text(format!("{utilization:.1}%"));
+                    } else {
+                        ui.text("CPU utilization: N/A (cycle-independent mode)");
+                    }
                     if let Some(runtime_percent) = stats.runtime_percent {
                         ui.text(format!(
                             "Runtime: {:.1}% of realtime ({:.3}x emulation; bar max 100%)",
@@ -1479,13 +1600,40 @@ impl DebugUiState {
             });
     }
 
-    fn draw_controls(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
+    fn draw_controls(
+        &mut self,
+        ui: &Ui,
+        cpu: &mut AnyCpu,
+        cpu_execution: &mut CpuExecutionSettings,
+    ) {
         ui.window("Debug Controls")
-            .size([520.0, 360.0], Condition::FirstUseEver)
+            .size([520.0, 400.0], Condition::FirstUseEver)
             .build(|| {
                 ui.checkbox("Run CPU (Realtime)", &mut self.running);
                 ui.input_text("Cycles / frame", &mut self.cycles_per_frame_input)
                     .build();
+                let mut mode_index = cpu_execution.mode.selection_index();
+                ui.combo_simple_string(
+                    "CPU execution mode",
+                    &mut mode_index,
+                    &CpuExecutionMode::LABELS,
+                );
+                cpu_execution.mode = CpuExecutionMode::from_selection_index(mode_index);
+                ui.input_int("CPU time slice (ms)", &mut cpu_execution.time_slice_ms)
+                    .build();
+                cpu_execution.time_slice_ms =
+                    cpu_execution.time_slice_ms.clamp(1, MAX_CPU_TIME_SLICE_MS);
+                ui.text(match cpu_execution.mode {
+                    CpuExecutionMode::Strict => {
+                        "Strict: exactly Cycles/frame; may delay GUI rendering."
+                    }
+                    CpuExecutionMode::BestEffort => {
+                        "Best-effort: stop at cycle cap or time slice; missed cycles are dropped."
+                    }
+                    CpuExecutionMode::CycleIndependent => {
+                        "Cycle-independent: time-sliced; Cycles/frame is ignored."
+                    }
+                });
                 if ui.button("Pause") {
                     self.running = false;
                 }
@@ -1703,13 +1851,15 @@ impl DebugGui {
         cpu: &mut AnyCpu,
         vdp: &Rc<RefCell<Vdp>>,
         presenter: &mut render::WgpuPresenter,
+        cpu_execution: &mut CpuExecutionSettings,
     ) -> (Duration, Duration, Result<(), render::FrameError>) {
         let emulation_start = Instant::now();
-        self.state.execute_cpu(cpu);
+        self.state.execute_cpu(cpu, *cpu_execution);
         let emulation_elapsed = emulation_start.elapsed();
         let emulated_cycles = cpu.cycles();
         let running_cycles = cpu.running_cycles();
         let instructions = cpu.instructions_executed();
+        let cycle_budget = cpu_execution.cycle_budget(self.state.cycles_per_frame());
         if let Some((last_running_cycles, last_instructions, last_emulated_cycles)) =
             self.last_performance_sample
         {
@@ -1718,16 +1868,11 @@ impl DebugGui {
                 emulated_cycles.saturating_sub(last_emulated_cycles),
                 instructions.saturating_sub(last_instructions),
                 emulation_elapsed,
-                self.state.cycles_per_frame(),
+                cycle_budget,
             );
             self.state.performance = Some(stats);
-            if self.state.cpu_utilization_history.len() == DebugUiState::PERFORMANCE_HISTORY_SAMPLES
-            {
-                self.state.cpu_utilization_history.pop_front();
-            }
             self.state
-                .cpu_utilization_history
-                .push_back(stats.cpu_utilization_percent as f32);
+                .record_cpu_utilization(stats.cpu_utilization_percent);
             if let Some(runtime_percent) = stats.runtime_percent {
                 if self.state.runtime_percent_history.len()
                     == DebugUiState::PERFORMANCE_HISTORY_SAMPLES
@@ -1754,7 +1899,7 @@ impl DebugGui {
 
             let ui = self.imgui.frame();
             self.menu_bar_height = ui.frame_height();
-            self.state.draw_windows(ui, cpu, vdp);
+            self.state.draw_windows(ui, cpu, vdp, cpu_execution);
             self.platform.prepare_render(ui, window);
             let framebuffer_scale = f64::from(self.imgui.io().display_framebuffer_scale[1]);
             let top_reserve_px = (f64::from(self.menu_bar_height) * framebuffer_scale).max(0.0);
@@ -2025,8 +2170,13 @@ impl ApplicationHandler for GuiApp {
                     (self.window.as_ref(), self.presenter.as_mut())
                 {
                     let render_result = if let Some(debug_gui) = self.debug_gui.as_mut() {
-                        let (cpu_elapsed, render_elapsed, result) =
-                            debug_gui.render_frame(window, &mut self.cpu, &self.vdp, presenter);
+                        let (cpu_elapsed, render_elapsed, result) = debug_gui.render_frame(
+                            window,
+                            &mut self.cpu,
+                            &self.vdp,
+                            presenter,
+                            &mut self.cpu_execution,
+                        );
                         if let Some(profile) = profile.as_mut() {
                             profile.stages[1] = cpu_elapsed;
                             profile.stages[2] = render_elapsed;
@@ -2034,7 +2184,8 @@ impl ApplicationHandler for GuiApp {
                         result
                     } else {
                         let cpu_start = profile.as_ref().map(|_| Instant::now());
-                        self.cpu.run(cpt32::cpu::CYCLES_PER_FRAME as usize);
+                        self.cpu_execution
+                            .run(&mut self.cpu, cpt32::cpu::CYCLES_PER_FRAME as usize);
                         if let (Some(profile), Some(start)) = (profile.as_mut(), cpu_start) {
                             profile.stages[1] = start.elapsed();
                         }
@@ -2152,6 +2303,7 @@ struct GuiLaunchOptions {
     start_paused: bool,
     music_stream: Option<PathBuf>,
     cpu: Option<CpuKind>,
+    cpu_execution: CpuExecutionSettings,
 }
 
 fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
@@ -2182,6 +2334,18 @@ fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
     }))
 }
 
+fn parse_cpu_time_slice_ms(value: &str) -> Result<i32, String> {
+    let milliseconds = value.parse::<i32>().map_err(|_| {
+        format!("invalid CPU time slice '{value}' (expected 1..={MAX_CPU_TIME_SLICE_MS} ms)")
+    })?;
+    if !(1..=MAX_CPU_TIME_SLICE_MS).contains(&milliseconds) {
+        return Err(format!(
+            "CPU time slice must be between 1 and {MAX_CPU_TIME_SLICE_MS} ms"
+        ));
+    }
+    Ok(milliseconds)
+}
+
 fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     let mut positional = Vec::new();
     let mut enable_debug_gui = false;
@@ -2190,6 +2354,9 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
 
     let mut music_stream = None;
     let mut cpu: Option<CpuKind> = None;
+    let mut cpu_execution = CpuExecutionSettings::default();
+    let mut cpu_execution_mode_seen = false;
+    let mut cpu_time_slice_seen = false;
     let mut args = args.iter();
     while let Some(arg) = args.next() {
         match arg.as_str() {
@@ -2206,6 +2373,38 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 music_stream = Some(PathBuf::from(
                     args.next().ok_or("--music-stream requires a path")?,
                 ));
+            }
+            "--cpu-execution" => {
+                if cpu_execution_mode_seen {
+                    return Err("Duplicate --cpu-execution".into());
+                }
+                cpu_execution_mode_seen = true;
+                cpu_execution.mode =
+                    CpuExecutionMode::parse(args.next().ok_or("--cpu-execution requires a mode")?)?;
+            }
+            _ if arg.starts_with("--cpu-execution=") => {
+                if cpu_execution_mode_seen {
+                    return Err("Duplicate --cpu-execution".into());
+                }
+                cpu_execution_mode_seen = true;
+                cpu_execution.mode = CpuExecutionMode::parse(&arg["--cpu-execution=".len()..])?;
+            }
+            "--cpu-time-slice-ms" => {
+                if cpu_time_slice_seen {
+                    return Err("Duplicate --cpu-time-slice-ms".into());
+                }
+                cpu_time_slice_seen = true;
+                cpu_execution.time_slice_ms = parse_cpu_time_slice_ms(
+                    args.next().ok_or("--cpu-time-slice-ms requires a value")?,
+                )?;
+            }
+            _ if arg.starts_with("--cpu-time-slice-ms=") => {
+                if cpu_time_slice_seen {
+                    return Err("Duplicate --cpu-time-slice-ms".into());
+                }
+                cpu_time_slice_seen = true;
+                cpu_execution.time_slice_ms =
+                    parse_cpu_time_slice_ms(&arg["--cpu-time-slice-ms=".len()..])?;
             }
             "--cpu" => {
                 if cpu.is_some() {
@@ -2242,6 +2441,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
         start_paused,
         music_stream,
         cpu,
+        cpu_execution,
     })
 }
 
@@ -2274,13 +2474,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }
@@ -2300,6 +2500,7 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
         options.enable_debug_gui && options.start_paused,
         options.music_stream.as_deref(),
         cpu_kind,
+        options.cpu_execution,
     )?;
     event_loop
         .run_app(&mut app)
@@ -2421,6 +2622,99 @@ mod input_tests {
         assert!(profile.profile_cpu);
         assert!(profile.enable_debug_gui);
     }
+    #[test]
+    fn cpu_execution_mode_selection_defaults_to_best_effort_and_parses_cli_modes() {
+        let defaults = parse_gui_args(&["guest.bin".into()]).unwrap();
+        assert_eq!(defaults.cpu_execution.mode, CpuExecutionMode::BestEffort);
+        let best_effort = parse_gui_args(&[
+            "guest.bin".into(),
+            "--cpu-execution".into(),
+            "best-effort".into(),
+        ])
+        .unwrap();
+        assert_eq!(best_effort.cpu_execution.mode, CpuExecutionMode::BestEffort);
+
+        let strict = parse_gui_args(&[
+            "guest.bin".into(),
+            "--cpu-execution".into(),
+            "strict".into(),
+        ])
+        .unwrap();
+        assert_eq!(strict.cpu_execution.mode, CpuExecutionMode::Strict);
+
+        let cycle_independent = parse_gui_args(&[
+            "guest.bin".into(),
+            "--cpu-execution=cycle-independent".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            cycle_independent.cpu_execution.mode,
+            CpuExecutionMode::CycleIndependent
+        );
+        assert!(
+            parse_gui_args(&[
+                "guest.bin".into(),
+                "--cpu-execution".into(),
+                "unknown".into(),
+            ])
+            .is_err()
+        );
+    }
+    #[test]
+    fn cycle_independent_mode_clears_cycle_budget_history() {
+        let mut state = DebugUiState::new(false);
+        state.cpu_utilization_history.extend([25.0, 50.0]);
+
+        state.record_cpu_utilization(None);
+        assert!(state.cpu_utilization_history.is_empty());
+
+        state.record_cpu_utilization(Some(75.0));
+        assert_eq!(
+            state
+                .cpu_utilization_history
+                .into_iter()
+                .collect::<Vec<_>>(),
+            [75.0]
+        );
+    }
+
+    #[test]
+    fn cpu_execution_modes_preserve_cycle_limit_or_use_wall_time_slice() {
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        let mut cpu = AnyCpu::new(CpuKind::Scalar, bus);
+        cpu.load_program(0, &[0; 4]);
+        let mut settings = CpuExecutionSettings {
+            mode: CpuExecutionMode::Strict,
+            time_slice_ms: DEFAULT_CPU_TIME_SLICE_MS,
+        };
+
+        settings.run(&mut cpu, 10);
+        assert_eq!(cpu.cycles(), 10);
+
+        cpu.reset(0);
+        settings.mode = CpuExecutionMode::BestEffort;
+        settings.run(&mut cpu, 1);
+        assert_eq!(cpu.cycles(), 1);
+
+        cpu.reset(0);
+        settings.mode = CpuExecutionMode::CycleIndependent;
+        settings.run(&mut cpu, 1);
+        assert!(cpu.cycles() > 1);
+    }
+
+    #[test]
+    fn cpu_time_slice_cli_value_is_bounded_and_reported() {
+        let options = parse_gui_args(&[
+            "guest.bin".into(),
+            "--cpu-time-slice-ms".into(),
+            "12".into(),
+        ])
+        .unwrap();
+        assert_eq!(options.cpu_execution.time_slice_ms, 12);
+        assert!(parse_gui_args(&["guest.bin".into(), "--cpu-time-slice-ms=0".into(),]).is_err());
+        assert!(parse_gui_args(&["guest.bin".into(), "--cpu-time-slice-ms=17".into(),]).is_err());
+    }
 
     #[test]
     fn focus_key_snapshot_is_not_guest_input() {
@@ -2501,13 +2795,13 @@ mod input_tests {
             24_000_000,
             5_000,
             Duration::from_millis(500),
-            200_000,
+            Some(200_000),
         );
 
         assert_eq!(stats.running_cycles, 100_000);
-        assert_eq!(stats.cycle_budget, 200_000);
+        assert_eq!(stats.cycle_budget, Some(200_000));
         assert_eq!(stats.instructions, 5_000);
-        assert_eq!(stats.cpu_utilization_percent, 50.0);
+        assert_eq!(stats.cpu_utilization_percent, Some(50.0));
         assert_eq!(stats.runtime_percent, Some(100.0));
         assert_eq!(realtime_multiplier(100.0), 1.0);
         assert_eq!(stats.kips, 10.0);
@@ -2521,7 +2815,7 @@ mod input_tests {
             12_000_000,
             5_000,
             Duration::from_millis(500),
-            200_000,
+            Some(200_000),
         );
         assert_eq!(slower.runtime_percent, Some(200.0));
         assert_eq!(realtime_multiplier(200.0), 0.5);
@@ -2531,10 +2825,19 @@ mod input_tests {
             36_000_000,
             5_000,
             Duration::from_millis(500),
-            200_000,
+            Some(200_000),
         );
         let runtime_percent = faster.runtime_percent.unwrap();
         assert!((realtime_multiplier(runtime_percent) - 1.5).abs() < 1e-12);
+    }
+    #[test]
+    fn cycle_independent_performance_has_no_cycle_budget_utilization() {
+        let stats =
+            PerformanceStats::from_deltas(10_000, 10_000, 5_000, Duration::from_millis(8), None);
+
+        assert_eq!(stats.cycle_budget, None);
+        assert_eq!(stats.cpu_utilization_percent, None);
+        assert!(stats.runtime_percent.is_some());
     }
 
     #[test]
@@ -2546,12 +2849,13 @@ mod input_tests {
 
     #[test]
     fn zero_elapsed_or_paused_sample_has_no_runtime_ratio() {
-        let zero_elapsed = PerformanceStats::from_deltas(0, 0, 100, Duration::ZERO, 200_000);
+        let zero_elapsed = PerformanceStats::from_deltas(0, 0, 100, Duration::ZERO, Some(200_000));
         assert_eq!(zero_elapsed.kips, 0.0);
         assert_eq!(zero_elapsed.ipc, 0.0);
         assert_eq!(zero_elapsed.runtime_percent, None);
 
-        let paused = PerformanceStats::from_deltas(0, 0, 0, Duration::from_millis(500), 200_000);
+        let paused =
+            PerformanceStats::from_deltas(0, 0, 0, Duration::from_millis(500), Some(200_000));
         assert_eq!(paused.runtime_percent, None);
     }
 
@@ -2703,6 +3007,7 @@ mod input_tests {
             debug_gui: None,
             frame_profiler: None,
             cpu_kind: CpuKind::Scalar,
+            cpu_execution: CpuExecutionSettings::default(),
             enable_debug_gui: true,
             start_paused: true,
             music_stream: None,

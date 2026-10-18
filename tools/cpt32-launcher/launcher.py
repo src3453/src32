@@ -18,6 +18,10 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 
+CPU_EXECUTION_MODES = ("strict", "best-effort", "cycle-independent")
+DEFAULT_CPU_EXECUTION_MODE = "best-effort"
+DEFAULT_CPU_TIME_SLICE_MS = 8
+CPU_TIME_SLICE_RANGE_MS = range(1, 17)
 REPO = Path(__file__).resolve().parents[2]
 CPU_KINDS = ("pipeline", "cached", "cached-relaxed", "jit", "scalar")
 if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
@@ -338,6 +342,8 @@ class Launcher(tk.Tk):
         self.program = tk.StringVar()
         self.cpu = tk.StringVar(value="pipeline")
         self.run_mode = tk.StringVar(value="gui")
+        self.cpu_execution_mode = tk.StringVar(value=DEFAULT_CPU_EXECUTION_MODE)
+        self.cpu_time_slice_ms = tk.StringVar(value=str(DEFAULT_CPU_TIME_SLICE_MS))
         self.debug_gui = tk.BooleanVar(value=False)
         self.profile_cpu = tk.BooleanVar(value=False)
         self.start_paused = tk.BooleanVar(value=False)
@@ -397,15 +403,20 @@ class Launcher(tk.Tk):
         build_row = ttk.Frame(general)
         build_row.grid(row=3, column=1, sticky="w")
         ttk.Radiobutton(build_row, text="release", value="release", variable=self.build_kind).pack(side="left")
-        ttk.Radiobutton(build_row, text="debug", value="debug", variable=self.build_kind).pack(side="left", padx=12)
+        ttk.Label(general, text="CPU実行").grid(row=4, column=0, sticky="w", pady=6)
+        execution_row = ttk.Frame(general)
+        execution_row.grid(row=4, column=1, sticky="w")
+        ttk.Combobox(execution_row, textvariable=self.cpu_execution_mode, values=CPU_EXECUTION_MODES, state="readonly", width=20).pack(side="left")
+        ttk.Label(execution_row, text="時間枠 (ms)").pack(side="left", padx=(12, 5))
+        ttk.Spinbox(execution_row, textvariable=self.cpu_time_slice_ms, from_=1, to=16, width=5).pack(side="left")
         checks = ttk.Frame(general)
-        checks.grid(row=4, column=0, columnspan=2, sticky="w", pady=(10, 0))
+        checks.grid(row=5, column=0, columnspan=2, sticky="w", pady=(10, 0))
         ttk.Checkbutton(checks, text="デバッグGUI", variable=self.debug_gui).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(checks, text="CPUプロファイル", variable=self.profile_cpu, command=self._profile_changed).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(checks, text="一時停止で開始", variable=self.start_paused).pack(side="left")
-        ttk.Label(general, text="ログレベル").grid(row=5, column=0, sticky="w", pady=(14, 5))
-        ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=5, column=1, sticky="w", pady=(14, 5))
-        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=6, column=0, columnspan=2, sticky="w", pady=(16, 4))
+        ttk.Label(general, text="ログレベル").grid(row=6, column=0, sticky="w", pady=(14, 5))
+        ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=6, column=1, sticky="w", pady=(14, 5))
+        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=7, column=0, columnspan=2, sticky="w", pady=(16, 4))
         hardware = ttk.Frame(self.tabs, padding=12)
         hardware.columnconfigure(1, weight=1)
         self.tabs.add(hardware, text="ROM・ディスク・拡張")
@@ -675,6 +686,7 @@ class Launcher(tk.Tk):
             "config_source": self.config_source.get(), "config_yaml": dump_yaml(self._effective_document()),
             "program": self.program.get(), "cpu": self.cpu.get(), "run_mode": self.run_mode.get(),
             "debug_gui": self.debug_gui.get(), "profile_cpu": self.profile_cpu.get(), "start_paused": self.start_paused.get(),
+            "cpu_execution_mode": self.cpu_execution_mode.get(), "cpu_time_slice_ms": self.cpu_time_slice_ms.get(),
             "music_stream": self.music_stream.get(), "build_kind": self.build_kind.get(), "log_level": self.log_level.get(),
             "workspace": self.workspace.get(), "executable": self.executable.get(),
         }
@@ -688,7 +700,8 @@ class Launcher(tk.Tk):
         self.debug_gui.set(profile.get("debug_gui", False))
         self.profile_cpu.set(profile.get("profile_cpu", False))
         self.start_paused.set(profile.get("start_paused", False))
-        self.music_stream.set(profile.get("music_stream", ""))
+        self.cpu_execution_mode.set(profile.get("cpu_execution_mode", DEFAULT_CPU_EXECUTION_MODE))
+        self.cpu_time_slice_ms.set(str(profile.get("cpu_time_slice_ms", DEFAULT_CPU_TIME_SLICE_MS)))
         self.build_kind.set(profile.get("build_kind", "release"))
         self.workspace.set(profile.get("workspace", str(REPO)))
         self.executable.set(profile.get("executable", ""))
@@ -797,7 +810,17 @@ class Launcher(tk.Tk):
         else:
             if not program:
                 raise ConfigError("GUI起動にはROMまたはカートリッジを指定してください")
+            mode = self.cpu_execution_mode.get()
+            if mode not in CPU_EXECUTION_MODES:
+                raise ConfigError(f"CPU実行モードが無効です: {mode}")
+            try:
+                time_slice_ms = int(self.cpu_time_slice_ms.get())
+            except ValueError as error:
+                raise ConfigError("CPU時間枠は1〜16 msで指定してください") from error
+            if time_slice_ms not in CPU_TIME_SLICE_RANGE_MS:
+                raise ConfigError("CPU時間枠は1〜16 msで指定してください")
             command.append(program)
+            command += ["--cpu-execution", mode, "--cpu-time-slice-ms", str(time_slice_ms)]
             if self.debug_gui.get() or self.profile_cpu.get():
                 command.append("--debug-gui")
             if self.profile_cpu.get():
