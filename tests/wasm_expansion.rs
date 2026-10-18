@@ -410,7 +410,7 @@ fn slot_zero_and_slot_seven_map_full_nonoverlapping_windows() {
 
     bus.set_access_source(BusAccessSource::Debugger);
     assert_eq!(bus.read_debug_u8(0xB000_0000), None);
-    assert!(bus.take_bus_error());
+    assert!(!bus.take_bus_error());
     fs::remove_dir_all(dir).unwrap();
 }
 

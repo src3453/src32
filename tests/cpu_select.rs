@@ -93,6 +93,30 @@ fn unmapped_store_without_bus_error_handler_stops_cpu_without_host_panic() {
     assert_eq!(cpu.irq_cause(), 2);
     assert_eq!(cpu.pc(), BUS_ERROR_VECTOR);
 }
+
+#[test]
+fn debugger_memory_reads_do_not_raise_cpu_bus_error_for_any_cpu_kind() {
+    for kind in [
+        CpuKind::Scalar,
+        CpuKind::Cached,
+        CpuKind::CachedRelaxed,
+        CpuKind::Pipelined,
+    ] {
+        let mut bus = Bus::new();
+        connect_ram_with_size(&mut bus, 1024 * 1024);
+        let mut cpu = AnyCpu::new(kind, bus);
+        cpu.load_program(0, &encode_r(0x3F, 0, 0, 0));
+
+        assert_eq!(cpu.read_debug_mem_u8(0x0010_0000), None, "{kind:?}");
+        assert_eq!(cpu.read_mem_u32_be(0x0010_0000), 0, "{kind:?}");
+
+        cpu.run(64);
+
+        assert!(!cpu.is_running(), "{kind:?}");
+        assert_eq!(cpu.epc(), 0, "{kind:?}");
+        assert_eq!(cpu.irq_cause(), 0, "{kind:?}");
+    }
+}
 #[test]
 fn cpu_modes_parse_and_keep_pipeline_as_default() {
     assert_eq!(CpuKind::default(), CpuKind::Pipelined);
