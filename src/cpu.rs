@@ -10,6 +10,26 @@ use std::cell::RefCell;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
+#[cfg(feature = "jit")]
+#[path = "cpu_jit.rs"]
+mod jit;
+
+/// JIT compilation and execution counters; compile time is included in run time.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct JitStats {
+    pub compilations: u64,
+    pub compile_time: Duration,
+    pub compile_failures: u64,
+    pub native_instructions: u128,
+    /// Interpreter ticks, excluding HALT cycles advanced in bulk.
+    pub fallback_cycles: u128,
+    pub invalidations: u64,
+    pub cache_resets: u64,
+    pub cached_blocks: usize,
+    /// Live native instruction bytes; excludes allocator alignment/metadata.
+    pub native_code_bytes: usize,
+}
+
 pub const CPU_CLOCK: u32 = crate::sys::MASTER_CLOCK; // 48MHz
 pub const CYCLES_PER_FRAME: u32 = crate::cpu::CPU_CLOCK / crate::sys::FRAME_RATE; // 800,000 cycles/frame
 pub const CYCLES_PER_SCANLINE: u32 = CYCLES_PER_FRAME / 240; // 3,333 cycles/scanline
@@ -172,7 +192,7 @@ impl CpuProfile {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum PendingInstruction {
     RawNormal(u32),
     RawShort(u16),
@@ -221,6 +241,8 @@ pub struct Cpu {
     instruction_cache_misses: u128,
     defer_register_sync: bool,
     profile: Option<CpuProfile>,
+    #[cfg(feature = "jit")]
+    jit: Option<jit::JitEngine>,
 }
 
 impl Cpu {
@@ -230,6 +252,21 @@ impl Cpu {
 
     pub(crate) fn new_cached(bus: Bus) -> Self {
         Self::new_with_instruction_cache(bus, true)
+    }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn new_jit(bus: Bus) -> Self {
+        let mut cpu = Self::new_cached(bus);
+        cpu.jit = Some(jit::JitEngine::new());
+        cpu
+    }
+
+    pub fn jit_stats(&self) -> Option<JitStats> {
+        #[cfg(feature = "jit")]
+        if let Some(jit) = &self.jit {
+            return Some(jit.stats());
+        }
+        None
     }
 
     fn new_with_instruction_cache(mut bus: Bus, cached: bool) -> Self {
@@ -270,6 +307,8 @@ impl Cpu {
             instruction_cache_misses: 0,
             defer_register_sync: false,
             profile: None,
+            #[cfg(feature = "jit")]
+            jit: None,
         };
         cpu.sync_register_block();
         cpu
@@ -298,6 +337,10 @@ impl Cpu {
         self.instruction = None;
         self.cycles_left = 0;
         self.defer_register_sync = false;
+        #[cfg(feature = "jit")]
+        if let Some(jit) = &mut self.jit {
+            jit.reset();
+        }
         self.bus.reset_expansion_cards();
         self.irq_controller.borrow_mut().reset();
         self.sync_register_block();
@@ -318,6 +361,10 @@ impl Cpu {
     }
 
     fn trace_cpu_name(&self) -> &'static str {
+        #[cfg(feature = "jit")]
+        if self.jit.is_some() {
+            return "jit";
+        }
         if self.instruction_cache.is_some() {
             "cached"
         } else {
@@ -599,6 +646,14 @@ impl Cpu {
     }
 
     fn tick_cached<const PROFILE: bool>(&mut self) {
+        if self.begin_cached_cycle::<PROFILE>() {
+            self.execute_cached_cycle::<PROFILE>();
+        }
+    }
+
+    // Shared by the interpreter and native blocks. Ordering is architectural:
+    // devices/DMA, IRQ inputs, register-block sync, then instruction execution.
+    fn begin_cached_cycle<const PROFILE: bool>(&mut self) -> bool {
         let device_start = Self::profile_start::<PROFILE>();
         self.bus.tick_devices();
         let irq_output = self.irq_controller.borrow().irq_output();
@@ -629,11 +684,15 @@ impl Cpu {
                 if let Some(start) = idle_start {
                     self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
                 }
-                return;
+                return false;
             }
         }
         self.cycles += 1;
         self.running_cycles += 1;
+        true
+    }
+
+    fn execute_cached_cycle<const PROFILE: bool>(&mut self) {
         let phase = self.state;
         match phase {
             CpuState::Fetch => {
@@ -643,22 +702,7 @@ impl Cpu {
                 if let Some(start) = fetch_start {
                     self.record_profile_time::<PROFILE>(CpuProfileStage::Fetch, start.elapsed());
                 }
-                if Self::is_mul(instruction) {
-                    self.cycles_left = 2;
-                    self.state = CpuState::Mul;
-                } else if Self::is_div(instruction) {
-                    self.cycles_left = 15;
-                    self.state = CpuState::Div;
-                } else {
-                    let execute_start = Self::profile_start::<PROFILE>();
-                    self.commit_cached_instruction();
-                    if let Some(start) = execute_start {
-                        self.record_profile_time::<PROFILE>(
-                            CpuProfileStage::Execute,
-                            start.elapsed(),
-                        );
-                    }
-                }
+                self.issue_cached_instruction::<PROFILE>(instruction);
             }
             CpuState::Mul | CpuState::Div => {
                 let stall_start = Self::profile_start::<PROFILE>();
@@ -688,6 +732,23 @@ impl Cpu {
         self.sync_register_block();
         if let Some(start) = sync_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
+        }
+    }
+
+    fn issue_cached_instruction<const PROFILE: bool>(&mut self, instruction: PendingInstruction) {
+        self.instruction = Some(instruction);
+        if Self::is_mul(instruction) {
+            self.cycles_left = 2;
+            self.state = CpuState::Mul;
+        } else if Self::is_div(instruction) {
+            self.cycles_left = 15;
+            self.state = CpuState::Div;
+        } else {
+            let execute_start = Self::profile_start::<PROFILE>();
+            self.commit_cached_instruction();
+            if let Some(start) = execute_start {
+                self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
+            }
         }
     }
 
@@ -1550,6 +1611,14 @@ impl Cpu {
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
+            #[cfg(feature = "jit")]
+            if !PROFILE && self.jit.is_some() && self.run_jit_block(end_cycles - self.cycles) {
+                continue;
+            }
+            #[cfg(feature = "jit")]
+            if let Some(jit) = &mut self.jit {
+                jit.record_fallback_cycle();
+            }
             self.tick_with_profile::<PROFILE>();
             if !self.running && !self.bus.has_pending_dma() {
                 let remaining = end_cycles - self.cycles;

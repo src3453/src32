@@ -1382,6 +1382,7 @@ impl DebugUiState {
             ));
         }
         ui.text("Cached interpreter combines instruction fetch, cache lookup, and decode.");
+        ui.text("JIT mode uses Cached execution while CPU profiling is enabled.");
     }
 
     fn draw_frame_profile(ui: &Ui, profile: FrameProfileSummary) {
@@ -2212,7 +2213,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 }
                 cpu = Some(
                     args.next()
-                        .ok_or("--cpu requires 'scalar', 'cached', or 'pipeline'")?
+                        .ok_or("--cpu requires 'scalar', 'cached', 'jit' (feature required), or 'pipeline'")?
                         .parse::<CpuKind>()?,
                 );
             }
@@ -2273,13 +2274,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--music-stream song.sgub] [--cpu scalar|cached|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }

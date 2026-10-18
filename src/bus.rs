@@ -46,6 +46,10 @@ pub trait Device {
     fn instruction_cache_generation(&self, _addr: u32) -> Option<u64> {
         None
     }
+    /// Side-effect-free instruction preview. Opt in only for stable memory.
+    fn peek_instruction_u8(&self, _addr: u32) -> Option<u8> {
+        None
+    }
     /// Enable or initialize generation tracking before a cached CPU is created.
     fn enable_instruction_cache_tracking(&mut self) {}
     fn next_event_cycle(&self) -> Option<u64> {
@@ -560,6 +564,16 @@ impl Bus {
             let offset = addr.checked_sub(mapped.region.start)?;
             (offset < mapped.region.size)
                 .then(|| mapped.device.instruction_cache_generation(offset))
+                .flatten()
+        })
+    }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn peek_instruction_u8(&self, addr: u32) -> Option<u8> {
+        self.devices.iter().find_map(|mapped| {
+            let offset = addr.checked_sub(mapped.region.start)?;
+            (offset < mapped.region.size)
+                .then(|| mapped.device.peek_instruction_u8(offset))
                 .flatten()
         })
     }

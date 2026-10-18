@@ -5,9 +5,10 @@ translation_of: ../spec_CPU.md
 
 # SRC32仕様
 
-Revision 2.5 (2026-10-18)
+Revision 2.6 (2026-10-18)
 
 # 変更履歴
+- 2.6 (2026-10-18): Cachedの命令意味・タイミングを基準にした、任意選択の実験的Cranelift JITを追加しました。ISAは変更しません。
 - 2.5 (2026-10-18): 書き込み整合性を持つ命令デコードキャッシュを使うCached Interpreterモードを追加しました。ISAは変更しません。
 - 2.4 (2026-10-15): 拡張p（小文字、パイプライン処理）をマイクロアーキテクチャ拡張として追加。[[doc/ja/spec_CPU_p|拡張p仕様]]を参照。ISAの変更はありません。パイプラインCPUは`CPU_FEATURES` bit 7（`0xBF`）を報告し、scalarおよびcached interpreterは`0x3F`を報告します。
 - 2.3 (2026-09-17): CPUID、割り込みベクター、実装済み拡張、CPU予約MMIOをRust CPUに合わせた。
@@ -31,6 +32,18 @@ Normal Modeでは固定長32ビット命令を使用し、拡張Sは16ビット�
 ## 1.1 CPUマイクロアーキテクチャ
 
 `--cpu scalar|cached|pipeline`で実行方式を選択できます。`config.yaml`の`cpu.microarchitecture`でも指定でき、既定はpipelineです。Cached Interpreterは、命令世代を公開するデバイスに対して1024エントリーの直接マップ型デコードキャッシュを使います。RAMの4 KiBページ内のbyteが変更されると世代が変わり、そのページ内のキャッシュ命令は再取得・再デコードされます。CPU store、デバッガー書き込み、DMA書き込みがこの無効化を行います。キャッシュヒットでは命令フェッチのバスアクセスを省くため、Scalar/Pipelineとバス調停タイミングが異なる場合があります。キャッシュ非対応デバイスは通常のfetch/decodeを続けます。Cachedは通常命令を1サイクル、MUL/MULHを3サイクル、DIV/DIVU/MODを16サイクルでcommitし、pipeline由来のhazardや分岐flush遅延はありません。
+
+## 1.2 実験的Cranelift JIT
+
+`--features jit`でビルドすると、`--cpu jit`またはYAMLの`cpu.microarchitecture: jit`を選択できます。featureなしのbuildではエラーになります。既定は引き続きPipelineです。CPUIDのfeaturesは`0x3F`で、命令・IRQ・バス・cycle budgetの意味はCachedに合わせます。乗算3サイクル、除算16サイクルもfallbackで維持します。
+
+同じ開始PCが16回dispatchされると、Normal modeの整数ALU、half immediate、CPUID、通常の分岐・call・returnを最大16命令のnative blockにします。memory、乗除算、Short mode、mode切替、HALT、IRET、先読み非対応の命令領域はCached経路を使います。先読みは副作用なしpreviewと世代追跡を公開したmemoryだけに限定します。
+
+各命令のdevice/DMA更新後にCached fetchを実行し、世代検証済みdecode値と生成時の命令が一致する場合だけnative演算を実行します。不一致なら実際の命令をそのサイクルにCachedで実行してblockを無効化します。cold fetchのバス副作用、CPU store・DMA・debugger・program loadによる変更、page境界やblock途中の変更をこの経路で扱います。
+
+命令境界のIRQ、CPU register MMIO同期、ホストframe loopからのVSync、`run`のcycle予算を維持します。単一stepと`--profile-cpu`はCachedを使い、後者はfallback側の処理を計測します。compile失敗もログと統計を残してCachedへ戻します。dispatch entryと累積native定義数の上限は各1024です。まず未compileのcold entryを破棄し、それでも満杯の場合やnative定義数が上限に達した場合は、native実行終了後にmodule全体を解放・再作成します。CPU resetでもnative cacheを解放します。
+
+`jit_stats()`はcompile時間・回数、native命令数、fallback cycle、無効化、cache reset、active block数、native code bytesを返します。code bytesはallocatorのpadding・metadataを含みません。統計はCPU resetをまたいで累積し、active blockとcode bytesは現在のcacheを表します。Cachedより高速になる保証はありません。設計・検証条件は`doc/cpu-jit-design.md`を参照してください。
 
 ## 2. レジスター
 

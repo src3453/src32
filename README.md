@@ -54,6 +54,10 @@ cargo run --release --bin cpt32 -- path/to/program.bin --profile-cpu
 
 エミュレーターは既定でパイプライン CPU（Extension p）で起動します。参照用のスカラー CPU は `--cpu scalar`、Cached Interpreter は `--cpu cached` で選択します。`--cpu pipeline` でパイプラインを明示できます。`config.yaml` の `cpu.microarchitecture` でも指定でき、CLI が優先されます。
 
+実験的な Cranelift JIT は `cargo run --release --features jit --bin cpt32 -- program.bin --cpu jit` で利用できます。同じ build なら YAML の `cpu.microarchitecture: jit` でも指定できます。Normal mode の整数演算・分岐などを最大16命令のブロックとしてコンパイルし、メモリアクセス・乗除算・Short mode・割り込み復帰などは Cached 経路で実行します。各サイクルのデバイス処理とコード変更の確認を維持する初期実装で、高速化は保証しません。`--profile-cpu` とデバッガーの単一ステップでは Cached 経路を使います。JIT feature がない build は `--cpu jit` をエラーにします。
+
+比較は `cargo run --release --features jit --bin cpu_jit_bench -- 400000 7` で実行できます。compile を含む cold 時間と、同じ CPU を継続実行する warm 時間を別々に表示し、Cached とレジスタ・PC・実行命令数・メモリ結果を照合します。[JIT の設計と制約](doc/cpu-jit-design.md)も参照してください。
+
 Cached Interpreter は RAM 上の命令を直接マップ型のデコードキャッシュに保持します。RAM の該当 4 KiB ページが書き換わるとキャッシュを無効化します。キャッシュヒット時は命令フェッチのバスアクセスを省略します。通常命令は1サイクル、MUL/MULHは3サイクル、DIV/DIVU/MODは16サイクルです。既定 CPU は変更していません。
 
 3種類の CPU を同じループワークロードで比較するには、リリースビルドでベンチマークを実行します。位置引数は順にループ反復数と測定サンプル数です（既定値: `10000`, `5`）。実行ごとにレジスター・PC・データメモリー・完了命令数を照合し、差異があれば失敗します。

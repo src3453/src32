@@ -1,7 +1,9 @@
 # SRC32 Specification
-Revision 2.5 (2026-10-18)
+Revision 2.6 (2026-10-18)
 
 # Changelog
+- 2.6 (2026-10-18): Added an opt-in experimental Cranelift JIT engine using
+  Cached timing and instruction semantics; no ISA change.
 - 2.5 (2026-10-18): Added an optional Cached Interpreter mode with a
   write-coherent instruction decode cache; no ISA change.
 - 2.4 (2026-10-15): Added Extension p (lowercase, Pipelining) as a
@@ -29,6 +31,44 @@ The goal is clarity and experimentation over micro-architectural complexity.
 ## 1.1 CPU microarchitectures
 
 `--cpu scalar|cached|pipeline` selects the execution engine; the same value may be set with `cpu.microarchitecture` in `config.yaml`. The pipeline remains the default. Cached interpretation uses a direct-mapped 1024-entry decode cache for devices that expose instruction generations. RAM generations change when bytes in a 4 KiB page are modified, so CPU stores, debugger writes, and DMA writes invalidate cached instructions in that page. Cache hits skip the instruction-fetch bus access; this can change bus arbitration relative to Scalar/Pipeline while leaving decoded instruction semantics unchanged. Non-cacheable devices continue through normal fetch and decode. Cached mode commits simple instructions in one cycle, MUL/MULH in three, and DIV/DIVU/MOD in sixteen; it has no pipeline hazards or branch-flush penalty.
+
+## 1.2 Experimental Cranelift JIT
+
+Build with `--features jit` and select `--cpu jit` (or YAML
+`cpu.microarchitecture: jit`). Builds without the feature reject that selection.
+Pipeline remains the default. JIT reports CPUID features `0x3F` and follows
+Cached instruction, IRQ, bus, and cycle-budget semantics, including 3-cycle
+multiply and 16-cycle division through interpreter fallback.
+
+After 16 dispatch visits, supported Normal-mode integer ALU, half-immediate,
+CPUID, and branch/call/return operations are compiled into native blocks of at
+most 16 instructions. Memory, multiply/divide, Short mode, mode transitions,
+HALT, IRET, and non-previewable instruction memory use Cached execution.
+Only memory exposing an explicit side-effect-free preview and generation
+tracking is previewed. Each executed instruction uses the Cached fetch path
+after device/DMA progress; its validated decoded identity must match the compiled
+instruction. A mismatch executes the actual instruction in Cached mode and
+invalidates the native block. This preserves cold-fetch bus effects and covers
+RAM changes from CPU stores, DMA, debugger writes, and program loading, including
+page crossings and modifications during a block.
+
+Native code never spans an unchecked cycle boundary. IRQ sampling, register
+MMIO synchronization, VSync from the host frame loop, and exact `run` budgets
+are retained. Single stepping and `--profile-cpu` use Cached execution rather
+than native blocks; profiling therefore describes the fallback engine.
+Compilation errors fall back to Cached and are counted/logged. Dispatch entries
+and accumulated native definitions are bounded at 1024 each. Cold uncompiled
+entries are pruned first; if compiled/failed entries still fill dispatch, or
+native definitions reach the limit, the module is reset only after native
+execution returns. CPU reset also
+clears native dispatch and releases generated code. `jit_stats()` reports
+compilation time/count, native instructions, fallback cycles, invalidations,
+cache resets, active blocks, and live native instruction bytes (excluding
+allocator padding and metadata). JIT counters are cumulative across CPU reset,
+while active block/code-byte counts describe the current cache.
+
+This is an experimental implementation, with no guaranteed speedup over Cached.
+See `doc/cpu-jit-design.md` for validation and measurement details.
 
 ## 2. Registers
 

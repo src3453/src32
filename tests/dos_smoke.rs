@@ -386,6 +386,12 @@ fn dos_pipeline_hex_returns_to_shell_at_default_cycles_per_frame() {
     );
 }
 
+#[cfg(feature = "jit")]
+#[test]
+fn dos_jit_hex_returns_to_shell_at_default_cycles_per_frame() {
+    hex_returns_to_shell_at_budget(CYCLES_PER_FRAME as usize, CpuKind::Jit, "hex-jit-default");
+}
+
 #[test]
 fn dos_dir_columns_align_in_40_and_80_column_modes() {
     let root = temp_root("dir-columns");

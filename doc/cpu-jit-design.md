@@ -1,6 +1,57 @@
 # Cranelift Dynarec 導入案
 
-2026-10-18。設計提案であり、`--cpu jit` はまだ実装されていない。
+2026-10-18。初期実装済み。以下に実装状況と設計方針を記録する。
+
+## 初期実装の状況
+
+`--features jit` 付き build で `--cpu jit` / YAML の `cpu.microarchitecture: jit` が使える。Cranelift 0.117.2 を既存 Wasmtime 系列と揃えて直接利用する。`src/cpu_jit.rs` がコード生成・dispatch・ABI 境界を持ち、Cached と cycle 開始処理・fallback issue を共有する。
+
+同じ開始 PC が16回 dispatch されると、最大16命令をコンパイルする。対象は Normal mode の整数 ALU、half immediate、CPUID、通常分岐・call・return。未対応命令の手前でブロックを終え、Short mode・memory・乗除算・HALT・IRET などは Cached を使う。生成コードは明示的な register array と helper だけを参照し、helper の panic は捕捉して native call から戻った後に Rust 側で再送出する。
+
+設計案の「全 page の世代を block に保存する」方式に代えて、**各命令の device/DMA 更新後に既存 Cached fetch を実行し、世代検証済みの decode 値と生成時の命令を比較する**。これにより cold fetch の bus 副作用も維持する。途中で変わった命令はそのサイクルに Cached で実行し、block を無効化する。MMIO 先読みは追加せず、RAM 専用の副作用なし preview API で compile 対象を読む。block key は Normal mode 専用の PC で、他 mode は dispatch 前に除外する。
+
+dispatch entry と module 内の累積定義数は各1024まで。まず未compileのcold entryを破棄し、それでも満杯の場合やnative定義数が上限に達した場合は、実行終了後に module 全体を解放・再作成する。CPU reset でも解放する。無効化だけでは実行中の code や metadata を解放しない。失敗 block は cache reset まで、未対応開始位置は entry 破棄まで fallback を使う。`jit_stats()` と headless harness が compile/fallback/無効化などを表示し、native code bytes は allocator の padding・metadata を含まない。fallback cyclesは実際のinterpreter tick数で、HALT中のまとめ進行は含まない。統計は CPU reset をまたいで累積する。
+
+debug step と `--profile-cpu` は Cached 経路を使う。JIT の wall time は profiler 無効で測る。合成比較用の `cpu_jit_bench` は cold と warm を分け、Cached と architectural state を照合する。実行例:
+
+```powershell
+cargo run --release --features jit --bin cpt32 -- program.bin --cpu jit
+cargo run --release --features jit --bin cpu_jit_bench -- 400000 7
+cargo test --features jit --test cpu_jit --test cpu_select --test cpu_pipeline
+```
+
+以下は導入時の設計方針。load/store の直接変換、block linking、device 処理の一括化は後続の性能検証を前提とする。
+
+## 初期版の検証・実測
+
+Windows x64 の同一ホスト、release build、profiler 無効で計測した。下表の倍率は Cached 時間 / JIT 時間で、1未満はJITの方が遅い。7 samplesの中央値であり、このホストとworkloadに限定する。
+
+| 合成ケース（400,000 cycles/phase） | Cached | JIT | 倍率 |
+|---|---:|---:|---:|
+| ALU + branch、cold | 34.518 ms | 34.284 ms | 1.007x |
+| ALU + branch、warm | 34.284 ms | 33.730 ms | 1.016x |
+| ALU + MUL + memory、cold | 39.734 ms | 42.188 ms | 0.942x |
+| ALU + MUL + memory、warm | 39.729 ms | 41.524 ms | 0.957x |
+
+`cpu_jit_bench 400000 7`。CPU/module作成とprogram loadは計測外で、coldにはblock compileを含む。warmは同じCPUの続きの400,000 cyclesを測る。CPU実行以外の処理やcompileを伴う別workloadへ外挿しない。ALUの数%以内の差は以前の試行では逆転しており、安定した高速化とは判断しない。
+
+| 実ゲスト、headless、process起動込み | Cached | JIT | 倍率 |
+|---|---:|---:|---:|
+| 作業ツリーの dos.wax、boot 5 frames | 58.325 ms | 75.512 ms | 0.772x |
+| 現在の 3d_cube.sol、startup 10 frames | 968.814 ms | 1065.546 ms | 0.909x |
+| 同ゲスト、60 frames（HALT後の進行を含む） | 1667.552 ms | 1835.725 ms | 0.908x |
+
+空configのworking directoryからreleaseの`src32_testbench`を起動し、各frameは800,000 cycles、Cached/JITの実行順を交互にした。3d_cubeは今回のsourceをsolc→asmでraw binaryにした。10 framesでは初期化途中で、SGC glyph / VPU cubeの描画assertionはCached/JITとも未成立だった。60 framesでは両方ともノイズ背景・VPU cube・SGC overlayのassertionが通過し、CPUはHALTしていた。60-frame時間は定常animationのframe latencyではない。GUI/GPUは計測していない。
+
+最終60-frame JIT smokeは186 blocks、compile 17.0342 ms、native 2,671,075 instructions、code 27,823 bytes、compile failure / cache reset は0。cold entryでhot codeを破棄していた修正前は同じゲストで3121 compiles / 94 resetsとなったため、cold entryの先行破棄を回帰テストに追加した。
+
+最終結果は、機能するJIT基盤だがCachedを置き換える性能上の根拠はまだない。次はfallbackが多いload/store経路と、各命令のCached fetch・device/IRQ・register同期・ABI呼出しを個別に測る。cycleごとの観測契約を維持する方法を定義してから最適化する。
+
+検証:
+
+- `cargo test --release --features jit --test cpu_jit --test cpu --test cpu_select --test cpu_pipeline --test dos_smoke`：69 passed（JIT固有10、既存CPU21、selection11、pipeline17、DOS10）。追加のMMIO PC同期・HALT復帰確認後にもJIT固有10件を再実行。
+- `cargo test --no-default-features --test cpu --test cpu_select --test cpu_pipeline`：49 passed。featureなしの`jit`選択エラーも確認。
+- JIT固有testは固定seedのALU differential、各cycleと可変run budget、分岐/call/link register、Short/memory/乗除算fallback、IRQ/IRET、HALT復帰、自己書換え・page境界・load/reset、DMAによるblock途中の変更とIRQ、非preview領域、panic回収、cold pathのcache圧迫を確認する。
 
 ## 方針
 

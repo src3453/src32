@@ -17,6 +17,7 @@ use crate::cpu_pipeline::PipelineCpu;
 pub enum CpuKind {
     Scalar,
     Cached,
+    Jit,
     #[default]
     Pipelined,
 }
@@ -26,6 +27,7 @@ impl CpuKind {
         match self {
             CpuKind::Scalar => "scalar",
             CpuKind::Cached => "cached",
+            CpuKind::Jit => "jit",
             CpuKind::Pipelined => "pipeline",
         }
     }
@@ -42,9 +44,11 @@ impl FromStr for CpuKind {
         match text.to_ascii_lowercase().as_str() {
             "scalar" => Ok(CpuKind::Scalar),
             "cached" => Ok(CpuKind::Cached),
+            "jit" if cfg!(feature = "jit") => Ok(CpuKind::Jit),
+            "jit" => Err("CPU JIT requires a build with --features jit".into()),
             "pipeline" | "pipelined" => Ok(CpuKind::Pipelined),
             _ => Err(format!(
-                "unknown CPU micro-architecture '{text}' (expected 'scalar', 'cached', or 'pipeline')"
+                "unknown CPU micro-architecture '{text}' (expected 'scalar', 'cached', 'jit' (feature required), or 'pipeline')"
             )),
         }
     }
@@ -99,9 +103,9 @@ pub fn split_cpu_arg(args: &[String]) -> Result<(Vec<String>, Option<CpuKind>), 
             if selected.is_some() {
                 return Err("Duplicate --cpu".into());
             }
-            let value = iter
-                .next()
-                .ok_or("--cpu requires 'scalar', 'cached', or 'pipeline'")?;
+            let value = iter.next().ok_or(
+                "--cpu requires 'scalar', 'cached', 'jit' (feature required), or 'pipeline'",
+            )?;
             selected = Some(value.parse::<CpuKind>()?);
         } else if let Some(value) = arg.strip_prefix("--cpu=") {
             if selected.is_some() {
@@ -115,20 +119,38 @@ pub fn split_cpu_arg(args: &[String]) -> Result<(Vec<String>, Option<CpuKind>), 
     Ok((rest, selected))
 }
 
-/// Shared harness over the scalar interpreter, cached interpreter, and pipeline.
+/// Shared harness over scalar, cached, native JIT, and pipeline execution.
 /// ISA state is preserved; timing, CPUID features, and instruction-fetch bus
 /// traffic depend on the selected microarchitecture.
 pub enum AnyCpu {
     Scalar(Cpu),
     Cached(Cpu),
+    Jit(Cpu),
     Pipelined(PipelineCpu),
 }
 
 impl AnyCpu {
+    pub fn jit_stats(&self) -> Option<crate::cpu::JitStats> {
+        match self {
+            Self::Jit(cpu) => cpu.jit_stats(),
+            _ => None,
+        }
+    }
+
     pub fn new(kind: CpuKind, bus: Bus) -> Self {
         match kind {
             CpuKind::Scalar => AnyCpu::Scalar(Cpu::new(bus)),
             CpuKind::Cached => AnyCpu::Cached(Cpu::new_cached(bus)),
+            CpuKind::Jit => {
+                #[cfg(feature = "jit")]
+                {
+                    AnyCpu::Jit(Cpu::new_jit(bus))
+                }
+                #[cfg(not(feature = "jit"))]
+                {
+                    panic!("CPU JIT requires a build with --features jit")
+                }
+            }
             CpuKind::Pipelined => AnyCpu::Pipelined(PipelineCpu::new(bus)),
         }
     }
@@ -137,6 +159,7 @@ impl AnyCpu {
         match self {
             AnyCpu::Scalar(_) => CpuKind::Scalar,
             AnyCpu::Cached(_) => CpuKind::Cached,
+            AnyCpu::Jit(_) => CpuKind::Jit,
             AnyCpu::Pipelined(_) => CpuKind::Pipelined,
         }
     }
@@ -144,7 +167,7 @@ impl AnyCpu {
     /// (stall_cycles, flush_events) for the pipeline; `None` for interpreters.
     pub fn pipeline_stats(&self) -> Option<(u128, u128)> {
         match self {
-            AnyCpu::Scalar(_) | AnyCpu::Cached(_) => None,
+            AnyCpu::Scalar(_) | AnyCpu::Cached(_) | AnyCpu::Jit(_) => None,
             AnyCpu::Pipelined(cpu) => Some((cpu.stall_cycles(), cpu.flush_events())),
         }
     }
@@ -152,231 +175,259 @@ impl AnyCpu {
     /// (cache_hits, cache_misses) for cached interpretation; `None` otherwise.
     pub fn instruction_cache_stats(&self) -> Option<(u128, u128)> {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.instruction_cache_stats(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.instruction_cache_stats()
+            }
             AnyCpu::Pipelined(_) => None,
         }
     }
 
     pub fn enable_profiling(&mut self, enabled: bool) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.enable_profiling(enabled),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.enable_profiling(enabled)
+            }
             AnyCpu::Pipelined(cpu) => cpu.enable_profiling(enabled),
         }
     }
 
     pub fn take_profile(&mut self) -> Option<CpuProfile> {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.take_profile(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.take_profile(),
             AnyCpu::Pipelined(cpu) => cpu.take_profile(),
         }
     }
 
     pub fn reset(&mut self, pc: u32) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.reset(pc),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.reset(pc),
             AnyCpu::Pipelined(cpu) => cpu.reset(pc),
         }
     }
 
     pub fn load_program(&mut self, base: u32, image: &[u8]) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.load_program(base, image),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.load_program(base, image)
+            }
             AnyCpu::Pipelined(cpu) => cpu.load_program(base, image),
         }
     }
 
     pub fn pc(&self) -> u32 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.pc(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.pc(),
             AnyCpu::Pipelined(cpu) => cpu.pc(),
         }
     }
 
     pub fn set_pc(&mut self, pc: u32) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.set_pc(pc),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.set_pc(pc),
             AnyCpu::Pipelined(cpu) => cpu.set_pc(pc),
         }
     }
 
     pub fn instruction_mode(&self) -> InstructionMode {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.instruction_mode(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.instruction_mode(),
             AnyCpu::Pipelined(cpu) => cpu.instruction_mode(),
         }
     }
 
     pub fn set_instruction_mode(&mut self, mode: InstructionMode) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.set_instruction_mode(mode),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.set_instruction_mode(mode)
+            }
             AnyCpu::Pipelined(cpu) => cpu.set_instruction_mode(mode),
         }
     }
 
     pub fn is_running(&self) -> bool {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.is_running(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.is_running(),
             AnyCpu::Pipelined(cpu) => cpu.is_running(),
         }
     }
 
     pub fn cycles(&self) -> u128 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.cycles(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.cycles(),
             AnyCpu::Pipelined(cpu) => cpu.cycles(),
         }
     }
 
     pub fn running_cycles(&self) -> u128 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.running_cycles(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.running_cycles(),
             AnyCpu::Pipelined(cpu) => cpu.running_cycles(),
         }
     }
 
     pub fn instructions_executed(&self) -> u128 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.instructions_executed(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.instructions_executed()
+            }
             AnyCpu::Pipelined(cpu) => cpu.instructions_executed(),
         }
     }
 
     pub fn epc(&self) -> u32 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.epc(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.epc(),
             AnyCpu::Pipelined(cpu) => cpu.epc(),
         }
     }
 
     pub fn irq_cause(&self) -> u8 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.irq_cause(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.irq_cause(),
             AnyCpu::Pipelined(cpu) => cpu.irq_cause(),
         }
     }
 
     pub fn irq_enabled(&self) -> bool {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.irq_enabled(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.irq_enabled(),
             AnyCpu::Pipelined(cpu) => cpu.irq_enabled(),
         }
     }
 
     pub fn set_irq_input(&mut self, level: bool, number: u8) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.set_irq_input(level, number),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.set_irq_input(level, number)
+            }
             AnyCpu::Pipelined(cpu) => cpu.set_irq_input(level, number),
         }
     }
 
     pub fn set_irq_source(&mut self, number: u8, level: bool) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.set_irq_source(number, level),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.set_irq_source(number, level)
+            }
             AnyCpu::Pipelined(cpu) => cpu.set_irq_source(number, level),
         }
     }
 
     pub fn read_mem_u8(&mut self, addr: u32) -> u8 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_mem_u8(addr),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.read_mem_u8(addr),
             AnyCpu::Pipelined(cpu) => cpu.read_mem_u8(addr),
         }
     }
 
     pub fn read_debug_mem_u8(&mut self, addr: u32) -> Option<u8> {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_debug_mem_u8(addr),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.read_debug_mem_u8(addr)
+            }
             AnyCpu::Pipelined(cpu) => cpu.read_debug_mem_u8(addr),
         }
     }
 
     pub fn read_mem_u32_be(&mut self, addr: u32) -> u32 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_mem_u32_be(addr),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.read_mem_u32_be(addr)
+            }
             AnyCpu::Pipelined(cpu) => cpu.read_mem_u32_be(addr),
         }
     }
 
     pub fn write_mem_u8(&mut self, addr: u32, value: u8) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.write_mem_u8(addr, value),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.write_mem_u8(addr, value)
+            }
             AnyCpu::Pipelined(cpu) => cpu.write_mem_u8(addr, value),
         }
     }
 
     pub fn write_mem_u32_be(&mut self, addr: u32, value: u32) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.write_mem_u32_be(addr, value),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.write_mem_u32_be(addr, value)
+            }
             AnyCpu::Pipelined(cpu) => cpu.write_mem_u32_be(addr, value),
         }
     }
 
     pub fn read_u32(&mut self, addr: u32) -> u32 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_u32(addr),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.read_u32(addr),
             AnyCpu::Pipelined(cpu) => cpu.read_u32(addr),
         }
     }
 
     pub fn read_u16_be(&mut self, addr: u32) -> u16 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_u16_be(addr),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.read_u16_be(addr),
             AnyCpu::Pipelined(cpu) => cpu.read_u16_be(addr),
         }
     }
 
     pub fn read_reg(&self, reg: usize) -> u32 {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.read_reg(reg),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.read_reg(reg),
             AnyCpu::Pipelined(cpu) => cpu.read_reg(reg),
         }
     }
 
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.write_reg(reg, value),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.write_reg(reg, value)
+            }
             AnyCpu::Pipelined(cpu) => cpu.write_reg(reg, value),
         }
     }
 
     pub fn bus_memory_map(&self) -> Box<dyn Iterator<Item = BusRegion> + '_> {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => Box::new(cpu.bus_memory_map()),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                Box::new(cpu.bus_memory_map())
+            }
             AnyCpu::Pipelined(cpu) => Box::new(cpu.bus_memory_map()),
         }
     }
 
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.decode_at(addr, mode),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.decode_at(addr, mode)
+            }
             AnyCpu::Pipelined(cpu) => cpu.decode_at(addr, mode),
         }
     }
 
     pub fn return_state_text(&mut self) -> String {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.return_state_text(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.return_state_text(),
             AnyCpu::Pipelined(cpu) => cpu.return_state_text(),
         }
     }
 
     pub fn tick(&mut self) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.tick(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.tick(),
             AnyCpu::Pipelined(cpu) => cpu.tick(),
         }
     }
 
     pub fn step_once(&mut self) -> bool {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.step_once(),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.step_once(),
             AnyCpu::Pipelined(cpu) => cpu.step_once(),
         }
     }
 
     pub fn run(&mut self, max_cycles: usize) {
         match self {
-            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) => cpu.run(max_cycles),
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.run(max_cycles),
             AnyCpu::Pipelined(cpu) => cpu.run(max_cycles),
         }
     }
