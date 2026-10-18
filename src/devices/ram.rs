@@ -55,7 +55,13 @@ impl Device for Ram {
     }
 }
 
-const RAM_SIZE: usize = 0x1000000; // 16MB
+pub const DEFAULT_RAM_SIZE: usize = 0x1000000; // 16 MiB
+pub const MAX_MEMORY_MIB: u64 = 256;
+
 pub fn connect_ram(bus: &mut crate::bus::Bus) {
-    bus.add_device(0, "Main RAM", Box::new(Ram::new(RAM_SIZE)));
+    connect_ram_with_size(bus, DEFAULT_RAM_SIZE)
+}
+
+pub fn connect_ram_with_size(bus: &mut crate::bus::Bus, size: usize) {
+    bus.add_device(0, "Main RAM", Box::new(Ram::new(size)));
 }

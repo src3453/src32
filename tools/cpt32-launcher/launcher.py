@@ -353,7 +353,8 @@ class Launcher(tk.Tk):
         self.sound_root = tk.StringVar()
         self.sound_volume = tk.StringVar(value="1.0")
         self.fdd_profile = tk.StringVar()
-        self.hdd_profile = tk.StringVar()
+        self.ram_mib = tk.StringVar(value="16")
+        self.vram_mib = tk.StringVar(value="4")
         self.log_level = tk.StringVar(value="info")
         self.build_kind = tk.StringVar(value="release")
         self.workspace = tk.StringVar(value=str(REPO))
@@ -435,7 +436,14 @@ class Launcher(tk.Tk):
         ttk.Label(hardware, text="ディスクイメージ").grid(row=5, column=0, columnspan=3, sticky="w")
         for slot in range(4):
             self._drive_row(hardware, slot, 6 + slot)
-        ttk.Label(hardware, text="転送速度・アクセス遅延は空欄でドライブ種別の既定値になります。partial sectorはreject / pad / truncateで選択します。", foreground="#555").grid(row=10, column=0, columnspan=6, sticky="w", pady=(5, 0))
+        advanced = ttk.Frame(self.tabs, padding=12)
+        advanced.columnconfigure(1, weight=1)
+        self.tabs.add(advanced, text="詳細設定")
+        ttk.Label(advanced, text="メインRAM (MiB)").grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Spinbox(advanced, textvariable=self.ram_mib, from_=1, to=256, width=8).grid(row=0, column=1, sticky="w")
+        ttk.Label(advanced, text="VRAM (MiB)").grid(row=1, column=0, sticky="w", pady=6)
+        ttk.Spinbox(advanced, textvariable=self.vram_mib, from_=4, to=256, width=8).grid(row=1, column=1, sticky="w")
+        ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜256 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
         cards_tab = ttk.Frame(self.tabs, padding=12)
         cards_tab.columnconfigure(1, weight=1)
         self.tabs.add(cards_tab, text="WASM拡張カード")
@@ -545,7 +553,9 @@ class Launcher(tk.Tk):
             pcg = self.document.get("pcg", {}) or {}
             sound = self.document.get("disk_sound", {}) or {}
             logging = self.document.get("logging", {}) or {}
-            self.log_level.set(logging.get("level", "info") if isinstance(logging, dict) else "info")
+            memory = self.document.get("memory", {}) or {}
+            self.ram_mib.set(str(memory.get("ram_mib", 16)) if isinstance(memory, dict) else "16")
+            self.vram_mib.set(str(memory.get("vram_mib", 4)) if isinstance(memory, dict) else "4")
             self.bios.set(bios.get("image", "") if isinstance(bios, dict) else "")
             self.font.set(pcg.get("font", "") if isinstance(pcg, dict) else "")
             self.sound_root.set(sound.get("asset_root", "") if isinstance(sound, dict) else "")
@@ -578,8 +588,22 @@ class Launcher(tk.Tk):
         cpu = document.get("cpu") or {}
         if not isinstance(cpu, dict):
             raise ConfigError("`cpu` はmappingで指定してください")
-        cpu["microarchitecture"] = self.cpu.get()
-        document["cpu"] = cpu
+        memory = document.get("memory") or {}
+        if not isinstance(memory, dict):
+            raise ConfigError("`memory` はmappingで指定してください")
+        for key, control, minimum in (("ram_mib", self.ram_mib, 1), ("vram_mib", self.vram_mib, 4)):
+            raw = control.get().strip()
+            if not raw.isdecimal() or not minimum <= int(raw) <= 256:
+                raise ConfigError(f"`memory.{key}` は{minimum}〜256 MiBの整数で入力してください")
+            value = int(raw)
+            if value == (16 if key == "ram_mib" else 4):
+                memory.pop(key, None)
+            else:
+                memory[key] = value
+        if memory or "memory" in document:
+            document["memory"] = memory
+        else:
+            document.pop("memory", None)
         for section, key, value in (("bios", "image", self.bios.get()), ("pcg", "font", self.font.get())):
             if value.strip():
                 nested = document.get(section) or {}
@@ -715,6 +739,9 @@ class Launcher(tk.Tk):
     def _populate_from_document(self):
         cpu = self.document.get("cpu", {}) or {}
         self.cpu.set(cpu.get("microarchitecture", self.cpu.get()) if isinstance(cpu, dict) else self.cpu.get())
+        memory = self.document.get("memory", {}) or {}
+        self.ram_mib.set(str(memory.get("ram_mib", 16)) if isinstance(memory, dict) else "16")
+        self.vram_mib.set(str(memory.get("vram_mib", 4)) if isinstance(memory, dict) else "4")
         bios, pcg, sound = (self.document.get(k, {}) or {} for k in ("bios", "pcg", "disk_sound"))
         self.bios.set(bios.get("image", "") if isinstance(bios, dict) else "")
         self.font.set(pcg.get("font", "") if isinstance(pcg, dict) else "")

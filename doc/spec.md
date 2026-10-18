@@ -63,14 +63,14 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 ## 2.4 Memory
 
 ### Main RAM
-- 容量: 16MB
+- 容量: 既定 16 MiB。`config.yaml` の `memory.ram_mib` で 1〜256 MiB に設定できる。
 - 用途:
   - プログラム
   - データ
   - ワークバッファ
 
 ### VRAM
-- 容量: 4MB
+- 容量: 既定 4 MiB。`config.yaml` の `memory.vram_mib` で 4〜256 MiB に設定できる。
 - 用途:
   - フレームバッファ
   - Zバッファ
@@ -78,6 +78,8 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - タイルデータ
   - スプライトデータ
   - 3Dモデルデータ
+
+両設定を省略した場合は従来の容量を使用する。VRAM のアドレス窓では PCMRAM 領域を除き、VRAM 内オフセットを維持して分割マッピングする。
 
 ### PCMRAM
 - 容量: 1MB
@@ -214,9 +216,9 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 
 | Address Range | Size | Description | Attributes |
 |--------------|------|------------|-----------|
-| 0x00000000 - 0x00FFFFFF | 16MB | Main RAM | RWC |
-| 0x10000000 - 0x103FFFFF | 4MB  | VRAM | RW |
-| 0x18000000 - 0x180FFFFF | 1MB  | PCMRAM | RW |
+| 0x00000000 - (0x00000000 + configured size - 1) | 1–256 MiB | Main RAM (default 16 MiB) | RWC |
+| 0x10000000 - 0x1FFFFFFF excluding PCMRAM | up to 256 MiB configured VRAM | VRAM (default 4 MiB) | RW |
+| 0x18000000 - 0x180FFFFF | 1MB | PCMRAM | RW |
 
 ### MMIO
 

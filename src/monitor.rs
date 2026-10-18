@@ -8,7 +8,7 @@ use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart_with_stdin;
 use cpt32::devices::pec::timing::connect_pec_timer_rtc;
-use cpt32::devices::ram::connect_ram;
+use cpt32::devices::ram::{DEFAULT_RAM_SIZE, connect_ram_with_size};
 use cpt32::devices::sgu::sgu::connect_sgu;
 
 fn load_binary_data(path: &str, cpu: &mut AnyCpu, base: u32) {
@@ -395,12 +395,42 @@ pub fn execute_command(cpu: &mut AnyCpu, command_line: &str) -> CommandOutput {
     output
 }
 
+fn configured_ram_size(config_path: &Path) -> Result<usize, String> {
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
+    };
+    let config: yaml_serde::Value = if contents.is_empty() {
+        yaml_serde::Value::Null
+    } else {
+        yaml_serde::from_str(&contents)
+            .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?
+    };
+    let Some(memory) = config.get("memory") else {
+        return Ok(DEFAULT_RAM_SIZE);
+    };
+    let table = memory.as_mapping().ok_or("`memory` must be a mapping")?;
+    let Some(value) = table.get("ram_mib") else {
+        return Ok(DEFAULT_RAM_SIZE);
+    };
+    let mib = value
+        .as_u64()
+        .ok_or("`memory.ram_mib` must be an integer MiB value")?;
+    if !(1..=256).contains(&mib) {
+        return Err("`memory.ram_mib` must be between 1 and 256 MiB".into());
+    }
+    Ok((mib * 1024 * 1024) as usize)
+}
+
 pub fn run(program_path: Option<&str>, cli_cpu: Option<CpuKind>) {
     let cpu_kind = resolve_cpu_kind(cli_cpu, Path::new("config.yaml"))
         .unwrap_or_else(|error| panic!("Invalid CPU configuration: {error}"));
     println!("CPU micro-architecture: {}", cpu_kind.as_str());
     let mut bus = Bus::new();
-    connect_ram(&mut bus);
+    let ram_size = configured_ram_size(Path::new("config.yaml"))
+        .unwrap_or_else(|error| panic!("Invalid memory configuration: {error}"));
+    connect_ram_with_size(&mut bus, ram_size);
     cpt32::bus::connect_bmc_dmac(&mut bus);
     connect_idc_from_config(&mut bus)
         .unwrap_or_else(|error| panic!("Invalid disk configuration: {error}"));

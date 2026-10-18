@@ -16,10 +16,14 @@ use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input, pec_trace_enabled};
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::pec::serial::connect_uart;
+#[cfg(test)]
 use cpt32::devices::ram::connect_ram;
+use cpt32::devices::ram::{DEFAULT_RAM_SIZE, connect_ram_with_size};
 use cpt32::devices::sgu::s3w2::S3w2Sound;
 use cpt32::devices::sgu::sgu::connect_sgu;
-use cpt32::devices::vdp::vdp::{Vdp, connect_vdp};
+#[cfg(test)]
+use cpt32::devices::vdp::vdp::connect_vdp;
+use cpt32::devices::vdp::vdp::{DEFAULT_VDP_VRAM_SIZE, Vdp, connect_vdp_with_vram_size};
 use cpt32::music::guest::{STREAM_BASE, read_music_stream};
 use gilrs::{
     Axis as GilrsAxis, Button as GilrsButton, EventType as GilrsEventType, GamepadId, Gilrs,
@@ -192,7 +196,8 @@ fn build_guest_machine(
     };
     let mut bus = Bus::new();
     let input_sender = connect_pec_input(&mut bus);
-    connect_ram(&mut bus);
+    let (ram_size, vram_size) = memory_sizes_from_config()?;
+    connect_ram_with_size(&mut bus, ram_size);
     cpt32::bus::connect_bmc_dmac(&mut bus);
     connect_uart(&mut bus);
     connect_rng(&mut bus);
@@ -241,7 +246,7 @@ fn build_guest_machine(
         }
     };
     let entry = load_program_data(program, music_stream, &mut bus)?;
-    let vdp = connect_vdp(&mut bus);
+    let vdp = connect_vdp_with_vram_size(&mut bus, vram_size);
     if let Some(font_path) = pcg_font_path_from_config()? {
         vdp.borrow()
             .load_pcg_font_from_file(&font_path)
@@ -294,7 +299,8 @@ fn build_raw_guest(
         )
     })?;
     let entry = load_program_data(&data, music_stream, &mut bus)?;
-    let vdp = connect_vdp(&mut bus);
+    let (_, vram_size) = memory_sizes_from_config()?;
+    let vdp = connect_vdp_with_vram_size(&mut bus, vram_size);
     if let Some(font_path) = pcg_font_path_from_config()? {
         vdp.borrow()
             .load_pcg_font_from_file(&font_path)
@@ -2332,6 +2338,44 @@ fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
             .unwrap_or_else(|| Path::new("."))
             .join(path)
     }))
+}
+fn memory_sizes_from_config() -> Result<(usize, u32), String> {
+    let config_path = Path::new("config.yaml");
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
+    };
+    let root: yaml_serde::Value = if contents.is_empty() {
+        yaml_serde::Value::Null
+    } else {
+        yaml_serde::from_str(&contents)
+            .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?
+    };
+    let Some(memory) = root.get("memory") else {
+        return Ok((DEFAULT_RAM_SIZE, DEFAULT_VDP_VRAM_SIZE));
+    };
+    let table = memory.as_mapping().ok_or("`memory` must be a mapping")?;
+    let parse = |key: &str, default: u64, minimum: u64| -> Result<u64, String> {
+        let Some(value) = table.get(key) else {
+            return Ok(default);
+        };
+        let mib = value
+            .as_u64()
+            .ok_or_else(|| format!("`memory.{key}` must be an integer MiB value"))?;
+        if !(minimum..=256).contains(&mib) {
+            return Err(format!(
+                "`memory.{key}` must be between {minimum} and 256 MiB"
+            ));
+        }
+        Ok(mib)
+    };
+    let ram_mib = parse("ram_mib", 16, 1)?;
+    let vram_mib = parse("vram_mib", 4, 4)?;
+    Ok((
+        (ram_mib * 1024 * 1024) as usize,
+        (vram_mib * 1024 * 1024) as u32,
+    ))
 }
 
 fn parse_cpu_time_slice_ms(value: &str) -> Result<i32, String> {

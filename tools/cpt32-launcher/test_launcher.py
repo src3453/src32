@@ -155,6 +155,35 @@ class LaunchPipelineTests(unittest.TestCase):
                 with self.assertRaises(launcher.ConfigError):
                     launcher.Launcher._launch_command(ui, self.run_dir, str(self.base / "game.bin"))
 
+    def test_memory_sizes_round_trip_through_launcher_document(self):
+        class Variable:
+            def __init__(self, value):
+                self.value = value
+
+            def get(self):
+                return self.value
+
+            def set(self, value):
+                self.value = value
+
+        ui = SimpleNamespace(
+            document={"memory": {}},
+            cpu=Variable("pipeline"),
+            ram_mib=Variable("96"),
+            vram_mib=Variable("128"),
+            bios=Variable(""),
+            font=Variable(""),
+            sound_root=Variable(""),
+            fdd_profile=Variable(""),
+            hdd_profile=Variable(""),
+            sound_volume=Variable("1.0"),
+            drives=[],
+            cards=[],
+            log_level=Variable("info"),
+        )
+        saved = launcher.Launcher._effective_document(ui)
+        restored = launcher.parse_yaml(launcher.dump_yaml(saved))
+        self.assertEqual(restored["memory"], {"ram_mib": 96, "vram_mib": 128})
     def test_execution_settings_round_trip_through_saved_profile(self):
         class Variable:
             def __init__(self, value):

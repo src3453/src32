@@ -28,7 +28,9 @@ use crate::devices::vdp::reg::{BitmapColorMode, DisplayMode};
 use crate::devices::vpu::vpu::{VPU_MMIO_BASE, VPU_MMIO_SIZE, Vpu};
 
 pub const VDP_VRAM_BASE: u32 = 0x10000000;
-pub const VDP_VRAM_SIZE: u32 = 0x00400000; // 4MB
+pub const DEFAULT_VDP_VRAM_SIZE: u32 = 0x00400000; // 4 MiB
+pub const MIN_VDP_VRAM_SIZE: u32 = 0x00400000;
+pub const MAX_VDP_VRAM_SIZE: u32 = 0x10000000; // 256 MiB
 pub const VDP_REG_BASE: u32 = 0x80000000;
 pub const VDP_REG_SIZE: u32 = 0x00010000;
 
@@ -290,7 +292,12 @@ impl<'a> VdpFramebuffer<'a> {
 
 impl Vdp {
     pub fn new() -> Self {
-        let vram = Rc::new(RefCell::new(vec![0; VDP_VRAM_SIZE as usize]));
+        Self::with_vram_size(DEFAULT_VDP_VRAM_SIZE)
+    }
+
+    pub fn with_vram_size(vram_size: u32) -> Self {
+        assert!((MIN_VDP_VRAM_SIZE..=MAX_VDP_VRAM_SIZE).contains(&vram_size));
+        let vram = Rc::new(RefCell::new(vec![0; vram_size as usize]));
         let vpu = Rc::new(RefCell::new(Vpu::new()));
         let sgc = Sgc::new(Rc::clone(&vram));
         let gp0 = Gp0::new(Rc::clone(&vram));
@@ -556,18 +563,39 @@ enum VdpPort {
 struct VdpDevice {
     vdp: Rc<RefCell<Vdp>>,
     port: VdpPort,
+    vram_offset: usize,
+    mapped_size: u32,
 }
 
 impl VdpDevice {
     fn new(vdp: Rc<RefCell<Vdp>>, port: VdpPort) -> Self {
-        Self { vdp, port }
+        let mapped_size = match port {
+            VdpPort::Vram => vdp.borrow().vram.borrow().len() as u32,
+            VdpPort::Regs => VDP_REG_SIZE,
+            VdpPort::Sgc => SGC_MMIO_SIZE,
+        };
+        Self {
+            vdp,
+            port,
+            vram_offset: 0,
+            mapped_size,
+        }
+    }
+
+    fn vram_segment(vdp: Rc<RefCell<Vdp>>, vram_offset: usize, mapped_size: u32) -> Self {
+        Self {
+            vdp,
+            port: VdpPort::Vram,
+            vram_offset,
+            mapped_size,
+        }
     }
 }
 
 impl Device for VdpDevice {
     fn read(&mut self, addr: u32) -> u8 {
         match self.port {
-            VdpPort::Vram => self.vdp.borrow().vram.borrow()[addr as usize],
+            VdpPort::Vram => self.vdp.borrow().vram.borrow()[self.vram_offset + addr as usize],
             VdpPort::Sgc => self.vdp.borrow().read_sgc_register(addr),
             VdpPort::Regs => {
                 let vdp = self.vdp.borrow();
@@ -584,7 +612,9 @@ impl Device for VdpDevice {
 
     fn write(&mut self, addr: u32, value: u8) {
         match self.port {
-            VdpPort::Vram => self.vdp.borrow_mut().vram.borrow_mut()[addr as usize] = value,
+            VdpPort::Vram => {
+                self.vdp.borrow_mut().vram.borrow_mut()[self.vram_offset + addr as usize] = value
+            }
             VdpPort::Sgc => self.vdp.borrow_mut().write_sgc_register(addr, value),
             VdpPort::Regs => {
                 let mut vdp = self.vdp.borrow_mut();
@@ -598,11 +628,7 @@ impl Device for VdpDevice {
     }
 
     fn size(&self) -> u32 {
-        match self.port {
-            VdpPort::Vram => VDP_VRAM_SIZE,
-            VdpPort::Regs => VDP_REG_SIZE,
-            VdpPort::Sgc => SGC_MMIO_SIZE,
-        }
+        self.mapped_size
     }
 }
 
@@ -620,6 +646,24 @@ mod tests {
             (VDP_FRAMEBUFFER_WIDTH, VDP_FRAMEBUFFER_HEIGHT)
         );
         assert_eq!(fb.get_pixel(0, 0), (0, 0, 0));
+    }
+    #[test]
+    fn maximum_vram_keeps_pcmram_mapped_and_exposes_final_vram_byte() {
+        let mut bus = Bus::new();
+        let _sgu = crate::devices::sgu::sgu::connect_sgu(&mut bus);
+        let vdp = connect_vdp_with_vram_size(&mut bus, MAX_VDP_VRAM_SIZE);
+        bus.write_u8(0x18000000, 0x5A);
+        assert_eq!(bus.read_u8(0x18000000), 0x5A);
+        bus.write_u8(0x18100000, 0xA5);
+        assert_eq!(vdp.borrow().vram.borrow()[0x08100000], 0xA5);
+        bus.write_u8(0x1FFFFFFF, 0x3C);
+        assert_eq!(bus.read_u8(0x1FFFFFFF), 0x3C);
+        let mapped_vram: u32 = bus
+            .memory_map()
+            .filter(|region| region.name == "VRAM")
+            .map(|region| region.size)
+            .sum();
+        assert_eq!(mapped_vram, MAX_VDP_VRAM_SIZE - 0x00100000);
     }
 
     #[test]
@@ -763,13 +807,30 @@ mod tests {
 }
 
 pub fn connect_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
-    let vdp = Rc::new(RefCell::new(Vdp::new()));
+    connect_vdp_with_vram_size(bus, DEFAULT_VDP_VRAM_SIZE)
+}
+
+pub fn connect_vdp_with_vram_size(bus: &mut Bus, vram_size: u32) -> Rc<RefCell<Vdp>> {
+    let vdp = Rc::new(RefCell::new(Vdp::with_vram_size(vram_size)));
     let vpu = Rc::clone(&vdp.borrow().vpu);
+    let first_segment = vram_size.min(0x08000000);
     bus.add_device(
         VDP_VRAM_BASE,
         "VRAM",
-        Box::new(VdpDevice::new(Rc::clone(&vdp), VdpPort::Vram)),
+        Box::new(VdpDevice::vram_segment(Rc::clone(&vdp), 0, first_segment)),
     );
+    if vram_size > 0x08100000 {
+        let second_size = vram_size - 0x08100000;
+        bus.add_device(
+            0x18100000,
+            "VRAM",
+            Box::new(VdpDevice::vram_segment(
+                Rc::clone(&vdp),
+                0x08100000,
+                second_size,
+            )),
+        );
+    }
     bus.add_device(
         VDP_REG_BASE,
         "VDP MMIO",
