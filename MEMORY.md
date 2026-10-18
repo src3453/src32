@@ -753,3 +753,7 @@
 - Regression: `tests/cpu_select.rs::unmapped_store_enters_bus_error_handler_for_each_cpu_kind` exercises a 1 MiB RAM fault and custom handler for Scalar, Cached, CachedRelaxed, and Pipeline CPUs.
 
 - Debugger-originated reads/writes use `BusAccessSource::Debugger`; unmapped addresses and faulted devices must not latch a CPU Bus Error or redirect guest execution. Open-bus debug byte reads return `None`; equivalent CPU-originated accesses still latch Bus Error. Regression: `tests/cpu_select.rs::debugger_memory_reads_do_not_raise_cpu_bus_error_for_any_cpu_kind`.
+
+## Launcher sol compiler arguments (2026-10-18)
+- The launcher’s 起動設定 tab accepts sol compiler arguments as shell-like whitespace-separated tokens; quoted whitespace stays within one argument. `prepare_program` passes the parsed argv directly to `solc.py compile` without invoking a shell, and malformed quoting raises `ConfigError` before launch.
+- Save the setting in launcher profiles; older profiles default it to empty (solc defaults). Verify argument boundaries and malformed quotes with `python -m unittest discover -s tools/cpt32-launcher -p 'test_*.py' -v`.

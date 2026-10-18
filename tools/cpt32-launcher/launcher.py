@@ -13,6 +13,7 @@ import sys
 import tempfile
 import threading
 import copy
+import shlex
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -307,7 +308,7 @@ def user_profile_path() -> Path:
     return base / "CPT32" / "Launcher" / "profiles.json"
 
 
-def prepare_program(program: str | None, workspace: Path, run_dir: Path):
+def prepare_program(program: str | None, workspace: Path, run_dir: Path, compiler_args: str = ""):
     """Plan source compilation without changing the selected source or its directory."""
     if not program or Path(program).suffix.lower() != ".sol":
         return program, []
@@ -316,10 +317,14 @@ def prepare_program(program: str | None, workspace: Path, run_dir: Path):
     for tool in (compiler, assembler):
         if not tool.is_file():
             raise ConfigError(f"solのビルドツールが見つかりません: {tool}")
+    try:
+        arguments = shlex.split(compiler_args)
+    except ValueError as error:
+        raise ConfigError(f"solコンパイラ引数を解析できません: {error}") from error
     assembly = run_dir / "program.asm"
-    binary = run_dir / "program.bin"
+    binary = run_dir / "program.wax"
     steps = [
-        ("solをコンパイルしています…", [sys.executable, str(compiler), "compile", program, "-o", str(assembly)]),
+        ("solをコンパイルしています…", [sys.executable, str(compiler), "compile", program, *arguments, "-o", str(assembly)]),
         ("アセンブルしています…", [sys.executable, str(assembler), str(assembly), "-o", str(binary)]),
     ]
     return str(binary), steps
@@ -344,6 +349,7 @@ class Launcher(tk.Tk):
         self.run_mode = tk.StringVar(value="gui")
         self.cpu_execution_mode = tk.StringVar(value=DEFAULT_CPU_EXECUTION_MODE)
         self.cpu_time_slice_ms = tk.StringVar(value=str(DEFAULT_CPU_TIME_SLICE_MS))
+        self.sol_compiler_args = tk.StringVar()
         self.debug_gui = tk.BooleanVar(value=False)
         self.profile_cpu = tk.BooleanVar(value=False)
         self.start_paused = tk.BooleanVar(value=False)
@@ -418,7 +424,10 @@ class Launcher(tk.Tk):
         ttk.Checkbutton(checks, text="一時停止で開始", variable=self.start_paused).pack(side="left")
         ttk.Label(general, text="ログレベル").grid(row=6, column=0, sticky="w", pady=(14, 5))
         ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=6, column=1, sticky="w", pady=(14, 5))
-        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=7, column=0, columnspan=2, sticky="w", pady=(16, 4))
+        ttk.Label(general, text="solコンパイラ引数").grid(row=7, column=0, sticky="w", pady=6)
+        ttk.Entry(general, textvariable=self.sol_compiler_args).grid(row=7, column=1, sticky="ew", pady=6)
+        ttk.Label(general, text='例: -O speed --debug（空白区切り。必要なら引用符で囲む）', foreground="#555").grid(row=8, column=1, sticky="w")
+        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 4))
         hardware = ttk.Frame(self.tabs, padding=12)
         hardware.columnconfigure(1, weight=1)
         self.tabs.add(hardware, text="ROM・ディスク・拡張")
@@ -710,8 +719,8 @@ class Launcher(tk.Tk):
         return {
             "config_source": self.config_source.get(), "config_yaml": dump_yaml(self._effective_document()),
             "program": self.program.get(), "cpu": self.cpu.get(), "run_mode": self.run_mode.get(),
-            "debug_gui": self.debug_gui.get(), "profile_cpu": self.profile_cpu.get(), "start_paused": self.start_paused.get(),
             "cpu_execution_mode": self.cpu_execution_mode.get(), "cpu_time_slice_ms": self.cpu_time_slice_ms.get(),
+            "sol_compiler_args": self.sol_compiler_args.get(),
             "music_stream": self.music_stream.get(), "build_kind": self.build_kind.get(), "log_level": self.log_level.get(),
             "workspace": self.workspace.get(), "executable": self.executable.get(),
         }
@@ -727,6 +736,7 @@ class Launcher(tk.Tk):
         self.start_paused.set(profile.get("start_paused", False))
         self.cpu_execution_mode.set(profile.get("cpu_execution_mode", DEFAULT_CPU_EXECUTION_MODE))
         self.cpu_time_slice_ms.set(str(profile.get("cpu_time_slice_ms", DEFAULT_CPU_TIME_SLICE_MS)))
+        self.sol_compiler_args.set(profile.get("sol_compiler_args", ""))
         self.build_kind.set(profile.get("build_kind", "release"))
         self.workspace.set(profile.get("workspace", str(REPO)))
         self.executable.set(profile.get("executable", ""))
@@ -884,6 +894,7 @@ class Launcher(tk.Tk):
             (self.run_directory / "config.yaml").write_text(dump_yaml(staged), encoding="utf-8")
             program_path, steps = prepare_program(
                 program_path, Path(self.workspace.get()).expanduser().resolve(), self.run_directory,
+                self.sol_compiler_args.get(),
             )
             command = self._launch_command(self.run_directory, program_path)
             steps.append(("エミュレーターを起動しています…", command))

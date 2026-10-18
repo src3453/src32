@@ -38,7 +38,9 @@ class LaunchPipelineTests(unittest.TestCase):
         source = self.base / "sample.SOL"
         source.write_text('!include "values.sol"\nVALUE\n', encoding="utf-8")
         (self.base / "values.sol").write_text("!const VALUE 42\n", encoding="utf-8")
-        binary, steps = launcher.prepare_program(str(source), launcher.REPO, self.run_dir)
+        binary, steps = launcher.prepare_program(
+            str(source), launcher.REPO, self.run_dir, "-O speed --debug",
+        )
         steps.append(("emulator", [sys.executable, "-c", "from pathlib import Path; import sys; assert Path(sys.argv[1]).stat().st_size > 0; print('emulator launched')", binary]))
         events = self.run_steps(steps)
         self.assertIn(("exited", 0), events, events)
@@ -47,6 +49,24 @@ class LaunchPipelineTests(unittest.TestCase):
         self.assertEqual(sorted(path.name for path in self.base.iterdir()), ["run", "sample.SOL", "values.sol"])
         self.assertTrue(Path(binary).is_file())
 
+
+    def test_sol_compiler_arguments_are_split_into_argv(self):
+        source = self.base / "sample.sol"
+        source.write_text("42\n", encoding="utf-8")
+        _, steps = launcher.prepare_program(
+            str(source), launcher.REPO, self.run_dir, '-O speed --debug --org "0x1000"',
+        )
+        compiler_command = steps[0][1]
+        self.assertEqual(
+            compiler_command[compiler_command.index("compile") + 2:-2],
+            ["-O", "speed", "--debug", "--org", "0x1000"],
+        )
+
+    def test_sol_compiler_arguments_reject_unclosed_quotes(self):
+        source = self.base / "sample.sol"
+        source.write_text("42\n", encoding="utf-8")
+        with self.assertRaises(launcher.ConfigError):
+            launcher.prepare_program(str(source), launcher.REPO, self.run_dir, '--org "0x1000')
     def test_compile_error_prevents_assembly_and_launch(self):
         source = self.base / "invalid.sol"
         source.write_text("unknown_word", encoding="utf-8")
@@ -214,6 +234,7 @@ class LaunchPipelineTests(unittest.TestCase):
             "executable": "",
             "cpu_execution_mode": "cycle-independent",
             "cpu_time_slice_ms": "12",
+            "sol_compiler_args": '-O speed --org "0x1000"',
         }
         ui = SimpleNamespace(
             **{key: Variable(value) for key, value in values.items()},
@@ -223,10 +244,12 @@ class LaunchPipelineTests(unittest.TestCase):
         profile = launcher.Launcher._collect_profile(ui)
         profile["config_yaml"] = "config: {}\n"
         self.assertEqual(profile["cpu_time_slice_ms"], "12")
+        self.assertEqual(profile["sol_compiler_args"], '-O speed --org "0x1000"')
 
         launcher.Launcher._apply_profile(ui, profile)
         self.assertEqual(ui.cpu_execution_mode.get(), "cycle-independent")
         self.assertEqual(ui.cpu_time_slice_ms.get(), "12")
+        self.assertEqual(ui.sol_compiler_args.get(), '-O speed --org "0x1000"')
 
         legacy_profile = dict(profile)
         legacy_profile.pop("cpu_execution_mode")
