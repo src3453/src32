@@ -71,6 +71,17 @@ WASM binary には `cpt32_abi_version`, `cpt32_reset`, `cpt32_mmio_read`, `cpt32
 
 ## Host API
 
+### 音声を出力するカード
+
+SDKの `Card::render_audio(&mut self, sample_rate: u32, output: &mut [[i16; 2]])` をoverrideする。
+`output` は1〜256 stereo framesで、呼び出し前にゼロに初期化される。既定実装は無音。
+`export_card!` は必須5 exportに加えて任意の `cpt32_audio_render` exportとbufferを提供する。
+bufferの管理やpointer処理をカードが直接実装する必要はない。サンプルレートはhostから受け取り、
+チップ内部の固定rateと異なる場合はカードでresampleする。renderの途中でMMIO/tickは呼ばれない。
+フレーム内の書き込みタイミング精度は [ABI音声契約](spec_WASM_expansion_card.md#32-任意の音声出力export) を参照。
+
+実例は [`examples/wasm-3ws88pwn4`](../examples/wasm-3ws88pwn4/)。固定小数点位相の8ch×8op HSと4ch PCM/WT/noise、EQ/compressorを48 kHzで生成する。
+
 SDK の public function は ABI v1 の `cpt32_host` import に対応します。
 
 - `current_cycles() -> u64`: 単調増加する仮想 cycle 値。

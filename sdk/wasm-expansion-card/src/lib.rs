@@ -20,6 +20,12 @@ pub trait Card: Default {
 
     /// Handle a scheduled virtual-cycle deadline.
     fn tick(&mut self);
+
+    /// Fill interleaved stereo frames at the host rate (1..=256 frames/call).
+    /// Default implementations are silent; MMIO and audio calls are serialized.
+    fn render_audio(&mut self, _sample_rate: u32, output: &mut [[i16; 2]]) {
+        output.fill([0, 0]);
+    }
 }
 
 #[link(wasm_import_module = "cpt32_host")]
@@ -148,6 +154,24 @@ macro_rules! export_card {
         #[unsafe(no_mangle)]
         pub extern "C" fn cpt32_tick() {
             <$card as $crate::Card>::tick(__cpt32_card_mut());
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn cpt32_audio_render(frames: i32, sample_rate: i32) -> i32 {
+            assert!((1..=256).contains(&frames) && sample_rate > 0);
+            struct AudioBuffer(core::cell::UnsafeCell<[[i16; 2]; 256]>);
+            // Host calls are serialized and the pointer is consumed before the next call.
+            unsafe impl Sync for AudioBuffer {}
+            static BUFFER: AudioBuffer = AudioBuffer(core::cell::UnsafeCell::new([[0; 2]; 256]));
+            // SAFETY: The ABI forbids concurrent or reentrant card calls.
+            let output = unsafe { &mut *BUFFER.0.get() };
+            output[..frames as usize].fill([0, 0]);
+            <$card as $crate::Card>::render_audio(
+                __cpt32_card_mut(),
+                sample_rate as u32,
+                &mut output[..frames as usize],
+            );
+            output.as_ptr() as usize as i32
         }
     };
 }

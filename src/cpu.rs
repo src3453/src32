@@ -913,6 +913,10 @@ impl Cpu {
         self.bus.memory_map()
     }
 
+    pub fn mix_expansion_audio(&mut self, rate: u32, left: &mut [i16], right: &mut [i16]) {
+        self.bus.mix_expansion_audio(rate, left, right);
+    }
+
     pub fn write_mem_u8(&mut self, addr: u32, value: u8) {
         self.bus.set_access_source(BusAccessSource::Debugger);
         self.bus.write_u8(addr, value);

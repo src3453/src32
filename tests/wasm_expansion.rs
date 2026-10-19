@@ -15,6 +15,189 @@ use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 static NEXT_TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
+fn audio_card(body: &str, pointer: i32) -> String {
+    format!(
+        r#"(module
+      (memory (export "memory") 1)
+      (func (export "cpt32_abi_version") (result i32) i32.const 1)
+      (func (export "cpt32_reset"))
+      (func (export "cpt32_mmio_read") (param i32) (result i32) i32.const 90)
+      (func (export "cpt32_mmio_write") (param i32 i32))
+      (func (export "cpt32_tick"))
+      (func (export "cpt32_audio_render") (param $n i32) (param $rate i32) (result i32)
+        (local $i i32)
+        {body}
+        i32.const {pointer}))"#
+    )
+}
+
+#[test]
+fn audio_mixes_multiple_cards_in_chunks_at_requested_rate_with_saturation() {
+    let dir = temporary_directory();
+    let mut bus = Bus::new();
+    let body = r#"(loop $again
+        local.get $i i32.const 4 i32.mul
+        local.get $rate i32.store16
+        local.get $i i32.const 4 i32.mul i32.const 2 i32.add
+        i32.const -20000 i32.store16
+        local.get $i i32.const 1 i32.add local.tee $i local.get $n i32.lt_u br_if $again)"#;
+    install_package(&mut bus, &dir, 0, &audio_card(body, 0), &[]);
+    install_package(&mut bus, &dir, 7, &audio_card(body, 0), &[]);
+    let mut left = vec![1000; 601];
+    let mut right = vec![1000; 600];
+    bus.mix_expansion_audio(16000, &mut left, &mut right);
+    assert!(left[..600].iter().all(|&x| x == 32767));
+    assert_eq!(left[600], 1000);
+    assert!(right.iter().all(|&x| x == -32768));
+    assert_eq!(bus.system_cycles(), 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn audio_faults_bad_pointers_and_traps_without_touching_other_sources() {
+    for (body, ptr) in [
+        ("", 65535),
+        ("", -1),
+        ("unreachable", 0),
+        ("(loop $spin br $spin)", 0),
+    ] {
+        let dir = temporary_directory();
+        let mut bus = Bus::new();
+        install_package(&mut bus, &dir, 0, &audio_card(body, ptr), &[]);
+        install_package(&mut bus, &dir, 1, CARD, &[]); // old card has no audio export
+        let mut left = [123; 3];
+        let mut right = [-456; 3];
+        bus.mix_expansion_audio(48000, &mut left, &mut right);
+        assert_eq!(left, [123; 3]);
+        assert_eq!(right, [-456; 3]);
+        assert_eq!(bus.read_u8(EXPANSION_BASE), 0);
+        assert!(bus.take_bus_error());
+        bus.mix_expansion_audio(48000, &mut left, &mut right);
+        assert_eq!(left, [123; 3]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+fn optional_audio_export_requires_exact_signature_and_exported_memory() {
+    use cpt32::devices::expansion::{ExpansionCardPackage, load_expansion_cards_from_bytes};
+    for (module, expected) in [
+        (
+            audio_card("", 0).replace("(param $n i32) (param $rate i32)", "(param $n i32)"),
+            "wrong type for export cpt32_audio_render",
+        ),
+        (
+            audio_card("", 0).replace("(memory (export \"memory\") 1)", "(memory 1)"),
+            "audio requires exported memory",
+        ),
+    ] {
+        let dir = temporary_directory();
+        let file = dir.join("audio.cpt32card");
+        write_card_package(&file, &module, &[]);
+        let mut bus = Bus::new();
+        let error = load_expansion_cards_from_bytes(
+            vec![ExpansionCardPackage {
+                slot: 0,
+                label: "audio".into(),
+                bytes: fs::read(file).unwrap(),
+            }],
+            &mut bus,
+        )
+        .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(!bus.memory_map().any(|r| r.start == EXPANSION_BASE));
+        fs::remove_dir_all(dir).unwrap();
+    }
+}
+
+#[test]
+#[ignore = "build/package examples/wasm-3ws88pwn4 and set CPT32_SOUND_CARD_PACKAGE"]
+fn built_sound_card_produces_audio_retriggers_and_survives_full_polyphony() {
+    let _ = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::ERROR)
+        .try_init();
+    use cpt32::devices::expansion::{ExpansionCardPackage, load_expansion_cards_from_bytes};
+    let path = std::env::var("CPT32_SOUND_CARD_PACKAGE").expect("set CPT32_SOUND_CARD_PACKAGE");
+    let mut bus = Bus::new();
+    load_expansion_cards_from_bytes(
+        vec![ExpansionCardPackage {
+            slot: 0,
+            label: path.clone(),
+            bytes: fs::read(path).unwrap(),
+        }],
+        &mut bus,
+    )
+    .unwrap();
+    let mut left = [0; 512];
+    let mut right = [0; 512];
+    bus.mix_expansion_audio(48000, &mut left, &mut right);
+    assert_eq!(left, [0; 512]);
+    let base = EXPANSION_BASE + 0x400000;
+    for ch in 0..8 {
+        let b = base + ch * 64;
+        bus.write_u8(b, 2);
+        bus.write_u8(b + 1, 238);
+        for op in 0..8 {
+            if op != 0 {
+                bus.write_u8(b + op * 2, 16);
+            }
+            bus.write_u8(b + 16 + op, 220);
+            bus.write_u8(b + 34 + op * 4, 200);
+        }
+        bus.write_u8(b + 28, 12);
+        bus.write_u8(b + 29, 0xf0);
+        bus.write_u8(b + 30, 1);
+    }
+    for i in 0..10 {
+        left.fill(0);
+        right.fill(0);
+        bus.mix_expansion_audio([48000, 44100, 8000, 96000][i % 4], &mut left, &mut right);
+        assert_eq!(
+            bus.read_u8(base),
+            2,
+            "card faulted during audio render iteration {i}"
+        );
+        assert!(left.iter().any(|&x| x != 0));
+        assert!(right.iter().all(|&x| x == 0));
+        assert_eq!(bus.read_u8(base), 2, "card faulted during audio render");
+    }
+    bus.reset_expansion_cards();
+    left.fill(0);
+    right.fill(0);
+    bus.mix_expansion_audio(48000, &mut left, &mut right);
+    assert_eq!(left, [0; 512]);
+    assert_eq!(right, [0; 512]);
+
+    // Resampler state must survive host calls and arbitrary block boundaries.
+    let prepare = |bus: &mut Bus| {
+        bus.reset_expansion_cards();
+        bus.write_u8(base, 1);
+        bus.write_u8(base + 1, 184);
+        bus.write_u8(base + 16, 255);
+        bus.write_u8(base + 34, 255);
+        bus.write_u8(base + 31, 128);
+        bus.write_u8(base + 30, 1);
+    };
+    prepare(&mut bus);
+    let mut whole_l = [0; 601];
+    let mut whole_r = [0; 601];
+    bus.mix_expansion_audio(44100, &mut whole_l, &mut whole_r);
+    prepare(&mut bus);
+    let mut split_l = [0; 601];
+    let mut split_r = [0; 601];
+    let mut cursor = 0;
+    for count in [1, 7, 128, 3, 462] {
+        bus.mix_expansion_audio(
+            44100,
+            &mut split_l[cursor..cursor + count],
+            &mut split_r[cursor..cursor + count],
+        );
+        cursor += count;
+    }
+    assert_eq!(whole_l, split_l);
+    assert_eq!(whole_r, split_r);
+}
+
 const CARD: &str = r#"
 (module
   (import "cpt32_host" "schedule_tick" (func $schedule (param i64)))

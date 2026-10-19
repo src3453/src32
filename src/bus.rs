@@ -63,6 +63,8 @@ pub trait Device {
         false
     }
     fn reset(&mut self) {}
+    /// Add stereo samples at the host output rate. Called serially with MMIO.
+    fn render_audio(&mut self, _sample_rate: u32, _left: &mut [i16], _right: &mut [i16]) {}
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -226,6 +228,18 @@ impl Bus {
     pub fn reset_expansion_cards(&mut self) {
         for index in self.expansion_devices.iter().flatten().copied() {
             self.devices[index].device.reset();
+        }
+        self.refresh_device_irqs();
+    }
+
+    pub fn mix_expansion_audio(&mut self, sample_rate: u32, left: &mut [i16], right: &mut [i16]) {
+        if sample_rate == 0 || sample_rate > i32::MAX as u32 {
+            return;
+        }
+        for index in self.expansion_devices.iter().flatten().copied() {
+            self.devices[index]
+                .device
+                .render_audio(sample_rate, left, right);
         }
         self.refresh_device_irqs();
     }

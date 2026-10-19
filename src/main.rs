@@ -2222,6 +2222,11 @@ impl ApplicationHandler for GuiApp {
                                 &mut self.audio_right,
                             );
                         }
+                        self.cpu.mix_expansion_audio(
+                            sample_rate,
+                            &mut self.audio_left,
+                            &mut self.audio_right,
+                        );
                         if let (Some(profile), Some(start)) = (profile.as_mut(), audio_start) {
                             profile.stages[3] = start.elapsed();
                         }

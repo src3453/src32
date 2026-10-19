@@ -38,7 +38,7 @@ moduleは次の5つのfunction exportをすべて持たなければならない�
 | `cpt32_mmio_write` | `(i32, i32) -> ()` | slot内byte offsetとbyte値`0..255`を受け取る。 |
 | `cpt32_tick` | `() -> ()` | 予約deadline到達時に一度呼び出される。 |
 
-moduleは次節に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。ポインタ渡しや独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
+moduleは次節に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
 
 ### 3.1 許可host imports
 
@@ -56,6 +56,17 @@ import namespaceは`cpt32_host`に限り、次の6関数を許可する。関数
 asset importはpackageに含まれる宣言済みassetだけを公開し、guestにpathやfilesystem accessを与えない。asset ID/offsetの不正、またはasset sizeが`i32`で表現できない場合はABI違反としてtrapする。asset entryは初回read時にだけ展開する。
 
 deadlineはカードごとに保持し、仮想時間を進める際はdeadlineを越える前に処理する。deadlineに達したとき、hostは予約を消費してから`cpt32_tick`を呼び出す。tick中の再予約は新しい予約として有効となる。reset/fault時は予約を消去する。
+
+### 3.2 任意の音声出力export
+
+ABI v1の後方互換拡張として `cpt32_audio_render: (i32 frames, i32 sample_rate) -> i32 pointer` を定義する。
+exportしない既存カードは無音として扱う。exportする場合は同名関数の型を完全一致させ、通常のlinear memoryを `memory` としてexportする。型違い・memory欠落は起動エラー。
+
+hostは `frames=1..256`、正の `sample_rate` (Hz) で呼び出す。現在のhostはfuelに余裕を持たせるため約1 ms、最大64 framesのblockに分ける。カードはhost rateのsigned 16-bit stereo PCMをlinear memoryに置き、その先頭offsetのu32 bit patternを返す。配置は `L0 low, L0 high, R0 low, R0 high, L1...`、計 `frames*4` bytes。CPT32 CPUのbig-endian MMIOとは別に、音声bufferはWASM標準のlittle-endianである。pointer `0` も有効。
+
+hostはguest呼び出し後、範囲検証してからbufferを読み取り、次のguest呼び出しより前に消費する。範囲外pointer、trap、fuel枯渇は通常のcard faultにし、そのblockを加算しない。先に完了したblockの音声は残る。fault後のカードは無音。各blockに通常と同じ10,000,000 fuelの上限を適用する。
+
+GUIの既存音声フレーム処理から、SGU/IDCの後にslot昇順で加算する。各加算をi16で飽和する。音声・MMIO・tickを直列に呼び、オーディオデバイスのcallback threadでWASMを実行しない。現在はフレーム末のレジスタ状態を使う方式で、フレーム内MMIO時刻をサンプル単位に再生する契約ではない。音声renderでBus cycleを進めず、仮想cycle tickを音声sampleから生成しない。host音声が無効なGUIやmonitor/testbenchは自動ではrenderしない。headless利用者は `Bus::mix_expansion_audio` を明示的に呼べる。
 
 ## 4. Reset、IRQ、DMA
 

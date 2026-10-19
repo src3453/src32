@@ -5,8 +5,8 @@ use std::path::Path;
 use std::rc::Rc;
 
 use wasmtime::{
-    Caller, Config, Engine, ExternType, FuncType, Instance, Linker, Module, Store, StoreLimits,
-    StoreLimitsBuilder, TypedFunc, ValType,
+    Caller, Config, Engine, ExternType, FuncType, Instance, Linker, Memory, Module, Store,
+    StoreLimits, StoreLimitsBuilder, TypedFunc, ValType,
 };
 
 use crate::bus::Device;
@@ -16,6 +16,8 @@ pub const EXPANSION_SLOT_SIZE: u32 = 0x0200_0000;
 pub const EXPANSION_BASE: u32 = 0xA000_0000;
 const GUEST_FUEL: u64 = 10_000_000;
 const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
+// Leave fuel headroom for polyphonic synthesis and resampling in each call.
+const AUDIO_BLOCK_FRAMES: usize = 64;
 
 #[derive(Clone)]
 pub(crate) struct ExpansionRuntime {
@@ -198,6 +200,22 @@ impl ExpansionRuntime {
             .get_typed_func::<(), ()>(&mut store, "cpt32_tick")
             .map_err(|error| context(error.to_string()))?;
 
+        let audio = if module
+            .exports()
+            .any(|export| export.name() == "cpt32_audio_render")
+        {
+            Some((
+                instance
+                    .get_typed_func::<(i32, i32), i32>(&mut store, "cpt32_audio_render")
+                    .map_err(|error| context(error.to_string()))?,
+                instance
+                    .get_memory(&mut store, "memory")
+                    .ok_or_else(|| context("audio requires exported memory".into()))?,
+            ))
+        } else {
+            None
+        };
+
         Ok(ExpansionCard {
             slot,
             label: label.to_owned(),
@@ -207,6 +225,7 @@ impl ExpansionRuntime {
             mmio_read,
             mmio_write,
             tick,
+            audio,
         })
     }
 }
@@ -366,6 +385,7 @@ pub(crate) struct ExpansionCard {
     mmio_read: TypedFunc<i32, i32>,
     mmio_write: TypedFunc<(i32, i32), ()>,
     tick: TypedFunc<(), ()>,
+    audio: Option<(TypedFunc<(i32, i32), i32>, Memory)>,
 }
 
 impl ExpansionCard {
@@ -442,6 +462,40 @@ impl ExpansionCard {
 }
 
 impl Device for ExpansionCard {
+    fn render_audio(&mut self, sample_rate: u32, left: &mut [i16], right: &mut [i16]) {
+        let Some((render, memory)) = self.audio.clone() else {
+            return;
+        };
+        if self.is_faulted() {
+            return;
+        }
+        let frames = left.len().min(right.len());
+        // About 1 ms, capped at 64 frames. Low-rate outputs may resample a
+        // higher-rate chip internally, so they need proportionally smaller calls.
+        let block_frames = AUDIO_BLOCK_FRAMES.min((sample_rate as usize / 1000).max(1));
+        for start in (0..frames).step_by(block_frames) {
+            let count = (frames - start).min(block_frames);
+            let mut bytes = [0u8; AUDIO_BLOCK_FRAMES * 4];
+            let result = self
+                .call_guest(|store| render.call(store, (count as i32, sample_rate as i32)))
+                .and_then(|ptr| {
+                    memory
+                        .read(&self.store, ptr as u32 as usize, &mut bytes[..count * 4])
+                        .map_err(|error| wasmtime::Error::msg(error.to_string()))
+                });
+            if let Err(error) = result {
+                self.fault(format!("cpt32_audio_render failed: {error:#}"));
+                return;
+            }
+            for (i, frame) in bytes[..count * 4].chunks_exact(4).enumerate() {
+                left[start + i] =
+                    left[start + i].saturating_add(i16::from_le_bytes([frame[0], frame[1]]));
+                right[start + i] =
+                    right[start + i].saturating_add(i16::from_le_bytes([frame[2], frame[3]]));
+            }
+        }
+    }
+
     fn read(&mut self, offset: u32) -> u8 {
         if self.is_faulted() || offset >= EXPANSION_SLOT_SIZE {
             return 0;
@@ -520,6 +574,25 @@ fn function_type_matches(
 
 fn validate_module(module: &Module) -> Result<(), String> {
     let engine = module.engine();
+    if let Some(export) = module
+        .exports()
+        .find(|export| export.name() == "cpt32_audio_render")
+    {
+        if !function_type_matches(
+            engine,
+            &export.ty(),
+            &[ValType::I32, ValType::I32],
+            &[ValType::I32],
+        ) {
+            return Err("wrong type for export cpt32_audio_render".into());
+        }
+        if !module
+            .exports()
+            .any(|export| export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_)))
+        {
+            return Err("audio requires exported memory".into());
+        }
+    }
     for import in module.imports() {
         if import.module() != "cpt32_host" {
             return Err(format!("unsupported import namespace {}", import.module()));

@@ -1,0 +1,16 @@
+[package]
+name = "cpt32-3ws88pwn4"
+version = "0.1.0"
+edition = "2024"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cpt32-wasm-expansion-card = { path = "../../sdk/wasm-expansion-card" }
+libm = "0.2.16"
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"

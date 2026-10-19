@@ -453,6 +453,15 @@ impl AnyCpu {
         }
     }
 
+    pub fn mix_expansion_audio(&mut self, rate: u32, left: &mut [i16], right: &mut [i16]) {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.mix_expansion_audio(rate, left, right)
+            }
+            AnyCpu::Pipelined(cpu) => cpu.mix_expansion_audio(rate, left, right),
+        }
+    }
+
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
