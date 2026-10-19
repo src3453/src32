@@ -1,5 +1,88 @@
 # エミュレータ性能調査と改善計画
 
+## 48 MHzへ向けた段階的最適化（2026-10-18）
+
+目標はシステムクロック48 MHzの継続動作。48 MIPSとは区別し、
+`running_cycles / CPU実行秒 / 1,000,000` を実効MHzとして測る。
+48 MHzは平均20.83 ns/cycle、60 Hzでは800,000 cycles/frameに相当する。
+HALT後のidle cyclesを含むguest wall timeから稼働中CPUのMHzを計算しない。
+既定のPipelineを維持し、正確性を保つ改善と実験的Cached/JITの改善は別々に評価する。
+
+| 段階 | 対象と実施順 | 次段階へ進むための確認 |
+| --- | --- | --- |
+| 0: 計測基準 | release・profilerなしでRAMのみ／待機platform構成を測定。実効MHzと48 MHz達成率、cycles・stalls・flushesを記録 | 同じguest・mode・build設定で複数sampleの中央値とばらつき、実行状態を照合 |
+| 1: Bus/調停 | 単独requestのBMC探索を省略（今回）。次にDMAC request取得、IRQ集約、入力mutex、RefCell/Rc往復を個別計測 | grant・待機履歴・MMIO・IRQ・DMA結果が一致。active DMA/IDC/カードの経路も維持 |
+| 2: Pipeline fetch | byteアクセスごとの負荷を分解し、decode・dispatch・命令取得経路を一つずつ改善 | 自己書換え・DMA書換え・page境界・MMIO fetch・分岐先・Short切替・bus errorの結果とアクセス順が一致 |
+| 3: CPU内部 | register MMIO同期、forwarding、stall bookkeepingを計測し、不要なコピー／分岐を削減 | cycle予算途中、単一step、IRQ/IRET/HALT、MMIO経由のregister変更と既存pipelineカウンターが一致 |
+| 4: 実験的高速方式 | Cached/JITのShort・memory・乗除算fallbackとnative dispatchを改善 | 通常Pipelineとの契約差を明示し、cached-relaxed単体も比較。速くなることを理由に既定modeや精度を暗黙に変えない |
+| 5: 実用48 MHz | DOS操作・cube定常描画・音楽・active DMA/disk・WASMカードを含むGUIでCPU/render/audioを別計測 | cycleを落とさず48 MHzを維持し、frame時間の中央値/p95、入力応答と音声を確認 |
+
+各変更は単独で前後比較し、再現できる改善がなければ取り込まない。
+今回は64 KiBページ表によるBus lookupも試したが、DOS起動で約3%短縮する一方、
+RAM主体の合成では遅くなったため見送った。
+次回は段階1の残りの負荷を測ってから対象を選ぶ。各段階の倍率は保証しない。
+
+GUI既定の8 ms time sliceで800,000 cyclesを毎frame処理するには、CPU部分だけで
+100 MHz相当の処理能力が必要となる。48 MHz相当のCPUベンチ達成だけでGUIの
+リアルタイム動作を達成したとは扱わない。`best-effort`のcycle打切りや
+`cycle-independent`の進行を48 MHz達成の証拠にせず、最終的には`strict`で測る。
+
+計測コマンド（引数は反復数とsample数）:
+
+```sh
+cargo run --release --bin cpu_bench -- 100000 9
+cargo run --release --bin cpu_bench -- 100000 9 --platform
+```
+
+`--platform`はRAM/BMC/DMAC/SGU/VDP/PeC input・timer/RNG/未接続IDCを接続する。
+CPU構築がIRQCを接続する。デバイスは待機状態で、active DMA/disk・カード、
+VDP描画、音声合成、GUI/GPUを含まない。初期化・program loadは計測外、
+最初の命令fetchは計測内。各CPUを64 cyclesずつrunし、開始順を巡回する。
+
+### 第1段階: BMC単独要求の高速経路
+
+単独requestかつgrant可能な場合、8 masterの優先度探索を省略する。
+`pending`、`active`、`next_master`、全masterの待機履歴を従来と同じ状態にする。
+調停無効時のDMA拒否を先に判定し、複数requestは従来の優先度・aging・
+ラウンドロビン処理を使う。CPUのbyteアクセス回数、デバイス更新、IRQ、cycle数は変えない。
+
+同一Windowsホスト・release・profilerなし、9 samplesの中央値で測定。
+platform合成は900,006命令、Pipelineは1,400,008 cycles、300,000 stalls、
+99,999 flushesで変更前後が一致した。前→後、後→前の順に実行した。
+
+| platform合成 | 変更前 | 変更後 | 時間短縮 |
+| --- | ---: | ---: | ---: |
+| Pipeline、1組目 | 410.082 ms / 3.414 MHz | 378.282 ms / 3.701 MHz | 7.8% |
+| Pipeline、逆順2組目 | 408.667 ms / 3.426 MHz | 378.914 ms / 3.695 MHz | 7.3% |
+
+保存した変更前exeと変更後exeによる実guest比較（Pipeline、process起動込み、
+7 samplesの中央値、sampleごとに前後順を反転）:
+
+| guest | 変更前 | 変更後 | 時間短縮 |
+| --- | ---: | ---: | ---: |
+| 作業ツリーの`dos.wax`、起動5 frames | 113.456 ms | 106.281 ms | 6.3% |
+| 現在の`3d_cube.sol`、起動10 frames | 2044.499 ms | 1900.649 ms | 7.0% |
+
+空configのdirectoryで`--allow-running --frames N --skip-render-checks`を使用。
+cubeは今回のsourceをsolc既定size最適化→asm `--strip`で生成し、両exeで同じbinaryを実行した。
+各sampleでcycles・PC・runningが一致、DOSはR1も一致した。
+cubeのhost TRNGを使う値は一致を要求しない。DOSはHALT後のclock進行を含み、
+cubeはstartupのみなので、どちらも定常描画やGUIの48 MHz動作を表す値ではない。
+
+48 MHzに対して約7.7%で、目標は未達。合成の改善率をGUI性能へ外挿しない。
+RAMのみの構成にはBMCがなく、この高速経路による改善は想定しない。
+
+差分回帰テストは、256要求mask × 調停有効/無効 × 8探索開始位置 ×
+8種類のpriority/待機履歴を一般調停と比較する（32,768状態）。待機履歴は
+agingの255/256境界、最大昇格、u16飽和を含む。
+
+検証はreleaseでBMC 4件、DMAC 4件、Bus 3件、CPU/選択/Pipeline/relaxed/
+memory-map 59件、JIT 13件が通過。変更前後両exeのcube 60-frame実行でも、
+GP noise・VPU描画・白いSGC glyphのassertionが通過し、48,000,000 cyclesで
+HALTした。これはheadless描画確認で、GUI/GPUの表示や音声試聴は未実施。
+変更したRustファイルの`rustfmt --check`と`git diff --check`も通過し、
+`cargo build --release --features jit --bin cpt32`で本体を再buildした。
+
 ## JITの追加改善（2026-10-18）
 
 待機device batching導入後のJITから、bus-free区間のnative命令を最大16個まとめ、Rust helper／CPU register同期の往復を削減した。cold fetch、code変更、DMA／IDC／拡張カード、IRQ pendingとtimer期限には保守的処理を残す。通常nativeは16 visits、一括用は128 visitsで段階的にcompileし、1命令blockは解釈実行する。Short modeや乗除算待ちのJIT呼出しも省いた。追加の精度緩和は行っていない。

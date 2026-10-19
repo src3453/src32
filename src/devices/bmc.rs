@@ -47,6 +47,16 @@ impl Bmc {
             return None;
         }
 
+        // With one requester there is no priority/tie search, and no other
+        // master accumulates wait time. Preserve all observable grant state.
+        if requests.is_power_of_two() {
+            let winner = requests.trailing_zeros() as u8;
+            self.waited = [0; 8];
+            self.active = Some(winner);
+            self.next_master = (winner + 1) & 7;
+            return Some(winner);
+        }
+
         let mut best_priority = u8::MAX;
         let mut winner = None;
         for step in 0..8 {
@@ -170,6 +180,63 @@ pub fn connect_bmc(bus: &mut Bus) -> Rc<RefCell<Bmc>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    // Deliberately keep the original general arbiter as a differential oracle.
+    fn reference_grant(bmc: &mut Bmc, requests: u8) -> Option<u8> {
+        bmc.pending = requests;
+        let eligible = if bmc.enabled { requests } else { requests & 1 };
+        let winner = (0..8u8)
+            .map(|step| (bmc.next_master + step) & 7)
+            .filter(|id| eligible & (1 << id) != 0)
+            .min_by_key(|id| {
+                bmc.priorities[*id as usize]
+                    .saturating_sub((bmc.waited[*id as usize] / AGE_GRANTS).min(7) as u8)
+            })?;
+        for id in 0..8 {
+            bmc.waited[id] = if requests & (1 << id) == 0 || id == winner as usize {
+                0
+            } else {
+                bmc.waited[id].saturating_add(1)
+            };
+        }
+        bmc.active = Some(winner);
+        bmc.next_master = (winner + 1) & 7;
+        Some(winner)
+    }
+
+    #[test]
+    fn grant_matches_reference_for_all_masks_and_round_robin_positions() {
+        for enabled in [false, true] {
+            for next_master in 0..8 {
+                for seed in 0..8usize {
+                    for requests in 0..=u8::MAX {
+                        let make = || Bmc {
+                            enabled,
+                            priorities: std::array::from_fn(|id| ((id + seed) & 7) as u8),
+                            waited: std::array::from_fn(|id| {
+                                [0, 255, 256, 511, 1791, 1792, u16::MAX - 1, u16::MAX]
+                                    [(id + seed) & 7]
+                            }),
+                            pending: 0xff,
+                            active: Some(6),
+                            next_master,
+                            max_burst: 16,
+                        };
+                        let mut actual = make();
+                        let mut expected = make();
+                        assert_eq!(
+                            actual.grant(requests),
+                            reference_grant(&mut expected, requests)
+                        );
+                        assert_eq!(actual.pending, expected.pending);
+                        assert_eq!(actual.active, expected.active);
+                        assert_eq!(actual.next_master, expected.next_master);
+                        assert_eq!(actual.waited, expected.waited);
+                    }
+                }
+            }
+        }
+    }
 
     #[test]
     fn chooses_highest_priority_then_round_robins_ties() {

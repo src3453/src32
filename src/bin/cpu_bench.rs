@@ -1,5 +1,8 @@
-use cpt32::bus::Bus;
+use cpt32::bus::{Bus, connect_devices_with_vdp};
 use cpt32::cpu_select::{AnyCpu, CpuKind};
+use cpt32::devices::pec::idc::idc::connect_idc;
+use cpt32::devices::pec::pec::connect_pec_input;
+use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::ram::connect_ram;
 use std::error::Error;
 use std::time::{Duration, Instant};
@@ -57,9 +60,18 @@ fn workload(iterations: usize) -> Result<Vec<u8>, Box<dyn Error>> {
     Ok(image)
 }
 
-fn run(kind: CpuKind, image: &[u8]) -> Sample {
+fn run(kind: CpuKind, image: &[u8], platform: bool) -> Sample {
     let mut bus = Bus::new();
-    connect_ram(&mut bus);
+    let _input = if platform {
+        let input = connect_pec_input(&mut bus);
+        connect_rng(&mut bus);
+        connect_devices_with_vdp(&mut bus);
+        connect_idc(&mut bus, [None, None, None, None]);
+        Some(input)
+    } else {
+        connect_ram(&mut bus);
+        None
+    };
     let mut cpu = AnyCpu::new(kind, bus);
     cpu.load_program(0, image);
 
@@ -155,12 +167,17 @@ fn report(label: &str, elapsed: Duration, sample: &Sample) {
     let seconds = elapsed.as_secs_f64();
     let instructions_per_second = sample.instructions as f64 / seconds;
     let cycles_per_instruction = sample.running_cycles as f64 / sample.instructions as f64;
+    let mhz = sample.running_cycles as f64 / seconds / 1_000_000.0;
     println!(
         "{label:<8} median={:.3} ms  {:.0} instr/s  cycles={}  CPI={:.3}",
         elapsed.as_secs_f64() * 1_000.0,
         instructions_per_second,
         sample.running_cycles,
         cycles_per_instruction,
+    );
+    println!(
+        "         effective={mhz:.3} MHz  48 MHz target={:.1}%",
+        mhz / 48.0 * 100.0
     );
     if let (Some(stalls), Some(flushes)) = (sample.stalls, sample.flushes) {
         println!("         pipeline stalls={stalls}  flushes={flushes}");
@@ -171,9 +188,11 @@ fn report(label: &str, elapsed: Duration, sample: &Sample) {
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    let platform = args.iter().any(|arg| arg == "--platform");
+    args.retain(|arg| arg != "--platform");
     if args.len() > 2 {
-        return Err("usage: cpu_bench [iterations [samples]]".into());
+        return Err("usage: cpu_bench [iterations [samples]] [--platform]".into());
     }
     let iterations = args
         .first()
@@ -186,6 +205,7 @@ fn main() -> Result<(), Box<dyn Error>> {
     }
 
     let image = workload(iterations)?;
+    let run = |kind, image: &[u8]| run(kind, image, platform);
     let mut scalar_results = Vec::with_capacity(samples);
     let mut pipeline_results = Vec::with_capacity(samples);
     let mut cached_results = Vec::with_capacity(samples);
@@ -234,6 +254,14 @@ fn main() -> Result<(), Box<dyn Error>> {
     println!(
         "CPU comparison: {iterations} loop iterations, {samples} samples, {} guest instructions/sample",
         scalar.instructions,
+    );
+    println!(
+        "Bus configuration: {}",
+        if platform {
+            "idle platform devices"
+        } else {
+            "RAM only"
+        }
     );
     report("Scalar", scalar_median, scalar);
     report("Pipeline", pipeline_median, pipeline);
