@@ -794,3 +794,7 @@
 ## Launcher console log mirroring (2026-10-19)
 - `tools/cpt32-launcher/launcher.py::_spawn_and_read` owns child stdout capture and forwards lines through `result_queue`; `_poll_process` renders them in the Tk log. Mirror lines with `print(..., flush=True)` at production time so the Python console receives them immediately while GUI queue behavior remains intact. Also mirror launch/build failure messages.
 - The launcher unittest can invoke `_spawn_and_read` synchronously and capture its console output with `redirect_stdout`; child output still passes through the pipe first.
+- SGUB guest driver のC版は `sol/cpt32/sgu_music_driver.c`。SDKの `sgub.c` と `irqc.c`、PCG表示用 `pcg.c` をリンクし、Music Editor は `sgu_music_driver.c` をストリームと同じ場所に書き出す。driver はRAM `0x00200000` のstreamを読み、v1はheader+16、v2はheader+32からtotal sizeを読む。全stream検証とinit後にIRQ0を有効化し、IRQごとに1 frame進める。
+- 再生中ビジュアライザーはPCG画面へ16chのvolume (`base+3`) とfrequency (`base+0..1`) をhexで表示し、VSyncごとに更新する。FILL/COPY_POOLは非制御領域に限定される仕様なのでC側でも32-bit MMIO bulk転送とbyte tailを使う。通常WRITEの並び順は維持する。
+- `tools/llvm-src32/driver.py` では現状C guestを `-O0` でビルドする。`-O1/-O2` は内部関数呼び出しのfastcc lowering errorが起き、一時的にstatic helperをglobal化して通した実験でも実stream再生の初期化失敗を確認した。最適化レベルを変える場合は compiler loweringとguest再生の両方を再検証する。
+- 検証: `python sdk/cpt32/smoke/run.py --clang <clang> --cpu pipeline` 全件通過。Music Editor export focused test通過。実C driver + `music.sgub` のtestbench 4-frame実行はR1=0でhalt待ちまで到達。

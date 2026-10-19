@@ -282,7 +282,10 @@ static size_t sgub_apply_operation(size_t cursor) {
   if (opcode == SGUB_OP_FILL) {
     uint32_t length = sgub_read_u32(p + 5);
     uint8_t value = p[9];
-    for (i = 0; i < length; ++i)
+    uint32_t packed = (uint32_t)value * UINT32_C(0x01010101);
+    for (i = 0; length - i >= 4u; i += 4u)
+      CPT32_MMIO32(destination + i) = packed;
+    for (; i < length; ++i)
       CPT32_MMIO8(destination + i) = value;
     return cursor + 10u;
   }
@@ -294,7 +297,14 @@ static size_t sgub_apply_operation(size_t cursor) {
     uint32_t payload_offset;
     (void)sgub_pool_info(pool_id, &pool);
     payload_offset = pool.payload_offset + source_offset;
-    for (i = 0; i < length; ++i)
+    for (i = 0; length - i >= 4u; i += 4u) {
+      uint32_t word = ((uint32_t)player.stream[payload_offset + i] << 24) |
+                     ((uint32_t)player.stream[payload_offset + i + 1u] << 16) |
+                     ((uint32_t)player.stream[payload_offset + i + 2u] << 8) |
+                     (uint32_t)player.stream[payload_offset + i + 3u];
+      CPT32_MMIO32(destination + i) = word;
+    }
+    for (; i < length; ++i)
       CPT32_MMIO8(destination + i) = player.stream[payload_offset + i];
     return cursor + 15u;
   }

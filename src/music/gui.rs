@@ -13,7 +13,7 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use winit::keyboard::KeyCode;
 
-const DRIVER_SOURCE: &str = include_str!("../../sol/cpt32/sgu_music_driver.sol");
+const DRIVER_SOURCE: &str = include_str!("../../sol/cpt32/sgu_music_driver.c");
 const NOTE_NAMES: [&str; 12] = [
     "C-", "C#", "D-", "D#", "E-", "F-", "F#", "G-", "G#", "A-", "A#", "B-",
 ];
@@ -652,7 +652,7 @@ impl TrackerUi {
             .hint("Export basename")
             .build();
         ui.same_line();
-        if ui.button("Export SGUB + driver source") {
+        if ui.button("Export SGUB + C driver") {
             self.request_export();
         }
         ui.text_wrapped(&self.status);
@@ -1426,7 +1426,7 @@ impl TrackerUi {
             PathBuf::from(self.export_base_input.trim())
         };
         let stream = base.with_extension("sgub");
-        let driver = stream.with_file_name("sgu_music_driver.sol");
+        let driver = stream.with_file_name("sgu_music_driver.c");
         (stream, driver)
     }
     fn request_export(&mut self) {
@@ -2382,7 +2382,7 @@ mod tests {
     fn exports_both_files_and_preserves_existing_pair_if_second_stage_fails() {
         let root = temp_dir();
         let stream = root.join("song.sgub");
-        let driver = root.join("sgu_music_driver.sol");
+        let driver = root.join("sgu_music_driver.c");
         fs::write(&stream, b"old stream").unwrap();
         fs::write(&driver, b"old driver").unwrap();
         export_pair(&stream, b"new stream", &driver, b"new driver").unwrap();

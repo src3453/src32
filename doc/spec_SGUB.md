@@ -1,16 +1,18 @@
 # SGUB v1 music stream
 
-SGUB is a register stream played at 60 Hz by the host VSync loop or
-`sol/cpt32/sgu_music_driver.sol`. `src/music/stream.rs::StreamPlayer` validates
+SGUB is a register stream played at 60 Hz by the host VSync loop or the C guest
+driver in `sol/cpt32/sgu_music_driver.c`, backed by `sdk/cpt32/src/sgub.c`.
+`src/music/stream.rs::StreamPlayer` validates
 all data before playback. Maximum file size is `0x00E00000` bytes (14 MiB),
 allowing a stream loaded at main RAM address `0x00200000` to fit in 16 MiB RAM.
+The C guest driver displays each channel's volume and frequency on the PCG
+screen and refreshes the values on every VSync while playing.
 
 All multi-byte fields are **big endian**.
 
 This document specifies v1, retained for Music Editor output and existing
 files. The current Furnace ROM exporter writes pooled v2, specified in
-`doc/spec_SGUB_v2.md`. Both versions use the current guest driver; rebuild it
-with `solc.py compile -O speed` after updating its source.
+`doc/spec_SGUB_v2.md`. Both versions use the same C guest driver.
 
 | Offset | Size | Meaning |
 |---|---|---|

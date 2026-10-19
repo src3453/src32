@@ -112,9 +112,25 @@ Furnace の現在の ROM exporter は v2 を出力し、次のpool化を行う�
 
 ## Guest driverのビルドと更新
 
-`sol/cpt32/sgu_music_driver.sol` を `solc.py compile -O speed` でコンパイルし、`tools/asm/asm.py` でbinaryにする。v2非対応の古いdriverや、以前Music EditorがSGUBと同じ場所に出力したdriverのコピーは最新版に更新する。SGUBファイル自体の再exportは不要。
+Guest playback uses `sol/cpt32/sgu_music_driver.c` and the SDK implementation
+`sdk/cpt32/src/sgub.c`. From the repository root, build it with:
 
-初期化は全検証が通ってから実行し、完了後にIRQ0を有効にする。FILL/COPY_POOLは制御レジスタに触れない契約なので32-bitのまとめ読み書きで処理し、端数だけbyte単位で処理する。通常のWRITEは順序と副作用を維持する。size最適化でコンパイルしたdriverでは大量のresetを含む先頭frameが1 VSyncのCPU予算を超える場合があるため、再生用binaryにはspeed最適化を推奨する。
+```sh
+python tools/llvm-src32/driver.py sol/cpt32/sgu_music_driver.c \
+  sdk/cpt32/src/irqc.c sdk/cpt32/src/sgub.c \
+  sdk/cpt32/src/pcg.c -I sdk/cpt32/include -O0 -o sgu_music_driver.bin
+```
+
+The music stream stays at `0x00200000`. Music Editor exports this C source next
+to the stream; compile it with the SDK sources and include directory above.
+Old Sol driver copies must be replaced with the current C driver. SGUB files do
+not need to be re-exported.
+
+During playback the driver uses the PCG text screen to show all 16 channels'
+volume and frequency registers in hexadecimal. It refreshes the display once
+per VSync after applying that frame's stream operations.
+
+初期化は全検証が通ってから実行し、完了後にIRQ0を有効にする。FILL/COPY_POOLは制御レジスタに触れない契約なので32-bitのまとめ読み書きで処理し、端数だけbyte単位で処理する。通常のWRITEは順序と副作用を維持する。現在のSRC32 C backendは最適化ビルドで一部内部呼び出し規約を扱えないため、上記の `-O0` を使う。
 
 ## ImHex パターン
 
