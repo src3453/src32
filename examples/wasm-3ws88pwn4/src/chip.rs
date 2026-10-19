@@ -84,7 +84,7 @@ pub struct Chip {
     wt_phase: [u64; 4],
     envelopes: [[Envelope; 8]; 8],
     gate: [bool; 8],
-    previous: [f32; 8],
+    feedback_history: [[[f32; 2]; 8]; 8],
     tables: [[i8; 256]; 16],
     noise: [u8; 65536],
     filter: [Biquad; 4],
@@ -102,7 +102,7 @@ impl Default for Chip {
             wt_phase: [0; 4],
             envelopes: [[Envelope::default(); 8]; 8],
             gate: [false; 8],
-            previous: [0.0; 8],
+            feedback_history: [[[0.0; 2]; 8]; 8],
             tables: [[0; 256]; 16],
             noise: [0; 65536],
             filter: [Biquad::default(); 4],
@@ -212,6 +212,7 @@ impl Chip {
                     env.trigger();
                 }
                 self.phases[ch] = [0; 8];
+                self.feedback_history[ch] = [[0.0; 2]; 8];
                 self.gate[ch] = true;
             } else if value == 0 && self.gate[ch] {
                 for env in &mut self.envelopes[ch] {
@@ -273,12 +274,19 @@ impl Chip {
                     r[24 + op / 2] & 15
                 };
             }
-            let feedback = ((self.previous[ch] as f64 / 255.0 / 127.0 + 1.0).clamp(0.0, 2.0) - 1.0)
-                as f32
-                * (r[31] as f32 / 256.0 - 0.5)
-                * 2.0;
-            result[ch] = synth(r[28], self.phases[ch], volume, wave, &self.tables, feedback);
-            self.previous[ch] = result[ch];
+            let feedback_amount = (r[31] as f32 / 256.0 - 0.5) * 2.0;
+            // 0x3C0..0x3C7 hold the per-HS-channel Feedback Destination Register.
+            let feedback_dest = self.regs[0x3c0 + ch];
+            result[ch] = synth(
+                r[28],
+                self.phases[ch],
+                volume,
+                wave,
+                &self.tables,
+                feedback_amount,
+                feedback_dest,
+                &mut self.feedback_history[ch],
+            );
         }
         for ch in 0..4 {
             let r = &self.regs[0x200 + ch * 48..0x200 + (ch + 1) * 48];

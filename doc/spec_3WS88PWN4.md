@@ -46,12 +46,14 @@ HSチャンネル `h=0..7` のbase `H=0x400000+64*h`。
 | `1F` | feedback、`(value/256-0.5)*2`、128が中立 |
 | `20..3F` | 各operatorのA,D,S,R (4 bytes×8) |
 
+Feedback Destination Registerは `0x3C0..0x3C7` にあり、各byteの値 `0..7` がOP1..OP8を選択する。範囲外の値ではfeedbackを無効にする。`0x1D`のpan registerとは独立している。
+
 ### Gate / ResetGate
 
 レジスタシート第1シート `Q3` (`Gate (W:Reset)`、各HSチャンネルに反復) に従い、`H+0x1E` を使用する。
 `1`の書き込みごとに8 operatorのenvelopeをAttackに戻し、8位相を0に戻す。同じ1の再書き込みでも必ず実行する。`0`はgateがonの場合Releaseを開始する。その他の値は保存するがgateを変化させない。readは最後に書いたbyteを返す。
 
-元の `resetGate(ch)` と同様、envelopeの現在level・feedbackの前回出力・他チャンネルは消去しない。Attack経過時間だけを0にするため、retrigger直後の第1sampleは直前のenvelope levelを参照する。Gate on/offは書き込み時点で処理するので、render前に連続したon/offを行ってもstrobeを失わない。
+Gate onでenvelope、位相、各operatorのfeedback履歴をresetする。Attack経過時間を0にするため、retrigger直後の第1sampleは直前のenvelope levelを参照する。Gate on/offは書き込み時点で処理するので、render前に連続したon/offを行ってもstrobeを失わない。
 
 ### 固定小数点位相
 
@@ -88,19 +90,19 @@ noiseは標準MT19937 seed 0から最初の65,536個のlow bitをPCM用tableに�
 
 ### 合成アルゴリズム
 
-`Oi`を各operatorのwave×volume、`A+B → C`を和の4周期相当によるCの位相変調とする。feedbackは前回のchannel出力を `255*127` で正規化して[-1,1]に制限し、feedback register値を掛ける。以下のFB位置を維持する。結果に `255*127` を掛ける。
+`Oi`を各operatorのwave×volume、`A+B → C`を和の4周期相当によるCの位相変調とする。Feedback Destination Registerが選ぶoperatorの直近2出力の平均 `(h0+h1)/2` にfeedback register値を掛け、そのoperator自身の位相へ戻す。オペレーター出力はすでにenvelope/volume経路で約`-1..1`に正規化されている。履歴はoperatorごと、channelごとに保持する。結果に `255*127` を掛ける。
 
 | mode | routing |
 |---|---|
-| 0 | O1+...+O8+FB |
-| 1 | O5+O6+O7+O8+FB → O1+O2+O3+O4 |
-| 2 | (O1+O2+O3+O4)×(O5+O6+O7+O8)+FB |
-| 3 | O7+O8 → O5+O6 → O3+O4+FB → O1+O2 |
-| 4 | O8 → O7 → O6 → O5 → O4 → O3 → O2+FB → O1 |
-| 5 | (O8→O7→O6→O5) + (O4→O3→O2+FB→O1) |
-| 6 | (O2+FB→O1)+(O8→O7)+(O6→O5)+(O4→O3) |
+| 0 | O1+...+O8 |
+| 1 | O5+O6+O7+O8 → O1+O2+O3+O4 |
+| 2 | (O1+O2+O3+O4)×(O5+O6+O7+O8) |
+| 3 | O7+O8 → O5+O6 → O3+O4 → O1+O2 |
+| 4 | O8 → O7 → O6 → O5 → O4 → O3 → O2 → O1 |
+| 5 | (O8→O7→O6→O5) + (O4→O3→O2→O1) |
+| 6 | (O2→O1)+(O8→O7)+(O6→O5)+(O4→O3) |
 | 7 | mode 5の2系列を乗算 |
-| 8 | (O1+O2)×(O3+O4)×(O5+O6)×(O7+O8)+FB |
+| 8 | (O1+O2)×(O3+O4)×(O5+O6)×(O7+O8) |
 | 9 | mode 6の4系列を乗算 |
 | 10 | mode 1、carrierはdirect phase |
 | 11 | mode 3、最上流以外をdirect phase |

@@ -22,7 +22,7 @@ expansion_card:
     package: "examples/wasm-3ws88pwn4/target/3ws88pwn4.cpt32card"
 ```
 
-slot 0のHS ch1は `0xA0400000`。最小の発音例はF=750 (`+0=2,+1=238`)、OP1 volume (`+0x10=255`)、OP1 sustain (`+0x22=255`)、中立feedback (`+0x1F=128`)、Gate (`+0x1E=1`)。その他は0でよい。同じGateに1を再書き込みすると位相とADSRをretriggerする。0を書くとreleaseする。PCM/WT ch1のsyncは `0xA0400208` への任意write。
+slot 0のHS ch1は `0xA0400000`。最小の発音例はF=750 (`+0=2,+1=238`)、OP1 volume (`+0x10=255`)、OP1 sustain (`+0x22=255`)、中立feedback (`+0x1F=128`)、Gate (`+0x1E=1`)。Feedback Destination Registerは `0xA04003C0` から8ch分で、値0〜7がOperator 1〜8を選択する。Feedbackは選択OP自身の直近2サンプルを位相へ戻す。その他は0でよい。同じGateに1を再書き込みすると位相、ADSR、feedback履歴をretriggerする。0を書くとreleaseする。PCM/WT ch1のsyncは `0xA0400208` への任意write。
 
 ## Validation
 
