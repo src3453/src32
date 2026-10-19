@@ -69,6 +69,8 @@ WASM binary には `cpt32_abi_version`, `cpt32_reset`, `cpt32_mmio_read`, `cpt32
 
 `Card::mmio_read/write` は slot 相対 byte offset を受け取ります。slot window は 32 MiB ですが、デバイスが使わない offset の read/write はカード側で定義してください。read は `u8` なので SDK 経由では ABI 範囲外値を返しません。
 
+デバッガのメモリモニタ用に、副作用なしで観測できる範囲があれば `Card::debug_read(&self, offset) -> Option<u8>` を実装してください。`None` を返したoffsetはOpen Bus表示になります。これはCPU/DMA用の `mmio_read` とは独立したsnapshot経路であり、カード状態やhost状態を変更してはいけません。未実装のカードは従来どおりロードでき、Debug Readは未対応になります。
+
 ## Host API
 
 ### 音声を出力するカード

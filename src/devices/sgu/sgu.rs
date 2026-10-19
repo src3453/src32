@@ -40,7 +40,7 @@ impl Device for SguDevice {
         }
     }
 
-    fn debug_read(&self, addr: u32) -> Option<u8> {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
         Some(match self.port {
             SguPort::Regs(chip) => self.sgus[chip].borrow().peek_register(addr),
             SguPort::PcmRam => self.sgus[0].borrow().read_pcm_ram(addr),

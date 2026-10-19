@@ -38,6 +38,8 @@ moduleは次の5つのfunction exportをすべて持たなければならない�
 | `cpt32_mmio_write` | `(i32, i32) -> ()` | slot内byte offsetとbyte値`0..255`を受け取る。 |
 | `cpt32_tick` | `() -> ()` | 予約deadline到達時に一度呼び出される。 |
 
+任意export `cpt32_debug_read: (i32) -> i32` はデバッガの受動snapshot用である。引数はslot内byte offset、戻り値`0..255`は読み出し値、`-1`は安全なsnapshotを提供しないことを示す。この関数はカード状態・host状態を変更してはならず、`cpt32_mmio_read`を呼び出す代用にはしない。exportがない旧moduleは従来どおりロードでき、そのカードのDebug Readは利用不可として扱う。SDKは`Card::debug_read(&self, offset) -> Option<u8>`からこのexportを生成する。
+
 moduleは次節に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
 
 ### 3.1 許可host imports

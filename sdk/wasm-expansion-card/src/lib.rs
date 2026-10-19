@@ -15,6 +15,12 @@ pub trait Card: Default {
     /// Read one byte at a slot-relative MMIO offset.
     fn mmio_read(&mut self, offset: u32) -> u8;
 
+    /// Return a stable byte snapshot for debuggers, without changing card or
+    /// host state. `None` marks offsets that cannot be inspected safely.
+    fn debug_read(&self, _offset: u32) -> Option<u8> {
+        None
+    }
+
     /// Write one byte at a slot-relative MMIO offset.
     fn mmio_write(&mut self, offset: u32, value: u8);
 
@@ -130,6 +136,13 @@ macro_rules! export_card {
             }
         }
 
+        fn __cpt32_card_ref() -> &'static $card {
+            let _ = __cpt32_card_mut();
+            // SAFETY: Debug reads borrow the initialized card immutably. The
+            // host serializes exports and does not call them reentrantly.
+            unsafe { (&*__CPT32_CARD.0.get()).card.assume_init_ref() }
+        }
+
         #[unsafe(no_mangle)]
         pub extern "C" fn cpt32_abi_version() -> i32 {
             let _ = __cpt32_card_mut();
@@ -144,6 +157,14 @@ macro_rules! export_card {
         #[unsafe(no_mangle)]
         pub extern "C" fn cpt32_mmio_read(offset: i32) -> i32 {
             <$card as $crate::Card>::mmio_read(__cpt32_card_mut(), offset as u32) as i32
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn cpt32_debug_read(offset: i32) -> i32 {
+            match <$card as $crate::Card>::debug_read(__cpt32_card_ref(), offset as u32) {
+                Some(value) => value as i32,
+                None => -1,
+            }
         }
 
         #[unsafe(no_mangle)]

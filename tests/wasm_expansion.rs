@@ -128,6 +128,10 @@ fn built_sound_card_produces_audio_retriggers_and_survives_full_polyphony() {
         &mut bus,
     )
     .unwrap();
+    assert_eq!(bus.read_debug_u8(EXPANSION_BASE + 0x4003F0), Some(b'3'));
+    assert_eq!(bus.read_debug_u8(EXPANSION_BASE + 0x1234), Some(0));
+    bus.write_u8(EXPANSION_BASE + 0x1234, 0xA5);
+    assert_eq!(bus.read_debug_u8(EXPANSION_BASE + 0x1234), Some(0xA5));
     let mut left = [0; 512];
     let mut right = [0; 512];
     bus.mix_expansion_audio(48000, &mut left, &mut right);
@@ -217,6 +221,8 @@ const CARD: &str = r#"
     call $irq)
   (func (export "cpt32_mmio_read") (param i32) (result i32)
     global.get $count)
+  (func (export "cpt32_debug_read") (param i32) (result i32)
+    global.get $count)
   (func (export "cpt32_mmio_write") (param i32) (param i32)
     local.get 1
     global.set $count
@@ -251,6 +257,7 @@ fn slot_zero_mmio_and_deadlines_are_driven_by_virtual_cycles() {
         .unwrap();
     assert_eq!(region.size, EXPANSION_SLOT_SIZE);
     assert_eq!(bus.read_u8(EXPANSION_BASE), 0);
+    assert_eq!(bus.read_debug_u8(EXPANSION_BASE), Some(0));
     assert_eq!(bus.cycles_until_next_event(), Some(5));
 
     bus.advance_system_cycles(4);
@@ -260,6 +267,7 @@ fn slot_zero_mmio_and_deadlines_are_driven_by_virtual_cycles() {
 
     bus.advance_system_cycles(1);
     assert_eq!(bus.system_cycles(), 5);
+    assert_eq!(bus.read_debug_u8(EXPANSION_BASE), Some(1));
     assert_eq!(bus.read_u8(EXPANSION_BASE), 1);
     assert_ne!(irq.borrow().pending() & (1 << 5), 0);
     assert_eq!(bus.cycles_until_next_event(), Some(5));

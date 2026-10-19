@@ -40,7 +40,7 @@ pub trait Device {
     fn read(&mut self, addr: u32) -> u8;
     /// Read a byte for a debugger without triggering device read side effects.
     /// Devices that cannot provide a stable snapshot should return `None`.
-    fn debug_read(&self, _addr: u32) -> Option<u8> {
+    fn debug_read(&mut self, _addr: u32) -> Option<u8> {
         None
     }
     fn write(&mut self, addr: u32, value: u8);

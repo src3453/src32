@@ -38,6 +38,15 @@ mod card {
                 self.chip.read(offset)
             }
         }
+        fn debug_read(&self, offset: u32) -> Option<u8> {
+            if (offset as usize) < PCM_SIZE {
+                Some(unsafe { (*PCM.0.get())[offset as usize] })
+            } else if offset < 0x400000 + 0x400 {
+                Some(self.chip.read(offset))
+            } else {
+                None
+            }
+        }
         fn mmio_write(&mut self, offset: u32, value: u8) {
             if (offset as usize) < PCM_SIZE {
                 unsafe {

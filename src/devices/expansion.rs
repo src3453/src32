@@ -200,6 +200,19 @@ impl ExpansionRuntime {
             .get_typed_func::<(), ()>(&mut store, "cpt32_tick")
             .map_err(|error| context(error.to_string()))?;
 
+        let debug_read = if module
+            .exports()
+            .any(|export| export.name() == "cpt32_debug_read")
+        {
+            Some(
+                instance
+                    .get_typed_func::<i32, i32>(&mut store, "cpt32_debug_read")
+                    .map_err(|error| context(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         let audio = if module
             .exports()
             .any(|export| export.name() == "cpt32_audio_render")
@@ -223,6 +236,7 @@ impl ExpansionRuntime {
             _instance: instance,
             reset,
             mmio_read,
+            debug_read,
             mmio_write,
             tick,
             audio,
@@ -383,6 +397,7 @@ pub(crate) struct ExpansionCard {
     _instance: Instance,
     reset: TypedFunc<(), ()>,
     mmio_read: TypedFunc<i32, i32>,
+    debug_read: Option<TypedFunc<i32, i32>>,
     mmio_write: TypedFunc<(i32, i32), ()>,
     tick: TypedFunc<(), ()>,
     audio: Option<(TypedFunc<(i32, i32), i32>, Memory)>,
@@ -518,6 +533,26 @@ impl Device for ExpansionCard {
         }
     }
 
+    fn debug_read(&mut self, offset: u32) -> Option<u8> {
+        if self.is_faulted() || offset >= EXPANSION_SLOT_SIZE {
+            return None;
+        }
+        let debug_read = self.debug_read.clone()?;
+        let offset = i32::try_from(offset).ok()?;
+        match self.call_guest(|store| debug_read.call(store, offset)) {
+            Ok(value) if (0..=255).contains(&value) => Some(value as u8),
+            Ok(-1) => None,
+            Ok(value) => {
+                self.fault(format!("cpt32_debug_read returned invalid value {value}"));
+                None
+            }
+            Err(error) => {
+                self.fault(format!("cpt32_debug_read trapped: {error}"));
+                None
+            }
+        }
+    }
+
     fn write(&mut self, offset: u32, value: u8) {
         if self.is_faulted() || offset >= EXPANSION_SLOT_SIZE {
             return;
@@ -574,6 +609,14 @@ fn function_type_matches(
 
 fn validate_module(module: &Module) -> Result<(), String> {
     let engine = module.engine();
+    if let Some(export) = module
+        .exports()
+        .find(|export| export.name() == "cpt32_debug_read")
+    {
+        if !function_type_matches(engine, &export.ty(), &[ValType::I32], &[ValType::I32]) {
+            return Err("wrong type for export cpt32_debug_read".into());
+        }
+    }
     if let Some(export) = module
         .exports()
         .find(|export| export.name() == "cpt32_audio_render")

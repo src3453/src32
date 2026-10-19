@@ -24,7 +24,7 @@ impl Device for Ram {
         self.data[addr as usize]
     }
 
-    fn debug_read(&self, addr: u32) -> Option<u8> {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
         self.data.get(addr as usize).copied()
     }
 
