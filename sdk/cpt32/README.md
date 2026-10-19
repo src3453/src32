@@ -16,7 +16,7 @@
 | `idc.h` | `idc_*` | IDC/DMAC ch0の同期sector I/O。戻り値0=成功、1=DMA失敗、2=IDC失敗 |
 | `dsfs.h` | `dsfs_*` | 単一mount状態、ディレクトリ・bitmap、ファイル読書き・削除、timestamp |
 | `wax.h` | `wax_*` | WAX v2検証、予約RAMへのstaging、コード・stackを置換できるロード |
-| `sgub.h` | `sgub_*` | SGUB v1/v2全体検証、初期化、フレーム再生、repeat・終端停止 |
+| `sgub.h` | `sgub_*` | SGUB v1/v2/v3全体検証、初期化、フレーム再生、slot 0カード出力、repeat・終端停止 |
 
 元の`colors.sol`の`hsv2color`は空の関数なのでAPIに含めません。`sol/solstd`のsoftfloat等はこのSDKの対象外です。述語は通常のC規約 (`true != 0`)。`dsfs_name_eq`と`wax_ult`もCの`bool`を返します。エラーコードは各ヘッダーを参照してください。
 

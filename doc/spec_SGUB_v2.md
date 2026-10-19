@@ -126,6 +126,10 @@ to the stream; compile it with the SDK sources and include directory above.
 Old Sol driver copies must be replaced with the current C driver. SGUB files do
 not need to be re-exported.
 
+The C SDK player accepts SGUB v1/v2/v3. The Sol source
+`sol/cpt32/sgu_music_driver.sol` remains a v1/v2 player; use the C driver for
+v3 S3HS streams. v3 output requires the 3WS88PWN4 card in expansion slot 0.
+
 During playback the driver uses the PCG text screen to show all 16 channels'
 volume and frequency registers in hexadecimal. It refreshes the display once
 per VSync after applying that frame's stream operations.

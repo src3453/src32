@@ -1,4 +1,4 @@
-/* SGUB v1/v2 guest driver. Build with sdk/cpt32/src/sgub.c and irqc.c. */
+/* SGUB v1/v2/v3 guest driver. Build with sdk/cpt32/src/sgub.c and irqc.c. */
 #include <cpt32/cpu.h>
 #include <cpt32/irqc.h>
 #include <cpt32/mmio.h>
@@ -24,7 +24,7 @@ void sgub_visualizer_put_hex(uint32_t value, uint32_t digits) {
 void sgub_visualizer_draw(void) {
   uint32_t voice;
   pcg_locate(0u, 0u);
-  pcg_prnlnscr("CPT32 SGUB Driver v2");
+  pcg_prnlnscr("CPT32 SGUB Driver v3");
   /*pcg_prnscr("CPT32 SGUB  VOL  FREQUENCY");
   for (voice = 0; voice < 16u; ++voice) {
     uintptr_t base = voice < 8u
@@ -60,7 +60,7 @@ int main(void) {
   pcg_cls(63);
   pcg_colorbg(63);
   pcg_colorfg(0);
-  pcg_prnlnscr("CPT32 SGUB Driver v2");
+  pcg_prnlnscr("CPT32 SGUB Driver v3");
   pcg_prnlnscr("Loading SGUB stream...");
 
   /* Validate the fixed header before using its declared size. */
@@ -73,8 +73,12 @@ int main(void) {
     size_offset = 16u;
   else if (CPT32_MMIO8(SGUB_STREAM_BASE + 4u) == 2u)
     size_offset = 32u;
+  else if (CPT32_MMIO8(SGUB_STREAM_BASE + 4u) == 3u)
+    size_offset = 32u;
   else
     return 1;
+  if (CPT32_MMIO8(SGUB_STREAM_BASE + 4u) == 3u)
+    pcg_prnlnscr("v3 needs 3WS88PWN4 at slot 0");
   size = ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset) << 24) |
          ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset + 1u) << 16) |
          ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset + 2u) << 8) |
