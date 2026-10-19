@@ -99,6 +99,11 @@ impl Default for CpuRegisterBlock {
 }
 
 impl Device for CpuRegisterBlock {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        let aligned = addr & !3;
+        let shift = 8 * (3 - (addr & 3));
+        Some((self.read_word(aligned) >> shift) as u8)
+    }
     fn read(&mut self, addr: u32) -> u8 {
         let aligned = addr & !3;
         let shift = 8 * (3 - (addr & 3));
@@ -156,6 +161,9 @@ struct SharedCpuVectorDevice {
     size: u32,
 }
 impl Device for SharedCpuVectorDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        self.regs.borrow_mut().debug_read(addr + self.offset)
+    }
     fn read(&mut self, addr: u32) -> u8 {
         self.regs.borrow_mut().read(addr + self.offset)
     }
@@ -169,6 +177,9 @@ impl Device for SharedCpuVectorDevice {
 
 struct SharedCpuRegisterDevice(Rc<RefCell<CpuRegisterBlock>>);
 impl Device for SharedCpuRegisterDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        self.0.borrow_mut().debug_read(addr + 0x200)
+    }
     fn read(&mut self, addr: u32) -> u8 {
         self.0.borrow_mut().read(addr + 0x200)
     }

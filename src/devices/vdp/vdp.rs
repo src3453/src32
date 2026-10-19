@@ -582,6 +582,24 @@ impl VdpDevice {
 }
 
 impl Device for VdpDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        match self.port {
+            VdpPort::Vram => self.vdp.borrow().vram.borrow().get(addr as usize).copied(),
+            VdpPort::Regs => {
+                let vdp = self.vdp.borrow();
+                Some(if addr < 0x0100 {
+                    vdp.read_common_register(addr)
+                } else if addr >= 0xF000 {
+                    vdp.read_pcg_register(addr)
+                } else {
+                    0
+                })
+            }
+            // SGC register reads have command-interface semantics; leave them unsupported.
+            VdpPort::Sgc => None,
+        }
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         match self.port {
             VdpPort::Vram => self.vdp.borrow().vram.borrow()[addr as usize],
@@ -869,6 +887,20 @@ impl VpuRegisterDevice {
     }
 }
 impl Device for VpuRegisterDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        let reg = addr & !3;
+        let shift = (3 - (addr & 3)) * 8;
+        let v = self.0.borrow();
+        Some(match reg {
+            0 => (0x5650_5531u32 >> shift) as u8,
+            4 => (v.status >> shift) as u8,
+            0x0c => ((v.fifo.len() as u32) >> shift) as u8,
+            0x10 => (4096u32 >> shift) as u8,
+            0x14 => ((v.output_gp as u32) >> shift) as u8,
+            _ => 0,
+        })
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let reg = addr & !3;
         let shift = (3 - (addr & 3)) * 8;

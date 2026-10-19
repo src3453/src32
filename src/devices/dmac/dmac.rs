@@ -470,6 +470,11 @@ impl Dmac {
 struct DmacRegisters(Rc<RefCell<Dmac>>);
 
 impl Device for DmacRegisters {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        let value = self.0.borrow().read_register(addr);
+        Some((value >> ((3 - (addr & 3)) * 8)) as u8)
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let value = self.0.borrow().read_register(addr);
         let shift = (3 - (addr & 3)) * 8;

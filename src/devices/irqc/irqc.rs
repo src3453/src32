@@ -124,6 +124,15 @@ impl Default for IrqController {
 }
 
 impl Device for IrqController {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        Some(match addr {
+            0 => (self.pending >> 8) as u8,
+            1 => self.pending as u8,
+            4 => (self.enable >> 8) as u8,
+            5 => self.enable as u8,
+            _ => 0,
+        })
+    }
     fn read(&mut self, addr: u32) -> u8 {
         let value = match addr {
             0x00..=0x01 => self.pending,
@@ -180,6 +189,9 @@ pub fn connect_irqc(bus: &mut crate::bus::Bus) -> std::rc::Rc<std::cell::RefCell
 struct SharedIrqController(std::rc::Rc<std::cell::RefCell<IrqController>>);
 
 impl Device for SharedIrqController {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        self.0.borrow_mut().debug_read(addr)
+    }
     fn read(&mut self, addr: u32) -> u8 {
         self.0.borrow_mut().read(addr)
     }

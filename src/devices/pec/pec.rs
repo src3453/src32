@@ -318,6 +318,13 @@ struct PeCInputDevice {
 }
 
 impl Device for PeCInputDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        let offset = addr + 0x30;
+        let register = offset & !3;
+        let shift = (3 - (offset & 3)) * 8;
+        Some((lock_state(&self.state).read_register(register) >> shift) as u8)
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let offset = addr + 0x30;
         let register = offset & !3;

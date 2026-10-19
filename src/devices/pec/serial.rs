@@ -101,6 +101,22 @@ impl UARTDevice {
 }
 
 impl Device for UARTDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        // DATA_RW consumes RX data, so it has no passive snapshot equivalent.
+        if addr == 0 {
+            return None;
+        }
+        let uart = self.uart.lock().unwrap();
+        Some(match addr {
+            1 => u8::from(uart.tx_ready) | (u8::from(uart.rx_ready) << 1),
+            2 => uart.baud_rate as u8,
+            3 => u8::from(!uart.enable) | (u8::from(uart.int_enable) << 1),
+            4 => uart.rx_buffer.len() as u8,
+            5 => uart.tx_buffer.len() as u8,
+            _ => 0,
+        })
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let mut uart = self.uart.lock().unwrap();
         match addr {

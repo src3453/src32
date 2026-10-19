@@ -151,6 +151,11 @@ impl Default for Bmc {
 struct BmcRegisters(Rc<RefCell<Bmc>>);
 
 impl Device for BmcRegisters {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        let value = self.0.borrow().read_register(addr);
+        Some((value >> ((3 - (addr & 3)) * 8)) as u8)
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let value = self.0.borrow().read_register(addr);
         let shift = (3 - (addr & 3)) * 8;

@@ -65,6 +65,18 @@ impl RngDevice {
 }
 
 impl Device for RngDevice {
+    fn debug_read(&mut self, addr: u32) -> Option<u8> {
+        match addr {
+            // Snapshot latched output without advancing either generator.
+            0x00..=0x03 => Some(Self::byte(self.prng_data, addr)),
+            0x04..=0x07 => Some(Self::byte(self.seed, addr - 4)),
+            0x08..=0x0B if !self.trng_enabled => Some(Self::byte(self.trng_data, addr - 8)),
+            0x0C => Some(u8::from(self.trng_enabled)),
+            0x0D => Some(u8::from(!self.trng_enabled)),
+            _ => None,
+        }
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         match addr {
             0x00..=0x03 => {
