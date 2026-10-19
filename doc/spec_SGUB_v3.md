@@ -26,7 +26,7 @@ FILLは `opcode:u8, target:u8, address:u32, length:u32, value:u8` の11 byte。C
 
 ### S3HS card image
 
-Furnace の `CPT32 SGUB (S3HS)` ROM exportは `DIV_SYSTEM_S3HS` 1基だけを受け付け、target 3 (slot 0) にcard WRITEを出力する。slot 0に `3WS88PWN4` WASM cardを装着する。S3HS RAM/register offsetは [spec_3WS88PWN4.md](spec_3WS88PWN4.md) のslot-relative mapに従う。Furnace の連続register write列は個々のWRITEとして保存し、同値・同一アドレスのwriteを統合しない。特に `0x400300..0x40033F` FIFO data/count と `0x40001E` Gate strobe は書き込み回数自体に意味がある。S3HS PCM RAM payloadはtype 3 poolに最大 `0x400000` byte格納し、COPY_POOLで `0x000000..0x3FFFFF` に転送する。
+Furnace の `CPT32 SGUB (S3HS)` ROM exportは `DIV_SYSTEM_S3HS` 1基だけを受け付け、target 3 (slot 0) にcard WRITEを出力する。slot 0に `3WS88PWN4` WASM cardを装着する。C guest driverは再生前にslot-relative `0x4003F0..0x4003F8` のread-only ASCII card IDを照合し、不一致の場合だけエラーを表示して停止する。SGUB stream parser自体はcard kindを推測しない。S3HS RAM/register offsetは [spec_3WS88PWN4.md](spec_3WS88PWN4.md) のslot-relative mapに従う。Furnace の連続register write列は個々のWRITEとして保存し、同値・同一アドレスのwriteを統合しない。特に `0x400300..0x40033F` FIFO data/count と `0x40001E` Gate strobe は書き込み回数自体に意味がある。S3HS PCM RAM payloadはtype 3 poolに最大 `0x400000` byte格納し、COPY_POOLで `0x000000..0x3FFFFF` に転送する。
 
 COPY_POOLのtype 3はcard PCM RAMのみにコピーでき、source範囲とdestination範囲を超えてはならない。FILLも同じPCM RAM範囲に限る。card register領域はWRITEのみとする。これにより4 MiB sample imageを小さく保持しつつ、strobe semanticsを壊さない。
 

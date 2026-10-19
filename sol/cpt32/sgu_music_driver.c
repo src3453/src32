@@ -8,11 +8,24 @@
 
 #define SGUB_STREAM_BASE UINT32_C(0x00200000)
 #define SGUB_MAX_SIZE UINT32_C(0x00E00000)
+#define SGUB_CARD0_BASE UINT32_C(0xA0000000)
+#define SGUB_3WS88PWN4_ID_OFFSET UINT32_C(0x004003F0)
 #define IRQ0_MASK UINT16_C(1)
 #define SGU0_CHANNELS UINT32_C(0x80020800)
 #define SGU1_CHANNELS UINT32_C(0x80021800)
 
 static const char hex_digits[] = "0123456789ABCDEF";
+static const uint8_t card_id[] = {'3', 'W', 'S', '8', '8', 'P', 'W', 'N', '4'};
+
+static uint8_t sgub_has_3ws88pwn4(void) {
+  uint32_t i;
+  for (i = 0; i < sizeof(card_id); ++i) {
+    if (CPT32_MMIO8(SGUB_CARD0_BASE + SGUB_3WS88PWN4_ID_OFFSET + i) !=
+        card_id[i])
+      return 0;
+  }
+  return 1;
+}
 
 void sgub_visualizer_put_hex(uint32_t value, uint32_t digits) {
   while (digits != 0u) {
@@ -77,8 +90,10 @@ int main(void) {
     size_offset = 32u;
   else
     return 1;
-  if (CPT32_MMIO8(SGUB_STREAM_BASE + 4u) == 3u)
-    pcg_prnlnscr("v3 needs 3WS88PWN4 at slot 0");
+  if (CPT32_MMIO8(SGUB_STREAM_BASE + 4u) == 3u && !sgub_has_3ws88pwn4()) {
+    pcg_prnlnscr("ERROR: 3WS88PWN4 not found in slot 0");
+    return 1;
+  }
   size = ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset) << 24) |
          ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset + 1u) << 16) |
          ((uint32_t)CPT32_MMIO8(SGUB_STREAM_BASE + size_offset + 2u) << 8) |

@@ -2,6 +2,8 @@
 
 仕様は [`doc/spec_3WS88PWN4.md`](../../doc/spec_3WS88PWN4.md)。Furnaceの3HS88PWN4をもとにした独立したRust音源で、位相とPCM/WT cursorは32.32固定小数点。ADSR、13 synthesis modes、16 HS waves、4 PCM/WT/noise/FIFO channels、filter、EQ、compressorを備える。
 
+カードID `3WS88PWN4` はslot相対 `0x4003F0..0x4003F8` のread-only ASCII bytesで公開する。SGUB v3 C driverはslot 0のこのIDを確認し、不一致時だけエラーを表示して終了する。
+
 ## Build / package
 
 repository rootで実行:

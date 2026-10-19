@@ -24,10 +24,11 @@
 | `0x400200..0x4002BF` | 4 PCM/WT channel × 48 bytes |
 | `0x4002C0..0x4002DF` | master controls、mute |
 | `0x400300..0x40033F` | 本カードのFIFO data/count拡張 |
-| `0x4002E0..0x4002FF`, `0x400340..0x4003FF` | 予約RAM (read/write、音声には未使用) |
+| `0x4002E0..0x4002FF`, `0x400340..0x4003EF`, `0x4003F9..0x4003FF` | 予約RAM (read/write、音声には未使用) |
+| `0x4003F0..0x4003F8` | read-only card ID ASCII `3WS88PWN4` |
 | その他 | read 0、write無視 |
 
-複数byte値は上位byteから並ぶbig-endian。書き込みはbyteごとに有効。card resetはPCM RAM・全register・位相・filter/envelope/feedback・FIFO・resamplerを初期化し、noiseをseed 0で再生成する。IRQ/tickは使用しない。PCM RAMの初期値は0、unsigned PCMの中点は128だが、初期volumeが0なので出力は無音。
+複数byte値は上位byteから並ぶbig-endian。書き込みはbyteごとに有効。card IDはslot-relative `0x4003F0..0x4003F8` をbyte readし、ASCII `3WS88PWN4` として確認する。ID領域へのwriteは無視する。card resetはPCM RAM・全register・位相・filter/envelope/feedback・FIFO・resamplerを初期化し、noiseをseed 0で再生成する。IRQ/tickは使用しない。PCM RAMの初期値は0、unsigned PCMの中点は128だが、初期volumeが0なので出力は無音。
 
 ## HSレジスタ
 

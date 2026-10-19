@@ -5,6 +5,8 @@ use crate::{
 };
 pub const PCM_SIZE: usize = 0x400000;
 pub const REG_BASE: u32 = 0x400000;
+const CARD_ID_BASE: usize = 0x3f0;
+const CARD_ID: &[u8; 9] = b"3WS88PWN4";
 
 struct Mt {
     state: [u32; 624],
@@ -173,6 +175,9 @@ impl Chip {
         let Some(offset) = offset.checked_sub(REG_BASE).map(|o| o as usize) else {
             return 0;
         };
+        if (CARD_ID_BASE..CARD_ID_BASE + CARD_ID.len()).contains(&offset) {
+            return CARD_ID[offset - CARD_ID_BASE];
+        }
         if (0x300..0x340).contains(&offset) {
             let fifo = &self.fifo[(offset - 0x300) / 16];
             return match offset % 16 {
@@ -191,6 +196,9 @@ impl Chip {
         else {
             return;
         };
+        if (CARD_ID_BASE..CARD_ID_BASE + CARD_ID.len()).contains(&offset) {
+            return;
+        }
         if (0x300..0x340).contains(&offset) {
             if offset % 16 == 0 {
                 self.fifo[(offset - 0x300) / 16].push(value);

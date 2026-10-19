@@ -84,7 +84,7 @@ fault発生時はカードをfault状態にし、以後guest関数を呼び出�
 
 ## 6. 起動設定
 
-設定ファイルの`expansion_card`配列にentryを記述する。各entryは整数`slot`と`.cpt32card` archive path文字列`package`を必須とする。未記載slotは空slot。`package`の相対pathは設定ファイルのparent directoryを基準に解決する。設定ファイルが存在しない場合、またはentryがない場合は拡張カードなしで起動する。
+設定ファイルの`expansion_card`配列にentryを記述する。各entryは整数`slot`と`.cpt32card` archive path文字列`package`を必須とする。未記載slotは空slot。空slot apertureへのbyte readは`0`を返し、bus errorを発生させないため、guest driverはoptional cardを安全にprobeできる。空slotへのwriteは通常のunmapped accessとしてbus errorを発生させる。`package`の相対pathは設定ファイルのparent directoryを基準に解決する。設定ファイルが存在しない場合、またはentryがない場合は拡張カードなしで起動する。
 
 例:
 

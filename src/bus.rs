@@ -428,6 +428,15 @@ impl Bus {
         (end <= slot_end).then_some(slot)
     }
 
+    fn is_unoccupied_expansion_address(&self, address: u32) -> bool {
+        let aperture_end = EXPANSION_BASE + u32::from(EXPANSION_SLOT_COUNT) * EXPANSION_SLOT_SIZE;
+        if !(EXPANSION_BASE..aperture_end).contains(&address) {
+            return false;
+        }
+        let slot = ((address - EXPANSION_BASE) / EXPANSION_SLOT_SIZE) as usize;
+        self.expansion_devices[slot].is_none()
+    }
+
     fn execute_dma_op(
         &mut self,
         op: crate::devices::dmac::dmac::DmaOp,
@@ -688,7 +697,11 @@ impl Bus {
             self.release_cpu_access();
             return value;
         }
-        self.latch_bus_error();
+        // An empty expansion aperture reads as open-bus zero so guest drivers
+        // can probe optional cards without taking a bus-error exception.
+        if !self.is_unoccupied_expansion_address(addr) {
+            self.latch_bus_error();
+        }
         self.release_cpu_access();
         0
     }
