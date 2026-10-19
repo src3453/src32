@@ -1334,17 +1334,22 @@ impl DebugUiState {
         ui.window(DebugWindow::AudioMixer.label())
             .size([480.0, 240.0], Condition::FirstUseEver)
             .build(|| {
-                ui.text("Output level per frame (RMS and peak, normalized to i16)");
+                ui.text("Output level per frame (dBFS; bars show -60 to 0 dBFS)");
                 for (index, name) in SOURCES.iter().enumerate() {
                     ui.separator();
                     ui.text(*name);
                     ui.same_line();
                     ui.checkbox(format!("Mute##audio{index}"), &mut self.audio_muted[index]);
                     let (rms, peak) = self.audio_levels[index];
-                    ui.text(format!("RMS {rms:.4}  Peak {peak:.4}"));
-                    ProgressBar::new(rms.clamp(0.0, 1.0))
-                        .size([250.0, 12.0])
-                        .build(ui);
+                    let rms_dbfs = linear_to_dbfs(rms);
+                    let peak_dbfs = linear_to_dbfs(peak);
+                    ui.text(format!(
+                        "RMS {} dBFS  Peak {} dBFS",
+                        format_dbfs(rms_dbfs),
+                        format_dbfs(peak_dbfs)
+                    ));
+                    let bar_value = ((rms_dbfs.unwrap_or(-60.0) + 60.0) / 60.0).clamp(0.0, 1.0);
+                    ProgressBar::new(bar_value).size([250.0, 12.0]).build(ui);
                 }
             });
     }
@@ -1851,6 +1856,14 @@ impl DebugUiState {
                 }
             });
     }
+}
+
+fn linear_to_dbfs(level: f32) -> Option<f32> {
+    (level > 0.0).then(|| 20.0 * level.log10())
+}
+
+fn format_dbfs(level: Option<f32>) -> String {
+    level.map_or_else(|| "−∞".to_string(), |value| format!("{value:.1}"))
 }
 
 struct DebugGui {
