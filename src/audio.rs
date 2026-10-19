@@ -5,6 +5,41 @@ use cpal::{SampleFormat, Stream, StreamConfig};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
+/// Common frame-based audio contract for every guest audio producer.
+pub trait AudioSource {
+    fn render_audio(&mut self, sample_rate: u32, left: &mut [i16], right: &mut [i16]);
+}
+
+/// Render, meter and optionally add one source to the output mix.
+pub fn mix_source(
+    source: &mut impl AudioSource,
+    sample_rate: u32,
+    muted: bool,
+    mix_left: &mut [i16],
+    mix_right: &mut [i16],
+) -> (f32, f32) {
+    let samples = mix_left.len().min(mix_right.len());
+    let mut left = vec![0; samples];
+    let mut right = vec![0; samples];
+    source.render_audio(sample_rate, &mut left, &mut right);
+    let mut sum = 0.0f64;
+    let mut peak = 0.0f32;
+    for (&l, &r) in left.iter().zip(&right) {
+        for sample in [l, r] {
+            let value = sample as f32 / 32768.0;
+            sum += f64::from(value * value);
+            peak = peak.max(value.abs());
+        }
+    }
+    if !muted {
+        for i in 0..samples {
+            mix_left[i] = mix_left[i].saturating_add(left[i]);
+            mix_right[i] = mix_right[i].saturating_add(right[i]);
+        }
+    }
+    ((sum / (samples * 2).max(1) as f64).sqrt() as f32, peak)
+}
+
 pub struct AudioRingBuffer {
     buffer: Vec<f32>,
     capacity: usize,

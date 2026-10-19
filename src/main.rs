@@ -42,6 +42,24 @@ mod audio;
 mod monitor;
 mod render;
 
+impl audio::AudioSource for S3w2Sound {
+    fn render_audio(&mut self, _: u32, left: &mut [i16], right: &mut [i16]) {
+        self.clock_mixed_into(left, right);
+    }
+}
+
+impl audio::AudioSource for cpt32::devices::pec::idc::idc::Idc {
+    fn render_audio(&mut self, rate: u32, left: &mut [i16], right: &mut [i16]) {
+        cpt32::devices::pec::idc::idc::Idc::render_audio(self, rate, left, right);
+    }
+}
+
+impl audio::AudioSource for AnyCpu {
+    fn render_audio(&mut self, rate: u32, left: &mut [i16], right: &mut [i16]) {
+        self.mix_expansion_audio(rate, left, right);
+    }
+}
+
 const BUILD_TITLE: &str = concat!(
     "CPT32 (build ",
     env!("CPT32_BUILD_NUMBER"),
@@ -1136,6 +1154,8 @@ struct DebugUiState {
     frame_profile: Option<FrameProfileSummary>,
     cpu_utilization_history: VecDeque<f32>,
     runtime_percent_history: VecDeque<f32>,
+    audio_muted: [bool; 4],
+    audio_levels: [(f32, f32); 4],
 }
 
 #[derive(Clone, Copy)]
@@ -1147,6 +1167,7 @@ enum DebugWindow {
     Compositor,
     Performance,
     MonitorConsole,
+    AudioMixer,
 }
 
 impl DebugWindow {
@@ -1158,8 +1179,9 @@ impl DebugWindow {
         Self::Compositor,
         Self::Performance,
         Self::MonitorConsole,
+        Self::AudioMixer,
     ];
-    const COUNT: usize = 7;
+    const COUNT: usize = 8;
 
     fn label(self) -> &'static str {
         match self {
@@ -1170,6 +1192,7 @@ impl DebugWindow {
             Self::Compositor => "Compositor Debug",
             Self::Performance => "Performance",
             Self::MonitorConsole => "src32 Debug Monitor Console",
+            Self::AudioMixer => "Audio Mixer",
         }
     }
 }
@@ -1199,6 +1222,8 @@ impl DebugUiState {
             frame_profile: None,
             cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
             runtime_percent_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
+            audio_muted: [false; 4],
+            audio_levels: [(0.0, 0.0); 4],
         }
     }
 
@@ -1299,6 +1324,29 @@ impl DebugUiState {
         if self.visible_windows[DebugWindow::MonitorConsole as usize] {
             self.draw_monitor_console(ui, cpu);
         }
+        if self.visible_windows[DebugWindow::AudioMixer as usize] {
+            self.draw_audio_mixer(ui);
+        }
+    }
+
+    fn draw_audio_mixer(&mut self, ui: &Ui) {
+        const SOURCES: [&str; 4] = ["SGU 1", "SGU 2", "IDC disk audio", "Expansion card"];
+        ui.window(DebugWindow::AudioMixer.label())
+            .size([480.0, 240.0], Condition::FirstUseEver)
+            .build(|| {
+                ui.text("Output level per frame (RMS and peak, normalized to i16)");
+                for (index, name) in SOURCES.iter().enumerate() {
+                    ui.separator();
+                    ui.text(*name);
+                    ui.same_line();
+                    ui.checkbox(format!("Mute##audio{index}"), &mut self.audio_muted[index]);
+                    let (rms, peak) = self.audio_levels[index];
+                    ui.text(format!("RMS {rms:.4}  Peak {peak:.4}"));
+                    ProgressBar::new(rms.clamp(0.0, 1.0))
+                        .size([250.0, 12.0])
+                        .build(ui);
+                }
+            });
     }
 
     fn draw_monitor_console(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
@@ -2229,22 +2277,40 @@ impl ApplicationHandler for GuiApp {
                         self.audio_right.resize(sample_count, 0);
                         self.audio_left.fill(0);
                         self.audio_right.fill(0);
-                        for sgu in &self.sgu {
-                            sgu.borrow_mut()
-                                .clock_mixed_into(&mut self.audio_left, &mut self.audio_right);
-                        }
-                        if let Some(idc) = self.idc.as_ref() {
-                            idc.borrow_mut().render_audio(
+                        let muted = self
+                            .debug_gui
+                            .as_ref()
+                            .map(|gui| gui.state.audio_muted)
+                            .unwrap_or([false; 4]);
+                        let mut levels = [(0.0, 0.0); 4];
+                        for index in 0..2 {
+                            levels[index] = audio::mix_source(
+                                &mut *self.sgu[index].borrow_mut(),
                                 sample_rate,
+                                muted[index],
                                 &mut self.audio_left,
                                 &mut self.audio_right,
                             );
                         }
-                        self.cpu.mix_expansion_audio(
+                        if let Some(idc) = self.idc.as_ref() {
+                            levels[2] = audio::mix_source(
+                                &mut *idc.borrow_mut(),
+                                sample_rate,
+                                muted[2],
+                                &mut self.audio_left,
+                                &mut self.audio_right,
+                            );
+                        }
+                        levels[3] = audio::mix_source(
+                            &mut self.cpu,
                             sample_rate,
+                            muted[3],
                             &mut self.audio_left,
                             &mut self.audio_right,
                         );
+                        if let Some(gui) = self.debug_gui.as_mut() {
+                            gui.state.audio_levels = levels;
+                        }
                         if let (Some(profile), Some(start)) = (profile.as_mut(), audio_start) {
                             profile.stages[3] = start.elapsed();
                         }
