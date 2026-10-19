@@ -2,6 +2,7 @@
 #include <cpt32/pcg.h>
 
 uint32_t pcg_cur_x = 0, pcg_cur_y = 0, pcg_width = 40, pcg_height = 30;
+uint32_t pcg_cell_height = 8;
 uint32_t pcg_fg_color = 0x3f, pcg_bg_color = 0, pcg_mode = 0, pcg_cursor = 0;
 uint32_t pcg_vram_base = 0x10000000u, pcg_scroll_y = 0, pcg_vram_row = 0;
 
@@ -12,18 +13,26 @@ static void pcg_fill(uint32_t address, uint32_t size, uint8_t value) {
 }
 void pcg_col40(void) {
   pcg_width = 40;
+  pcg_cell_height = 8;
   CPT32_MMIO8(0x8000f003u) = 0;
 }
 void pcg_col80(void) {
   pcg_width = 80;
+  pcg_cell_height = 8;
   CPT32_MMIO8(0x8000f003u) = 1;
+}
+void pcg_mode80x16(void) {
+  pcg_width = 80;
+  pcg_height = 30;
+  pcg_cell_height = 16;
+  CPT32_MMIO8(0x8000f003u) = 3;
 }
 static void pcg_setcur(uint32_t x, uint32_t y) {
   CPT32_MMIO8(0x8000f005u) = (uint8_t)x;
   CPT32_MMIO8(0x8000f006u) = (uint8_t)y;
 }
 static void pcg_update_row(void) {
-  pcg_vram_row = ((pcg_scroll_y / 8u) + pcg_cur_y) % pcg_height;
+  pcg_vram_row = ((pcg_scroll_y / pcg_cell_height) + pcg_cur_y) % pcg_height;
 }
 static void pcg_update_cur(void) { pcg_setcur(pcg_cur_x, pcg_vram_row); }
 void pcg_locate(uint32_t x, uint32_t y) {
@@ -39,6 +48,7 @@ void pcg_initPCG(void) {
   pcg_mode = 0;
   pcg_width = 40;
   pcg_height = 30;
+  pcg_cell_height = 8;
   CPT32_MMIO8(0x8000f000u) = 0;
   pcg_scroll_y = 0;
   CPT32_MMIO8(0x8000f00cu) = 0;
@@ -56,7 +66,7 @@ static void pcg_ln(void) {
   pcg_cur_y++;
   pcg_vram_row = (pcg_vram_row + 1u) % pcg_height;
   if (pcg_cur_y >= pcg_height) {
-    pcg_scroll_y = (pcg_scroll_y + 8u) % (pcg_height * 8u);
+    pcg_scroll_y = (pcg_scroll_y + pcg_cell_height) % (pcg_height * pcg_cell_height);
     CPT32_MMIO8(0x8000f00eu) = (uint8_t)pcg_scroll_y;
     pcg_cur_y = pcg_height - 1u;
     {

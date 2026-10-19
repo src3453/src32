@@ -743,6 +743,44 @@ mod tests {
     }
 
     #[test]
+    fn pcg_mode3_renders_640_by_480_from_single_4k_font_bank() {
+        let mut vdp = Vdp::new();
+        vdp.write_common_register(0x01, DisplayMode::PCG as u8);
+        vdp.write_pcg_register(0xF003, 3);
+        vdp.write_pcg_register(0xF001, 1); // Ignored by the 8x16 mode.
+        {
+            let mut vram = vdp.vram.borrow_mut();
+            let clut = crate::devices::vdp::pcg::PCG_CLUT_START_ADDR;
+            vram[clut + 3..clut + 6].copy_from_slice(&[255, 0, 0]);
+            vram[clut + 6..clut + 9].copy_from_slice(&[0, 0, 200]);
+            vram[0] = 1;
+            vram[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR] = 1;
+            vram[crate::devices::vdp::pcg::PCG_BG_ATTR_ADDR] = 2;
+            // Glyph 1, row 0 and row 15 in bank 0. Bank 1 has a different bit.
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 16] = 0x80;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 31] = 0x01;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK1_ADDR + 16] = 0x40;
+        }
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.dimensions(), (640, 480));
+        assert_eq!(fb.get_pixel(0, 0), (255, 0, 0));
+        assert_eq!(fb.get_pixel(7, 15), (255, 0, 0));
+        assert_eq!(fb.get_pixel(1, 0), (0, 0, 200));
+        assert_eq!(fb.get_pixel(8, 479), (0, 0, 0));
+
+        let mut vdp = Vdp::new();
+        vdp.write_common_register(0x01, DisplayMode::PCG as u8);
+        vdp.write_pcg_register(0xF003, 3);
+        vdp.write_pcg_register(0xF005, 0);
+        vdp.write_pcg_register(0xF006, 29);
+        vdp.write_pcg_register(0xF007, 1);
+        vdp.write_pcg_register(0xF008, 0xFE);
+        let fb = vdp.framebuffer();
+        assert_eq!(fb.get_pixel(0, 476), (0, 0, 0));
+        assert_eq!(fb.get_pixel(0, 478), (255, 255, 255));
+    }
+
+    #[test]
     fn pcg_mode2_keeps_legacy_mode_dimensions_and_font_banks() {
         let mut vdp = Vdp::new();
         vdp.write_common_register(0x01, DisplayMode::PCG as u8);
