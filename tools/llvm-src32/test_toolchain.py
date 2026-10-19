@@ -106,6 +106,96 @@ int main(void) {
         self.execute(image, 42)
         self.execute(image, 42, 'pipeline')
 
+    def test_optimized_static_helper_calls(self):
+        source = self.work / 'static.c'
+        source.write_text('''
+#include <stdint.h>
+static volatile uint32_t input = 3;
+static __attribute__((noinline)) uint64_t helper(uint32_t n, uint64_t x) {
+    if (n == 0) return x;
+    return helper(n - 1, x + n);
+}
+int main(void) {
+    return helper(input, UINT64_C(0x1234567800000024)) ==
+           UINT64_C(0x123456780000002a) ? 42 : 1;
+}
+''', encoding='utf-8')
+        for opt in ('-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                temps = self.work / opt[1:]
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(source, opt, '--save-temps', temps, '-o', image)
+                # The old conformance project can inline all static helpers;
+                # require an actual optimized calling convention regression.
+                self.assertIn('fastcc', (temps / 'linked.ll').read_text())
+                self.execute(image, 42)
+                self.execute(image, 42, 'pipeline')
+
+    def test_optimized_sgub_driver_furnace_stream(self):
+        sources = [ROOT / 'sol/cpt32/sgu_music_driver.c'] + [
+            ROOT / 'sdk/cpt32/src' / name
+            for name in ('sgub.c', 'irqc.c', 'pcg.c')]
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
+                # Match the default Pipeline frame budget; Scalar may still
+                # be initializing or servicing the first IRQ at frame 0.
+                result = subprocess.run(
+                    [str(self.harness), str(image), '--cpu', 'pipeline',
+                     '--music-stream', str(ROOT / 'tests/fixtures/furnace_minimal_v2.sgub'),
+                     '--frames', '4', '--allow-running',
+                     '--expect-mem-u8', '0xFFFF0045=1',
+                     '--expect-mem-u8', '0x180FFFFF=128',
+                     '--expect-mem-u8', '0x80020801=131',
+                     '--expect-mem-u8', '0x80020803=255'],
+                    cwd=self.work, capture_output=True, text=True, timeout=120)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('PASS:', result.stdout)
+
+    def test_fastcc_indirect_call_with_byval_and_wide_result(self):
+        source = self.ir('''
+%Pair = type { i32, i32 }
+@pair = global %Pair { i32 6, i32 7 }
+define internal fastcc i64 @helper(ptr byval(%Pair) %pair, i64 %base) {
+  %a = load i32, ptr %pair
+  %p = getelementptr %Pair, ptr %pair, i32 0, i32 1
+  %b = load i32, ptr %p
+  store i32 99, ptr %pair
+  %product = mul i32 %a, %b
+  %wide = zext i32 %product to i64
+  %result = add i64 %base, %wide
+  ret i64 %result
+}
+define i32 @main() {
+  %target = select i1 true, ptr @helper, ptr @helper
+  %result = call fastcc i64 %target(ptr byval(%Pair) @pair, i64 4294967296)
+  %correct = icmp eq i64 %result, 4294967338
+  %original = load i32, ptr @pair
+  %private = icmp eq i32 %original, 6
+  %ok = and i1 %correct, %private
+  %answer = select i1 %ok, i32 42, i32 1
+  ret i32 %answer
+}
+''')
+        image = self.work / 'indirect-fastcc.wax'
+        self.driver(source, '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+
+    def test_other_calling_conventions_and_musttail_rejected(self):
+        for convention, modifier in (('coldcc', ''), ('fastcc', 'musttail ')):
+            with self.subTest(convention=convention, modifier=modifier):
+                source = self.ir(f'''
+define {convention} i32 @helper() {{ ret i32 42 }}
+define {convention} i32 @main() {{
+  %r = {modifier}call {convention} i32 @helper()
+  ret i32 %r
+}}
+''')
+                result = self.driver(source, '-o', self.work / 'bad.wax', success=False)
+                self.assertIn('convention', result.stderr)
+
     def test_phi_parallel_copy_on_backedge(self):
         source = self.ir('''
 define i32 @main() {

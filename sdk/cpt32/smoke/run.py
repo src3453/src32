@@ -22,6 +22,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--clang', default=os.environ.get('CLANG'))
     parser.add_argument('--testbench', type=Path)
+    parser.add_argument('--optimization', choices=['0', '1', '2'], default='0')
     parser.add_argument('--cpu', action='append', choices=['scalar', 'cached', 'cached-relaxed', 'pipeline'])
     args = parser.parse_args()
     clang = args.clang or shutil.which('clang')
@@ -36,7 +37,8 @@ def main():
     build = ROOT / 'target' / 'cpt32-c-smoke'
     run('cmake', '-S', HERE, '-B', build, '-G', 'Ninja',
         '-DSRC32_PYTHON_EXECUTABLE=' + sys.executable,
-        '-DSRC32_CLANG=' + clang, '-DCMAKE_MAKE_PROGRAM=' + ninja)
+        '-DSRC32_CLANG=' + clang, '-DCMAKE_MAKE_PROGRAM=' + ninja,
+        '-DCPT32_SMOKE_OPTIMIZATION=' + args.optimization)
     run('cmake', '--build', build)
     harness = args.testbench
     if harness is None:

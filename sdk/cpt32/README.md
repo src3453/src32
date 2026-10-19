@@ -36,7 +36,7 @@ src32_add_executable(my_guest
 
 `cpt32`は全モジュール、`cpt32_display`、`cpt32_irqc`、`cpt32_storage`、`cpt32_music`は個別グループです。`cpt32_storage`は安全なWAXロードのためIRQライブラリにも依存します。各ターゲットは既存の`src32_add_library`によるソースライブラリです。
 
-**`OPTIMIZATION 0`で使用してください。** 現行バックエンドはClangが内部関数に生成する`fastcc`を受け付けません。標準のホストコンパイラでMMIOプログラムを実行しないでください。
+`OPTIMIZATION 0` / `1` / `2`を使用できます。最適化時の内部関数の`fastcc`も、SRC32のスタック渡しへ変換します。標準のホストコンパイラでMMIOプログラムを実行しないでください。
 
 ## IRQとVSync
 
@@ -83,6 +83,7 @@ python sdk/cpt32/smoke/run.py --clang "C:/Program Files/LLVM/bin/clang.exe"
 ```
 
 CMake buildとnative `src32_testbench`を使い、Scalar/Pipelineの5ゲストを実行します。すべてR1=42を検査します。PCGのring row・cursor、IRQ0連続callbackと中断された計算の保持、SGUB v1/v2・不正streamの書込み禁止、DSFSの成長/縮小/削除、WAXが実行中のコードとstackを上書きして起動する経路を含みます。
+`--optimization 1`または`--optimization 2`で最適化した全ライブラリとゲストを検証できます（既定は`0`）。
 
 `--cpu cached --cpu cached-relaxed`を追加するとCached系で実行できます。この2方式でも全5ゲストとDSFSのリーク0検査を通しています。
 

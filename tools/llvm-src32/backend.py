@@ -140,10 +140,11 @@ class _Function:
         attributes = " ".join(a.decode("utf-8") if isinstance(a, bytes) else str(a) for a in function.attributes)
         header += " " + attributes
         header = _mask_identifiers(header)
-        if re.search(r"\b(?:(?!ccc\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+|naked)\b", header):
+        if re.search(r"\b(?:(?!(?:ccc|fastcc)\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+|naked)\b", header):
             self.fail("unsupported calling convention or naked function")
-        # Clang's inreg is a source-target ABI hint; this whole-program backend
-        # consistently remaps those arguments to the private SRC32 stack ABI.
+        # Clang's fastcc and inreg are source-target ABI hints; this whole-program
+        # backend remaps both definitions and calls to the private SRC32 stack
+        # ABI. Other conventions (and musttail's ABI guarantee) stay unsupported.
         if re.search(r"\b(?:inalloca|preallocated|byref|nest|swiftself|swifterror|swiftasync)\b", header):
             self.fail("unsupported ABI argument attribute")
         if re.search(r"\b(?:personality|prefix|prologue|comdat)\b", header):
@@ -806,7 +807,7 @@ class _Function:
         name = target.name if target.value_kind == llvm.ValueKind.function else ""
         text = str(inst)
         syntax = _mask_identifiers(text)
-        if re.search(r"\b(?:musttail|(?!ccc\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+)\b", syntax):
+        if re.search(r"\b(?:musttail|(?!(?:ccc|fastcc)\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+)\b", syntax):
             self.fail("unsupported call convention or musttail call")
         if "..." in syntax:
             self.fail("variadic calls are unsupported")

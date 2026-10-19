@@ -87,13 +87,13 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 | LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、expect/assume、lifetime/debug 等の対応部分 |
 
 Clang の `mips-unknown-none` / o32 は **big-endian 32-bit C の IR 生成用**。MIPS 命令は生成しません。
-LLVM の元ターゲット ABI ヒント `inreg` も、全呼出側・定義側を一貫して SRC32 のスタック渡しへ変換します。
+LLVM の `ccc` / `fastcc` と元ターゲット ABI ヒント `inreg` は、直接・間接呼出側と定義側を一貫して SRC32 のスタック渡しへ変換します。Clang が `-O1` / `-O2` で内部関数へ付ける `fastcc` も利用できます。`tail` は通常呼出として扱い、末尾呼出最適化は保証しません。
 ホスト用 x86 の `.ll/.bc` を単に SRC32 として読み替えることは禁止し、互換性のない data layout はエラーにします。
 複数モジュールをリンクする場合、data layout 文字列は完全一致が必須です。配置へ影響しない差だけの場合も安全優先で拒否します。
 
 ### 明示的に非対応
 
-浮動小数点、SIMD、atomic、可変長引数、例外、inline asm、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、非既定 calling convention、i33–i63/i65以上。
+浮動小数点、SIMD、atomic、可変長引数、例外、inline asm、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、`ccc` / `fastcc` 以外の calling convention、`musttail`、i33–i63/i65以上。
 未対応命令・intrinsic・定数は位置情報を含むエラーにし、不正な命令へ置換しません。
 LLVM IR 全仕様／C11 全仕様を実装したという意味ではありません。
 
@@ -123,6 +123,7 @@ python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
 `CLANG` と `SRC32_TESTBENCH` で実行ファイルを指定可能。テストは独立した作業ディレクトリで実行し、リポジトリの BIOS／ディスク設定を引き継ぎません。
 検証プロジェクトは成功時42を返します。失敗時は100番台=メモリ、200番台=整数、300番台=呼出／制御、400番台=64-bit整数。
 O0/O1/O2 × Scalar/Cached/CachedRelaxed/Pipeline を検証します。ほかに phi の循環コピー、長距離分岐、非ゼロ origin、診断、ASM再アセンブル、CMakeのヘッダー再ビルドを検証。
+最適化後も残る static helper の `fastcc` 呼出と、実際の Furnace v2 stream を使う C SGUB driver の O0/O1/O2 × Pipeline（IRQ有効化・PCM初期化・周波数・音量）も検証します。
 
 手動実行は **BIOSを設定していない作業ディレクトリ** から:
 
