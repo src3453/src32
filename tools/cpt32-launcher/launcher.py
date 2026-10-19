@@ -965,22 +965,39 @@ class Launcher(tk.Tk):
                         break
                     self.process = subprocess.Popen(command, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
                     process = self.process
-                self.result_queue.put(("line", "$ " + subprocess.list2cmdline(command)))
+                self._queue_log("$ " + subprocess.list2cmdline(command))
                 self.result_queue.put(("phase", label))
                 if index == len(steps) - 1:
                     self.result_queue.put(("started", process.pid))
                 with process.stdout:
                     for line in process.stdout:
-                        self.result_queue.put(("line", line.rstrip()))
+                        self._queue_log(line.rstrip())
                 code = process.wait()
                 if self.stop_requested.is_set():
                     break
                 if code != 0 and index < len(steps) - 1:
-                    self.result_queue.put(("error", f"{label} 失敗 (終了コード {code})。ログを確認してください。"))
+                    message = f"{label} 失敗 (終了コード {code})。ログを確認してください。"
+                    self._console_log("起動エラー: " + message)
+                    self.result_queue.put(("error", message))
                     return
             self.result_queue.put(("exited", code))
         except (OSError, subprocess.SubprocessError) as error:
+            self._console_log("起動エラー: " + str(error))
             self.result_queue.put(("error", str(error)))
+
+    def _queue_log(self, text):
+        """Send a launch log line to both the GUI queue and Python console."""
+        self.result_queue.put(("line", text))
+        self._console_log(text)
+
+    def _console_log(self, text):
+        stream = sys.stdout
+        if stream is None:
+            return
+        try:
+            print(text, file=stream, flush=True)
+        except (OSError, ValueError):
+            pass
 
     def _poll_process(self):
         try:

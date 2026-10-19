@@ -6,7 +6,9 @@ import queue
 import sys
 import tempfile
 import threading
-from types import SimpleNamespace
+from contextlib import redirect_stdout
+from io import StringIO
+from types import MethodType, SimpleNamespace
 import unittest
 
 
@@ -26,6 +28,8 @@ class LaunchPipelineTests(unittest.TestCase):
             result_queue=queue.Queue(), process=None,
             process_lock=threading.Lock(), stop_requested=threading.Event(),
         )
+        self.runner._queue_log = MethodType(launcher.Launcher._queue_log, self.runner)
+        self.runner._console_log = MethodType(launcher.Launcher._console_log, self.runner)
 
     def run_steps(self, steps):
         launcher.Launcher._spawn_and_read(self.runner, steps, self.run_dir)
@@ -48,6 +52,14 @@ class LaunchPipelineTests(unittest.TestCase):
         self.assertEqual(len([event for event in events if event[0] == "started"]), 1)
         self.assertEqual(sorted(path.name for path in self.base.iterdir()), ["run", "sample.SOL", "values.sol"])
         self.assertTrue(Path(binary).is_file())
+
+    def test_launch_log_is_also_written_to_python_console(self):
+        console = StringIO()
+        with redirect_stdout(console):
+            events = self.run_steps([("emulator", [sys.executable, "-c", "print('emulator output')"])])
+        self.assertIn(("line", "emulator output"), events)
+        self.assertIn("emulator output", console.getvalue())
+        self.assertIn("emulator", console.getvalue())
 
 
     def test_sol_compiler_arguments_are_split_into_argv(self):
