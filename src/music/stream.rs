@@ -11,6 +11,7 @@ const HEADER_SIZE: usize = 20;
 const RECORD_SIZE: usize = 5;
 const STREAM_VERSION: u8 = 1;
 const STREAM_VERSION_2: u8 = 2;
+const STREAM_VERSION_3: u8 = 3;
 const V2_HEADER_SIZE: usize = 40;
 const V2_POOL_ENTRY_SIZE: usize = 16;
 const VOICE_COUNT: u8 = 16;
@@ -796,14 +797,16 @@ fn validate_v2_operation(
     end: usize,
     pools: &[(u8, usize, usize)],
 ) -> Result<usize, MusicError> {
+    let version3 = bytes.get(4) == Some(&STREAM_VERSION_3);
+    let address_size = if version3 { 4 } else { 3 };
     let opcode = *bytes
         .get(offset)
         .filter(|_| offset < end)
         .ok_or_else(|| error("truncated SGUB v2 operation"))?;
     let size = match opcode {
-        0 => 6,
-        1 => 10,
-        2 => 15,
+        0 => 3 + address_size,
+        1 => 2 + address_size + 5,
+        2 => 2 + address_size + 10,
         _ => return Err(error("unknown SGUB v2 operation")),
     };
     let op_end = offset
@@ -811,24 +814,30 @@ fn validate_v2_operation(
         .filter(|value| *value <= end)
         .ok_or_else(|| error("truncated SGUB v2 operation"))?;
     let target = bytes[offset + 1];
-    let address = (u32::from(bytes[offset + 2]) << 16)
-        | (u32::from(bytes[offset + 3]) << 8)
-        | u32::from(bytes[offset + 4]);
+    let address = if version3 {
+        read_u32(bytes, offset + 2).ok_or_else(|| error("truncated SGUB v3 address"))?
+    } else {
+        (u32::from(bytes[offset + 2]) << 16)
+            | (u32::from(bytes[offset + 3]) << 8)
+            | u32::from(bytes[offset + 4])
+    };
     let limit = match target {
         0 | 1 => 0x8ffu32,
         2 => 0x0f_ffff,
-        _ => return Err(error("SGUB v2 operation has invalid target")),
+        3 if version3 => 0x01ff_ffff,
+        _ => return Err(error("SGUB operation has invalid target")),
     };
     match opcode {
         0 if address <= limit => {}
-        0 => return Err(error("SGUB v2 WRITE address is out of range")),
+        0 => return Err(error("SGUB WRITE address is out of range")),
         1 => {
             let length =
-                read_u32(bytes, offset + 5).ok_or_else(|| error("truncated SGUB v2 FILL"))?;
+                read_u32(bytes, offset + 2 + address_size).ok_or_else(|| error("truncated SGUB FILL"))?;
+            let dest_limit = if target == 3 { 0x3f_ffff } else { limit };
             if length == 0
                 || address
                     .checked_add(length - 1)
-                    .is_none_or(|last| last > limit)
+                    .is_none_or(|last| last > dest_limit)
                 || (target < 2
                     && address
                         .checked_add(length - 1)
@@ -838,12 +847,12 @@ fn validate_v2_operation(
             }
         }
         2 => {
-            let id = read_u16(bytes, offset + 5)
+            let id = read_u16(bytes, offset + 2 + address_size)
                 .ok_or_else(|| error("truncated SGUB v2 COPY_POOL"))? as usize;
-            let source = read_u32(bytes, offset + 7)
+            let source = read_u32(bytes, offset + 4 + address_size)
                 .ok_or_else(|| error("truncated SGUB v2 COPY_POOL"))?
                 as usize;
-            let length = read_u32(bytes, offset + 11)
+            let length = read_u32(bytes, offset + 8 + address_size)
                 .ok_or_else(|| error("truncated SGUB v2 COPY_POOL"))?
                 as usize;
             let (kind, _, pool_len) = pools
@@ -861,7 +870,7 @@ fn validate_v2_operation(
             if length == 0
                 || source_end > pool_len
                 || dest_end == 0
-                || dest_end - 1 > limit
+                || dest_end - 1 > if target == 3 { 0x3f_ffff } else { limit }
                 || (kind == 1
                     && (target > 1
                         || address > 0x7ff
@@ -870,6 +879,8 @@ fn validate_v2_operation(
                         || source % 256 != 0
                         || length % 256 != 0))
                 || (kind == 2 && target != 2)
+                || (kind == 3 && (!version3 || target != 3 || pool_len > 0x400000))
+                || (version3 && target == 3 && kind != 3)
             {
                 return Err(error("SGUB v2 COPY_POOL range or type is invalid"));
             }
@@ -917,11 +928,12 @@ pub struct StreamPlayer {
     repeat: bool,
     initialized: bool,
     finished: bool,
+    card_writes: Vec<(u32, u8)>,
 }
 
 impl StreamPlayer {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MusicError> {
-        if bytes.get(4) == Some(&STREAM_VERSION_2) {
+        if bytes.get(4).is_some_and(|version| *version == STREAM_VERSION_2 || *version == STREAM_VERSION_3) {
             return Self::from_v2_bytes(bytes);
         }
         if bytes.len() < HEADER_SIZE {
@@ -1003,6 +1015,7 @@ impl StreamPlayer {
             repeat: bytes[6] & 1 != 0,
             initialized: false,
             finished: false,
+            card_writes: Vec::new(),
         })
     }
 
@@ -1011,8 +1024,9 @@ impl StreamPlayer {
         if bytes.len() < V2_HEADER_SIZE || &bytes[..4] != b"SGUB" {
             return Err(error("SGUB v2 header is truncated"));
         }
-        if bytes[4] != STREAM_VERSION_2 || bytes[5] != VOICE_COUNT {
-            return Err(error("invalid SGUB v2 version or voice count"));
+        let version = bytes[4];
+        if (version != STREAM_VERSION_2 && version != STREAM_VERSION_3) || bytes[5] != VOICE_COUNT {
+            return Err(error("invalid SGUB pooled version or voice count"));
         }
         if bytes[6] & !1 != 0
             || bytes[7] != 0
@@ -1071,7 +1085,8 @@ impl StreamPlayer {
                     return Err(error("SGUB v2 wave pool entries must be 256 bytes"));
                 }
                 1 | 2 => {}
-                _ => return Err(error("unsupported SGUB v2 pool type")),
+                3 if version == STREAM_VERSION_3 && raw_size <= 0x400000 => {}
+                _ => return Err(error("unsupported SGUB pooled stream pool type")),
             }
             if kind == 2 && raw_size > PCM_RAM_SIZE {
                 return Err(error("SGUB v2 PCM pool entry exceeds 1 MiB"));
@@ -1109,7 +1124,7 @@ impl StreamPlayer {
         }
         Ok(Self {
             bytes: bytes.to_vec(),
-            version: STREAM_VERSION_2,
+            version,
             frame_count,
             initial_count,
             pools,
@@ -1120,6 +1135,7 @@ impl StreamPlayer {
             repeat: bytes[6] & 1 != 0,
             initialized: false,
             finished: false,
+            card_writes: Vec::new(),
         })
     }
 
@@ -1164,44 +1180,54 @@ impl StreamPlayer {
         for _ in 0..count {
             let opcode = self.bytes[cursor];
             let target = self.bytes[cursor + 1];
-            let address = (u32::from(self.bytes[cursor + 2]) << 16)
-                | (u32::from(self.bytes[cursor + 3]) << 8)
-                | u32::from(self.bytes[cursor + 4]);
+            let address_size = if self.version == STREAM_VERSION_3 { 4 } else { 3 };
+            let address = if address_size == 4 {
+                read_u32(&self.bytes, cursor + 2).unwrap()
+            } else {
+                (u32::from(self.bytes[cursor + 2]) << 16)
+                    | (u32::from(self.bytes[cursor + 3]) << 8)
+                    | u32::from(self.bytes[cursor + 4])
+            };
+            let data = cursor + 2 + address_size;
             match opcode {
                 0 => {
-                    let value = self.bytes[cursor + 5];
+                    let value = self.bytes[data];
                     if target < 2 {
                         sgus[target as usize]
                             .borrow_mut()
                             .write_register(address, value);
-                    } else {
+                    } else if target == 2 {
                         for sgu in sgus {
                             sgu.borrow_mut().write_pcm_ram(address, value);
                         }
+                    } else {
+                        self.card_writes.push((address, value));
                     }
-                    cursor += 6;
+                    cursor += 2 + address_size + 1;
                 }
                 1 => {
-                    let length = read_u32(&self.bytes, cursor + 5).unwrap() as usize;
-                    let value = self.bytes[cursor + 9];
+                    let length = read_u32(&self.bytes, data).unwrap() as usize;
+                    let value = self.bytes[data + 4];
                     for index in 0..length {
                         if target < 2 {
                             sgus[target as usize]
                                 .borrow_mut()
                                 .write_register(address + index as u32, value);
-                        } else {
+                        } else if target == 2 {
                             for sgu in sgus {
                                 sgu.borrow_mut()
                                     .write_pcm_ram(address + index as u32, value);
                             }
+                        } else {
+                            self.card_writes.push((address + index as u32, value));
                         }
                     }
-                    cursor += 10;
+                    cursor += 2 + address_size + 5;
                 }
                 2 => {
-                    let pool_id = read_u16(&self.bytes, cursor + 5).unwrap() as usize;
-                    let source = read_u32(&self.bytes, cursor + 7).unwrap() as usize;
-                    let length = read_u32(&self.bytes, cursor + 11).unwrap() as usize;
+                    let pool_id = read_u16(&self.bytes, data).unwrap() as usize;
+                    let source = read_u32(&self.bytes, data + 2).unwrap() as usize;
+                    let length = read_u32(&self.bytes, data + 6).unwrap() as usize;
                     let (_, pool_start, _) = self.pools[pool_id];
                     for index in 0..length {
                         let value = self.bytes[pool_start + source + index];
@@ -1209,14 +1235,16 @@ impl StreamPlayer {
                             sgus[target as usize]
                                 .borrow_mut()
                                 .write_register(address + index as u32, value);
-                        } else {
+                        } else if target == 2 {
                             for sgu in sgus {
                                 sgu.borrow_mut()
                                     .write_pcm_ram(address + index as u32, value);
                             }
+                        } else {
+                            self.card_writes.push((address + index as u32, value));
                         }
                     }
-                    cursor += 15;
+                    cursor += 2 + address_size + 10;
                 }
                 _ => return Err(error("validated SGUB v2 operation became invalid")),
             }
@@ -1233,6 +1261,11 @@ impl StreamPlayer {
                 sgu.write_register(base + 0x19, 0);
             }
         }
+    }
+
+    /// Drain ordered v3 writes for the expansion card in slot 0.
+    pub fn take_card_writes(&mut self) -> Vec<(u32, u8)> {
+        std::mem::take(&mut self.card_writes)
     }
 
     /// Apply initial uploads on the first call, then exactly one frame per VSYNC.

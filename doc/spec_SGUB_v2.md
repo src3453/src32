@@ -1,6 +1,6 @@
 # SGUB v2 音楽ストリーム仕様案
 
-状態: **Draft（実装済み）**。Rust の reader/compiler、Furnace S3W2 ROM exporter、CPT32 guest Sol driver が v2 の WRITE/FILL/COPY_POOL に対応する。Furnace実出力の波形pool・PCM初期化・発音と、guest driverのPCM部分コピー・repeatを回帰テストで確認する。Music Editorからのv2編集・exportは対象外。v1との互換契約は維持する。
+状態: **Draft（実装済み）**。Rust の reader/compiler、Furnace S3W2 ROM exporter、CPT32 guest C driver が v2 の WRITE/FILL/COPY_POOL に対応する。v3はoperation addressを32-bitへ拡張し、拡張カードslot 0への出力を追加する。Music Editorからのv2編集・exportは対象外。v1との互換契約は維持する。
 
 ## 目的
 
@@ -101,7 +101,7 @@ Writer と reader の相互運用テストでは、最低限、v1 との version
 
 ## Furnace exporter への適用
 
-Furnace の現在の ROM exporter は v2 を出力し、次のpool化を行う。過去のv1ファイルもreaderとguest driverで再生できる。
+Furnace の S3W2 ROM exporter は v2 を出力し、次のpool化を行う。過去のv1ファイルもreaderとguest driverで再生できる。S3HS outputは [SGUB v3](spec_SGUB_v3.md) を使う。
 
 - 同一の256 byte波形を1つの wave pool entry にまとめ、初期化または必要な frame で SGU 波形 SRAM に COPY_POOL する。
 - PCM bank を PCM pool entry とし、必要な destination 範囲だけ COPY_POOL する。未使用領域は FILL で `0x80` に初期化して決定性を保つ。

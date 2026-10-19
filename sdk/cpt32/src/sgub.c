@@ -7,16 +7,19 @@
 #define SGUB_SGU0_REGS UINT32_C(0x80020800)
 #define SGUB_SGU1_REGS UINT32_C(0x80021800)
 #define SGUB_PCMRAM_BASE UINT32_C(0x18000000)
+#define SGUB_CARD0_BASE UINT32_C(0xA0000000)
 #define SGUB_V2_HEADER_SIZE 40u
 #define SGUB_V2_POOL_ENTRY_SIZE 16u
 
 #define SGUB_VERSION_V1 1u
 #define SGUB_VERSION_V2 2u
+#define SGUB_VERSION_V3 3u
 #define SGUB_OP_WRITE 0u
 #define SGUB_OP_FILL 1u
 #define SGUB_OP_COPY_POOL 2u
 #define SGUB_POOL_WAVE 1u
 #define SGUB_POOL_PCM 2u
+#define SGUB_POOL_S3HS 3u
 
 typedef struct {
   uint8_t kind;
@@ -31,6 +34,7 @@ static uint32_t directory_offset;
 static uint32_t init_offset;
 static uint32_t frames_offset;
 
+
 static uint16_t sgub_read_u16(const uint8_t *p) {
   return (uint16_t)(((uint16_t)p[0] << 8) | p[1]);
 }
@@ -44,6 +48,10 @@ static uint32_t sgub_read_u32(const uint8_t *p) {
          ((uint32_t)p[2] << 8) | p[3];
 }
 
+static uint32_t sgub_read_address(const uint8_t *p) {
+  return player.version == SGUB_VERSION_V3 ? sgub_read_u32(p) : sgub_read_u24(p);
+}
+
 static uint8_t sgub_valid_record(const uint8_t *record) {
   uint8_t target = record[0];
   uint32_t address = sgub_read_u24(record + 1);
@@ -51,6 +59,8 @@ static uint8_t sgub_valid_record(const uint8_t *record) {
     return (uint8_t)(address <= UINT32_C(0x8ff));
   if (target == 2u)
     return (uint8_t)(address <= UINT32_C(0xfffff));
+  if (target == 3u && player.version == SGUB_VERSION_V3)
+    return (uint8_t)(address <= UINT32_C(0x1ffffff));
   return 0;
 }
 
@@ -75,6 +85,7 @@ static uint8_t sgub_validate_operation(size_t *cursor, size_t limit) {
   uint8_t valid = 0;
   uint32_t address;
   uint32_t length;
+  size_t address_size = player.version == SGUB_VERSION_V3 ? 4u : 3u;
   size_t operation_size;
 
   if (*cursor >= limit)
@@ -82,37 +93,40 @@ static uint8_t sgub_validate_operation(size_t *cursor, size_t limit) {
   p = player.stream + *cursor;
   opcode = p[0];
   if (opcode == SGUB_OP_WRITE) {
-    operation_size = 6u;
+    operation_size = 2u + address_size + 1u;
     if (limit - *cursor < operation_size)
       return 0;
     target = p[1];
-    address = sgub_read_u24(p + 2);
+    address = sgub_read_address(p + 2);
     valid = (uint8_t)((target <= 1u && address <= UINT32_C(0x8ff)) ||
-                      (target == 2u && address <= UINT32_C(0xfffff)));
+                      (target == 2u && address <= UINT32_C(0xfffff)) ||
+                      (target == 3u && player.version == SGUB_VERSION_V3 && address <= UINT32_C(0x1ffffff)));
   } else if (opcode == SGUB_OP_FILL) {
-    operation_size = 10u;
+    operation_size = 2u + address_size + 4u + 1u;
     if (limit - *cursor < operation_size)
       return 0;
     target = p[1];
-    address = sgub_read_u24(p + 2);
-    length = sgub_read_u32(p + 5);
+    address = sgub_read_address(p + 2);
+    length = sgub_read_u32(p + 2u + address_size);
     valid = (uint8_t)(length != 0 &&
                       ((target == 2u && address <= UINT32_C(0xfffff) &&
                         length <= UINT32_C(0x100000) - address) ||
+                       (target == 3u && player.version == SGUB_VERSION_V3 && address <= UINT32_C(0x3fffff) &&
+                        length <= UINT32_C(0x400000) - address) ||
                        (target <= 1u && address <= UINT32_C(0x7ff) &&
                         length <= UINT32_C(0x800) - address)));
   } else if (opcode == SGUB_OP_COPY_POOL) {
     sgub_pool_t pool;
     uint32_t pool_id;
     uint32_t source;
-    operation_size = 15u;
+    operation_size = 2u + address_size + 2u + 4u + 4u;
     if (limit - *cursor < operation_size)
       return 0;
     target = p[1];
-    address = sgub_read_u24(p + 2);
-    pool_id = sgub_read_u16(p + 5);
-    source = sgub_read_u32(p + 7);
-    length = sgub_read_u32(p + 11);
+    address = sgub_read_address(p + 2);
+    pool_id = sgub_read_u16(p + 2u + address_size);
+    source = sgub_read_u32(p + 4u + address_size);
+    length = sgub_read_u32(p + 8u + address_size);
     if (length != 0 && sgub_pool_info(pool_id, &pool) && source <= pool.size &&
         length <= pool.size - source) {
       valid = (uint8_t)((target == 2u && pool.kind == SGUB_POOL_PCM &&
@@ -123,7 +137,9 @@ static uint8_t sgub_validate_operation(size_t *cursor, size_t limit) {
                          length <= UINT32_C(0x800) - address &&
                          (address & UINT32_C(0xff)) == 0 &&
                          (source & UINT32_C(0xff)) == 0 &&
-                         (length & UINT32_C(0xff)) == 0));
+                         (length & UINT32_C(0xff)) == 0) ||
+                        (target == 3u && player.version == SGUB_VERSION_V3 && pool.kind == SGUB_POOL_S3HS &&
+                         address <= UINT32_C(0x3fffff) && length <= UINT32_C(0x400000) - address));
     }
   } else {
     return 0;
@@ -221,7 +237,8 @@ static uint8_t sgub_validate_v2(void) {
       return 0;
     if ((kind == SGUB_POOL_WAVE && raw_size != 256u) ||
         (kind == SGUB_POOL_PCM && raw_size > UINT32_C(0x100000)) ||
-        (kind != SGUB_POOL_WAVE && kind != SGUB_POOL_PCM))
+        (kind == SGUB_POOL_S3HS && (player.version != SGUB_VERSION_V3 || raw_size > UINT32_C(0x400000))) ||
+        (kind != SGUB_POOL_WAVE && kind != SGUB_POOL_PCM && kind != SGUB_POOL_S3HS))
       return 0;
     expected_payload += stored_size;
   }
@@ -260,6 +277,7 @@ static uint8_t sgub_validate_v2(void) {
 static void sgub_write_target(uint8_t target, uint32_t address, uint8_t value) {
   uintptr_t base = target == 0u   ? SGUB_SGU0_BASE
                    : target == 1u ? SGUB_SGU1_BASE
+                   : target == 3u ? SGUB_CARD0_BASE
                                   : SGUB_PCMRAM_BASE;
   CPT32_MMIO8(base + address) = value;
 }
@@ -268,36 +286,38 @@ static size_t sgub_apply_operation(size_t cursor) {
   const uint8_t *p = player.stream + cursor;
   uint8_t opcode = p[0];
   uint8_t target = p[1];
-  uint32_t address = sgub_read_u24(p + 2);
+  uint32_t address = sgub_read_address(p + 2);
+  size_t address_size = player.version == SGUB_VERSION_V3 ? 4u : 3u;
   uintptr_t base = target == 0u   ? SGUB_SGU0_BASE
                    : target == 1u ? SGUB_SGU1_BASE
+                   : target == 3u ? SGUB_CARD0_BASE
                                   : SGUB_PCMRAM_BASE;
   uintptr_t destination = base + address;
   uint32_t i;
 
   if (opcode == SGUB_OP_WRITE) {
-    sgub_write_target(target, address, p[5]);
-    return cursor + 6u;
+    sgub_write_target(target, address, p[2u + address_size]);
+    return cursor + 2u + address_size + 1u;
   }
   if (opcode == SGUB_OP_FILL) {
-    uint32_t length = sgub_read_u32(p + 5);
-    uint8_t value = p[9];
+    uint32_t length = sgub_read_u32(p + 2u + address_size);
+    uint8_t value = p[6u + address_size];
     uint32_t packed = (uint32_t)value * UINT32_C(0x01010101);
-    for (i = 0; length - i >= 4u; i += 4u)
+    for (i = 0; target != 3u && length - i >= 4u; i += 4u)
       CPT32_MMIO32(destination + i) = packed;
     for (; i < length; ++i)
       CPT32_MMIO8(destination + i) = value;
-    return cursor + 10u;
+    return cursor + 2u + address_size + 4u + 1u;
   }
   {
-    uint32_t pool_id = sgub_read_u16(p + 5);
-    uint32_t source_offset = sgub_read_u32(p + 7);
-    uint32_t length = sgub_read_u32(p + 11);
+    uint32_t pool_id = sgub_read_u16(p + 2u + address_size);
+    uint32_t source_offset = sgub_read_u32(p + 4u + address_size);
+    uint32_t length = sgub_read_u32(p + 8u + address_size);
     sgub_pool_t pool;
     uint32_t payload_offset;
     (void)sgub_pool_info(pool_id, &pool);
     payload_offset = pool.payload_offset + source_offset;
-    for (i = 0; length - i >= 4u; i += 4u) {
+    for (i = 0; target != 3u && length - i >= 4u; i += 4u) {
       uint32_t word = ((uint32_t)player.stream[payload_offset + i] << 24) |
                      ((uint32_t)player.stream[payload_offset + i + 1u] << 16) |
                      ((uint32_t)player.stream[payload_offset + i + 2u] << 8) |
@@ -306,7 +326,7 @@ static size_t sgub_apply_operation(size_t cursor) {
     }
     for (; i < length; ++i)
       CPT32_MMIO8(destination + i) = player.stream[payload_offset + i];
-    return cursor + 15u;
+    return cursor + 2u + address_size + 2u + 4u + 4u;
   }
 }
 
@@ -348,7 +368,7 @@ sgub_status_t sgub_init(const uint8_t *stream, size_t size) {
       stream[3] != 'B')
     return player.status;
   version = stream[4];
-  if (version != SGUB_VERSION_V1 && version != SGUB_VERSION_V2) {
+  if (version != SGUB_VERSION_V1 && version != SGUB_VERSION_V2 && version != SGUB_VERSION_V3) {
     player.status = SGUB_STATUS_ERROR_VERSION;
     return player.status;
   }
