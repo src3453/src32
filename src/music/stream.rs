@@ -831,8 +831,8 @@ fn validate_v2_operation(
         0 if address <= limit => {}
         0 => return Err(error("SGUB WRITE address is out of range")),
         1 => {
-            let length =
-                read_u32(bytes, offset + 2 + address_size).ok_or_else(|| error("truncated SGUB FILL"))?;
+            let length = read_u32(bytes, offset + 2 + address_size)
+                .ok_or_else(|| error("truncated SGUB FILL"))?;
             let dest_limit = if target == 3 { 0x3f_ffff } else { limit };
             if length == 0
                 || address
@@ -933,7 +933,10 @@ pub struct StreamPlayer {
 
 impl StreamPlayer {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MusicError> {
-        if bytes.get(4).is_some_and(|version| *version == STREAM_VERSION_2 || *version == STREAM_VERSION_3) {
+        if bytes
+            .get(4)
+            .is_some_and(|version| *version == STREAM_VERSION_2 || *version == STREAM_VERSION_3)
+        {
             return Self::from_v2_bytes(bytes);
         }
         if bytes.len() < HEADER_SIZE {
@@ -1171,7 +1174,7 @@ impl StreamPlayer {
     }
 
     fn apply_v2_operations(
-        &self,
+        &mut self,
         sgus: &[Rc<RefCell<S3w2Sound>>; 2],
         start: usize,
         count: u32,
@@ -1180,7 +1183,11 @@ impl StreamPlayer {
         for _ in 0..count {
             let opcode = self.bytes[cursor];
             let target = self.bytes[cursor + 1];
-            let address_size = if self.version == STREAM_VERSION_3 { 4 } else { 3 };
+            let address_size = if self.version == STREAM_VERSION_3 {
+                4
+            } else {
+                3
+            };
             let address = if address_size == 4 {
                 read_u32(&self.bytes, cursor + 2).unwrap()
             } else {
