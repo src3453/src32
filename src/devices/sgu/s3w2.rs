@@ -10,6 +10,7 @@ use std::rc::Rc;
 use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
 
 pub const NUM_CHANNELS: usize = 8;
+const SGU_MASTER_GAIN_DIVISOR: i32 = 4;
 pub const WAVETABLE_SIZE: usize = 256;
 pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
@@ -201,6 +202,10 @@ impl Channel {
 pub struct S3w2Sound {
     pub channels: [Channel; NUM_CHANNELS],
     pub pcm_ram: Rc<RefCell<Vec<u8>>>,
+}
+
+fn apply_master_gain(sample: i16) -> i16 {
+    (i32::from(sample) / 2 / SGU_MASTER_GAIN_DIVISOR) as i16
 }
 
 impl Default for S3w2Sound {
@@ -748,7 +753,7 @@ impl S3w2Sound {
         for i in 0..samples {
             for ch in 0..NUM_CHANNELS {
                 for _ in 0..4 {
-                    let sample = self.generate_sample(ch) / 2; // Reduce volume
+                    let sample = apply_master_gain(self.generate_sample(ch));
                     let pan_l = (self.channels[ch].panpot >> 4) as i32;
                     let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
                     output[ch][0][i] =
@@ -777,7 +782,7 @@ impl S3w2Sound {
             let mut mix_r = 0i32;
             for ch in 0..NUM_CHANNELS {
                 for _ in 0..4 {
-                    let sample = self.generate_sample(ch) / 2; // Reduce volume
+                    let sample = apply_master_gain(self.generate_sample(ch));
                     let pan_l = (self.channels[ch].panpot >> 4) as i32;
                     let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
                     mix_l += (sample as i32) * pan_l / 15;
@@ -905,6 +910,12 @@ mod tests {
         assert_eq!(sound.channels[0].pcm_start_addr, 0x012345);
         assert_eq!(sound.channels[0].pcm_control, 0x03);
         assert!(sound.channels[0].active);
+    }
+
+    #[test]
+    fn master_output_gain_is_one_quarter() {
+        assert_eq!(apply_master_gain(4000), 500);
+        assert_eq!(apply_master_gain(-4000), -500);
     }
 
     #[test]
