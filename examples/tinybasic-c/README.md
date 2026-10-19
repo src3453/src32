@@ -2,6 +2,8 @@
 
 `main.c` is a freestanding C port of the complete root [`tinybasic.sol`](../../tinybasic.sol) interpreter, using the independent `tools/llvm-src32` Clang/LLVM IR-to-SRC32 toolchain. It does not use `csc` or a host C runtime. It retains the lexer, precedence-climbing parser, fixed-address AST and string pools, program-line directory, REPL, expression evaluator, statements and control stacks, keyboard mapping, PCG console, PeC RNG, and the original IDC/DMA disk transfer path.
 
+Numeric `PRINT` items follow Palo Alto Tiny BASIC field formatting: the default field width is 8, and `#N` changes the width for the remaining numeric items in that `PRINT` statement. Values are right-justified with leading blanks; strings and separators do not reset the width.
+
 `SAVE` keeps the original requirement for both LBA and sector count. `FOR` executes its body once before `NEXT`, and `LOAD` and `NEW` stop a running program. `BYE`/`QUIT` and an idle input reader use the SDK's HALT intrinsic. The reader drains PeC events queued before it sleeps and after it wakes; IRQ3 dispatch acknowledges the source so a FIFO level left high by an earlier key cannot strand the REPL.
 
 ## Requirements

@@ -794,3 +794,7 @@
 ## Launcher console log mirroring (2026-10-19)
 - `tools/cpt32-launcher/launcher.py::_spawn_and_read` owns child stdout capture and forwards lines through `result_queue`; `_poll_process` renders them in the Tk log. Mirror lines with `print(..., flush=True)` at production time so the Python console receives them immediately while GUI queue behavior remains intact. Also mirror launch/build failure messages.
 - The launcher unittest can invoke `_spawn_and_read` synchronously and capture its console output with `redirect_stdout`; child output still passes through the pipe first.
+
+## TinyBASIC C Palo Alto PRINT field formatting (2026-10-19)
+- In `examples/tinybasic-c/main.c`, Palo Alto Tiny BASIC `PRINT` numeric fields default to width 8. `#N` updates the active field width for all later numeric items in that same PRINT statement; it is a standalone format directive and does not get consumed as a one-shot width for only the next expression. Strings and separators do not reset it. Numeric fields are right-justified with leading blanks, as specified by the Palo Alto manual.
+- Keep the C-port README aligned with this behavior. Build verification requires Python with `llvmlite` plus Clang and Ninja; an environment may have llvmlite but no usable CMake/Clang/Ninja toolchain.
