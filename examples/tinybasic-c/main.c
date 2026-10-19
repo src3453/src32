@@ -93,8 +93,7 @@ enum {
   S_IF,
   S_FOR,
   S_NEXT,
-  S_SYS,
-  PI_WIDTH
+  S_SYS
 };
 enum {
   OP_ADD = 1,
@@ -249,7 +248,7 @@ static void help(void) {
   newline();
   print_string("ABS(), ASC(), RND(), SGN(), integer variables A-Z, @(n).");
   newline();
-  print_string("PRINT: numbers use width 8; #N sets width for the rest of PRINT.");
+  print_string("PRINT: , tab, ; no newline, #N right-justifies next number.");
   newline();
   print_string("LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps "
                "sectors to image size.");
@@ -807,11 +806,10 @@ static Node *parse_print(void) {
       ++parser_pos;
       if (peek() == ',' || peek() == ';')
         ++parser_pos;
-      n = alloc_node(PI_WIDTH, w, 0, 0, 0);
+      e = parse_expr(0);
       if (error)
         return 0;
-      h = append(h, &t, n);
-      continue;
+      n = alloc_node(PI_EXPR, w, e, 0, 0);
     } else {
       e = parse_expr(0);
       if (error)
@@ -1461,18 +1459,19 @@ static void exec_disk(int32_t cmd, Node *lban, Node *secn) {
     stop = 1;
 }
 static void exec_print(Node *items) {
-  int32_t nl = 1, v, width = 8;
+  int32_t nl = 1, v;
   for (Node *p = items; p; p = p->c) {
     if (p->kind == PI_STR) {
       print_string((char *)(uintptr_t)p->a);
       nl = 1;
-    } else if (p->kind == PI_WIDTH) {
-      width = p->value;
     } else if (p->kind == PI_EXPR) {
       v = eval(p->a);
       if (error)
         return;
-      print_padded(v, width);
+      if (p->value)
+        print_padded(v, p->value);
+      else
+        print_number(v);
       nl = 1;
     } else
       nl = 0;
