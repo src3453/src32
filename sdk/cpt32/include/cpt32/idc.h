@@ -33,8 +33,10 @@
 void idc_enable(void);
 /* Polls a 32-bit MMIO register until all masked bits clear. */
 void idc_wait_clear(uint32_t address, uint32_t mask);
-/* Returns the slot's sector capacity, or -1 on absent media/command error. */
-int32_t idc_identify(uint32_t slot);
+/* Returns 0 on success and stores the full uint32 sector capacity in
+ * *capacity. Returns 1 on null output pointer or absent media/command error.
+ * On failure, *capacity is unchanged. */
+uint32_t idc_identify(uint32_t slot, uint32_t *capacity);
 /* Raw IDC ERROR_CODE for the most recently accepted command. */
 uint32_t idc_error_code(void);
 /* Transfers 1..8,388,607 512-byte sectors. Buffer must be main RAM and

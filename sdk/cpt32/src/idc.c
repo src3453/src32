@@ -12,14 +12,17 @@ void idc_wait_clear(uint32_t address, uint32_t mask) {
   }
 }
 
-int32_t idc_identify(uint32_t slot) {
+uint32_t idc_identify(uint32_t slot, uint32_t *capacity) {
+  if (capacity == 0)
+    return 1u;
   idc_enable();
   CPT32_MMIO32(IDC_DRIVE_SELECT) = slot;
   CPT32_MMIO32(IDC_COMMAND) = IDC_CMD_IDENTIFY;
   idc_wait_clear(IDC_STATUS, IDC_BIT_BUSY);
   if ((CPT32_MMIO32(IDC_STATUS) & IDC_BIT_ERROR) != 0u)
-    return -1;
-  return (int32_t)CPT32_MMIO32(IDC_CAPACITY);
+    return 1u;
+  *capacity = CPT32_MMIO32(IDC_CAPACITY);
+  return 0u;
 }
 
 uint32_t idc_error_code(void) { return CPT32_MMIO32(IDC_ERROR_CODE); }

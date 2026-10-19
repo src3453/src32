@@ -11,7 +11,9 @@ typedef void (*irqc_handler)(void);
  * callbacks. */
 void irqc_init(void);
 /* Returns 0 on success, 1 for invalid line. NULL unregisters a callback.
- * Call with the source disabled. Unregistered IRQs are still acknowledged. */
+ * Call with source disabled. The dispatcher invokes the callback before
+ * acknowledging its pending bit, so clear any device condition in the
+ * callback. Unregistered IRQs are still acknowledged. */
 int irqc_register(unsigned line, irqc_handler handler);
 void irqc_enable(uint16_t mask);
 void irqc_disable(uint16_t mask);
