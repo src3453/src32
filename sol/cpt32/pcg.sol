@@ -3,6 +3,7 @@
 !var pcg_cur_y 0
 !var pcg_width 40
 !var pcg_height 30
+!var pcg_cell_height 8
 !var pcg_fg_color 0x3f
 !var pcg_bg_color 0
 !var pcg_mode 0
@@ -30,11 +31,20 @@ fn _pcg_set_cur (x y) :
 fn col40 () :
     0 0x8000f003 stb # mode
     40 >pcg_width
+    8 >pcg_cell_height
 ;
 
 fn col80 () :
     1 0x8000f003 stb # mode
     80 >pcg_width
+    8 >pcg_cell_height
+;
+
+fn mode80x16 () :
+    3 0x8000f003 stb # mode
+    80 >pcg_width
+    30 >pcg_height
+    16 >pcg_cell_height
 ;
 
 fn _pcg_update_cur () :
@@ -46,7 +56,7 @@ fn _pcg_update_cur () :
 ;
 
 fn _pcg_update_vram_row () :
-    pcg_scroll_y 8 div pcg_cur_y add pcg_height mod >pcg_vram_row
+    pcg_scroll_y pcg_cell_height div pcg_cur_y add pcg_height mod >pcg_vram_row
 ;
 
 fn locate (x y) :
@@ -65,6 +75,7 @@ fn initPCG () :
     0 0x8000f003 stb # mode
     40 >pcg_width
     30 >pcg_height
+    8 >pcg_cell_height
     0 0x8000f000 stb # enable
     0 >pcg_scroll_y
     0 0x8000f00c stb # scroll X low
@@ -85,7 +96,7 @@ fn _pcg_ln () :
     pcg_vram_row 1 add pcg_height mod >pcg_vram_row
     pcg_cur_y pcg_height ge if
         # Advance the pixel scroll by one text row, wrapping the source rows.
-        pcg_scroll_y 8 add pcg_height 8 mul mod >pcg_scroll_y
+        pcg_scroll_y pcg_cell_height add pcg_height pcg_cell_height mul mod >pcg_scroll_y
         pcg_scroll_y 0x8000f00e stb
         pcg_height 1 sub >pcg_cur_y
 

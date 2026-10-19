@@ -1,9 +1,9 @@
 // PCG (Programmable Character Generator) renderer for the VDP (Video Display Processor)
 
 // PCG Specification:
-// Screen modes: 40x30 or 80x30 cells of 8x8 glyphs; mode 2 is 20x15 cells of 16x16 BMP glyphs.
+// Screen modes: 40x30 or 80x30 cells of 8x8 glyphs; mode 2 is 20x15 cells of 16x16 BMP glyphs; mode 3 is 80x30 cells of 8x16 glyphs.
 // Display area: 320x240 pixels for the 40-column and 16x16 modes.
-// Modes 0/1 use two rewritable 256-glyph font banks in VRAM; mode 2 uses the shared Unifont ROM.
+// Modes 0/1 use two rewritable 256-glyph font banks in VRAM; mode 2 uses the shared Unifont ROM; mode 3 uses its dedicated 4 KiB font region.
 // Color capabilities: 6-bit color, foreground and background colors can be set per character.
 
 // VRAM Layout for PCG (from base address):
@@ -13,12 +13,13 @@
 // 0x12C00 - 0x12CBF: 64 CLUT (Color Look-Up Table) entries (RGB888; 192 bytes)
 // 0x20000 - 0x207FF: Font bank 0 (256 characters x 8 bytes = 2048 bytes)
 // 0x20800 - 0x20FFF: Font bank 1 (256 characters x 8 bytes = 2048 bytes)
+// 0x21000 - 0x21FFF: Font 8x16 (256 characters x 16 bytes = 4096 bytes)
 
 // VDP PCG Mode specific registers (from base address):
 // 0xF000: /PCG_ENABLE:RW (PCG enable) (0 = enable, 1 = disable)
 // 0xF001: PCG_FONT_BANK:RW (PCG Font bank select) (0 = Bank 0, 1 = Bank 1)
 // 0xF002: SWAP_FGBG:RW (Swap FG/BG colors) (0 = normal, 1 = swap)
-// 0xF003: SCREEN_MODE:RW (0 = 40x30, 1 = 80x30, 2 = 20x15 cells of 16x16 glyphs)
+// 0xF003: SCREEN_MODE:RW (0 = 40x30 8x8, 1 = 80x30 8x8, 2 = 20x15 16x16, 3 = 80x30 8x16)
 // 0xF004: STATUS:R- (Status register) (0 = OK, 1 = Error)
 // 0xF005: CURSOR_POS_X:RW (mode-dependent: 0-39, 0-79, or 0-19)
 // 0xF006: CURSOR_POS_Y:RW (mode-dependent: 0-29 or 0-14)
@@ -47,6 +48,7 @@ pub enum PcgScreenMode {
     Columns40 = 0,
     Columns80 = 1,
     Unifont16x16 = 2,
+    Font8x16 = 3,
 }
 
 impl PcgScreenMode {
@@ -55,6 +57,7 @@ impl PcgScreenMode {
             0 => Some(Self::Columns40),
             1 => Some(Self::Columns80),
             2 => Some(Self::Unifont16x16),
+            3 => Some(Self::Font8x16),
             _ => None,
         }
     }
@@ -64,26 +67,28 @@ impl PcgScreenMode {
             Self::Columns40 => 40,
             Self::Columns80 => 80,
             Self::Unifont16x16 => 20,
+            Self::Font8x16 => 80,
         }
     }
 
     pub fn rows(self) -> usize {
         match self {
             Self::Unifont16x16 => 15,
-            Self::Columns40 | Self::Columns80 => PCG_ROWS,
+            Self::Columns40 | Self::Columns80 | Self::Font8x16 => PCG_ROWS,
         }
     }
 
     pub fn cell_width(self) -> usize {
         match self {
             Self::Unifont16x16 => 16,
+            Self::Font8x16 => 8,
             Self::Columns40 | Self::Columns80 => PCG_CELL_WIDTH,
         }
     }
 
     pub fn cell_height(self) -> usize {
         match self {
-            Self::Unifont16x16 => 16,
+            Self::Unifont16x16 | Self::Font8x16 => 16,
             Self::Columns40 | Self::Columns80 => PCG_CELL_HEIGHT,
         }
     }
@@ -110,6 +115,7 @@ pub const PCG_FONT_BANK_SIZE: usize = 256 * 8;
 pub const PCG_FONT_TOTAL_SIZE: usize = PCG_FONT_BANK_SIZE * 2;
 pub const PCG_FONT_BANK0_ADDR: usize = 0x20000;
 pub const PCG_FONT_BANK1_ADDR: usize = 0x20800;
+pub const PCG_FONT_8X16_ADDR: usize = 0x21000;
 pub const PCG_TEXT_ADDR: usize = 0x00000;
 pub const PCG_FG_ATTR_ADDR: usize = 0x01000;
 pub const PCG_BG_ATTR_ADDR: usize = 0x02000;
@@ -207,6 +213,10 @@ impl PcgRenderer {
             let row = lookup_row(self.unifont_rom, code_unit, row_in_char)
                 .expect("PCG mode has a 16-row glyph");
             row[local_x / 8] & (1 << (7 - local_x % 8)) != 0
+        } else if screen_mode == PcgScreenMode::Font8x16 {
+            let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
+            let font_offset = PCG_FONT_8X16_ADDR + glyph * 16 + row_in_char;
+            vram[font_offset] & (1 << (7 - local_x)) != 0
         } else {
             let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
             let bank_base = if font_bank & 1 == 0 {
@@ -232,7 +242,7 @@ impl PcgRenderer {
                 let cell_y = y / cell_height;
                 if cell_x == cursor_x && cell_y == cursor_y {
                     let line = y % cell_height;
-                    let cursor_line = if is_unifont_mode { line / 2 } else { line };
+                    let cursor_line = if cell_height == 16 { line / 2 } else { line };
                     let line_visible = ((cursor_lines >> (7 - cursor_line)) & 1) == 0;
                     let cursor_visible = if cursor_blink_period == 0 {
                         true
