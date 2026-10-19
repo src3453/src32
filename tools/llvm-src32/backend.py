@@ -814,6 +814,11 @@ class _Function:
             self.fail("unsupported ABI call argument attribute")
         if re.search(r"\[\s*\"", text):
             self.fail("call operand bundles are unsupported")
+        if name == "cpt32_halt":
+            if values or str(inst.type) != "void":
+                self.fail("cpt32_halt must be called with no arguments and no return value")
+            c.emit("HALT")
+            return
         if name.startswith("llvm."):
             self.intrinsic(inst, name, values)
             return
@@ -1087,8 +1092,8 @@ class _Module:
 
     def compile(self):
         c = self.code
-        if self.entry not in self.definitions:
-            raise CompileError(f"entry function @{self.entry} is not defined")
+        if "cpt32_halt" in self.definitions:
+            raise CompileError("function @cpt32_halt is reserved for the SRC32 HALT intrinsic")
         entry = self.definitions[self.entry]
         if list(entry.arguments):
             raise CompileError("freestanding entry must take no arguments (use int main(void))")

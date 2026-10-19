@@ -8,6 +8,9 @@
 //! python3 tools/asm/asm.py dos.a -o dos.bin
 //! ```
 //!
+//! Guest execution has a five-minute wall-clock watchdog per test harness, so
+//! a guest that never returns to the expected prompt cannot stall the suite.
+//!
 //! The tests craft DSFS images in Rust (no host tooling at test time), boot
 //! `dos.bin` from RAM, drive the shell by pushing PeC keyboard events (the
 //! shell HALT s and is woken by IRQC source 3), and check both the PCG text
@@ -26,6 +29,7 @@ use cpt32::devices::vdp::vdp::{VDP_VRAM_BASE, Vdp};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 use tokio::sync::mpsc::UnboundedSender;
 
 const SECTOR: usize = 512;
@@ -34,6 +38,7 @@ const ENTRY_SIZE: usize = 32;
 const DIR_OFFSET: usize = 3 * SECTOR;
 const BITMAP_OFFSET: usize = 2 * SECTOR;
 
+const GUEST_TEST_TIMEOUT: Duration = Duration::from_secs(5 * 60);
 fn be32(image: &mut [u8], offset: usize, value: u32) {
     image[offset..offset + 4].copy_from_slice(&value.to_be_bytes());
 }
@@ -163,6 +168,7 @@ struct Harness {
     input: UnboundedSender<HostInputEvent>,
     root: PathBuf,
     cycles_per_frame: usize,
+    started_at: Instant,
 }
 
 impl Harness {
@@ -178,8 +184,11 @@ impl Harness {
         let vdp = connect_devices_with_vdp(&mut bus);
         connect_idc(&mut bus, drives);
         let mut cpu = AnyCpu::new(cpu_kind, bus);
-        let guest = std::fs::read(concat!(env!("CARGO_MANIFEST_DIR"), "/dos.bin"))
-            .expect("dos.bin is missing; build it from dos.sol (see the module comment)");
+        let guest_path = std::env::var_os("DOS_GUEST_IMAGE")
+            .map(PathBuf::from)
+            .unwrap_or_else(|| PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/dos.bin")));
+        let guest = std::fs::read(&guest_path)
+            .unwrap_or_else(|error| panic!("failed to read {}: {error}", guest_path.display()));
         cpu.load_program(0, &guest);
         Harness {
             cpu,
@@ -187,6 +196,7 @@ impl Harness {
             input,
             root: root.to_path_buf(),
             cycles_per_frame: CYCLES_PER_FRAME as usize,
+            started_at: Instant::now(),
         }
     }
 
@@ -196,6 +206,10 @@ impl Harness {
 
     fn frames(&mut self, count: usize) {
         for _ in 0..count {
+            assert!(
+                self.started_at.elapsed() < GUEST_TEST_TIMEOUT,
+                "DOS guest test exceeded its five-minute wall-clock timeout"
+            );
             self.vdp.borrow_mut().tick();
             self.cpu.set_irq_source(0, true);
             self.cpu.set_irq_source(0, false);

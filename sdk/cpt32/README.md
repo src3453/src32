@@ -12,6 +12,7 @@
 | `pec_rng.h` | `pec_rng_*` | TRNGでPRNGをseedし、初回読出しを破棄 |
 | `colors.h` | `colors_tocolor` | 元ソースどおり`b + (g << 2) + (r << 4)`。RGB332への仕様変更ではない |
 | `irqc.h` | `irqc_*` | 割り込み登録、マスク、ack、IRQ番号、VSyncカウンタ・待機 |
+| `cpu.h` | `cpt32_halt` | SRC32の`HALT`を出力し、有効なIRQ受理後に再開するLLVM/SRC32専用intrinsic |
 | `idc.h` | `idc_*` | IDC/DMAC ch0の同期sector I/O。戻り値0=成功、1=DMA失敗、2=IDC失敗 |
 | `dsfs.h` | `dsfs_*` | 単一mount状態、ディレクトリ・bitmap、ファイル読書き・削除、timestamp |
 | `wax.h` | `wax_*` | WAX v2検証、予約RAMへのstaging、コード・stackを置換できるロード |
@@ -56,6 +57,11 @@ int main(void) {
 - Dispatcherは有効な保留IRQを優先度順に全件処理し、callbackの前に各pending bitをackします。下位優先度のIRQが保留されたままIRETするとCPUのエッジ検出が再度立ち上がらないため、この処理が必要です。
 - callbackで割り込みのネストを有効にしないでください。callbackは引数なし・戻り値なしの通常のC関数です。SGUBの再生はcallbackから`sgub_step()`を呼ぶか、VSync待機後に呼びます。
 - `irqc_wait_vsync()`は次のIRQ0をカウンタで待ちます。CPUは実行を続けます。CPUサイクル由来の独自VSyncや、ハンドラ未登録のIRQ有効化は使いません。
+
+
+## CPU HALT
+
+`cpt32_halt()`はSRC32の`HALT`命令を出力するLLVM/SRC32専用intrinsicです。有効な割り込みが受理されると呼出し直後から再開します。CPUを起こす有効な割り込みsourceがある状態でのみ使ってください。ホスト向けsleep関数ではありません。
 
 ## バッファと状態
 
