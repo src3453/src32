@@ -1349,7 +1349,10 @@ impl DebugUiState {
                         format_dbfs(peak_dbfs)
                     ));
                     let bar_value = ((rms_dbfs.unwrap_or(-60.0) + 60.0) / 60.0).clamp(0.0, 1.0);
-                    ProgressBar::new(bar_value).size([250.0, 12.0]).build(ui);
+                    ProgressBar::new(bar_value)
+                        .overlay_text("")
+                        .size([250.0, 12.0])
+                        .build(ui);
                 }
             });
     }
