@@ -11,6 +11,8 @@ void pcg_col40(void);
 void pcg_col80(void);
 void pcg_mode80x16(void);
 void pcg_locate(uint32_t x, uint32_t y);
+/* Clear all 4 KiB of text to glyph zero and both attribute planes to color.
+ * Preserves cursor, scroll and the colors used for subsequent text output. */
 void pcg_cls(uint32_t color);
 void pcg_initPCG(void);
 void pcg_putcscr(uint32_t character);

@@ -41,7 +41,12 @@ void pcg_locate(uint32_t x, uint32_t y) {
   pcg_update_row();
   pcg_update_cur();
 }
-void pcg_cls(uint32_t color) { pcg_fill(0x10002000u, 0x1000u, (uint8_t)color); }
+void pcg_cls(uint32_t color) {
+  pcg_fill(pcg_vram_base, 0x1000u, 0);
+  /* Glyph zero is writable; equal attributes blank even a nonempty glyph. */
+  pcg_fill(pcg_vram_base + 0x1000u, 0x1000u, (uint8_t)color);
+  pcg_fill(pcg_vram_base + 0x2000u, 0x1000u, (uint8_t)color);
+}
 void pcg_initPCG(void) {
   CPT32_MMIO8(0x80000001u) = 1;
   CPT32_MMIO8(0x8000f003u) = 0;

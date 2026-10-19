@@ -66,6 +66,7 @@ int main(void) {
 ## バッファと状態
 
 - MMIOはvolatileアクセス。CPUのword/halfwordとファイル整数はbig-endian。PCG scroll MMIOのbyte laneはlow byteからです。
+- `pcg_cls(color)`は`pcg_vram_base`から文字面4 KiBを0、前景・背景属性面各4 KiBを指定色で埋め、スクロールで隠れた行も消去します。glyph 0が空でなくても指定色で塗りつぶされます。カーソル位置・スクロール量と、以後の出力用の`pcg_fg_color`/`pcg_bg_color`は保持します。
 - VPUの配列長・テクスチャサイズなどの前提条件は元のsol APIと同じです。APIコメントを確認してください。
 - DSFSは単一mountです。ディレクトリbufferは8192 byte、bitmapは`dsfs_bitmap_blocks()*512` byte、ファイルbufferはsector切り上げサイズが必要です。書込みは入力bufferの最終sector末尾をゼロ埋めします。名前はドットなし・space-paddingの大文字11 byteです。
 - `idc_identify(slot, &capacity)`は成功時0、失敗時1を返し、全範囲の`uint32_t`セクタ数を出力引数へ格納します。失敗時は出力を変更しません。
@@ -82,7 +83,7 @@ int main(void) {
 python sdk/cpt32/smoke/run.py --clang "C:/Program Files/LLVM/bin/clang.exe"
 ```
 
-CMake buildとnative `src32_testbench`を使い、Scalar/Pipelineの5ゲストを実行します。すべてR1=42を検査します。PCGのring row・cursor、IRQ0連続callbackと中断された計算の保持、SGUB v1/v2・不正streamの書込み禁止、DSFSの成長/縮小/削除、WAXが実行中のコードとstackを上書きして起動する経路を含みます。
+CMake buildとnative `src32_testbench`を使い、Scalar/Pipelineの5ゲストを実行します。すべてR1=42を検査します。PCGのring row・cursor、40列/80列/8×16のCLSによる文字・属性の全消去、IRQ0連続callbackと中断された計算の保持、SGUB v1/v2・不正streamの書込み禁止、DSFSの成長/縮小/削除、WAXが実行中のコードとstackを上書きして起動する経路を含みます。
 `--optimization 1`または`--optimization 2`で最適化した全ライブラリとゲストを検証できます（既定は`0`）。
 
 `--cpu cached --cpu cached-relaxed`を追加するとCached系で実行できます。この2方式でも全5ゲストとDSFSのリーク0検査を通しています。

@@ -819,3 +819,8 @@
 ## Build identity in the emulator title (2026-10-19)
 - `build.rs` embeds the reachable HEAD commit count (`git rev-list --count HEAD`) and UTC build-script execution time. Git-free source builds use `unknown`; shallow clones count only available history. Unchanged Cargo builds reuse the timestamp.
 - Watch source/Cargo inputs and Git-resolved HEAD, symbolic branch ref and packed-refs paths so commits, branch switches and linked worktrees invalidate metadata. Keep `BUILD_TITLE` in startup, cartridge replacement and load-error titles; the package-drop regression checks the shared prefix. UTC calendar boundaries are tested by compiling `build.rs` with `rustc --test`.
+
+## C PCG CLS (2026-10-19)
+- `sdk/cpt32/src/pcg.c::pcg_cls` must clear the complete 4 KiB text plane at `pcg_vram_base` and fill both 4 KiB attribute planes (+0x1000 FG / +0x2000 BG) with the requested color. Updating only BG leaves colored glyphs visible; clearing text alone depends on writable glyph zero being empty. Equal FG/BG guarantees a solid fill regardless of font data or color swap.
+- Preserve cursor/scroll state and subsequent output colors. The display C guest smoke checks all plane bytes in 40-column, 80-column and 8x16 modes after ring scrolling, then verifies that subsequent text uses the original output colors. The old implementation fails with R1=107 (stale text).
+- Verification: full C SDK guest smokes passed at O0 on Scalar/Pipeline (5 guests each, DSFS zero leaks); display also passed at O2 on both CPUs. `cargo test --test vdp_pcg_scroll` passed (1). Point TMP/TEMP inside workspace when the sandbox denies the toolchain's default temporary directory.
