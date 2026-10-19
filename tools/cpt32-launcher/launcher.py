@@ -550,8 +550,13 @@ class Launcher(tk.Tk):
         package = tk.StringVar()
         ttk.Checkbutton(parent, text=f"{slot}", variable=enabled, width=3).grid(row=row, column=0, sticky="w")
         ttk.Entry(parent, textvariable=package).grid(row=row, column=1, sticky="ew", pady=2)
-        ttk.Button(parent, text="選択…", command=lambda v=package, s=slot: self._choose_into(v, f"WASM package {s}", "*.cpt32card")).grid(row=row, column=2, padx=3)
+        ttk.Button(parent, text="選択…", command=lambda p=package, e=enabled, s=slot: self._choose_card_package(p, e, s)).grid(row=row, column=2, padx=3)
         self.cards.append(dict(slot=slot, enabled=enabled, package=package))
+
+    def _choose_card_package(self, package, enabled, slot):
+        self._choose_into(package, f"WASM package {slot}", "*.cpt32card")
+        if package.get().strip():
+            enabled.set(True)
 
     def _profile_changed(self):
         if self.profile_cpu.get():
