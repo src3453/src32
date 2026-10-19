@@ -40,6 +40,13 @@ impl Device for SguDevice {
         }
     }
 
+    fn debug_read(&self, addr: u32) -> Option<u8> {
+        Some(match self.port {
+            SguPort::Regs(chip) => self.sgus[chip].borrow().peek_register(addr),
+            SguPort::PcmRam => self.sgus[0].borrow().read_pcm_ram(addr),
+        })
+    }
+
     fn write(&mut self, addr: u32, value: u8) {
         match self.port {
             SguPort::Regs(chip) => self.sgus[chip].borrow_mut().write_register(addr, value),
@@ -82,4 +89,23 @@ pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
         Box::new(SguDevice::new(sgus.clone(), SguPort::PcmRam)),
     );
     sgus
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn debugger_register_read_does_not_reset_channel_phase() {
+        let mut bus = Bus::new();
+        let sgus = connect_sgu(&mut bus);
+        sgus[0].borrow_mut().channels[0].phase = 0.75;
+
+        assert_eq!(bus.read_debug_u8(SGU_REG_BASE + 0x80A), Some(0));
+        assert_eq!(sgus[0].borrow().channels[0].phase, 0.75);
+
+        sgus[0].borrow_mut().channels[0].phase = 0.5;
+        assert_eq!(bus.read_u8(SGU_REG_BASE + 0x80A), 0);
+        assert_eq!(sgus[0].borrow().channels[0].phase, 0.0);
+    }
 }

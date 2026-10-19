@@ -387,6 +387,24 @@ impl AnyCpu {
         }
     }
 
+    pub fn read_debug_mem_u16_be(&mut self, addr: u32) -> Option<u16> {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.read_debug_mem_u16_be(addr)
+            }
+            AnyCpu::Pipelined(cpu) => cpu.read_debug_mem_u16_be(addr),
+        }
+    }
+
+    pub fn read_debug_mem_u32_be(&mut self, addr: u32) -> Option<u32> {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.read_debug_mem_u32_be(addr)
+            }
+            AnyCpu::Pipelined(cpu) => cpu.read_debug_mem_u32_be(addr),
+        }
+    }
+
     pub fn read_mem_u32_be(&mut self, addr: u32) -> u32 {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {

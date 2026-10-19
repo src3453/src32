@@ -66,6 +66,10 @@ impl Device for BiosRom {
         self.data[addr as usize]
     }
 
+    fn debug_read(&self, addr: u32) -> Option<u8> {
+        self.data.get(addr as usize).copied()
+    }
+
     fn write(&mut self, _addr: u32, _value: u8) {
         // ROM is read-only: guest stores are silently ignored.
     }

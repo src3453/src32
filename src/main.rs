@@ -1731,17 +1731,27 @@ impl DebugUiState {
                     let marker = if addr == cpu.pc() { "=>" } else { "  " };
                     let decoded = cpu.decode_at(addr, mode);
                     if decoded.size == 2 {
-                        let raw = cpu.read_u16_be(addr);
-                        ui.text(format!(
-                            "{} 0x{:08X}: {:04X}      {}",
-                            marker, addr, raw, decoded.text
-                        ));
+                        match cpu.read_debug_mem_u16_be(addr) {
+                            Some(raw) => ui.text(format!(
+                                "{} 0x{:08X}: {:04X}      {}",
+                                marker, addr, raw, decoded.text
+                            )),
+                            None => ui.text(format!(
+                                "{} 0x{:08X}: ????      {}",
+                                marker, addr, decoded.text
+                            )),
+                        }
                     } else {
-                        let raw = cpu.read_u32(addr);
-                        ui.text(format!(
-                            "{} 0x{:08X}: {:08X}  {}",
-                            marker, addr, raw, decoded.text
-                        ));
+                        match cpu.read_debug_mem_u32_be(addr) {
+                            Some(raw) => ui.text(format!(
+                                "{} 0x{:08X}: {:08X}  {}",
+                                marker, addr, raw, decoded.text
+                            )),
+                            None => ui.text(format!(
+                                "{} 0x{:08X}: ????????  {}",
+                                marker, addr, decoded.text
+                            )),
+                        }
                     }
                     addr = addr.wrapping_add(decoded.size as u32);
                     mode = decoded.next_mode;

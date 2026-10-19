@@ -38,6 +38,11 @@ pub struct BusRegion {
 
 pub trait Device {
     fn read(&mut self, addr: u32) -> u8;
+    /// Read a byte for a debugger without triggering device read side effects.
+    /// Devices that cannot provide a stable snapshot should return `None`.
+    fn debug_read(&self, _addr: u32) -> Option<u8> {
+        None
+    }
     fn write(&mut self, addr: u32, value: u8);
     fn size(&self) -> u32;
     /// Return the generation token for the cache-coherence unit containing `addr`.
@@ -688,22 +693,16 @@ impl Bus {
         0
     }
 
-    /// Read a byte for a debugger view. `None` represents an open bus.
+    /// Read a byte for a passive debugger view. `None` means no safe snapshot
+    /// is available. This path never performs a normal device read.
     pub fn read_debug_u8(&mut self, addr: u32) -> Option<u8> {
         if addr == IDC_DATA_ADDRESS {
             return self.idc.as_ref().map(|idc| idc.borrow().peek_data_byte());
         }
         if let Some((device, offset)) = self.find_device(addr) {
-            let value = device.read(offset);
-            let faulted = device.is_faulted();
-            if faulted {
-                self.latch_bus_error();
-            }
-            self.refresh_device_irqs();
-            return Some(value);
+            return device.debug_read(offset);
         }
-        self.latch_bus_error();
-        Some(0).filter(|_| self.access_source != BusAccessSource::Debugger)
+        None
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {

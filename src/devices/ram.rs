@@ -24,6 +24,10 @@ impl Device for Ram {
         self.data[addr as usize]
     }
 
+    fn debug_read(&self, addr: u32) -> Option<u8> {
+        self.data.get(addr as usize).copied()
+    }
+
     fn write(&mut self, addr: u32, value: u8) {
         let index = addr as usize;
         if let Some(generations) = self.instruction_generations.as_mut() {

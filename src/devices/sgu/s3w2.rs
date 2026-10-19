@@ -271,6 +271,39 @@ impl S3w2Sound {
         }
     }
 
+    /// Return the visible register value without applying read side effects.
+    pub fn peek_register(&self, address: u32) -> u8 {
+        if address <= 0x7FF {
+            let ch = ((address >> 8) & 0x7) as usize;
+            let offset = (address & 0xFF) as u8;
+            self.read_channel_wavetable(ch, offset)
+        } else if (0x800..=0x8FF).contains(&address) {
+            let ch = (((address - 0x800) >> 5) & 0x7) as usize;
+            let offset = ((address - 0x800) & 0x1F) as u8;
+            match offset {
+                0..=9 => {
+                    let c = &self.channels[ch];
+                    match offset {
+                        0 => (c.frequency >> 8) as u8,
+                        1 => c.frequency as u8,
+                        2 => c.waveform_type as u8,
+                        3 => c.volume,
+                        4 => c.panpot,
+                        5 => ((c.modulation_type as u8) << 3) | (c.modulation_target & 7),
+                        6..=7 => (c.modulation_param_1 >> ((7 - offset) * 8)) as u8,
+                        8..=9 => (c.modulation_param_2 >> ((9 - offset) * 8)) as u8,
+                        _ => 0,
+                    }
+                }
+                0x0B => self.channels[ch].modulation_targeting_mode & 1,
+                0x10..=0x19 => self.read_channel_pcm_reg(ch, offset - 0x10),
+                _ => 0,
+            }
+        } else {
+            0
+        }
+    }
+
     pub fn write_pcm_ram(&mut self, address: u32, value: u8) {
         let addr = address as usize;
         let mut pcm_ram = self.pcm_ram.borrow_mut();

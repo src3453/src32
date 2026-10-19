@@ -538,6 +538,22 @@ impl PipelineCpu {
         value
     }
 
+    pub fn read_debug_mem_u16_be(&mut self, addr: u32) -> Option<u16> {
+        Some(
+            (u16::from(self.read_debug_mem_u8(addr)?) << 8)
+                | u16::from(self.read_debug_mem_u8(addr.wrapping_add(1))?),
+        )
+    }
+
+    pub fn read_debug_mem_u32_be(&mut self, addr: u32) -> Option<u32> {
+        Some(
+            (u32::from(self.read_debug_mem_u8(addr)?) << 24)
+                | (u32::from(self.read_debug_mem_u8(addr.wrapping_add(1))?) << 16)
+                | (u32::from(self.read_debug_mem_u8(addr.wrapping_add(2))?) << 8)
+                | u32::from(self.read_debug_mem_u8(addr.wrapping_add(3))?),
+        )
+    }
+
     pub fn read_u32(&mut self, addr: u32) -> u32 {
         self.read_mem_u32_be(addr)
     }
@@ -553,7 +569,7 @@ impl PipelineCpu {
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match mode {
             InstructionMode::Normal => {
-                let raw = self.read_mem_u32_be(addr);
+                let raw = self.read_debug_mem_u32_be(addr).unwrap_or(0);
                 let insn = Self::decode(raw);
                 let next_mode = match insn {
                     Instruction::Jmps { .. }
@@ -570,7 +586,7 @@ impl PipelineCpu {
                 }
             }
             InstructionMode::Short => {
-                let raw = self.read_u16_be(addr);
+                let raw = self.read_debug_mem_u16_be(addr).unwrap_or(0);
                 let insn = Self::decode_short(raw);
                 let next_mode = match insn {
                     ShortInstruction::Ret => InstructionMode::Normal,
