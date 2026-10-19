@@ -42,6 +42,14 @@ mod audio;
 mod monitor;
 mod render;
 
+const BUILD_TITLE: &str = concat!(
+    "CPT32 (build ",
+    env!("CPT32_BUILD_NUMBER"),
+    " at ",
+    env!("CPT32_BUILD_TIME"),
+    ")"
+);
+
 const WIDTH: u32 = render::PRESENT_WIDTH;
 const HEIGHT: u32 = render::PRESENT_HEIGHT;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
@@ -270,7 +278,7 @@ fn build_guest_machine(
     };
     let title = cartridge
         .as_ref()
-        .map(|cartridge| format!("CPT32 — {}", cartridge.title));
+        .map(|cartridge| format!("{BUILD_TITLE} — {}", cartridge.title));
     let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))?;
     cpu.set_pc(entry);
     Ok(GuestMachine {
@@ -776,7 +784,7 @@ impl GuiApp {
             enable_debug_gui,
             start_paused,
             music_stream: music_stream.map(Path::to_path_buf),
-            title: machine.title.unwrap_or_else(|| "CPT32".to_owned()),
+            title: machine.title.unwrap_or_else(|| BUILD_TITLE.to_owned()),
             next_frame_deadline: Instant::now(),
         })
     }
@@ -813,14 +821,14 @@ impl GuiApp {
                         }
                     }
                 }
-                self.title = machine.title.unwrap_or_else(|| "CPT32".to_owned());
+                self.title = machine.title.unwrap_or_else(|| BUILD_TITLE.to_owned());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&self.title);
                 }
             }
             Err(error) => {
                 tracing::error!(%error, "Failed to load dropped cartridge");
-                self.title = format!("CPT32 — Failed to load {}", path.display());
+                self.title = format!("{BUILD_TITLE} — Failed to load {}", path.display());
                 if let Some(window) = self.window.as_ref() {
                     window.set_title(&self.title);
                 }
@@ -3078,12 +3086,12 @@ mod input_tests {
             enable_debug_gui: true,
             start_paused: true,
             music_stream: None,
-            title: "CPT32".to_owned(),
+            title: BUILD_TITLE.to_owned(),
             next_frame_deadline: Instant::now(),
         };
 
         app.handle_dropped_file(&package_path);
-        assert_eq!(app.title, "CPT32 — Drop test");
+        assert_eq!(app.title, format!("{BUILD_TITLE} — Drop test"));
         assert_eq!(app.cpu.pc(), 0);
         assert_eq!(app.cpu.read_mem_u8(0), 0x12);
         assert!(app.held_keys.is_empty());
