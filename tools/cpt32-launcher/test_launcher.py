@@ -189,6 +189,7 @@ class LaunchPipelineTests(unittest.TestCase):
         ui = SimpleNamespace(
             document={"memory": {}},
             cpu=Variable("pipeline"),
+            jit_block_size=Variable("32"),
             ram_mib=Variable("96"),
             vram_mib=Variable("128"),
             bios=Variable(""),
@@ -204,6 +205,7 @@ class LaunchPipelineTests(unittest.TestCase):
         saved = launcher.Launcher._effective_document(ui)
         restored = launcher.parse_yaml(launcher.dump_yaml(saved))
         self.assertEqual(restored["memory"], {"ram_mib": 96, "vram_mib": 128})
+        self.assertEqual(restored["cpu"]["jit_block_size"], 32)
 
         ui.vram_mib.set("129")
         with self.assertRaises(launcher.ConfigError):

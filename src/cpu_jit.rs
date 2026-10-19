@@ -9,7 +9,6 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
 
-const MAX_INSTRUCTIONS: usize = 16;
 const MAX_BLOCKS: usize = 1024;
 const HOT_THRESHOLD: u32 = 16;
 const BATCH_THRESHOLD: u32 = 128;
@@ -42,11 +41,12 @@ pub(super) struct JitEngine {
     module: Option<JITModule>,
     entries: HashMap<u32, Entry>,
     definitions: usize,
+    max_instructions: usize,
     stats: JitStats,
 }
 
 impl JitEngine {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(max_instructions: usize) -> Self {
         let module = match Self::create_module() {
             Ok(module) => Some(module),
             Err(error) => {
@@ -62,6 +62,7 @@ impl JitEngine {
             module,
             entries: HashMap::new(),
             definitions: 0,
+            max_instructions: max_instructions.clamp(2, 64),
         }
     }
 
@@ -132,7 +133,7 @@ impl JitEngine {
             self.module.as_ref()?;
         }
         let entry = self.entries.entry(pc).or_insert_with(|| Entry {
-            instructions: preview(bus, pc).into_boxed_slice(),
+            instructions: preview(bus, pc, self.max_instructions).into_boxed_slice(),
             visits: 0,
             function: None,
             failed: false,
@@ -258,9 +259,9 @@ fn ends_block(instruction: Instruction) -> bool {
     )
 }
 
-fn preview(bus: &Bus, mut pc: u32) -> Vec<BlockInstruction> {
+fn preview(bus: &Bus, mut pc: u32, max_instructions: usize) -> Vec<BlockInstruction> {
     let mut instructions = Vec::new();
-    for _ in 0..MAX_INSTRUCTIONS {
+    for _ in 0..max_instructions {
         // No speculative MMIO reads. Both APIs must opt in for the entire word.
         let raw = (0..4).try_fold(0u32, |word, offset| {
             let address = pc.wrapping_add(offset);

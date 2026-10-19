@@ -442,7 +442,8 @@ pub fn run(program_path: Option<&str>, cli_cpu: Option<CpuKind>) {
         .unwrap_or_else(|error| panic!("Invalid expansion-card configuration: {error}"));
     let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
         .unwrap_or_else(|error| panic!("Invalid BIOS configuration: {error}"));
-    let mut cpu = AnyCpu::new(cpu_kind, bus);
+    let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))
+        .unwrap_or_else(|error| panic!("Invalid CPU configuration: {error}"));
 
     if let Some(path) = program_path {
         load_binary_data(path, &mut cpu, 0);

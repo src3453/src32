@@ -1,5 +1,5 @@
 use cpt32::bus::Bus;
-use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind};
+use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, resolve_jit_block_size};
 use cpt32::devices::cpu::BUS_ERROR_VECTOR;
 use cpt32::devices::ram::{connect_ram, connect_ram_with_size};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -358,6 +358,34 @@ fn resolve_rejects_unknown_microarchitecture() {
     let bad_cfg = scratch_config("cpu:\n  microarchitecture: superscalar\n");
     assert!(resolve_cpu_kind(None, &bad_cfg).is_err());
     std::fs::remove_file(&bad_cfg).ok();
+}
+
+#[test]
+fn jit_block_size_defaults_and_validates_configured_values() {
+    let missing = std::env::temp_dir().join(format!(
+        "cpt32-jit-size-missing-{}-{}.yaml",
+        std::process::id(),
+        CONFIG_SEQ.fetch_add(1, Ordering::SeqCst)
+    ));
+    assert_eq!(resolve_jit_block_size(&missing).unwrap(), 16);
+    for (yaml, expected) in [
+        ("cpu:\n  jit_block_size: 8\n", 8),
+        ("cpu:\n  jit_block_size: 32\n", 32),
+        ("cpu:\n  jit_block_size: 64\n", 64),
+    ] {
+        let path = scratch_config(yaml);
+        assert_eq!(resolve_jit_block_size(&path).unwrap(), expected);
+        std::fs::remove_file(path).ok();
+    }
+    for yaml in [
+        "cpu:\n  jit_block_size: 1\n",
+        "cpu:\n  jit_block_size: 65\n",
+        "cpu:\n  jit_block_size: nope\n",
+    ] {
+        let path = scratch_config(yaml);
+        assert!(resolve_jit_block_size(&path).is_err());
+        std::fs::remove_file(path).ok();
+    }
 }
 
 #[test]
