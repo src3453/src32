@@ -271,7 +271,7 @@ fn build_guest_machine(
     let title = cartridge
         .as_ref()
         .map(|cartridge| format!("CPT32 — {}", cartridge.title));
-    let mut cpu = AnyCpu::new(cpu_kind, bus);
+    let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))?;
     cpu.set_pc(entry);
     Ok(GuestMachine {
         cpu,
@@ -311,7 +311,7 @@ fn build_raw_guest(
         Some(bios_entry) => bios_entry,
         None => entry,
     };
-    let mut cpu = AnyCpu::new(cpu_kind, bus);
+    let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))?;
     cpu.set_pc(entry);
     Ok(GuestMachine {
         cpu,

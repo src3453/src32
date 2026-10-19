@@ -67,8 +67,10 @@ Cached instruction, IRQ, bus, and cycle-budget semantics, including 3-cycle
 multiply and 16-cycle division through interpreter fallback.
 
 After 16 dispatch visits, supported Normal-mode integer ALU, half-immediate,
-CPUID, and branch/call/return operations are compiled into native blocks of at
-most 16 instructions. Memory, multiply/divide, Short mode, mode transitions,
+CPUID, and branch/call/return operations are compiled into native blocks. The
+maximum is set by `cpu.jit_block_size` (2..=64, default 16); recommended presets
+are Small=8, Medium=16, and Big=32. Larger blocks may improve performance, but
+increase generated code size and may reduce stability. Memory, multiply/divide, Short mode, mode transitions,
 HALT, IRET, and non-previewable instruction memory use Cached execution.
 Single-instruction blocks remain interpreted because native dispatch costs
 outweigh their arithmetic work. Only memory exposing an explicit side-effect-free preview and generation
@@ -81,7 +83,7 @@ page crossings and modifications during a block.
 
 At 128 dispatch visits a second native variant is compiled for sustained hot
 blocks. Within a bus-free idle window, it executes a validated
-prefix of at most 16 warm instructions without per-instruction Rust calls.
+prefix up to the configured block size of warm instructions without per-instruction Rust calls.
 All instructions must already hit the decode cache with matching identity and
 both endpoint generations. Cold fetches and changed code use the conservative
 path. The window ends BEFORE the next device update or known timer deadline,

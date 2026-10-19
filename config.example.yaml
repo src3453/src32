@@ -5,6 +5,7 @@
 # The --cpu CLI flag overrides this key.
 #cpu:
 #  microarchitecture: "pipeline" # "pipeline" (default), "cached" or "scalar"
+#  jit_block_size: 16 # JIT only: Small=8, Medium=16 (default), Big=32; custom 2..64
 
 # Log verbosity: trace, debug, info, warn, error, or off (default: info).
 # logging:

@@ -46,11 +46,11 @@ Normal Modeでは固定長32ビット命令を使用し、拡張Sは16ビット�
 
 `--features jit`でビルドすると、`--cpu jit`またはYAMLの`cpu.microarchitecture: jit`を選択できます。featureなしのbuildではエラーになります。既定は引き続きPipelineです。CPUIDのfeaturesは`0x3F`で、命令・IRQ・バス・cycle budgetの意味はCachedに合わせます。乗算3サイクル、除算16サイクルもfallbackで維持します。
 
-同じ開始PCが16回dispatchされると、Normal modeの整数ALU、half immediate、CPUID、通常の分岐・call・returnを最大16命令のnative blockにします。memory、乗除算、Short mode、mode切替、HALT、IRET、先読み非対応の命令領域はCached経路を使います。先読みは副作用なしpreviewと世代追跡を公開したmemoryだけに限定します。保守的な経路ではnative命令ごとにコード変更・CPU IRQを確認し、待機デバイス更新を最大32 cycle単位にまとめます。MMIO、timer期限、DMA／IDC動作中、拡張カード、HALT／IRET、実行予算終端では同期します。profiler／単命令stepは毎サイクル更新のCached経路を使います。
+同じ開始PCが16回dispatchされると、Normal modeの整数ALU、half immediate、CPUID、通常の分岐・call・returnをnative blockにします。最大命令数はYAMLの`cpu.jit_block_size`で2〜64に設定でき、既定値は16です。推奨プリセットはSmall=8、Medium=16、Big=32です。ブロックを大きくすると性能が上がる場合がありますが、生成コード量が増え、安定性が下がる可能性があります。memory、乗除算、Short mode、mode切替、HALT、IRET、先読み非対応の命令領域はCached経路を使います。先読みは副作用なしpreviewと世代追跡を公開したmemoryだけに限定します。保守的な経路ではnative命令ごとにコード変更・CPU IRQを確認し、待機デバイス更新を最大32 cycle単位にまとめます。MMIO、timer期限、DMA／IDC動作中、拡張カード、HALT／IRET、実行予算終端では同期します。profiler／単命令stepは毎サイクル更新のCached経路を使います。
 
 保守的な経路では各命令のdevice/DMA更新後にCached fetchを実行し、世代検証済みdecode値と生成時の命令が一致する場合だけnative演算を実行します。不一致なら実際の命令をそのサイクルにCachedで実行してblockを無効化します。cold fetchのバス副作用、CPU store・DMA・debugger・program loadによる変更、page境界やblock途中の変更をこの経路で扱います。
 
-128回目のdispatchで、命令ごとのRust呼出しを省く別のnative関数を追加生成します。この関数はバスアクセスのない待機区間で使います。最大16命令の実行prefixすべてで、既存decode cacheのhit・命令一致・先頭と末尾の世代一致が必要です。次のdevice更新／timer期限の直前までに区間を終了し、DMA／IDC動作中・拡張カードあり・有効なCPU IRQ pending時には使いません。区間内でコードやCPU register MMIOを変える主体がないため、IRQ samplingとregister同期を境界でまとめます。正確なcycle予算、cache hit数、cold fetchの副作用を維持します。1命令だけのblockはnative化の固定費が大きいため解釈実行します。`jit_stats()`の`native_batches`と`batched_instructions`で一括実行の使用量を確認できます。
+128回目のdispatchで、命令ごとのRust呼出しを省く別のnative関数を追加生成します。この関数はバスアクセスのない待機区間で使います。設定した最大命令数までの実行prefixすべてで、既存decode cacheのhit・命令一致・先頭と末尾の世代一致が必要です。次のdevice更新／timer期限の直前までに区間を終了し、DMA／IDC動作中・拡張カードあり・有効なCPU IRQ pending時には使いません。区間内でコードやCPU register MMIOを変える主体がないため、IRQ samplingとregister同期を境界でまとめます。正確なcycle予算、cache hit数、cold fetchの副作用を維持します。1命令だけのblockはnative化の固定費が大きいため解釈実行します。`jit_stats()`の`native_batches`と`batched_instructions`で一括実行の使用量を確認できます。
 
 命令境界のIRQ、CPU register MMIO同期、ホストframe loopからのVSync、`run`のcycle予算を維持します。単一stepと`--profile-cpu`はCachedを使い、後者はfallback側の処理を計測します。compile失敗もログと統計を残してCachedへ戻します。dispatch entryと累積native block定義数の上限は各1024です。各blockは保守的関数と一括実行関数を持てます。まず未compileのcold entryを破棄し、それでも満杯の場合やnative定義数が上限に達した場合は、native実行終了後にmodule全体を解放・再作成します。CPU resetでもnative cacheを解放します。
 

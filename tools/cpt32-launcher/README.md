@@ -6,7 +6,7 @@ Windows／Linuxで使えるPython 3.10+・Tkinter製ランチャーです。追�
 python tools/cpt32-launcher/launcher.py
 ```
 
-ROM／WAX／CPT32PKG、CPU方式、通常GUI／monitor、CPU実行ポリシー、デバッグGUI、profile、music stream、BIOS ROM、PCG font、FDD／HDDイメージ（4スロット）、WASM expansion card（8スロット）、IDC disk sound asset rootを設定できます。CPU実行ポリシーは Strict、Best-effort（既定）、Cycle-independent から選べ、時間枠は1〜16 ms（既定8 ms）です。GUI起動時に設定をコマンドラインへ渡し、保存済みランチャープロファイルにも保持します。monitor起動ではCPU実行ポリシーは適用しません。`pipeline`、`cached`、`cached-relaxed`、`jit`、`scalar`に対応し、JITを選ぶとCargo起動に`--features jit`を追加します。既存実行ファイルを指定してビルドせずに起動することもできます。
+ROM／WAX／CPT32PKG、CPU方式、通常GUI／monitor、CPU実行ポリシー、デバッグGUI、profile、music stream、BIOS ROM、PCG font、FDD／HDDイメージ（4スロット）、WASM expansion card（8スロット）、IDC disk sound asset rootを設定できます。CPU実行ポリシーは Strict、Best-effort（既定）、Cycle-independent から選べ、時間枠は1〜16 ms（既定8 ms）です。GUI起動時に設定をコマンドラインへ渡し、保存済みランチャープロファイルにも保持します。monitor起動ではCPU実行ポリシーは適用しません。`pipeline`、`cached`、`cached-relaxed`、`jit`、`scalar`に対応し、JITを選ぶとCargo起動に`--features jit`を追加します。詳細設定でJITブロックをSmall=8、Medium=16、Big=32命令から選ぶか、2〜64の具体値を指定できます（既定16）。大きい設定は速くなる場合がありますが、安定性が下がる可能性があります。値は設定YAMLとランチャープロファイルに保持されます。既存実行ファイルを指定してビルドせずに起動することもできます。
 
 ROM欄には `.sol` ソースも指定できます。「この設定で起動」を押すたびに、選択したCargo workspaceの `tools/solc/solc.py compile` と `tools/asm/asm.py` をランチャーと同じPythonで実行し、生成した `.wax` を起動します（通常GUI／monitor、既存エミュレーター指定のいずれにも対応）。起動設定タブの「solコンパイラ引数」に `-O speed --debug` のように入力すると、その引数をコンパイラへ渡します。空白で分割し、引用符内の空白はひとつの引数として扱います。空欄ならコンパイラ既定値です。設定は保存済みランチャープロファイルにも保持されます。ソースを元の絶対パスで渡すため、相対includeはソースの場所を基準に解決されます。アセンブリとバイナリは設定と同じ一時フォルダーに生成し、終了時に削除します。プロファイルには元の `.sol` パスを保存します。コンパイル／アセンブルの出力とエラーは起動ログに表示し、失敗した場合は起動しません。「停止」はコンパイル中にも使えます。
 

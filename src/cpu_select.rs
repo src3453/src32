@@ -95,6 +95,36 @@ pub fn resolve_cpu_kind(cli: Option<CpuKind>, config_path: &Path) -> Result<CpuK
     })
 }
 
+/// Resolve the maximum instructions previewed into each JIT block. Presets are
+/// Small=8, Medium=16 (default), Big=32; custom values may use 2..=64.
+pub fn resolve_jit_block_size(config_path: &Path) -> Result<usize, String> {
+    let contents = match std::fs::read_to_string(config_path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(16),
+        Err(error) => return Err(format!("cannot read {}: {error}", config_path.display())),
+    };
+    let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+        .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
+    let Some(cpu) = root.get("cpu") else {
+        return Ok(16);
+    };
+    let table = cpu
+        .as_mapping()
+        .ok_or("`cpu` must be a mapping".to_string())?;
+    let Some(value) = table.get("jit_block_size") else {
+        return Ok(16);
+    };
+    let size = value
+        .as_u64()
+        .ok_or("`cpu.jit_block_size` must be an integer".to_string())?;
+    if !(2..=64).contains(&size) {
+        return Err(format!(
+            "`cpu.jit_block_size` must be between 2 and 64 (got {size})"
+        ));
+    }
+    Ok(size as usize)
+}
+
 /// Parse `--cpu KIND` / `--cpu=KIND` out of a free-form argument list.
 /// Returns the remaining (non-cpu) arguments plus the selected kind, if any.
 pub fn split_cpu_arg(args: &[String]) -> Result<(Vec<String>, Option<CpuKind>), String> {
@@ -133,6 +163,16 @@ pub enum AnyCpu {
 }
 
 impl AnyCpu {
+    /// Construct a CPU using the optional `cpu.jit_block_size` setting in a YAML config.
+    pub fn new_configured(kind: CpuKind, bus: Bus, config_path: &Path) -> Result<Self, String> {
+        if kind == CpuKind::Jit {
+            let block_size = resolve_jit_block_size(config_path)?;
+            Ok(Self::new_with_jit_block_size(kind, bus, block_size))
+        } else {
+            Ok(Self::new(kind, bus))
+        }
+    }
+
     pub fn jit_stats(&self) -> Option<crate::cpu::JitStats> {
         match self {
             Self::Jit(cpu) => cpu.jit_stats(),
@@ -141,6 +181,10 @@ impl AnyCpu {
     }
 
     pub fn new(kind: CpuKind, bus: Bus) -> Self {
+        Self::new_with_jit_block_size(kind, bus, 16)
+    }
+
+    pub fn new_with_jit_block_size(kind: CpuKind, bus: Bus, _jit_block_size: usize) -> Self {
         match kind {
             CpuKind::Scalar => AnyCpu::Scalar(Cpu::new(bus)),
             CpuKind::Cached => AnyCpu::Cached(Cpu::new_cached(bus)),
@@ -152,7 +196,7 @@ impl AnyCpu {
             CpuKind::Jit => {
                 #[cfg(feature = "jit")]
                 {
-                    AnyCpu::Jit(Cpu::new_jit(bus))
+                    AnyCpu::Jit(Cpu::new_jit(bus, _jit_block_size))
                 }
                 #[cfg(not(feature = "jit"))]
                 {

@@ -8,6 +8,8 @@
 
 `--features jit` 付き build で `--cpu jit` / YAML の `cpu.microarchitecture: jit` が使える。Cranelift 0.117.2 を既存 Wasmtime 系列と揃えて直接利用する。`src/cpu_jit.rs` がコード生成・dispatch・ABI 境界を持ち、Cached と cycle 開始処理・fallback issue を共有する。
 
+ブロック命令上限は `cpu.jit_block_size` で2〜64に設定し、既定値は16。Launcherの詳細設定はSmall=8、Medium=16、Big=32を提示し、具体値も入力できる。previewが長くなっても分岐命令・未対応命令でblockを終え、命令ごとの検証契約は変えない。大きな値は生成コード量を増やすため、性能と安定性を環境ごとに確認する。
+
 同じ開始 PC が16回 dispatch されると、最大16命令をコンパイルする。対象は Normal mode の整数 ALU、half immediate、CPUID、通常分岐・call・return。未対応命令の手前でブロックを終え、Short mode・memory・乗除算・HALT・IRET などは Cached を使う。生成コードは明示的な register array と helper だけを参照し、helper の panic は捕捉して native call から戻った後に Rust 側で再送出する。
 
 設計案の「全 page の世代を block に保存する」方式に代えて、**各命令の device/DMA 更新後に既存 Cached fetch を実行し、世代検証済みの decode 値と生成時の命令を比較する**。これにより cold fetch の bus 副作用も維持する。途中で変わった命令はそのサイクルに Cached で実行し、block を無効化する。MMIO 先読みは追加せず、RAM 専用の副作用なし preview API で compile 対象を読む。block key は Normal mode 専用の PC で、他 mode は dispatch 前に除外する。

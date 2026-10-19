@@ -362,6 +362,9 @@ class Launcher(tk.Tk):
         self.hdd_profile = tk.StringVar()
         self.ram_mib = tk.StringVar(value="16")
         self.vram_mib = tk.StringVar(value="4")
+        self.jit_block_size = tk.StringVar(value="16")
+        self.jit_block_preset = tk.StringVar(value="Medium")
+        self.jit_block_size.trace_add("write", self._jit_block_size_changed)
         self.log_level = tk.StringVar(value="info")
         self.build_kind = tk.StringVar(value="release")
         self.workspace = tk.StringVar(value=str(REPO))
@@ -453,7 +456,16 @@ class Launcher(tk.Tk):
         ttk.Spinbox(advanced, textvariable=self.ram_mib, from_=1, to=256, width=8).grid(row=0, column=1, sticky="w")
         ttk.Label(advanced, text="VRAM (MiB)").grid(row=1, column=0, sticky="w", pady=6)
         ttk.Spinbox(advanced, textvariable=self.vram_mib, from_=4, to=128, width=8).grid(row=1, column=1, sticky="w")
-        ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜128 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=2, column=0, columnspan=2, sticky="w", pady=(8, 0))
+        ttk.Label(advanced, text="JITブロックサイズ").grid(row=2, column=0, sticky="w", pady=6)
+        jit_row = ttk.Frame(advanced)
+        jit_row.grid(row=2, column=1, sticky="w")
+        preset_box = ttk.Combobox(jit_row, textvariable=self.jit_block_preset, values=("Small", "Medium", "Big", "Custom"), state="readonly", width=10)
+        preset_box.pack(side="left")
+        preset_box.bind("<<ComboboxSelected>>", self._jit_preset_changed)
+        ttk.Label(jit_row, text="命令").pack(side="left", padx=(10, 4))
+        ttk.Spinbox(jit_row, textvariable=self.jit_block_size, from_=2, to=64, width=7).pack(side="left")
+        ttk.Label(advanced, text="Small=8、Medium=16（既定）、Big=32。数値は2〜64命令です。大きいほど高速化する場合がありますが、安定性が下がる可能性があります。", foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜128 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         cards_tab = ttk.Frame(self.tabs, padding=12)
         cards_tab.columnconfigure(1, weight=1)
         self.tabs.add(cards_tab, text="WASM拡張カード")
@@ -545,6 +557,20 @@ class Launcher(tk.Tk):
         if self.profile_cpu.get():
             self.debug_gui.set(True)
 
+    def _jit_preset_changed(self, _event=None):
+        preset_values = {"Small": "8", "Medium": "16", "Big": "32"}
+        value = preset_values.get(self.jit_block_preset.get())
+        if value:
+            self.jit_block_size.set(value)
+
+    def _jit_block_size_changed(self, *_args):
+        try:
+            size = int(self.jit_block_size.get())
+        except ValueError:
+            self.jit_block_preset.set("Custom")
+            return
+        self.jit_block_preset.set({8: "Small", 16: "Medium", 32: "Big"}.get(size, "Custom"))
+
     def _log(self, text):
         self.log.configure(state="normal")
         self.log.insert("end", text.rstrip() + "\n")
@@ -559,6 +585,7 @@ class Launcher(tk.Tk):
                 raise ConfigError("YAMLの最上位はmappingにしてください")
             cpu = self.document.get("cpu", {}) or {}
             self.cpu.set(cpu.get("microarchitecture", "pipeline") if isinstance(cpu, dict) else "pipeline")
+            self._set_jit_block_size(cpu.get("jit_block_size", 16) if isinstance(cpu, dict) else 16)
             bios = self.document.get("bios", {}) or {}
             pcg = self.document.get("pcg", {}) or {}
             sound = self.document.get("disk_sound", {}) or {}
@@ -598,6 +625,14 @@ class Launcher(tk.Tk):
         cpu = document.get("cpu") or {}
         if not isinstance(cpu, dict):
             raise ConfigError("`cpu` はmappingで指定してください")
+        raw_block_size = self.jit_block_size.get().strip()
+        if not raw_block_size.isdecimal() or not 2 <= int(raw_block_size) <= 64:
+            raise ConfigError("`cpu.jit_block_size` は2〜64命令の整数で入力してください")
+        if int(raw_block_size) == 16:
+            cpu.pop("jit_block_size", None)
+        else:
+            cpu["jit_block_size"] = int(raw_block_size)
+        document["cpu"] = cpu
         memory = document.get("memory") or {}
         if not isinstance(memory, dict):
             raise ConfigError("`memory` はmappingで指定してください")
@@ -750,6 +785,7 @@ class Launcher(tk.Tk):
     def _populate_from_document(self):
         cpu = self.document.get("cpu", {}) or {}
         self.cpu.set(cpu.get("microarchitecture", self.cpu.get()) if isinstance(cpu, dict) else self.cpu.get())
+        self._set_jit_block_size(cpu.get("jit_block_size", 16) if isinstance(cpu, dict) else 16)
         memory = self.document.get("memory", {}) or {}
         self.ram_mib.set(str(memory.get("ram_mib", 16)) if isinstance(memory, dict) else "16")
         self.vram_mib.set(str(memory.get("vram_mib", 4)) if isinstance(memory, dict) else "4")
@@ -779,6 +815,14 @@ class Launcher(tk.Tk):
             item = by_slot.get(row["slot"], {})
             row["enabled"].set(bool(item))
             row["package"].set(item.get("package", ""))
+
+    def _set_jit_block_size(self, value):
+        try:
+            size = int(value)
+        except (TypeError, ValueError):
+            size = 16
+        self.jit_block_size.set(str(size))
+        self.jit_block_preset.set({8: "Small", 16: "Medium", 32: "Big"}.get(size, "Custom"))
 
     def _load_saved_state(self):
         try:

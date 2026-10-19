@@ -92,7 +92,8 @@ fn main() {
         .expect("Invalid expansion-card configuration");
     let bios_entry = cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)
         .expect("Invalid BIOS configuration");
-    let mut cpu = AnyCpu::new(cpu_kind, bus);
+    let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))
+        .expect("Invalid CPU configuration");
     cpu.enable_profiling(profile_cpu);
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");

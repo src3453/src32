@@ -261,13 +261,13 @@ impl Cpu {
     }
 
     #[cfg(feature = "jit")]
-    pub(crate) fn new_jit(bus: Bus) -> Self {
+    pub(crate) fn new_jit(bus: Bus, max_block_instructions: usize) -> Self {
         let mut cpu = Self::new_cached(bus);
         // Native blocks use the same bounded idle-device batching as the
         // experimental relaxed Cached engine. Pure native batches fit entirely
         // inside bus-free windows; other native execution validates each cycle.
         cpu.relaxed_devices = true;
-        cpu.jit = Some(jit::JitEngine::new());
+        cpu.jit = Some(jit::JitEngine::new(max_block_instructions));
         cpu
     }
 
