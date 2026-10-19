@@ -24,7 +24,8 @@ void sgub_visualizer_put_hex(uint32_t value, uint32_t digits) {
 void sgub_visualizer_draw(void) {
   uint32_t voice;
   pcg_locate(0u, 0u);
-  pcg_prnscr("CPT32 SGUB  VOL  FREQUENCY");
+  pcg_prnlnscr("CPT32 SGUB Driver v2");
+  /*pcg_prnscr("CPT32 SGUB  VOL  FREQUENCY");
   for (voice = 0; voice < 16u; ++voice) {
     uintptr_t base = voice < 8u
                          ? SGU0_CHANNELS + (uintptr_t)voice * 0x20u
@@ -40,14 +41,14 @@ void sgub_visualizer_draw(void) {
     pcg_prnscr("  FREQ ");
     sgub_visualizer_put_hex(frequency, 4u);
     pcg_prnscr("   ");
-  }
+  }*/
 }
 
 void sgub_music_irq0(void) {
   if (sgub_step() == SGUB_STATUS_COMPLETE) {
     irqc_disable(IRQ0_MASK);
   } else {
-    sgub_visualizer_draw();
+    //sgub_visualizer_draw();
   }
 }
 
@@ -55,6 +56,12 @@ int main(void) {
   const uint8_t *stream = (const uint8_t *)(uintptr_t)SGUB_STREAM_BASE;
   uint32_t size;
   uint32_t size_offset;
+  pcg_initPCG();
+  pcg_cls(63);
+  pcg_colorbg(63);
+  pcg_colorfg(0);
+  pcg_prnlnscr("CPT32 SGUB Driver v2");
+  pcg_prnlnscr("Loading SGUB stream...");
 
   /* Validate the fixed header before using its declared size. */
   if (CPT32_MMIO8(SGUB_STREAM_BASE) != 'S' ||
@@ -78,11 +85,11 @@ int main(void) {
   irqc_init();
   if (sgub_init(stream, size) != SGUB_STATUS_PLAYING)
     return 1;
-  pcg_initPCG();
-  sgub_visualizer_draw();
+  //sgub_visualizer_draw();
   if (irqc_register(0u, sgub_music_irq0) != 0)
     return 1;
   irqc_enable(IRQ0_MASK);
+  pcg_prnlnscr("Stream loaded, playing...");
 
   for (;;) {
     const sgub_state_t *state = sgub_state();
