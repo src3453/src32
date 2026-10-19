@@ -743,7 +743,7 @@ mod tests {
     }
 
     #[test]
-    fn pcg_mode3_renders_640_by_480_from_single_4k_font_bank() {
+    fn pcg_mode3_renders_640_by_480_from_dedicated_4k_font_region() {
         let mut vdp = Vdp::new();
         vdp.write_common_register(0x01, DisplayMode::PCG as u8);
         vdp.write_pcg_register(0xF003, 3);
@@ -756,16 +756,18 @@ mod tests {
             vram[0] = 1;
             vram[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR] = 1;
             vram[crate::devices::vdp::pcg::PCG_BG_ATTR_ADDR] = 2;
-            // Glyph 1, row 0 and row 15 in bank 0. Bank 1 has a different bit.
-            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 16] = 0x80;
-            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 31] = 0x01;
-            vram[crate::devices::vdp::pcg::PCG_FONT_BANK1_ADDR + 16] = 0x40;
+            // The 8x16 mode has its own font region, separate from both 8x8 banks.
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK0_ADDR + 16] = 0x40;
+            vram[crate::devices::vdp::pcg::PCG_FONT_BANK1_ADDR + 16] = 0x20;
+            vram[crate::devices::vdp::pcg::PCG_FONT_8X16_ADDR + 16] = 0x80;
+            vram[crate::devices::vdp::pcg::PCG_FONT_8X16_ADDR + 31] = 0x01;
         }
         let fb = vdp.framebuffer();
         assert_eq!(fb.dimensions(), (640, 480));
         assert_eq!(fb.get_pixel(0, 0), (255, 0, 0));
         assert_eq!(fb.get_pixel(7, 15), (255, 0, 0));
         assert_eq!(fb.get_pixel(1, 0), (0, 0, 200));
+        assert_eq!(fb.get_pixel(2, 0), (0, 0, 200));
         assert_eq!(fb.get_pixel(8, 479), (0, 0, 0));
 
         let mut vdp = Vdp::new();

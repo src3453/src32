@@ -1,6 +1,8 @@
 #ifndef CPT32_PCG_H
 #define CPT32_PCG_H
 #include <stdint.h>
+#define CPT32_PCG_FONT_8X16_VRAM_OFFSET 0x21000u
+#define CPT32_PCG_FONT_8X16_SIZE 0x1000u
 /* sol pcg namespace state is public and intentionally mutable by callers. */
 extern uint32_t pcg_cur_x, pcg_cur_y, pcg_width, pcg_height, pcg_cell_height;
 extern uint32_t pcg_fg_color, pcg_bg_color, pcg_mode, pcg_cursor;

@@ -3,7 +3,7 @@
 // PCG Specification:
 // Screen modes: 40x30 or 80x30 cells of 8x8 glyphs; mode 2 is 20x15 cells of 16x16 BMP glyphs; mode 3 is 80x30 cells of 8x16 glyphs.
 // Display area: 320x240 pixels for the 40-column and 16x16 modes.
-// Modes 0/1 use two rewritable 256-glyph font banks in VRAM; mode 2 uses the shared Unifont ROM.
+// Modes 0/1 use two rewritable 256-glyph font banks in VRAM; mode 2 uses the shared Unifont ROM; mode 3 uses its dedicated 4 KiB font region.
 // Color capabilities: 6-bit color, foreground and background colors can be set per character.
 
 // VRAM Layout for PCG (from base address):
@@ -13,6 +13,7 @@
 // 0x12C00 - 0x12CBF: 64 CLUT (Color Look-Up Table) entries (RGB888; 192 bytes)
 // 0x20000 - 0x207FF: Font bank 0 (256 characters x 8 bytes = 2048 bytes)
 // 0x20800 - 0x20FFF: Font bank 1 (256 characters x 8 bytes = 2048 bytes)
+// 0x21000 - 0x21FFF: Font 8x16 (256 characters x 16 bytes = 4096 bytes)
 
 // VDP PCG Mode specific registers (from base address):
 // 0xF000: /PCG_ENABLE:RW (PCG enable) (0 = enable, 1 = disable)
@@ -114,6 +115,7 @@ pub const PCG_FONT_BANK_SIZE: usize = 256 * 8;
 pub const PCG_FONT_TOTAL_SIZE: usize = PCG_FONT_BANK_SIZE * 2;
 pub const PCG_FONT_BANK0_ADDR: usize = 0x20000;
 pub const PCG_FONT_BANK1_ADDR: usize = 0x20800;
+pub const PCG_FONT_8X16_ADDR: usize = 0x21000;
 pub const PCG_TEXT_ADDR: usize = 0x00000;
 pub const PCG_FG_ATTR_ADDR: usize = 0x01000;
 pub const PCG_BG_ATTR_ADDR: usize = 0x02000;
@@ -213,7 +215,7 @@ impl PcgRenderer {
             row[local_x / 8] & (1 << (7 - local_x % 8)) != 0
         } else if screen_mode == PcgScreenMode::Font8x16 {
             let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
-            let font_offset = PCG_FONT_BANK0_ADDR + glyph * 16 + row_in_char;
+            let font_offset = PCG_FONT_8X16_ADDR + glyph * 16 + row_in_char;
             vram[font_offset] & (1 << (7 - local_x)) != 0
         } else {
             let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
