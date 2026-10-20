@@ -211,6 +211,8 @@ cargo run --bin src32_testbench -- 3d_cube.bin --allow-running --expect-sgc-over
 
 Gouraud補間とクリッピングの三角形サンプルを実行するときは、`3d_cube.sol` と出力名を `vpu_tnl_triangle.sol` と `vpu_tnl_triangle.a` / `vpu_tnl_triangle.bin` に置き換えます。
 
+地形上をキーボードで飛行するC版は [VPU Terrain Flight](../examples/vpu-terrain-flight-c/README.md) を参照してください。ワールド座標の連続した丘陵、斜面の陰影、遠景の霞をVPUで描画し、PeCの押下・解放イベントで旋回・高度・速度を操作します。
+
 ## 問題が起きたとき
 
 - 画面が空なら、FIFO_DATA への書き込みが `st` になっているか、VDP がグラフィックスモード (`0`) かを確認します。
