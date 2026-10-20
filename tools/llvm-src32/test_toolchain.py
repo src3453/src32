@@ -223,12 +223,16 @@ int main(void) {
             with self.subTest(optimization=opt):
                 image = self.work / (opt[1:] + '.wax')
                 self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
-                # Match the default Pipeline frame budget; Scalar may still
-                # be initializing or servicing the first IRQ at frame 0.
+                # Validate completed guest IRQs, rather than claiming that the
+                # unoptimized dense reset frame fits a real-time frame budget.
+                # The bounded drain sends no additional host VSYNCs.
+                # Keep Pipeline: the harness's fixed 50M startup budget is
+                # insufficient for Scalar's full PCM initialization at -O0.
                 result = subprocess.run(
                     [str(self.harness), str(image), '--cpu', 'pipeline',
                      '--music-stream', str(ROOT / 'tests/fixtures/furnace_minimal_v2.sgub'),
                      '--frames', '4', '--allow-running',
+                     '--irq-drain-cycles', '40000000',
                      '--expect-mem-u8', '0xFFFF0045=1',
                      '--expect-mem-u8', '0x180FFFFF=128',
                      '--expect-mem-u8', '0x80020801=131',
@@ -236,6 +240,29 @@ int main(void) {
                     cwd=self.work, capture_output=True, text=True, timeout=120)
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('PASS:', result.stdout)
+
+    def test_irq_drain_rejects_handler_that_never_returns(self):
+        source = self.work / 'stuck-irq.c'
+        source.write_text('''
+#include <cpt32/cpu.h>
+#include <stdint.h>
+void irqc_dispatch(void) { for (;;) {} }
+int main(void) {
+    *(volatile uint16_t *)0xFFFF0044u = 1;
+    for (;;) cpt32_halt();
+}
+''')
+        image = self.work / 'stuck-irq.wax'
+        self.driver(source, '-I', ROOT / 'sdk/cpt32/include', '-o', image)
+        for cpu in ('scalar', 'pipeline'):
+            with self.subTest(cpu=cpu):
+                result = subprocess.run(
+                    [str(self.harness), str(image), '--cpu', cpu,
+                     '--frames', '1', '--irq-drain-cycles', '800000',
+                     '--allow-running', '--skip-render-checks'],
+                    cwd=self.work, capture_output=True, text=True, timeout=120)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+                self.assertIn('IRQ did not return within 800000 extra cycles', result.stderr)
 
     def test_fastcc_indirect_call_with_byval_and_wide_result(self):
         source = self.ir('''

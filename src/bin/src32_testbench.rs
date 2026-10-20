@@ -29,7 +29,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -43,6 +43,7 @@ fn main() {
     let mut expected = 0;
     let mut music_stream = None;
     let mut frames = None;
+    let mut irq_drain_cycles = 0;
     let mut profile_cpu = false;
     let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
@@ -57,6 +58,10 @@ fn main() {
             }
             "--frames" => {
                 frames = Some(integer(options.next().expect("--frames requires N")) as usize)
+            }
+            "--irq-drain-cycles" => {
+                irq_drain_cycles =
+                    integer(options.next().expect("--irq-drain-cycles requires N")) as usize;
             }
             "--profile-cpu" => profile_cpu = true,
             "--skip-render-checks" => skip_render_checks = true,
@@ -126,6 +131,22 @@ fn main() {
         cpu.set_irq_source(0, true);
         cpu.set_irq_source(0, false);
         cpu.run(cycles_per_frame);
+        // Optional completed-handler checks, not a real-time playback budget.
+        // Dense unoptimized SGUB frames can outlive one CPU frame. Drain only
+        // the current IRQ, without ticking VDP or delivering another VSYNC.
+        if irq_drain_cycles != 0 {
+            let mut remaining = irq_drain_cycles;
+            while !cpu.irq_enabled() && remaining != 0 {
+                let chunk = remaining.min(cycles_per_frame);
+                cpu.run(chunk);
+                remaining -= chunk;
+            }
+            assert!(
+                cpu.irq_enabled(),
+                "frame {frame}: IRQ did not return within {irq_drain_cycles} extra cycles (pc=0x{:08X})",
+                cpu.pc()
+            );
+        }
         if let Some(profile) = cpu.take_profile() {
             cpu_profile.accumulate(profile);
         }

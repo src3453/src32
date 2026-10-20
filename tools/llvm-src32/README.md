@@ -131,7 +131,8 @@ python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
 `CLANG` と `SRC32_TESTBENCH` で実行ファイルを指定可能。テストは独立した作業ディレクトリで実行し、リポジトリの BIOS／ディスク設定を引き継ぎません。
 検証プロジェクトは成功時42を返します。失敗時は100番台=メモリ、200番台=整数、300番台=呼出／制御、400番台=64-bit整数。
 O0/O1/O2 × Scalar/Cached/CachedRelaxed/Pipeline を検証します。ほかに phi の循環コピー、長距離分岐、非ゼロ origin、診断、ASM再アセンブル、CMakeのヘッダー再ビルドを検証。
-最適化後も残る static helper の `fastcc` 呼出と、実際の Furnace v2 stream を使う C SGUB driver の O0/O1/O2 × Pipeline（IRQ有効化・PCM初期化・周波数・音量）も検証します。
+最適化後も残る static helper の `fastcc` 呼出と、実際の Furnace v2 stream を使う C SGUB driver の O0/O1/O2 × Pipeline（IRQ有効化・PCM初期化・周波数・音量）も検証します。テストベンチの初期化用5000万サイクルでは Scalar の `-O0` による全PCM初期化が終わらないため、このストリーム検証は Pipeline を使用します。
+SGUB の密な初回リセット処理は、未最適化では1フレームのCPU予算を超えます。このテストは `--irq-drain-cycles 40000000` を指定し、通常のフレーム実行後に最大4000万サイクルだけ IRQ 復帰を待ってから毎フレームのメモリを検査します。待機中はVSyncを追加せず、VDPもtickしません。これは処理完了後の互換性検証であり、実時間再生の速度保証ではありません。
 
 手動実行は **BIOSを設定していない作業ディレクトリ** から:
 
@@ -140,6 +141,7 @@ O0/O1/O2 × Scalar/Cached/CachedRelaxed/Pipeline を検証します。ほかに 
 ```
 
 `src32_testbench --skip-render-checks` は R1 の期待値検査を省くため、この結果検証には使いません。
+`--irq-drain-cycles N` は既定では無効です。有効時はCPUのIRQ許可状態が復帰するまで追加実行し、上限に達したらエラーにします。IRQを禁止したままの処理や復帰しないハンドラも成功扱いにしません。通常のフレーム予算での検証には指定しないでください。
 
 ## 根拠
 

@@ -134,7 +134,9 @@ During playback the driver uses the PCG text screen to show all 16 channels'
 volume and frequency registers in hexadecimal. It refreshes the display once
 per VSync after applying that frame's stream operations.
 
-初期化は全検証が通ってから実行し、完了後にIRQ0を有効にする。FILL/COPY_POOLは制御レジスタに触れない契約なので32-bitのまとめ読み書きで処理し、端数だけbyte単位で処理する。通常のWRITEは順序と副作用を維持する。現在のSRC32 C backendは最適化ビルドで一部内部呼び出し規約を扱えないため、上記の `-O0` を使う。
+初期化は全検証が通ってから実行し、完了後にIRQ0を有効にする。FILL/COPY_POOLは制御レジスタに触れない契約なので32-bitのまとめ読み書きで処理し、端数だけbyte単位で処理する。通常のWRITEは順序と副作用を維持する。SRC32 C backend は内部関数の `fastcc` に対応しており、`-O1` / `-O2` も使用できる。
+
+実行回帰テストは実際の Furnace v2 stream を `-O0/-O1/-O2` × Pipeline で検証する。密な初回リセットフレームは未最適化では80万サイクルを超えるため、テストベンチの `--irq-drain-cycles 40000000` で、追加VSyncなしにIRQ復帰を上限付きで待ってからレジスタを検査する。これはゲストのフレーム処理が完了した状態の検証であり、実時間フレーム予算に収まることの保証ではない。
 
 ## ImHex パターン
 
