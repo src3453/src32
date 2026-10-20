@@ -919,3 +919,8 @@
 - Freestanding Clang mangles even `main`; declare `extern "C" int main()` and wrap C SDK includes in `extern "C" { ... }`. Define methods out of line to avoid weak/COMDAT. C++ standard library, allocation runtime, dynamic global initialization and shutdown destructors are not provided. The dynamic-global regression deliberately checks rejection of `llvm.global_ctors` appending linkage; never silently skip constructors.
 - The sample checks its class result and PCG text VRAM, then returns 42. C++ extension/optimization regression covers -O0/-O1/-O2 on Scalar/Pipeline; the documented CMake build also returns R1=42 on both. This is byte/state validation, not GUI pixel comparison. `src32_testbench` has no UART device at the C SDK's 0x80040000, so calling `print_prnln` there causes a bus error; use PCG for the sample. `--skip-render-checks` also skips the expected-R1 assertion, so omit it when validating this returning guest.
 - Full LLVM suite: 18/19 passed with Clang 20.1.8 and the existing release testbench. SGUB -O0 failed frame-0 memory 0x80020801 (0 instead of 131). HEAD's unmodified driver reproduced it and emitted a byte-identical WAX (SHA256 22ce28a1e361bfd729701b97e36e3c1f6298fc5b8e645225aa1d08abeeedca8f); keep that pre-existing failure distinct from C++ support.
+
+## C SDK function summaries (2026-10-21)
+- `sdk/cpt32/include/cpt32/*.h` の公開93関数には宣言直前に日本語の短い説明がある。詳細なバッファ・戻り値・IRQ等の既存契約コメントも維持する。新規APIや挙動変更では説明も実装と同期する。
+- VPU配列はbinary32値そのものではなくuint32_tのビット列。DSFS bitmapのset/clearはメモリ上の操作で保存は別、write_fileはsrcのセクタ末尾をゼロ埋めする。SGUB初期化はv1/v2/v3を受理する。
+- 説明追加のみの場合は、コメント除去後のヘッダーとHEADが一致すること、全宣言の説明網羅、ClangのC11構文検査でコード不変を確認できる。

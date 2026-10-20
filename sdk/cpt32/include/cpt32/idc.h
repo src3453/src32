@@ -30,18 +30,24 @@
 #define IDC_CLEAR_BITS 6u
 
 /* Enables DMAC channel 0 and clears sticky IDC/DMAC DONE and ERROR bits. */
+/* DMAC ch0を有効にし、IDCとDMACの完了・エラー状態をクリアします。 */
 void idc_enable(void);
 /* Polls a 32-bit MMIO register until all masked bits clear. */
+/* 指定MMIOレジスタのmaskに対応するビットがすべて0になるまで待ちます。 */
 void idc_wait_clear(uint32_t address, uint32_t mask);
 /* Returns 0 on success and stores the full uint32 sector capacity in
  * *capacity. Returns 1 on null output pointer or absent media/command error.
  * On failure, *capacity is unchanged. */
+/* 指定ドライブの容量をセクタ数で取得します（0=成功、1=失敗）。 */
 uint32_t idc_identify(uint32_t slot, uint32_t *capacity);
 /* Raw IDC ERROR_CODE for the most recently accepted command. */
+/* 直近に受理されたIDCコマンドのエラーコードを返します。 */
 uint32_t idc_error_code(void);
 /* Transfers 1..8,388,607 512-byte sectors. Buffer must be main RAM and
  * hold sectors*512 bytes. Results: 0 success, 1 DMAC error, 2 IDC error. */
+/* 指定LBAからRAMへ同期読込みします（0=成功、1=DMA失敗、2=IDC失敗）。 */
 uint32_t idc_read(uint32_t slot, uint32_t lba, uint32_t sectors, void *buffer);
+/* RAMから指定LBAへ同期書込みします（0=成功、1=DMA失敗、2=IDC失敗）。 */
 uint32_t idc_write(uint32_t slot, uint32_t lba, uint32_t sectors,
                    const void *buffer);
 #endif
