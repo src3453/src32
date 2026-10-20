@@ -165,6 +165,9 @@ impl WgpuPresenter {
             (adapter, device_and_queue)
         });
 
+        let info = adapter.get_info();
+        tracing::info!(adapter = %info.name, backend = ?info.backend, "Graphics adapter selected");
+
         let surface_caps = surface.get_capabilities(&adapter);
         let format = surface_caps
             .formats

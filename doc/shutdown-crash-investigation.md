@@ -21,7 +21,7 @@ Windows Application ログの Event 1000/1001 と保存済み minidump を確認
 
 ## ソースから見つかった終了処理の問題
 
-`src/main.rs` の `GuiApp` は `window`, `presenter`, `debug_gui` の順にフィールドを宣言している。終了要求は `event_loop.exit()` のみで、専用の `Drop` / `exiting` による描画資源の解放はない。
+調査時点の `src/main.rs` の `GuiApp` は `window`, `presenter`, `debug_gui` の順にフィールドを宣言していた。終了要求は `event_loop.exit()` のみで、専用の `Drop` / `exiting` による描画資源の解放はなかった。
 
 Rust の構造体フィールドは宣言順に破棄される。そのため `Window` が `WgpuPresenter` 内の `Surface<'static>` より先に破棄される。
 
@@ -36,4 +36,17 @@ Rust の構造体フィールドは宣言順に破棄される。そのため `W
 3. OBS のゲームキャプチャーを外した比較、CPU を Cached にした比較を独立に行う。設定を同時に変えない。
 4. なお失敗する場合、WinDbg で上記ダンプの `.exr -1; .ecxr; k` を取得し、DLL detach / Surface 解放 / hook のどの経路か調べる。
 
-今回実施したのはログ・ダンプの例外情報・ソースの調査。スタックの完全な unwind、GUI 再現、対策の有効性の確認は未実施。実行時コードは変更していない。
+初回調査ではログ・ダンプの例外情報・ソースを確認した。スタックの完全な unwind は未実施。
+
+## 解放順序の修正と GUI 比較
+
+`GuiApp::release_graphics` を追加し、debug GUI → presenter / Surface → Window の順に `Option::take` で破棄する。`ApplicationHandler::exiting` でイベントループ終了時に解放し、`Drop` でも同じ処理を呼んでエラー／unwind 時をカバーする。二度目の呼び出しは空の Option を処理するだけになる。adapter 名と backend の info ログも追加した。バックエンドの選択設定は変更していない。
+
+- ビルド: `cargo build --release --features jit --bin cpt32` 成功。
+- `rustfmt --check --edition 2024 --config skip_children=true src/main.rs src/render.rs` と `git diff --check` 成功。
+- 元のバイナリ: 元の cwd / config.yaml と対象 TinyBASIC コマンドで起動し、画面の OK / prompt を確認後 Alt+F4。1回、exit code 0。今回の比較では変更前にもクラッシュは再現しなかった。
+- 修正版: 同じ cwd / config.yaml / TinyBASIC / CPU 引数で3回起動。各回 OK / prompt の表示を確認し、1回目 Alt+F4、2回目 Escape、3回目タイトルバーの閉じるボタンで終了。全回 exit code 0。強制終了は使用していない。
+- adapter ログ: `AMD Radeon RX 7600`, `backend=Vulkan`。GL ドライバーでの障害記録は、表示 backend が GL であったことを意味しない。
+- ログ出力用に修正版の試行では `RUST_LOG=info` を指定した。出力はローカルの `target/shutdown-check/after-{1,2,3}.{stdout,stderr}.log`。この追加ログ設定は比較条件の差である。
+
+この修正は unsafe Surface の lifetime 契約違反を解消するが、元の障害が今回再現していないため AMD fail-fast の完全解消を実証したものではない。再発した場合は新しいダンプと adapter ログを比較し、上記の OBS / backend 切り分けへ進む。

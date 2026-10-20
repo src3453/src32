@@ -747,6 +747,14 @@ struct GuiApp {
 }
 
 impl GuiApp {
+    fn release_graphics(&mut self) {
+        // The surface was created from raw handles: it must be destroyed
+        // before its Window. Release the overlay's GPU resources first.
+        drop(self.debug_gui.take());
+        drop(self.presenter.take());
+        drop(self.window.take());
+    }
+
     fn new(
         program_path: &str,
         display_handle: OwnedDisplayHandle,
@@ -2026,7 +2034,18 @@ impl DebugGui {
     }
 }
 
+impl Drop for GuiApp {
+    fn drop(&mut self) {
+        // Also cover errors/unwinding that bypass ApplicationHandler::exiting.
+        self.release_graphics();
+    }
+}
+
 impl ApplicationHandler for GuiApp {
+    fn exiting(&mut self, _event_loop: &ActiveEventLoop) {
+        self.release_graphics();
+    }
+
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
         if self.window.is_some() {
             return;
