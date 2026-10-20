@@ -840,3 +840,13 @@
 - 既存の不安定テスト（変更前HEADでも失敗）: `cow::tests::rejects_crc_sequence_range_and_base_mismatch`、`tb_load_live` 6件、`strek_smoke::probe_strek_tron`、`strek_micro`（0–3件、ホスト入力スレッドとのタイミング依存）。
 - `tinybasic.sol` の `tb_read_line` は「FIFO空を確認→`halt`」の間にキーが届くと、irq3がIRQC pendingを消してHALTへIRETし、PeCレベルがhighのまま新しいedgeが来ず永久HALTする lost-wakeup 競合がある。エミュレータが速くなると発生頻度が変わるので、`strek_micro` 等の失敗をCPU/Bus変更の回帰と即断しないこと。
 
+## JIT dispatch bottlenecks, MUL/DIV and memory support (2026-10-20)
+- JITがinterpreterより遅かった主因は生成コードではなくRust側の固定費だった。batch経路をrdtscで分解すると、命令ごとのdecode cache検証52%（世代lookupがdevice線形探索×2/命令）、SipHash dispatch 31%、register block同期12%、native code 6%。生成コードを速くする前に往復コストを測ること。詳細と数値は `doc/cpu-jit-design.md`「dispatchボトルネック、乗除算・memory対応」。
+- 実ゲストではさらにcompile時間（test.wax 60 framesで183 ms）が支配的だった。strict関数は命令ごとに`prepare`するので解釈実行とほぼ同速なのにcompile時間の約63%を占めていた。batch関数は128 visitsで、strict関数はbatchを32回辞退した後に遅延生成する。release buildはCranelift IR verifierを無効化（debugでは有効）。合成ベンチだけでなく `src32_testbench test.wax --frames 60 --cpu jit` の実ゲストで必ず比較すること。
+- 新しい契約: batch stampは `Cpu::instruction_cache_fills`（decode cache slot書込みで増加）と覆うpageの世代で有効性を判定する。cache slotを書き換える経路を追加したら必ず`instruction_cache_fills`を増やすこと（増やさないとstale命令をnative実行する）。
+- batch内のload/storeは`batch_memory` helperが`defer_native_idle_cycles`で経過cycleを渡してから `execute_normal` を呼ぶ。plain memory以外はアクセス前に停止、IRQC出力変化か自block code pageの世代変化でアクセス直後に停止。連続batchはregister blockを同期せず連結するので、batch内からCPU register MMIOに触れる経路を作ってはならない。
+- `RELAXED_DEVICE_WINDOW`（bus.rs）は256 cycle（以前32）。JIT block上限は`MAX_JIT_BLOCK_SIZE`=256（launcher/config/specも同期）。block sizeを大きくしても実ゲストでは遅くなった（重複blockのcompile増）ので既定16のまま。
+- JITテストは `eager_tiers()`（`AnyCpu::set_jit_tier_thresholds(16, 0)`、doc hidden）で旧来の早期・両段階compileに戻してstrict経路を検証している。既定の遅延tierは `lazy_tiers_compile_batch_when_hot_and_strict_only_after_declines` が検証。
+- テストの落とし穴: 毎iterationでcodeを書き換えるとdecode cacheが常にmissしてbatchが一度も走らず、自己書換え検出のテストにならない（mutationが通った）。書換えを稀にしてvalidated batchの最中に起きるようにする。またrun(7)のような小予算では16-cycle DIVがbatchに入らない。mutationでテストが実際に経路を通るか確認すること。
+- Cranelift: `finalize_definitions`は約5 µsで支配的でない。`opt_level=speed`は効果なし。single-pass regallocはcompile約40%減だが実績が少ないため不採用。
+

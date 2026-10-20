@@ -243,6 +243,10 @@ pub struct Cpu {
     instruction_cache: Option<Box<[Option<CachedInstruction>]>>,
     instruction_cache_hits: u128,
     instruction_cache_misses: u128,
+    /// Bumped on every instruction-cache slot write; JIT batch stamps use it
+    /// to prove that previously validated cache hits are still present.
+    #[cfg(feature = "jit")]
+    instruction_cache_fills: u64,
     defer_register_sync: bool,
     profile: Option<CpuProfile>,
     pub(crate) relaxed_devices: bool,
@@ -269,6 +273,15 @@ impl Cpu {
         cpu.relaxed_devices = true;
         cpu.jit = Some(jit::JitEngine::new(max_block_instructions));
         cpu
+    }
+
+    /// Test hook: visits before the batch tier compiles, and declined batch
+    /// dispatches before the strict tier compiles (0 = with the batch tier).
+    #[cfg(feature = "jit")]
+    pub(crate) fn set_jit_tier_thresholds(&mut self, hot: u32, strict: u32) {
+        if let Some(jit) = &mut self.jit {
+            jit.set_tier_thresholds(hot, strict);
+        }
     }
 
     pub fn jit_stats(&self) -> Option<JitStats> {
@@ -315,6 +328,8 @@ impl Cpu {
                 .then(|| vec![None; INSTRUCTION_CACHE_SIZE].into_boxed_slice()),
             instruction_cache_hits: 0,
             instruction_cache_misses: 0,
+            #[cfg(feature = "jit")]
+            instruction_cache_fills: 0,
             defer_register_sync: false,
             profile: None,
             relaxed_devices: false,
@@ -1003,6 +1018,10 @@ impl Cpu {
                 return entry.instruction;
             }
             self.instruction_cache_misses += 1;
+            #[cfg(feature = "jit")]
+            {
+                self.instruction_cache_fills += 1;
+            }
             let instruction = self.read_and_decode_instruction(pc, mode);
             self.instruction_cache.as_mut().unwrap()[index] = Some(CachedInstruction {
                 pc,

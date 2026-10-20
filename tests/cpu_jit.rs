@@ -17,10 +17,17 @@ fn boot(kind: CpuKind, base: u32, words: &[u32]) -> AnyCpu {
     let mut bus = Bus::new();
     connect_ram(&mut bus);
     let mut cpu = AnyCpu::new(kind, bus);
+    eager_tiers(&mut cpu);
     let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
     cpu.load_program(base, &image);
     cpu.set_pc(base);
     cpu
+}
+
+/// These tests target both native tiers at every cycle boundary, so compile
+/// them after 16 visits and together, unlike the lazy production tiering.
+fn eager_tiers(cpu: &mut AnyCpu) {
+    cpu.set_jit_tier_thresholds(16, 0);
 }
 
 fn same(a: &AnyCpu, b: &AnyCpu) {
@@ -89,6 +96,151 @@ fn native_alu_matches_cached_at_every_cycle_with_randomized_operands() {
         same(&cached, &jit);
     }
     native_ran(&jit);
+}
+
+#[test]
+fn native_multiply_divide_edges_and_latencies_match_cached() {
+    // MUL, MULH, DIV, DIVU, MOD over 0, ±1, MIN and MAX operand pairs, with
+    // operands rotated each iteration so later visits hit other edge pairs.
+    let ops = [0x18, 0x1b, 0x19, 0x1c, 0x1a];
+    let mut words = Vec::new();
+    for (index, op) in ops.iter().enumerate() {
+        let index = index as u32;
+        words.push(r(*op, 10 + index, 1 + index, 2 + index));
+        words.push(r(*op, 15 + index, 2 + index, 1));
+    }
+    // Rotate R1..R7 left by one register.
+    words.push(r(0x03, 20, 1, 0));
+    for reg in 1..7 {
+        words.push(r(0x03, reg, reg + 1, 0));
+    }
+    words.push(r(0x03, 7, 20, 0));
+    words.push(i(0x09, 0, 0, -((words.len() as i16 + 1) * 4)));
+    let mut cached = boot(CpuKind::Cached, 0, &words);
+    let mut jit = boot(CpuKind::Jit, 0, &words);
+    let values = [0, 1, u32::MAX, 0x8000_0000, 0x7FFF_FFFF, 7, 0xFFFF_FFF9];
+    for (reg, value) in (1..8).zip(values) {
+        cached.write_reg(reg, value).unwrap();
+        jit.write_reg(reg, value).unwrap();
+    }
+    // Odd budgets split MUL/DIV stalls; repeated runs reach the batch tier.
+    for budget in [50_000, 1, 2, 3, 5, 15, 16, 17, 31, 64] {
+        cached.run(budget);
+        jit.run(budget);
+        same(&cached, &jit);
+    }
+    // Short budgets split stalls; long ones let 16-cycle DIVs fit native batches.
+    for step in 0..4000 {
+        let budget = [7, 200, 33, 1000][step % 4];
+        cached.run(budget);
+        jit.run(budget);
+        same(&cached, &jit);
+    }
+    native_ran(&jit);
+    assert!(jit.jit_stats().unwrap().batched_instructions > 0);
+}
+
+#[test]
+fn batched_memory_mmio_and_self_modifying_stores_match_cached() {
+    let addi = i(0x04, 5, 5, 0);
+    let mut words = vec![
+        i(0x3d, 9, 0, -1), // R9 = 0xFFFF_0000
+        i(0x04, 12, 0, 7),
+        i(0x04, 13, 0, 0xff),
+        i(0x3c, 14, 0, addi as i16),
+        i(0x3d, 14, 0, (addi >> 16) as i16),
+    ];
+    let start = words.len() as i16 * 4;
+    words.extend([
+        i(0x04, 1, 1, 1),
+        i(0x02, 1, 0, 0x1000), // ST
+        i(0x01, 2, 0, 0x1000), // LD
+        i(0x15, 1, 0, 0x1005), // STB
+        i(0x13, 3, 0, 0x1005), // LDB
+        i(0x16, 2, 0, 0x100a), // STH
+        i(0x14, 4, 0, 0x100a), // LDH
+        i(0x16, 0, 9, 0x44),   // STH to IRQC MMIO: stops the batch before it
+        // R11 = ADDI R5,R5,(R1 >> 7) & 0xFF: changes once per 128 iterations.
+        r(0x10, 11, 1, 12),
+        r(0x0c, 11, 11, 13),
+        r(0x0d, 11, 11, 14),
+        i(0x02, 11, 0, 0x2000), // phase 2 retargets this store at the ADDI below
+        r(0x18, 6, 1, 2),
+    ]);
+    let addi_address = words.len() as i16 * 4;
+    words.push(addi);
+    words.push(i(0x09, 0, 0, start - (words.len() as i16 + 1) * 4));
+    let mut cached = boot(CpuKind::Cached, 0, &words);
+    // Production tiering: lazy strict tier, batch tier after 128 visits.
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut jit = AnyCpu::new(CpuKind::Jit, bus);
+    let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+    jit.load_program(0, &image);
+    jit.set_pc(0);
+    let lockstep = |cached: &mut AnyCpu, jit: &mut AnyCpu| {
+        for step in 0..30_000 {
+            let budget = [1, 5, 13, 40, 300, 2][step % 6];
+            cached.run(budget);
+            jit.run(budget);
+            same(cached, jit);
+            for address in [0x1000, 0x1004, 0x1008, 0x2000, addi_address as u32] {
+                assert_eq!(
+                    cached.read_mem_u32_be(address),
+                    jit.read_mem_u32_be(address)
+                );
+            }
+        }
+    };
+    // Phase 1: data-only stores; the RAM accesses run inside native batches
+    // and the IRQC store stops each batch before it.
+    lockstep(&mut cached, &mut jit);
+    let stats = jit.jit_stats().unwrap();
+    assert_eq!(stats.compile_failures, 0, "{stats:?}");
+    assert!(stats.batched_instructions > 1000, "{stats:?}");
+    // Phase 2: every iteration rewrites an instruction later in its own block.
+    for cpu in [&mut cached, &mut jit] {
+        cpu.write_mem_u32_be(start as u32 + 44, i(0x02, 11, 0, addi_address));
+    }
+    lockstep(&mut cached, &mut jit);
+    let stats = jit.jit_stats().unwrap();
+    assert!(stats.invalidations > 0, "{stats:?}");
+    assert!(jit.read_reg(5) > 0);
+}
+
+#[test]
+fn lazy_tiers_compile_batch_when_hot_and_strict_only_after_declines() {
+    let words = [i(0x04, 1, 1, 1), i(0x04, 2, 2, 3), i(0x09, 0, 0, -12)];
+    let mut cached = boot(CpuKind::Cached, 0, &words);
+    let mut bus = Bus::new();
+    connect_ram(&mut bus);
+    let mut jit = AnyCpu::new(CpuKind::Jit, bus);
+    let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
+    jit.load_program(0, &image);
+    jit.set_pc(0);
+    // 100 dispatches of the loop stay below the batch threshold.
+    cached.run(300);
+    jit.run(300);
+    same(&cached, &jit);
+    assert_eq!(jit.jit_stats().unwrap().compilations, 0);
+    cached.run(3000);
+    jit.run(3000);
+    same(&cached, &jit);
+    // Hot entries got only the batch tier.
+    let stats = jit.jit_stats().unwrap();
+    assert!(stats.batch_compilations > 0, "{stats:?}");
+    assert_eq!(stats.compilations, stats.batch_compilations, "{stats:?}");
+    assert!(stats.batched_instructions > 0, "{stats:?}");
+    let batch_tiers = stats.batch_compilations;
+    // One-cycle budgets cannot batch; repeated declines build the strict tier.
+    for _ in 0..200 {
+        cached.run(1);
+        jit.run(1);
+        same(&cached, &jit);
+    }
+    let stats = jit.jit_stats().unwrap();
+    assert_eq!(stats.batch_compilations, batch_tiers, "{stats:?}");
+    assert!(stats.compilations > stats.batch_compilations, "{stats:?}");
 }
 
 #[test]
@@ -248,6 +400,7 @@ fn native_blocked_cpu_batches_idle_devices_but_observes_timer_irq_deadline() {
         connect_ram(&mut bus);
         connect_pec_timer_rtc(&mut bus);
         let mut cpu = AnyCpu::new(kind, bus);
+        eager_tiers(&mut cpu);
         // Increment R1 in a native-eligible loop. IRQ4 increments R2 and IRETs.
         let words = [i(4, 1, 1, 1), i(9, 0, 0, -8)];
         let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
@@ -301,6 +454,7 @@ fn dma_rewrites_a_later_native_instruction_during_the_block() {
         let bmc = connect_bmc(&mut bus);
         connect_dmac(&mut bus, bmc);
         let mut cpu = AnyCpu::new(kind, bus);
+        eager_tiers(&mut cpu);
         let words = [i(4, 1, 1, 1), i(4, 2, 2, 1), i(4, 3, 3, 1), i(9, 0, 0, -16)];
         let image: Vec<u8> = words.iter().flat_map(|word| word.to_be_bytes()).collect();
         cpu.load_program(0, &image);
@@ -381,6 +535,7 @@ fn non_previewable_instruction_devices_do_not_receive_speculative_reads() {
         }),
     );
     let mut jit = AnyCpu::new(CpuKind::Jit, bus);
+    eager_tiers(&mut jit);
     jit.set_pc(0x2000_0000);
     jit.run(100);
     assert_eq!(reads.get(), 400);
@@ -449,6 +604,7 @@ fn idle_native_batches_stop_before_every_timer_deadline_and_pending_external_irq
         connect_ram(&mut bus);
         connect_pec_timer_rtc(&mut bus);
         let mut cpu = AnyCpu::new(kind, bus);
+        eager_tiers(&mut cpu);
         let mut words = vec![i(4, 1, 1, 1); 15];
         words.push(i(9, 0, 0, -64));
         cpu.load_program(

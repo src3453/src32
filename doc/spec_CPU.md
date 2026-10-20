@@ -40,8 +40,8 @@ The goal is clarity and experimentation over micro-architectural complexity.
 
 Select `--cpu cached-relaxed` or YAML `cpu.microarchitecture: cached-relaxed`
 without requiring the JIT feature. This uses Cached instructions and CPUID
-(`0x3F`), but batches idle device progression in groups of at most 32 CPU
-cycles. All bus reads/writes (including RAM and cold fetches), timer IRQ
+(`0x3F`), but batches idle device progression in groups of at most 256 CPU
+cycles (5.3 us at 48 MHz). All bus reads/writes (including RAM and cold fetches), timer IRQ
 deadlines, HALT/IRET, and `run` budget exits flush deferred cycles. CPU cycle
 budgets and multiply/divide latency remain unchanged. DMA channels that are
 busy (even when globally disabled), active IDC commands, and any installed
@@ -64,39 +64,52 @@ Build with `--features jit` and select `--cpu jit` (or YAML
 `cpu.microarchitecture: jit`). Builds without the feature reject that selection.
 Pipeline remains the default. JIT reports CPUID features `0x3F` and follows
 Cached instruction, IRQ, bus, and cycle-budget semantics, including 3-cycle
-multiply and 16-cycle division through interpreter fallback.
+MUL/MULH and 16-cycle DIV/DIVU/MOD.
 
-After 16 dispatch visits, supported Normal-mode integer ALU, half-immediate,
-CPUID, and branch/call/return operations are compiled into native blocks. The
-maximum is set by `cpu.jit_block_size` (2..=64, default 16); recommended presets
-are Small=8, Medium=16, and Big=32. Larger blocks may improve performance, but
-increase generated code size and may reduce stability. Memory, multiply/divide, Short mode, mode transitions,
-HALT, IRET, and non-previewable instruction memory use Cached execution.
-Single-instruction blocks remain interpreted because native dispatch costs
-outweigh their arithmetic work. Only memory exposing an explicit side-effect-free preview and generation
-tracking is previewed. The conservative native path uses Cached fetch
-after device/DMA progress; its validated decoded identity must match the compiled
-instruction. A mismatch executes the actual instruction in Cached mode and
-invalidates the native block. This preserves cold-fetch bus effects and covers
-RAM changes from CPU stores, DMA, debugger writes, and program loading, including
-page crossings and modifications during a block.
+Supported Normal-mode instructions are integer ALU, half-immediate, CPUID,
+branch/call/return, MUL/MULH/DIV/DIVU/MOD, and LD/LDH/LDB/ST/STH/STB. The block
+maximum is set by `cpu.jit_block_size` (2..=256, default 16); recommended
+presets are Small=8, Medium=16, and Big=32. Blocks still end at branches and
+unsupported instructions. On measured guests, larger blocks compiled more
+overlapping code without running faster, so the default remains 16. Short mode,
+mode transitions, HALT, IRET, and non-previewable instruction memory use Cached
+execution. Single-instruction blocks remain interpreted. Only memory exposing
+an explicit side-effect-free preview and generation tracking is previewed.
 
-At 128 dispatch visits a second native variant is compiled for sustained hot
-blocks. Within a bus-free idle window, it executes a validated
-prefix up to the configured block size of warm instructions without per-instruction Rust calls.
-All instructions must already hit the decode cache with matching identity and
-both endpoint generations. Cold fetches and changed code use the conservative
-path. The window ends BEFORE the next device update or known timer deadline,
-with no active DMA/IDC or installed expansion cards. Pending enabled CPU IRQs
-also prohibit batching. No device or CPU store can change code or register MMIO
-inside that window; CPU IRQ sampling and register synchronization are shared
-at its boundaries. Exact prefix cycle budgets and decode-cache hit counts are
-retained. Idle device progression still batches up to 32 cycles using the
-experimental `cached-relaxed` policy. MMIO, timer deadlines, active DMA/IDC,
-expansion cards, HALT/IRET, and run-budget exit force synchronization.
-VSync remains host-frame driven. Single stepping and `--profile-cpu` use Cached
-execution and strict per-cycle device updates; profiling therefore describes
-the fallback engine rather than batched native execution.
+Compilation is tiered. After 128 dispatch visits a block's **batch** function
+is compiled. It runs a validated prefix inside an idle device window without
+per-instruction Rust calls. Every instruction must already hit the decode cache
+with matching identity and both endpoint generations; a block that passed this
+check once is stamped and only revalidated after any decode-cache fill or a
+generation change in the pages it covers. The prefix is limited by the run
+budget and by the idle window (Cached cycles, so MUL/DIV count 3/16). The window
+ends BEFORE the next device update or known timer deadline, with no active
+DMA/IDC or installed expansion cards and no pending enabled CPU IRQ.
+Multiply/divide execute natively with the interpreter's results for division
+by zero and `INT_MIN / -1`. A load/store calls a helper that first hands the
+elapsed batch cycles to the deferred device window, then performs the same Bus
+access as the interpreter, so devices are flushed at the access exactly as in
+`cached-relaxed`. Only accesses wholly inside plain memory (RAM/BIOS ROM) run in
+a batch; any other address stops the batch before the access. The batch also
+stops right after an access if IRQC output changed or a store changed the
+block's own code. Consecutive batches chain in native registers; the CPU
+register MMIO block and IRQ sampling are synchronized when the chain ends.
+
+The **conservative** function executes one instruction per cycle boundary
+through Rust: Cached fetch after device/DMA progress, then native execution if
+the validated decoded identity matches. A mismatch executes the actual
+instruction in Cached mode and invalidates the block. Multiply/divide and memory
+instructions are issued to the interpreter there. It is compiled lazily, only
+after a hot block has declined the batch path 32 times (e.g. during DMA or at
+budget/window edges); until then those cycles are interpreted.
+
+Idle device progression batches up to 256 cycles using the `cached-relaxed`
+policy. MMIO, timer deadlines, active DMA/IDC, expansion cards, HALT/IRET, and
+run-budget exit force synchronization. VSync remains host-frame driven. Single
+stepping and `--profile-cpu` use Cached execution and strict per-cycle device
+updates; profiling therefore describes the fallback engine rather than native
+execution. Release builds disable the Cranelift IR verifier (debug builds keep
+it); it dominated compile time.
 Compilation errors fall back to Cached and are counted/logged. Dispatch entries
 and accumulated native definitions are bounded at 1024 each. Cold uncompiled
 entries are pruned first; if compiled/failed entries still fill dispatch, or
@@ -104,7 +117,7 @@ native block definitions reach the limit (each can own conservative and batch
 functions), the module is reset only after native
 execution returns. CPU reset also
 clears native dispatch and releases generated code. `jit_stats()` reports
-compilation time/count, second-tier compilation count, native instructions,
+compilation time, compiled functions of either tier, batch-tier compilations, native instructions,
 native batches and batched instructions, fallback cycles, invalidations,
 cache resets, active blocks, and live native instruction bytes (excluding
 allocator padding and metadata). JIT counters are cumulative across CPU reset,

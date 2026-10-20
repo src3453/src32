@@ -176,7 +176,7 @@ JITも同じ一括処理を自動で使う。profiler無効、JIT feature付き�
 
 この同一buildではJITは通常Cachedよりcubeで速いが、cached-relaxed単体よりcube起動で約22%、60 framesで約22%遅い。DOSではJITが通常Cachedより約3%遅い。したがってJITに一括処理を接続したことと、JITが最速であることは別の結果である。CPU JIT合成ベンチ (`cargo run --release --features jit --bin cpu_jit_bench -- 800000 9`) は、ALU＋branch warmでCached 87.088 ms / JIT 22.456 ms（3.878x）、ALU＋MUL＋memory warmで82.822 / 40.355 ms（2.052x）。cold compileも別に出力する。
 
-2026-10-18。`--cpu cached-relaxed` を追加した。待機中のデバイス更新を最大32サイクルにまとめるCached派生モードで、JITも同じ一括処理を使う。RAMを含むバスアクセス、既知のタイマーIRQ期限、HALT／IRET、`run` 終端で同期する。DMA busy／IDC active／拡張カードありでは従来処理を使う。単命令stepとprofilerは通常のCached処理に戻る。入力IRQの観測遅延と待機中のBMC調停履歴の違いを許容し、デバイスのIRQ記録や転送内容は維持する。
+2026-10-18。`--cpu cached-relaxed` を追加した。待機中のデバイス更新を最大32サイクル（2026-10-20に256へ拡大）にまとめるCached派生モードで、JITも同じ一括処理を使う。RAMを含むバスアクセス、既知のタイマーIRQ期限、HALT／IRET、`run` 終端で同期する。DMA busy／IDC active／拡張カードありでは従来処理を使う。単命令stepとprofilerは通常のCached処理に戻る。入力IRQの観測遅延と待機中のBMC調停履歴の違いを許容し、デバイスのIRQ記録や転送内容は維持する。
 
 同じWindows x64ホスト、release、profiler無効で比較した。倍率はCached時間÷relaxed時間。
 

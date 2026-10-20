@@ -52,6 +52,11 @@ pub trait Device {
     fn instruction_cache_generation(&self, _addr: u32) -> Option<u64> {
         None
     }
+    /// Size of the aligned address unit (relative to the device start) that
+    /// shares one generation token. The default 1 never shares a token.
+    fn instruction_cache_unit(&self) -> u32 {
+        1
+    }
     /// Side-effect-free instruction preview. Opt in only for stable memory.
     fn peek_instruction_u8(&self, _addr: u32) -> Option<u8> {
         None
@@ -85,6 +90,10 @@ pub enum BusAccessSource {
     Debugger,
 }
 
+/// Maximum idle device cycles a relaxed CPU run may defer between syncs.
+/// Bounds host-input IRQ observation latency (256 cycles = 5.3 us at 48 MHz).
+pub(crate) const RELAXED_DEVICE_WINDOW: u64 = 256;
+
 pub struct Bus {
     devices: Vec<DeviceMap>,
     access_source: BusAccessSource,
@@ -101,6 +110,8 @@ pub struct Bus {
     has_expansion_cards: bool,
     relaxed_cycles: u64,
     relaxed_limit: u64,
+    /// Device index that last answered an instruction-generation query.
+    generation_device: Cell<usize>,
 }
 
 impl Bus {
@@ -121,6 +132,7 @@ impl Bus {
             has_expansion_cards: false,
             relaxed_cycles: 0,
             relaxed_limit: 0,
+            generation_device: Cell::new(0),
         }
     }
 
@@ -361,7 +373,10 @@ impl Bus {
                 self.tick_devices();
                 return;
             }
-            self.relaxed_limit = self.cycles_until_next_event().unwrap_or(32).clamp(1, 32);
+            self.relaxed_limit = self
+                .cycles_until_next_event()
+                .unwrap_or(RELAXED_DEVICE_WINDOW)
+                .clamp(1, RELAXED_DEVICE_WINDOW);
         }
         self.relaxed_cycles += 1;
         if self.relaxed_cycles >= self.relaxed_limit {
@@ -386,14 +401,20 @@ impl Bus {
         {
             return 0;
         }
-        self.cycles_until_next_event().unwrap_or(32).clamp(1, 32) - 1
+        self.cycles_until_next_event()
+            .unwrap_or(RELAXED_DEVICE_WINDOW)
+            .clamp(1, RELAXED_DEVICE_WINDOW)
+            - 1
     }
 
     #[cfg(feature = "jit")]
     pub(crate) fn defer_native_idle_cycles(&mut self, cycles: u64) {
         debug_assert!(cycles <= self.native_idle_budget());
         if self.relaxed_cycles == 0 {
-            self.relaxed_limit = self.cycles_until_next_event().unwrap_or(32).clamp(1, 32);
+            self.relaxed_limit = self
+                .cycles_until_next_event()
+                .unwrap_or(RELAXED_DEVICE_WINDOW)
+                .clamp(1, RELAXED_DEVICE_WINDOW);
         }
         self.relaxed_cycles += cycles;
     }
@@ -681,6 +702,17 @@ impl Bus {
         })
     }
 
+    /// Whether `addr..addr+width` lies in one plain-memory device, so a CPU
+    /// access there has no side effect beyond the bytes and bus timing.
+    #[cfg(feature = "jit")]
+    pub(crate) fn is_plain_memory_range(&self, addr: u32, width: u32) -> bool {
+        self.find_device_index(addr).is_some_and(|index| {
+            let mapped = &self.devices[index];
+            mapped.device.is_plain_memory()
+                && mapped.region.size - (addr - mapped.region.start) >= width
+        })
+    }
+
     /// Plain-memory device holding `addr..addr+width` when a CPU access can
     /// use the single-arbitration path: no DMA master can request the bus
     /// between beats, and plain memory cannot raise one.
@@ -735,22 +767,52 @@ impl Bus {
 
     /// Return the executable-memory generation at an address without a bus read.
     pub(crate) fn instruction_cache_generation(&self, addr: u32) -> Option<u64> {
-        self.devices.iter().find_map(|mapped| {
-            let offset = addr.checked_sub(mapped.region.start)?;
-            (offset < mapped.region.size)
-                .then(|| mapped.device.instruction_cache_generation(offset))
-                .flatten()
-        })
+        let (mapped, offset) = self.instruction_device(addr)?;
+        mapped.device.instruction_cache_generation(offset)
+    }
+
+    /// Generation at `addr` plus the inclusive address range sharing it. A
+    /// caller may reuse the token for that range until memory can change.
+    pub(crate) fn instruction_cache_generation_span(&self, addr: u32) -> Option<(u64, u32, u32)> {
+        let (mapped, offset) = self.instruction_device(addr)?;
+        let generation = mapped.device.instruction_cache_generation(offset)?;
+        let unit = mapped.device.instruction_cache_unit().max(1);
+        let unit_start = offset - offset % unit;
+        let unit_last = unit_start
+            .saturating_add(unit - 1)
+            .min(mapped.region.size - 1);
+        Some((
+            generation,
+            mapped.region.start + unit_start,
+            mapped.region.start + unit_last,
+        ))
+    }
+
+    /// Mapped device for instruction metadata. Regions never overlap, so the
+    /// remembered device is the same answer a full scan would give.
+    fn instruction_device(&self, addr: u32) -> Option<(&DeviceMap, u32)> {
+        let contains = |mapped: &DeviceMap| {
+            addr.checked_sub(mapped.region.start)
+                .filter(|&offset| offset < mapped.region.size)
+        };
+        if let Some(mapped) = self.devices.get(self.generation_device.get()) {
+            if let Some(offset) = contains(mapped) {
+                return Some((mapped, offset));
+            }
+        }
+        let index = self
+            .devices
+            .iter()
+            .position(|mapped| contains(mapped).is_some())?;
+        self.generation_device.set(index);
+        let mapped = &self.devices[index];
+        Some((mapped, addr - mapped.region.start))
     }
 
     #[cfg(feature = "jit")]
     pub(crate) fn peek_instruction_u8(&self, addr: u32) -> Option<u8> {
-        self.devices.iter().find_map(|mapped| {
-            let offset = addr.checked_sub(mapped.region.start)?;
-            (offset < mapped.region.size)
-                .then(|| mapped.device.peek_instruction_u8(offset))
-                .flatten()
-        })
+        let (mapped, offset) = self.instruction_device(addr)?;
+        mapped.device.peek_instruction_u8(offset)
     }
 
     /// Enable instruction-generation tracking for cache-aware CPU modes.
@@ -918,21 +980,22 @@ mod relaxed_device_tests {
     fn relaxed_ticks_batch_but_bus_access_and_budget_flush_time() {
         let mut bus = Bus::new();
         crate::devices::ram::connect_ram(&mut bus);
-        for _ in 0..31 {
+        let window = RELAXED_DEVICE_WINDOW;
+        for _ in 0..window - 1 {
             bus.tick_relaxed_devices();
         }
         assert_eq!(bus.system_cycles(), 0);
         bus.tick_relaxed_devices();
-        assert_eq!(bus.system_cycles(), 32);
+        assert_eq!(bus.system_cycles(), window);
         bus.tick_relaxed_devices();
         bus.write_u8(0, 7);
-        assert_eq!(bus.system_cycles(), 33);
+        assert_eq!(bus.system_cycles(), window + 1);
         bus.tick_relaxed_devices();
         assert_eq!(bus.read_u8(0), 7);
-        assert_eq!(bus.system_cycles(), 34);
+        assert_eq!(bus.system_cycles(), window + 2);
         bus.tick_relaxed_devices();
         bus.flush_relaxed_devices();
-        assert_eq!(bus.system_cycles(), 35);
+        assert_eq!(bus.system_cycles(), window + 3);
     }
 
     #[test]

@@ -372,6 +372,7 @@ fn jit_block_size_defaults_and_validates_configured_values() {
         ("cpu:\n  jit_block_size: 8\n", 8),
         ("cpu:\n  jit_block_size: 32\n", 32),
         ("cpu:\n  jit_block_size: 64\n", 64),
+        ("cpu:\n  jit_block_size: 256\n", 256),
     ] {
         let path = scratch_config(yaml);
         assert_eq!(resolve_jit_block_size(&path).unwrap(), expected);
@@ -379,7 +380,7 @@ fn jit_block_size_defaults_and_validates_configured_values() {
     }
     for yaml in [
         "cpu:\n  jit_block_size: 1\n",
-        "cpu:\n  jit_block_size: 65\n",
+        "cpu:\n  jit_block_size: 257\n",
         "cpu:\n  jit_block_size: nope\n",
     ] {
         let path = scratch_config(yaml);

@@ -463,7 +463,7 @@ class Launcher(tk.Tk):
         preset_box.pack(side="left")
         preset_box.bind("<<ComboboxSelected>>", self._jit_preset_changed)
         ttk.Label(jit_row, text="命令").pack(side="left", padx=(10, 4))
-        ttk.Spinbox(jit_row, textvariable=self.jit_block_size, from_=2, to=64, width=7).pack(side="left")
+        ttk.Spinbox(jit_row, textvariable=self.jit_block_size, from_=2, to=256, width=7).pack(side="left")
         ttk.Label(advanced, text="Small=8、Medium=16（既定）、Big=32。数値は2〜64命令です。大きいほど高速化する場合がありますが、安定性が下がる可能性があります。", foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜128 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         cards_tab = ttk.Frame(self.tabs, padding=12)
@@ -631,8 +631,8 @@ class Launcher(tk.Tk):
         if not isinstance(cpu, dict):
             raise ConfigError("`cpu` はmappingで指定してください")
         raw_block_size = self.jit_block_size.get().strip()
-        if not raw_block_size.isdecimal() or not 2 <= int(raw_block_size) <= 64:
-            raise ConfigError("`cpu.jit_block_size` は2〜64命令の整数で入力してください")
+        if not raw_block_size.isdecimal() or not 2 <= int(raw_block_size) <= 256:
+            raise ConfigError("`cpu.jit_block_size` は2〜256命令の整数で入力してください")
         if int(raw_block_size) == 16:
             cpu.pop("jit_block_size", None)
         else:

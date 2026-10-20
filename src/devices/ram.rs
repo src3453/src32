@@ -45,6 +45,10 @@ impl Device for Ram {
             .map(|generations| generations[addr as usize / INSTRUCTION_PAGE_SIZE])
     }
 
+    fn instruction_cache_unit(&self) -> u32 {
+        INSTRUCTION_PAGE_SIZE as u32
+    }
+
     fn peek_instruction_u8(&self, addr: u32) -> Option<u8> {
         self.data.get(addr as usize).copied()
     }

@@ -1,6 +1,6 @@
 # Cranelift Dynarec 導入案
 
-以下の導入時記録に対する最新の改善は「JIT往復削減と段階的compile」を参照。関連する後続実験として `--cpu cached-relaxed` とJITへの待機device batchingを追加した。JITも最大32 cyclesにまとめるが、CPU IRQ sampling、各命令のコード世代検証、native blockのcommit、run budget確認は命令境界ごとに保つ。MMIO／timer deadline／HALT／IRETとactive DMA／IDC／expansion時は同期する。[性能調査の結果](emulator-performance-plan.md#実験的cached-relaxedモード)を参照。
+最新の改善は「dispatchボトルネック、乗除算・memory対応（2026-10-20）」、その前は「JIT往復削減と段階的compile」を参照。関連する後続実験として `--cpu cached-relaxed` とJITへの待機device batchingを追加した。JITも最大32 cycles（2026-10-20に256へ拡大）にまとめるが、CPU IRQ sampling、各命令のコード世代検証、native blockのcommit、run budget確認は命令境界ごとに保つ。MMIO／timer deadline／HALT／IRETとactive DMA／IDC／expansion時は同期する。[性能調査の結果](emulator-performance-plan.md#実験的cached-relaxedモード)を参照。
 
 2026-10-18。初期実装済み。以下に実装状況と設計方針を記録する。
 
@@ -8,7 +8,7 @@
 
 `--features jit` 付き build で `--cpu jit` / YAML の `cpu.microarchitecture: jit` が使える。Cranelift 0.117.2 を既存 Wasmtime 系列と揃えて直接利用する。`src/cpu_jit.rs` がコード生成・dispatch・ABI 境界を持ち、Cached と cycle 開始処理・fallback issue を共有する。
 
-ブロック命令上限は `cpu.jit_block_size` で2〜64に設定し、既定値は16。Launcherの詳細設定はSmall=8、Medium=16、Big=32を提示し、具体値も入力できる。previewが長くなっても分岐命令・未対応命令でblockを終え、命令ごとの検証契約は変えない。大きな値は生成コード量を増やすため、性能と安定性を環境ごとに確認する。
+ブロック命令上限は `cpu.jit_block_size` で2〜256（2026-10-20に64から拡大）に設定し、既定値は16。Launcherの詳細設定はSmall=8、Medium=16、Big=32を提示し、具体値も入力できる。previewが長くなっても分岐命令・未対応命令でblockを終え、命令ごとの検証契約は変えない。大きな値は生成コード量を増やすため、性能と安定性を環境ごとに確認する。
 
 同じ開始 PC が16回 dispatch されると、最大16命令をコンパイルする。対象は Normal mode の整数 ALU、half immediate、CPUID、通常分岐・call・return。未対応命令の手前でブロックを終え、Short mode・memory・乗除算・HALT・IRET などは Cached を使う。生成コードは明示的な register array と helper だけを参照し、helper の panic は捕捉して native call から戻った後に Rust 側で再送出する。
 
@@ -96,6 +96,35 @@ cubeは約5〜6%短縮、DOSは約1%遅くほぼ横ばい。ホスト負荷に�
 
 検証はreleaseのCPU/JIT/relaxed/selection/pipeline/DOS/expansion計98件、Bus batching unit test 2件、featureなしCPU/selection/pipeline計49件。debug buildでもJIT 13件を通過し、idle予算のdebug assertionを確認した。JIT追加testは1〜65 cycle予算、page跨ぎ、CPU register MMIO結果、block後半の自己書換え、1〜65 cycleのtimer期限と外部IRQをCachedと比較し、実際の一括native実行もassertする。既存のDMA途中のcode変更／IRQ、拡張カードdeadline、panic transport、HALT／IRET、debug/profiler回帰も維持する。
 
+## dispatchボトルネック、乗除算・memory対応（2026-10-20）
+
+`cpu_jit_bench --platform` のwarm ALUでJITは14.5 ns/cycleかかり、生成コードの速さを生かせていなかった。一時的な`rdtsc`計測でbatch経路を分解すると、命令ごとのdecode cache検証（命令ごとに世代lookupを2回、各lookupがdeviceの線形探索）が52%、dispatch `lookup`（SipHashの`HashMap`、blockあたり最大3回hash）が31%、register blockの同期in/outが各6%で、**生成コード自体は6%**だった。
+
+改善内容:
+
+- `Bus::instruction_cache_generation`は最後に応答したdeviceを`Cell`で覚える（regionは重ならないので全走査と同じ答え）。`Device::instruction_cache_unit`（RAMは4 KiB page）で、同じ世代tokenを共有する範囲を返す`instruction_cache_generation_span`を追加した。Cached interpreterのfetchも速くなる。
+- blockの検証結果をstampする。全命令がhitしたblockは、CPUの`instruction_cache_fills`（decode cache slotへの書込みごとに増加）が変わらず、覆うpage（最大2単位）の世代も同じなら、次回は命令ごとの検証を省く。
+- dispatch mapはPC用の乗算hasherを使い、確立済みblockのhot pathは1回のprobeで返す。compile／prune／resetが必要な場合だけ従来経路に入る。
+- MUL/MULH/DIV/DIVU/MODをnative化した。0除算と`INT_MIN / -1`はtrapしないselectで解釈実行と同じ結果にする。batchのprefixは命令数でなくCached cycle数（1/3/16）で待機区間に収める。strict関数では乗除算を解釈実行のstall FSMへ渡す。
+- LD/LDH/LDB/ST/STH/STBをbatchで扱う。helperが経過cycleを`defer_native_idle_cycles`で渡してから解釈実行の`execute_normal`を呼ぶので、Busのflush・調停・RAM世代更新は`cached-relaxed`と同じ。plain memoryに収まらないアドレスはアクセス前に、IRQC出力の変化や自block code pageの世代変化はアクセス直後にbatchを止める。
+- 連続batchはregister blockを同期せず連結する。間に起きうるのはplain memoryアクセスだけで、CPU register MMIOに触れず、IRQC変化ではbatchが止まるため。
+- relaxed待機区間を32から256 cycleに拡大した（`RELAXED_DEVICE_WINDOW`）。区間ごとに1命令がstrict経路でdeviceをflushするので、32ではALU loopのfallbackが約1%残った。ホスト入力の観測遅延は最大5.3 µs。
+
+実ゲストでは別の問題が見えた。`test.wax` 60 framesでJIT（block 16）が385 ms、cached-relaxedが356 msで、JITのほうが遅く、compile時間が183 msを占めた。strict関数は命令ごとに`prepare`を呼ぶため解釈実行と大差なく、それなのにcompile時間の約63%を使っていた（実行されたnative命令8.2Mのうちstrictは約15万）。対策:
+
+- batch関数だけを128 visitsで生成し、strict関数はhot blockがbatchを32回辞退した後に遅延生成する。テストは`AnyCpu::set_jit_tier_thresholds(16, 0)`（doc hidden）で従来どおり両段階を早期生成して検証する。
+- release buildでCranelift IR verifierを無効化した（debug buildでは有効）。`opt_level=speed`は効果がなく、single-pass register allocatorはcompileが約40%速いが実績が少ないため採用しない。
+- `finalize_definitions`は1回5 µs程度で、支配的なのはCraneliftの`define_function`そのものだった。
+
+Windows x64 release、profiler無効。合成は800,000 cycles/phase・9 samples中央値（同一build内で比較）。
+
+| 合成（platform） | 開始時JIT warm | 最終JIT warm | Cached | cached-relaxed |
+|---|---:|---:|---:|---:|
+| ALU+branch | 11.580 ms | 2.349 ms | 31.369 ms | 19.218 ms |
+| ALU+MUL+memory | 19.167 ms | 6.593 ms | 29.752 ms | 20.637 ms |
+
+mixedのfallback cyclesは640,132から563近くへ減った。実ゲスト（`src32_testbench … --frames 60`、空config、process起動込み、7回の最良値）: `test.wax` JIT 312 ms、cached-relaxed 370 ms、Cached 473 ms、Pipeline 766 ms。`dos.wax`はほぼHALTでJIT 55 ms、relaxed 52 ms。20 frames時点のPC・cycles・R1はJIT／relaxed／Cachedで一致。block sizeは16→32→64→256で`test.wax`が302→322→337→343 msと悪化したため既定は16のまま（上限のみ256へ拡大）。
+
 ## 導入時の設計方針
 
 SRC32 命令を Cranelift IR に変換し、ホストのネイティブコードとして実行する独立した JIT CPU を追加する。最初の互換性基準は Cached CPU とし、Pipeline のハザード・flush timing の再現は対象にしない。既定の Pipeline は維持する。sol の VM を JIT 化する案ではなく、コンパイル済みゲストの CPU 実行を高速化する案である。
@@ -113,7 +142,7 @@ Cranelift は命令セットの意味、割り込み、バス、コード無効�
 
 ## デバイス・IRQ・コード変更
 
-`Cpu::tick_cached` はデバイス更新、IRQ 入力取得、CPU MMIO 状態同期、命令実行、commit と IRQ 受理を所定の順に行う。JITは各native命令境界でIRQ入力・CPU MMIO同期とコード世代を確認するが、既定のJIT実行では待機デバイス更新だけを最大32 cycleまとめる（実験的cached-relaxedと同じ契約）。Known deadline、MMIO、active DMA/IDC/expansion、run予算境界で同期する。block開始時だけのIRQ確認では不十分である。`run(max_cycles)` の予算境界、debug step、IRQ、外部からの PC/status 更新で正確に退出できるようにする。
+`Cpu::tick_cached` はデバイス更新、IRQ 入力取得、CPU MMIO 状態同期、命令実行、commit と IRQ 受理を所定の順に行う。JITは各native命令境界でIRQ入力・CPU MMIO同期とコード世代を確認するが、既定のJIT実行では待機デバイス更新だけを最大256 cycleまとめる（実験的cached-relaxedと同じ契約）。Known deadline、MMIO、active DMA/IDC/expansion、run予算境界で同期する。block開始時だけのIRQ確認では不十分である。`run(max_cycles)` の予算境界、debug step、IRQ、外部からの PC/status 更新で正確に退出できるようにする。
 
 RAM の既存 4 KiB page generation を再利用する。block key は PC と instruction mode を含み、block 全体が参照する全 page の世代を記録する。入口検証だけでなく、途中の device tick で DMA が後続命令を書き換える場合にも、変更済み命令の実行前に退出する。初期版は各命令前に世代を再検証する保守的な方式でよい。CPU store は block 終端とし、debugger・DMA・load/reset による変更も検証する。追跡不能な領域は fallback とする。
 

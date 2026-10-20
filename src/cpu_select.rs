@@ -95,8 +95,12 @@ pub fn resolve_cpu_kind(cli: Option<CpuKind>, config_path: &Path) -> Result<CpuK
     })
 }
 
+/// Largest configurable JIT block. A batch still stops at branches, at the
+/// relaxed device window and at the run budget.
+pub const MAX_JIT_BLOCK_SIZE: u64 = 256;
+
 /// Resolve the maximum instructions previewed into each JIT block. Presets are
-/// Small=8, Medium=16 (default), Big=32; custom values may use 2..=64.
+/// Small=8, Medium=16 (default), Big=32; custom values may use 2..=256.
 pub fn resolve_jit_block_size(config_path: &Path) -> Result<usize, String> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
@@ -117,9 +121,9 @@ pub fn resolve_jit_block_size(config_path: &Path) -> Result<usize, String> {
     let size = value
         .as_u64()
         .ok_or("`cpu.jit_block_size` must be an integer".to_string())?;
-    if !(2..=64).contains(&size) {
+    if !(2..=MAX_JIT_BLOCK_SIZE).contains(&size) {
         return Err(format!(
-            "`cpu.jit_block_size` must be between 2 and 64 (got {size})"
+            "`cpu.jit_block_size` must be between 2 and {MAX_JIT_BLOCK_SIZE} (got {size})"
         ));
     }
     Ok(size as usize)
@@ -170,6 +174,17 @@ impl AnyCpu {
             Ok(Self::new_with_jit_block_size(kind, bus, block_size))
         } else {
             Ok(Self::new(kind, bus))
+        }
+    }
+
+    /// Test hook for JIT tiering: visits before the batch tier compiles and
+    /// declined batch dispatches before the strict tier compiles (0 compiles
+    /// both together). No effect on other CPU kinds.
+    #[doc(hidden)]
+    #[cfg(feature = "jit")]
+    pub fn set_jit_tier_thresholds(&mut self, hot: u32, strict: u32) {
+        if let Self::Jit(cpu) = self {
+            cpu.set_jit_tier_thresholds(hot, strict);
         }
     }
 
