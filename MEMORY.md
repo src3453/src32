@@ -859,3 +859,7 @@
 - 検証は `tests/spin_fast_forward.rs`（早送りON/OFFのlockstep差分、timer IRQ併用、関数呼び出し型poll、ホスト書き換え）。`AnyCpu::set_spin_fast_forward` と `spin_skipped_cycles` はdoc hiddenのテスト用hook。timer期限・IDC期限を無視するmutationはどちらも検出される。
 - sol小ネタ: `while` 本体は末尾で0（継続）／1（終了）を積む。ループ内の分岐に `ret` を入れると「stack underflow at jz」になることがある。`$TMPDIR/..` は `AppData/Local` でありscratchpadのTempではない（Writeツールの出力先と混同した）。
 
+
+## Launcher JIT presets (2026-10-20)
+- Launcher presets are Small=16, Medium=32, Big=64 instructions. Keep preset selection, numeric-to-preset detection, initial state and config/profile loading aligned. The emulator default remains 16 (now Small), and custom values remain 2..256.
+- Launcher help must reflect the 256-instruction limit. Larger blocks can increase generated code and compilation time and may run slower; preset changes do not change JIT safety contracts.

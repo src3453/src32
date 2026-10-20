@@ -69,7 +69,7 @@ MUL/MULH and 16-cycle DIV/DIVU/MOD.
 Supported Normal-mode instructions are integer ALU, half-immediate, CPUID,
 branch/call/return, MUL/MULH/DIV/DIVU/MOD, and LD/LDH/LDB/ST/STH/STB. The block
 maximum is set by `cpu.jit_block_size` (2..=256, default 16); recommended
-presets are Small=8, Medium=16, and Big=32. Blocks still end at branches and
+presets are Small=16, Medium=32, and Big=64. Blocks still end at branches and
 unsupported instructions. On measured guests, larger blocks compiled more
 overlapping code without running faster, so the default remains 16. Short mode,
 mode transitions, HALT, IRET, and non-previewable instruction memory use Cached

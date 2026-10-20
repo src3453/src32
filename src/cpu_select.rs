@@ -100,7 +100,7 @@ pub fn resolve_cpu_kind(cli: Option<CpuKind>, config_path: &Path) -> Result<CpuK
 pub const MAX_JIT_BLOCK_SIZE: u64 = 256;
 
 /// Resolve the maximum instructions previewed into each JIT block. Presets are
-/// Small=8, Medium=16 (default), Big=32; custom values may use 2..=256.
+/// Small=16 (default), Medium=32, Big=64; custom values may use 2..=256.
 pub fn resolve_jit_block_size(config_path: &Path) -> Result<usize, String> {
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,

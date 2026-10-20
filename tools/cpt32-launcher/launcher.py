@@ -363,7 +363,7 @@ class Launcher(tk.Tk):
         self.ram_mib = tk.StringVar(value="16")
         self.vram_mib = tk.StringVar(value="4")
         self.jit_block_size = tk.StringVar(value="16")
-        self.jit_block_preset = tk.StringVar(value="Medium")
+        self.jit_block_preset = tk.StringVar(value="Small")
         self.jit_block_size.trace_add("write", self._jit_block_size_changed)
         self.log_level = tk.StringVar(value="info")
         self.build_kind = tk.StringVar(value="release")
@@ -464,7 +464,7 @@ class Launcher(tk.Tk):
         preset_box.bind("<<ComboboxSelected>>", self._jit_preset_changed)
         ttk.Label(jit_row, text="命令").pack(side="left", padx=(10, 4))
         ttk.Spinbox(jit_row, textvariable=self.jit_block_size, from_=2, to=256, width=7).pack(side="left")
-        ttk.Label(advanced, text="Small=8、Medium=16（既定）、Big=32。数値は2〜64命令です。大きいほど高速化する場合がありますが、安定性が下がる可能性があります。", foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(advanced, text="Small=16（既定）、Medium=32、Big=64。数値は2〜256命令です。大きい値では生成コード量やコンパイル時間が増え、遅くなる場合があります。", foreground="#555").grid(row=3, column=0, columnspan=2, sticky="w", pady=(4, 0))
         ttk.Label(advanced, text="RAM: 1〜256 MiB、VRAM: 4〜128 MiB。既定値は16 MiB / 4 MiBです。", foreground="#555").grid(row=4, column=0, columnspan=2, sticky="w", pady=(4, 0))
         cards_tab = ttk.Frame(self.tabs, padding=12)
         cards_tab.columnconfigure(1, weight=1)
@@ -563,7 +563,7 @@ class Launcher(tk.Tk):
             self.debug_gui.set(True)
 
     def _jit_preset_changed(self, _event=None):
-        preset_values = {"Small": "8", "Medium": "16", "Big": "32"}
+        preset_values = {"Small": "16", "Medium": "32", "Big": "64"}
         value = preset_values.get(self.jit_block_preset.get())
         if value:
             self.jit_block_size.set(value)
@@ -574,7 +574,7 @@ class Launcher(tk.Tk):
         except ValueError:
             self.jit_block_preset.set("Custom")
             return
-        self.jit_block_preset.set({8: "Small", 16: "Medium", 32: "Big"}.get(size, "Custom"))
+        self.jit_block_preset.set({16: "Small", 32: "Medium", 64: "Big"}.get(size, "Custom"))
 
     def _log(self, text):
         self.log.configure(state="normal")
@@ -827,7 +827,7 @@ class Launcher(tk.Tk):
         except (TypeError, ValueError):
             size = 16
         self.jit_block_size.set(str(size))
-        self.jit_block_preset.set({8: "Small", 16: "Medium", 32: "Big"}.get(size, "Custom"))
+        self.jit_block_preset.set({16: "Small", 32: "Medium", 64: "Big"}.get(size, "Custom"))
 
     def _load_saved_state(self):
         try:

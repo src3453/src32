@@ -46,7 +46,7 @@ Normal Modeでは固定長32ビット命令を使用し、拡張Sは16ビット�
 
 `--features jit`でビルドすると、`--cpu jit`またはYAMLの`cpu.microarchitecture: jit`を選択できます。featureなしのbuildではエラーになります。既定は引き続きPipelineです。CPUIDのfeaturesは`0x3F`で、命令・IRQ・バス・cycle budgetの意味はCachedに合わせます。MUL/MULHの3サイクル、DIV/DIVU/MODの16サイクルも維持します。
 
-対応命令はNormal modeの整数ALU、half immediate、CPUID、通常の分岐・call・return、MUL/MULH/DIV/DIVU/MOD、LD/LDH/LDB/ST/STH/STBです。最大命令数はYAMLの`cpu.jit_block_size`で2〜256に設定でき、既定値は16です。推奨プリセットはSmall=8、Medium=16、Big=32です。blockは分岐と未対応命令で終わります。実測ゲストでは大きいblockほど重複コードのcompileが増えて速くならなかったため、既定は16のままです。Short mode、mode切替、HALT、IRET、先読み非対応の命令領域はCached経路を使います。1命令だけのblockは解釈実行します。先読みは副作用なしpreviewと世代追跡を公開したmemoryだけに限定します。
+対応命令はNormal modeの整数ALU、half immediate、CPUID、通常の分岐・call・return、MUL/MULH/DIV/DIVU/MOD、LD/LDH/LDB/ST/STH/STBです。最大命令数はYAMLの`cpu.jit_block_size`で2〜256に設定でき、既定値は16です。推奨プリセットはSmall=16、Medium=32、Big=64です。blockは分岐と未対応命令で終わります。実測ゲストでは大きいblockほど重複コードのcompileが増えて速くならなかったため、既定は16のままです。Short mode、mode切替、HALT、IRET、先読み非対応の命令領域はCached経路を使います。1命令だけのblockは解釈実行します。先読みは副作用なしpreviewと世代追跡を公開したmemoryだけに限定します。
 
 compileは段階的です。同じ開始PCが128回dispatchされると、まず**一括実行（batch）関数**を生成します。バスアクセスのない待機区間で、命令ごとのRust呼出しなしに検証済みprefixを実行します。全命令が既存decode cacheにhitし、命令一致・先頭と末尾の世代一致が必要です。一度検証に通ったblockはstampを持ち、decode cacheへのfillか対象pageの世代変化があった場合だけ再検証します。prefixはrun予算と待機区間（Cachedのcycle数。MUL/DIVは3/16）で制限し、次のdevice更新／timer期限の直前で終えます。DMA／IDC動作中・拡張カードあり・有効なCPU IRQ pending時には使いません。乗除算はnativeで実行し、0除算と`INT_MIN / -1`は解釈実行と同じ結果にします。load/storeはhelperを呼び、経過cycleを待機device区間へ渡してから解釈実行と同じBusアクセスを行うため、deviceの同期点は`cached-relaxed`と一致します。一括実行できるのはplain memory（RAM／BIOS ROM）に収まるアクセスだけで、それ以外のアドレスはアクセス前に一括実行を止めます。アクセス後にIRQC出力が変わった場合や、storeが自blockのコードを変えた場合も直後に止めます。連続するbatchはnative registerのまま連結し、CPU register MMIOとIRQ samplingは連結の終わりで同期します。
 
