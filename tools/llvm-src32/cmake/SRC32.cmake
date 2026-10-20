@@ -124,7 +124,7 @@ function(src32_add_executable name)
         DEPENDS ${sources} ${compiler_dependencies}
             "${tool_root}/../asm/asm.py" "${tool_root}/../wax/wax.py"
         DEPFILE "${depfile}"
-        COMMENT "Compiling freestanding C target ${name} for SRC32"
+        COMMENT "Compiling freestanding C/C++ target ${name} for SRC32"
         VERBATIM COMMAND_EXPAND_LISTS)
     add_custom_target("${name}" ALL DEPENDS "${image}")
     set_target_properties("${name}" PROPERTIES SRC32_IMAGE "${image}")

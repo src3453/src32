@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Freestanding big-endian C / LLVM IR to SRC32 assembler and WAX."""
+"""Freestanding big-endian C / C++ / LLVM IR to SRC32 assembler and WAX."""
 from __future__ import annotations
 
 import argparse
@@ -13,6 +13,8 @@ import tempfile
 
 ROOT = Path(__file__).resolve().parent
 RUNTIME_NAMES = ("memcpy", "memmove", "memset", "memcmp", "strlen")
+CXX_SUFFIXES = (".cpp", ".cc", ".cxx")
+SOURCE_SUFFIXES = (".c", *CXX_SUFFIXES)
 
 
 class DriverError(Exception):
@@ -31,7 +33,7 @@ def address(text: str) -> int:
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
-    p.add_argument("inputs", nargs="+", type=Path, help="C, textual LLVM IR (.ll), or LLVM bitcode (.bc)")
+    p.add_argument("inputs", nargs="+", type=Path, help="C/C++, textual LLVM IR (.ll), or LLVM bitcode (.bc)")
     p.add_argument("-o", "--output", type=Path)
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("-S", action="store_true", help="emit SRC32 assembly")
@@ -69,11 +71,16 @@ def find_clang(explicit: str | None) -> str:
 
 
 def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=False, depfile=None) -> None:
+    cxx = source.suffix.lower() in CXX_SUFFIXES
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-pic", "-fno-pie",
                "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
-               "-isystem", str(ROOT / "runtime" / "include"), "-std=c11",
+               "-isystem", str(ROOT / "runtime" / "include"),
+               "-std=c++17" if cxx else "-std=c11",
                "-O0" if runtime else args.optimization, "-S", "-emit-llvm"]
+    if cxx:
+        command.extend(["-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
+                        "-fno-use-cxa-atexit", "-Xclang", "-mno-constructor-aliases"])
     # Also set LLVM's pipeline switches: ROCm Clang 20 otherwise runs its SLP
     # pass at -O2 despite the frontend -fno-slp-vectorize flag.
     command.extend(["-mllvm", "-vectorize-slp=false", "-mllvm", "-vectorize-loops=false"])
@@ -143,8 +150,8 @@ def run(args) -> Path:
     from data import Layout
 
     for source in args.inputs:
-        if source.suffix.lower() not in (".c", ".ll", ".bc"):
-            raise DriverError(f"unsupported input extension: {source} (expected .c, .ll, or .bc)")
+        if source.suffix.lower() not in (*SOURCE_SUFFIXES, ".ll", ".bc"):
+            raise DriverError(f"unsupported input extension: {source} (expected .c, .cpp, .cc, .cxx, .ll, or .bc)")
         if not source.is_file():
             raise DriverError(f"input file not found: {source}")
     if args.origin % 4:
@@ -177,7 +184,7 @@ def run(args) -> Path:
             rule = make_escape(output) + ": " + " ".join(make_escape(path) for path in sorted(dependencies)) + "\n"
             args.depfile.write_text(rule, encoding="utf-8")
     clang = None
-    if any(source.suffix.lower() == ".c" for source in args.inputs):
+    if any(source.suffix.lower() in SOURCE_SUFFIXES for source in args.inputs):
         clang = find_clang(args.clang)
 
     def parse_module(path):
@@ -205,7 +212,7 @@ def run(args) -> Path:
         linked = None
         for index, source in enumerate(args.inputs):
             parsed_source = source
-            if source.suffix.lower() == ".c":
+            if source.suffix.lower() in SOURCE_SUFFIXES:
                 parsed_source = work / f"{index:03d}-{source.stem}.ll"
                 dependency_path = parsed_source.with_suffix(".d") if args.depfile else None
                 compile_c(clang, source, parsed_source, args, depfile=dependency_path)

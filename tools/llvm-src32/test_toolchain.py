@@ -76,6 +76,39 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_cpp_example_with_c_sdk(self):
+        example = ROOT / 'examples/hello-cpp'
+        # Exercise each C++ extension, constructor/method mangling across TUs,
+        # C SDK linkage, constexpr and PCG VRAM checks at every supported -O.
+        main = self.work / 'main.cc'
+        main.write_text((example / 'main.cpp').read_text(encoding='utf-8'), encoding='utf-8')
+        counter = self.work / 'counter.cxx'
+        counter.write_text((example / 'counter.cpp').read_text(encoding='utf-8'), encoding='utf-8')
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(main, counter, ROOT / 'sdk/cpt32/src/pcg.c',
+                            ROOT / 'sdk/cpt32/src/print.c', '-I', example,
+                            '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
+                for cpu in ('scalar', 'pipeline'):
+                    self.execute(image, 42, cpu)
+        image = self.work / 'cpp.wax'
+        self.driver(example / 'main.cpp', example / 'counter.cpp',
+                    ROOT / 'sdk/cpt32/src/pcg.c', ROOT / 'sdk/cpt32/src/print.c',
+                    '-I', ROOT / 'sdk/cpt32/include', '-o', image)
+        self.execute(image, 42)
+
+    def test_cpp_dynamic_global_initialization_rejected(self):
+        source = self.work / 'global.cpp'
+        source.write_text('''
+extern "C" int read_value();
+int value = read_value();
+extern "C" int read_value() { return 42; }
+extern "C" int main() { return value; }
+''', encoding='utf-8')
+        result = self.driver(source, '-o', self.work / 'global.wax', success=False)
+        self.assertIn('unsupported linkage appending', result.stderr)
+
     def test_cpt32_halt_waits_for_irq_then_resumes(self):
         source = self.work / 'halt.c'
         source.write_text('''

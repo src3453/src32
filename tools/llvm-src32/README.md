@@ -1,6 +1,6 @@
-# LLVM → SRC32 freestanding C toolchain
+# LLVM → SRC32 freestanding C / C++ toolchain
 
-`csc` と独立した、C / LLVM IR → SRC32 ASM → WAX コンパイラ。
+`csc` と独立した、C / C++ / LLVM IR → SRC32 ASM → WAX コンパイラ。
 `tools/csc` は非推奨 (deprecated) です。今後更新しません。C guest の新規開発にはこの LLVM/SRC32 ツールチェーンを使用してください。
 CPT32 の RAM 上で起動し、引数なしの `int main(void)` を呼び、戻り値を R1 に残して HALT します。
 
@@ -67,11 +67,18 @@ python tools/llvm-src32/driver.py main.c helper.c --emit-llvm -o game.ll
 python tools/llvm-src32/driver.py game.ll -o game.wax
 ```
 
-入力は `.c`、`.ll`、`.bc` の組合せ。`-O0`（既定）、`-O1`、`-O2` は C 入力に適用。IR 入力を再最適化する指定ではありません。
+入力は `.c`、`.cpp`、`.cc`、`.cxx`、`.ll`、`.bc` の組合せ。C は C11、C++ は C++17 としてコンパイルします。`-O0`（既定）、`-O1`、`-O2` は C/C++ 入力に適用。IR 入力を再最適化する指定ではありません。
 `--origin`、`--stack-top`、`--entry` で配置・起動関数を指定。
 `--save-temps DIR` は各入力の IR、リンク済み `linked.ll`、`output.a` を保存。
 `--depfile PATH` は出力生成成功後に Make 形式の依存ルールを書き出します。
 `.bin` 出力は raw バイト列で配置・エントリ情報を持ちません。非ゼロ origin では WAX を使ってください。
+
+## C++ 開発サンプル
+
+[`examples/hello-cpp`](../../examples/hello-cpp/README.md) はクラスを使う複数翻訳単位と C SDK の混在プロジェクトです。CMake と CLI の両方でビルドできます。
+C++ の起動関数は `extern "C" int main()` とし、C SDK ヘッダーも `extern "C"` で囲みます。
+ドライバは例外・RTTI・threadsafe statics・cxa atexit を無効にし、コンストラクタ／デストラクタの alias 生成も抑制します。
+標準 C++ ライブラリ、new/delete ランタイム、動的グローバル初期化、終了時デストラクタは提供しません。weak/COMDAT を生成するテンプレートや inline メソッド等も現行バックエンドでは利用できません。メソッドを別の `.cpp` に定義する例と詳しい制限はサンプルを参照してください。
 
 ## 対応範囲
 
