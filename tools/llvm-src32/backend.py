@@ -1047,6 +1047,41 @@ class _Function:
 
     def intrinsic(self, inst, name, values):
         c = self.c
+        if name.startswith("llvm.usub.sat."):
+            bits = _bits(inst.type)
+            wide = bits > 32
+            self.load(values[0], 1, 1 if wide else 0)
+            self.load(values[1], 3, 1 if wide else 0)
+            if not wide:
+                self.narrow(1, bits)
+                self.narrow(3, bits)
+            c.emit("SLTU R6, R1, R3")  # low-word borrow
+            if wide:
+                self.load(values[0], 2, 0)
+                self.load(values[1], 4, 0)
+                # Underflow = high(a)<high(b) || (high(a)==high(b) && borrow).
+                c.emit("XOR R5, R2, R4")
+                c.emit("SLTU R5, R0, R5")
+                c.imm(9, 1)
+                c.emit("XOR R5, R5, R9")
+                c.emit("AND R5, R5, R6")
+                c.emit("SLTU R7, R2, R4")
+                c.emit("OR R5, R5, R7")
+                c.emit("SUB R2, R2, R4")
+                c.emit("SUB R2, R2, R6")
+            else:
+                c.move(5, 6)
+            c.emit("SUB R1, R1, R3")
+            c.add_const(5, 5, -1)  # no underflow: all ones; underflow: zero
+            c.emit("AND R1, R1, R5")
+            if wide:
+                c.emit("AND R2, R2, R5")
+                self.store(inst, 2, 0)
+                self.store(inst, 1, 1)
+            else:
+                self.narrow(1, bits)
+                self.store(inst)
+            return
         if name.split(".")[1] in ("smin", "smax", "umin", "umax", "abs", "bswap", "ctpop", "ctlz", "cttz"):
             self.integer_intrinsic(inst, name, values)
             return

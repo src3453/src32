@@ -76,6 +76,57 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_unsigned_saturating_subtraction(self):
+        # Direct IR prevents Clang folding constants or replacing the intrinsic.
+        # Include non-C widths, the unsigned sign boundary, and both i64 words.
+        declarations, functions, checks = [], [], []
+        index = 0
+        for bits in (1, 7, 8, 16, 31, 32, 64):
+            ty = f'i{bits}'
+            maximum, sign = (1 << bits) - 1, 1 << (bits - 1)
+            pairs = [(0, 0), (0, 1), (1, 0), (1, 1),
+                     (maximum, maximum), (maximum, 0), (maximum, 1),
+                     (0, maximum), (sign, sign - 1), (sign - 1, sign)]
+            if bits == 64:
+                pairs += [(0x100000000, 1), (0xffffffff, 0x100000000),
+                          (0x200000000, 0x100000001),
+                          (0x100000001, 0x100000002),
+                          (0xffffffffffffffff, 0xffffffff)]
+            declarations.append(f'declare {ty} @llvm.usub.sat.{ty}({ty}, {ty})')
+            functions.append(f'''define {ty} @sub{bits}({ty} %a, {ty} %b) {{
+  %r = call {ty} @llvm.usub.sat.{ty}({ty} %a, {ty} %b)
+  ret {ty} %r
+}}''')
+            for a, b in pairs:
+                checks += [f'  %r{index} = call {ty} @sub{bits}({ty} {a}, {ty} {b})',
+                           f'  %ok{index} = icmp eq {ty} %r{index}, {max(a - b, 0)}',
+                           f'  %all{index} = and i1 %ok{index}, ' +
+                           ('true' if index == 0 else f'%all{index - 1}')]
+                index += 1
+        source = self.ir('\n'.join(declarations + functions) + '\n' +
+                         'define i32 @main() {\n' + '\n'.join(checks) +
+                         f'\n  %result = select i1 %all{index - 1}, i32 42, i32 1\n'
+                         '  ret i32 %result\n}\n')
+        image = self.work / 'usub-sat.wax'
+        self.driver(source, '-o', image)
+        for cpu in ('scalar', 'pipeline'):
+            self.execute(image, 42, cpu)
+
+    def test_softfloat_c_example(self):
+        example = ROOT / 'examples/softfloat-c'
+        library = example / 'vendor/softfloat/source'
+        sources = sorted(library.rglob('*.c'))
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(example / 'main.c', *sources,
+                            ROOT / 'sdk/cpt32/src/pcg.c',
+                            '-I', example / 'port', '-I', library / 'include',
+                            '-I', library / '8086', '-I', ROOT / 'sdk/cpt32/include',
+                            '-DINLINE_LEVEL=0', '-DSOFTFLOAT_ROUND_ODD', opt, '-o', image)
+                for cpu in ('scalar', 'pipeline'):
+                    self.execute(image, 42, cpu)
+
     def test_cpp_example_with_c_sdk(self):
         example = ROOT / 'examples/hello-cpp'
         # Exercise each C++ extension, constructor/method mangling across TUs,

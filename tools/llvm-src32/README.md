@@ -91,7 +91,7 @@ C++ の起動関数は `extern "C" int main()` とし、C SDK ヘッダーも `e
 | 制御フロー | 分岐、ループ、switch、select、並列コピーによる phi |
 | スタック | 固定／動的 alloca、VLA、stacksave/stackrestore。最大アラインメント8 byte |
 | ランタイム | memcpy、memmove、memset、memcmp、strlen。未解決のものだけ同梱実装をリンク。ユーザー実装を優先 |
-| LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、expect/assume、lifetime/debug 等の対応部分 |
+| LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、符号なし飽和減算 `llvm.usub.sat`（i1–i32/i64）、expect/assume、lifetime/debug 等の対応部分 |
 
 Clang の `mips-unknown-none` / o32 は **big-endian 32-bit C の IR 生成用**。MIPS 命令は生成しません。
 LLVM の `ccc` / `fastcc` と元ターゲット ABI ヒント `inreg` は、直接・間接呼出側と定義側を一貫して SRC32 のスタック渡しへ変換します。Clang が `-O1` / `-O2` で内部関数へ付ける `fastcc` も利用できます。`tail` は通常呼出として扱い、末尾呼出最適化は保証しません。
@@ -106,6 +106,7 @@ LLVM IR 全仕様／C11 全仕様を実装したという意味ではありま�
 
 stdio、malloc、ファイル、OS API は付属しません。標準ヘッダーも `stddef.h/stdint.h/stdbool.h/limits.h/string.h` の freestanding 用です。
 追加の API はCで実装して一緒にリンクするか、同じ ABI を守る SRC32 ランタイムとして用意してください。
+外部 C ライブラリの組み込み例は [`Berkeley SoftFloat デモ`](../../examples/softfloat-c/README.md)。Release 3e のソースを同梱し、整数演算で binary32 を実装するライブラリを `-O2` でリンクします。
 既存 sol / csc の関数呼出 ABI とはバイナリ互換ではありません。
 
 ## SRC32 ABI とメモリ配置

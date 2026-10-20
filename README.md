@@ -11,6 +11,7 @@ Windows／Linuxで起動設定を操作できるPython GUIランチャーを用�
 - **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。標準ライブラリ（`sol/solstd`、`sol/cpt32`）は名前空間を宣言しており、`pcg.prnscr` や `softfloat.sf32_add` のように `名前空間.名前` で参照します（[`doc/spec_sol.md`](doc/spec_sol.md)）。
 - **CPT32 Cライブラリ** — sol版の描画・IRQ・ストレージ・音楽APIを、LLVM/SRC32向けfreestanding Cへ移植。SDKは [`sdk/cpt32`](sdk/cpt32/README.md)、サンプルは [`3D Cube`](examples/3d-cube-c/README.md)、[`Terrain Flight`](examples/vpu-terrain-flight-c/README.md)、[`DOS`](examples/dos-c/README.md)、[`TinyBASIC`](examples/tinybasic-c/README.md)。
 - **C++17 + LLVM サンプル** — クラスを使う複数ファイルと C SDK をリンクし、文字画面に結果を表示。CMake／CLI の手順は [`Hello C++`](examples/hello-cpp/README.md)。
+- **C 外部ライブラリデモ** — [`Berkeley SoftFloat Release 3e`](examples/softfloat-c/README.md) を組み込み、浮動小数点の四則演算・丸め・例外フラグをゲストで検証して表示。
 - **開発サンプル** — [`3d_cube.sol`](3d_cube.sol)、[`mouse_cursor.sol`](mouse_cursor.sol)、[`vpu_tnl_triangle.sol`](vpu_tnl_triangle.sol) など。
 - **CPT32 DOS / TinyBASIC** — sol版 [`dos.sol`](dos.sol)、[`tinybasic.sol`](tinybasic.sol) と、freestanding C移植 [`DOS`](examples/dos-c/README.md)・[`TinyBASIC`](examples/tinybasic-c/README.md)。
 
