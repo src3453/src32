@@ -88,6 +88,27 @@ impl IrqController {
         }
     }
 
+    /// Set every source selected by `mask` to its bit in `levels` at once.
+    /// Equivalent to calling [`Self::set_source`] for each selected source.
+    #[inline]
+    pub fn set_source_levels(&mut self, mask: u16, levels: u16) {
+        let levels = levels & mask;
+        let changed = (self.source_level ^ levels) & mask;
+        if changed == 0 {
+            return;
+        }
+        self.set_changed_source_levels(changed, levels);
+    }
+
+    #[cold]
+    fn set_changed_source_levels(&mut self, changed: u16, levels: u16) {
+        for number in 0..SOURCE_COUNT as u8 {
+            if changed & (1 << number) != 0 {
+                self.set_source(number, levels & (1 << number) != 0);
+            }
+        }
+    }
+
     pub fn clear_pending(&mut self, mask: u16) {
         let old_pending = self.pending;
         self.pending &= !(mask & SOURCE_MASK);
@@ -224,5 +245,35 @@ mod tests {
         assert!(!irqc.irq_output().valid);
         irqc.set_source(3, true);
         assert_eq!(irqc.pending(), 1 << 3);
+    }
+
+    #[test]
+    fn set_source_levels_matches_individual_source_updates() {
+        let samples = [
+            0x0000, 0xFFFF, 0x1FFE, 0x0008, 0x1234, 0xA5A5, 0x0F0F, 0x8001,
+        ];
+        for &pending in &samples {
+            for &old_levels in &samples {
+                for &mask in &samples {
+                    for &levels in &samples {
+                        let make = || IrqController {
+                            pending,
+                            enable: 0x00FF,
+                            source_level: old_levels,
+                        };
+                        let mut batched = make();
+                        batched.set_source_levels(mask, levels);
+                        let mut individual = make();
+                        for number in 0..SOURCE_COUNT as u8 {
+                            if mask & (1 << number) != 0 {
+                                individual.set_source(number, levels & (1 << number) != 0);
+                            }
+                        }
+                        assert_eq!(batched.pending, individual.pending);
+                        assert_eq!(batched.source_level, individual.source_level);
+                    }
+                }
+            }
+        }
     }
 }

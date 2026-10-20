@@ -7,6 +7,7 @@
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::devices::bmc::{Bmc, connect_bmc};
@@ -67,6 +68,12 @@ pub trait Device {
     fn irq_asserted(&self) -> bool {
         false
     }
+    /// Side-effect-free storage: accesses never fault, never touch other
+    /// devices and cannot change any IRQ source. The Bus then skips IRQ
+    /// re-sampling after the access and may arbitrate a word only once.
+    fn is_plain_memory(&self) -> bool {
+        false
+    }
     fn reset(&mut self) {}
     /// Add stereo samples at the host output rate. Called serially with MMIO.
     fn render_audio(&mut self, _sample_rate: u32, _left: &mut [i16], _right: &mut [i16]) {}
@@ -85,7 +92,7 @@ pub struct Bus {
     bmc: Option<Rc<RefCell<Bmc>>>,
     dmac: Option<Rc<RefCell<Dmac>>>,
     idc: Option<Rc<RefCell<Idc>>>,
-    pec_input: Option<Arc<Mutex<PeCState>>>,
+    pec_input_pending: Option<Arc<AtomicBool>>,
     pec_timing: Option<Rc<RefCell<PeCTimingState>>>,
     irq_controller: Option<Rc<RefCell<IrqController>>>,
     system_cycles: u64,
@@ -105,7 +112,7 @@ impl Bus {
             bmc: None,
             dmac: None,
             idc: None,
-            pec_input: None,
+            pec_input_pending: None,
             pec_timing: None,
             irq_controller: None,
             system_cycles: 0,
@@ -140,7 +147,11 @@ impl Bus {
         self.idc = Some(idc);
     }
     pub(crate) fn attach_pec_input(&mut self, state: Arc<Mutex<PeCState>>) {
-        self.pec_input = Some(state);
+        let pending = state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .pending_flag();
+        self.pec_input_pending = Some(pending);
     }
     pub(crate) fn attach_pec_timing(&mut self, state: Rc<RefCell<PeCTimingState>>) {
         self.pec_timing = Some(state);
@@ -161,14 +172,17 @@ impl Bus {
         while self.system_cycles < target {
             let now = self.system_cycles;
             let mut next_cycle = target;
-            if let Some(until_irq) = self.cycles_until_pec_irq() {
-                next_cycle = next_cycle.min(now.saturating_add(until_irq.max(1)));
-            }
-            if let Some(deadline) = self
-                .next_expansion_event_cycle()
-                .filter(|&cycle| cycle > now)
-            {
-                next_cycle = next_cycle.min(deadline);
+            // Every deadline is at least `now + 1`, so it cannot split a single cycle.
+            if target - now > 1 {
+                if let Some(until_irq) = self.cycles_until_pec_irq() {
+                    next_cycle = next_cycle.min(now.saturating_add(until_irq.max(1)));
+                }
+                if let Some(deadline) = self
+                    .next_expansion_event_cycle()
+                    .filter(|&cycle| cycle > now)
+                {
+                    next_cycle = next_cycle.min(deadline);
+                }
             }
             let elapsed = next_cycle - now;
             self.advance_pec_timing_cycles(elapsed);
@@ -298,6 +312,9 @@ impl Bus {
     /// Advance one 48 MHz system cycle and one bus arbitration opportunity.
     pub fn tick_devices(&mut self) {
         self.advance_system_cycles(1);
+        if self.tick_idle_dma_devices() {
+            return;
+        }
         if let Some(dmac) = &self.dmac {
             dmac.borrow_mut().process_idc_abort_boundaries();
         }
@@ -307,6 +324,27 @@ impl Bus {
         }
         self.refresh_device_irqs();
         self.service_dma_request(false);
+    }
+
+    /// Idle form of the rest of `tick_devices`. With no busy DMA channel and
+    /// no active IDC command there is no abort boundary, IDC failure, IRQ
+    /// change or DMA request, so only the IDC clock and BMC request latch move.
+    fn tick_idle_dma_devices(&mut self) -> bool {
+        let (Some(bmc), Some(dmac)) = (&self.bmc, &self.dmac) else {
+            return false;
+        };
+        if !dmac.borrow().can_batch_idle() {
+            return false;
+        }
+        if let Some(idc) = &self.idc {
+            let mut idc = idc.borrow_mut();
+            if idc.is_busy() {
+                return false;
+            }
+            idc.advance_idle_cycles(1);
+        }
+        bmc.borrow_mut().grant(0);
+        true
     }
 
     /// Experimental idle-device batching. Active transfers and expansion cards
@@ -517,39 +555,45 @@ impl Bus {
             .idc
             .as_ref()
             .is_some_and(|idc| idc.borrow().irq_asserted());
-        let pec_pending = self.pec_input.as_ref().is_some_and(|state| {
-            state
-                .lock()
-                .unwrap_or_else(std::sync::PoisonError::into_inner)
-                .has_pending_events()
-        });
+        let pec_pending = self
+            .pec_input_pending
+            .as_ref()
+            .is_some_and(|pending| pending.load(Ordering::Acquire));
         let pec_timing_pending = self
             .pec_timing
             .as_ref()
             .is_some_and(|state| state.borrow().irq_asserted());
-        let expansion_pending = if self.has_expansion_cards {
-            std::array::from_fn(|slot| {
-                self.expansion_devices[slot]
+        let mut levels = u16::from(dmac_pending) << 1
+            | u16::from(idc_pending) << 2
+            | u16::from(pec_pending) << 3
+            | u16::from(pec_timing_pending) << 4;
+        if self.has_expansion_cards {
+            for slot in 0..usize::from(EXPANSION_SLOT_COUNT) {
+                if self.expansion_devices[slot]
                     .is_some_and(|index| self.devices[index].device.irq_asserted())
-            })
-        } else {
-            [false; 8]
-        };
-        if let Some(irq) = &self.irq_controller {
-            let mut irq = irq.borrow_mut();
-            irq.set_source(1, dmac_pending);
-            irq.set_source(2, idc_pending);
-            irq.set_source(3, pec_pending);
-            irq.set_source(4, pec_timing_pending);
-            for (slot, asserted) in expansion_pending.into_iter().enumerate() {
-                irq.set_source((slot + 5) as u8, asserted);
+                {
+                    levels |= 1 << (slot + 5);
+                }
             }
+        }
+        if let Some(irq) = &self.irq_controller {
+            // Sources 1..=12: DMAC, IDC, PeC input, PeC timing, slots 0..=7.
+            irq.borrow_mut().set_source_levels(0x1FFE, levels);
         }
     }
 
     fn arbitrate_cpu_access(&mut self) {
         if self.access_source != BusAccessSource::Cpu {
             return;
+        }
+        if let (Some(bmc), Some(dmac)) = (&self.bmc, &self.dmac) {
+            if dmac.borrow().request_mask() == 0 {
+                // Same BMC state as the CPU-only grant/release/claim sequence.
+                let mut bmc = bmc.borrow_mut();
+                bmc.grant(1);
+                bmc.claim_cpu();
+                return;
+            }
         }
         while self.service_dma_request(true) != Some(0) {
             if self.bmc.is_none() || self.dmac.is_none() {
@@ -630,6 +674,37 @@ impl Bus {
         self.devices.iter().map(|mapped| mapped.region)
     }
 
+    fn find_device_index(&self, addr: u32) -> Option<usize> {
+        self.devices.iter().position(|mapped| {
+            addr.checked_sub(mapped.region.start)
+                .is_some_and(|offset| offset < mapped.region.size)
+        })
+    }
+
+    /// Plain-memory device holding `addr..addr+width` when a CPU access can
+    /// use the single-arbitration path: no DMA master can request the bus
+    /// between beats, and plain memory cannot raise one.
+    fn plain_memory_span(&mut self, addr: u32, width: u32) -> Option<(usize, u32)> {
+        if self.access_source != BusAccessSource::Cpu {
+            return None;
+        }
+        let index = self.find_device_index(addr)?;
+        let mapped = &self.devices[index];
+        let offset = addr - mapped.region.start;
+        if !mapped.device.is_plain_memory() || mapped.region.size - offset < width {
+            return None;
+        }
+        self.flush_relaxed_devices();
+        if self
+            .dmac
+            .as_ref()
+            .is_some_and(|dmac| dmac.borrow().request_mask() != 0)
+        {
+            return None;
+        }
+        Some((index, offset))
+    }
+
     pub fn find_device(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
         for mapped in &mut self.devices {
             let end = mapped
@@ -690,10 +765,13 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device(addr) {
             let value = device.read(offset);
+            let plain = device.is_plain_memory();
             if device.is_faulted() {
                 self.latch_bus_error();
             }
-            self.refresh_device_irqs();
+            if !plain {
+                self.refresh_device_irqs();
+            }
             self.release_cpu_access();
             return value;
         }
@@ -723,10 +801,13 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device_mut(addr) {
             device.write(offset, value);
+            let plain = device.is_plain_memory();
             if device.is_faulted() {
                 self.latch_bus_error();
             }
-            self.refresh_device_irqs();
+            if !plain {
+                self.refresh_device_irqs();
+            }
             self.release_cpu_access();
             return;
         }
@@ -751,6 +832,15 @@ impl Bus {
             self.latch_bus_error();
             return 0;
         }
+        if let Some((index, offset)) = self.plain_memory_span(addr, 4) {
+            self.arbitrate_cpu_access();
+            let device = &mut self.devices[index].device;
+            let value = u32::from_be_bytes(std::array::from_fn(|beat| {
+                device.read(offset + beat as u32)
+            }));
+            self.release_cpu_access();
+            return value;
+        }
         let b0 = self.read_u8(addr) as u32;
         let b1 = self.read_u8(addr.wrapping_add(1)) as u32;
         let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
@@ -762,6 +852,15 @@ impl Bus {
         if Self::invalid_idc_u32_access(addr) {
             self.flush_relaxed_devices();
             self.latch_bus_error();
+            return;
+        }
+        if let Some((index, offset)) = self.plain_memory_span(addr, 4) {
+            self.arbitrate_cpu_access();
+            let device = &mut self.devices[index].device;
+            for (beat, byte) in value.to_be_bytes().into_iter().enumerate() {
+                device.write(offset + beat as u32, byte);
+            }
+            self.release_cpu_access();
             return;
         }
         self.write_u8(addr, ((value >> 24) & 0xFF) as u8);

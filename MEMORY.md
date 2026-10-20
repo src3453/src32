@@ -830,3 +830,13 @@
 - Furnace's SGUB exporter handles one S3HS system, transforms signed sample RAM to unsigned card PCM, and records S3HS writes at 48 kHz into 60 Hz v3 frames. The S3HS dispatch must emit register writes when register-dump mode is enabled; reset disables that mode, so enable it after playback initialization and clear stale writes first.
 - SDK C playback maps target 3 to slot 0 at 0xA0000000 and must use byte MMIO for card bulk transfers. Rust StreamPlayer validates v3 and exposes ordered slot 0 writes through `take_card_writes`; GUI playback integration still needs to route those events into an installed card.
 - The Music Editor exports its guest C source from `sol/cpt32/sgu_music_driver.c` at build time via `include_str!`; update that file to read the v3 total-size field at offset 32. Leave `sol/cpt32/sgu_music_driver.sol` on v1/v2 when only the C driver is requested.
+
+## Bus per-cycle overhead reduction (2026-10-20)
+- 最大のボトルネックは `Bus::refresh_device_irqs`（約29 ns）だった。tick毎2回＋バスアクセス毎1回（32-bit fetchで4回）呼ばれ、Pipelineの1 cycle ≈ 260 nsの大半を占めた。12回の `set_source` 呼び出しを `IrqController::set_source_levels` の一括bit演算にして3 nsへ。PeC Mutexやu128除算は単体では支配的でなかった（変更しても計測差なし）——推測より先に部品単位で計測すること。
+- 実装と計測値は `doc/emulator-performance-plan.md`「Bus／デバイスのサイクル毎オーバーヘッド削減」。Pipeline合成 4.7x、`test.wax` 60 frames 3.96x。
+- 新しい契約: `Device::is_plain_memory()` を true にするデバイスは副作用なし・fault無し・IRQ source不変でなければならない（BusがIRQ再サンプルを省き、32-bit word を1回の調停で処理する）。MMIOデバイスでは絶対に true にしない。
+- `set_source_levels` の等価性は `irqc::tests::set_source_levels_matches_individual_source_updates`、timer/RTCのu64高速経路は `timing::tests::single_cycle_advances_match_one_batched_advance`（u64桁あふれ時のu128経路も確認）。
+- このホストでのプロファイル: 非管理者なのでETW/WPRサンプリング不可。`src/bin` に一時probeバイナリや `#[ignore]` テストを置き、private関数を N 回呼んで ns/call を測るのが速かった（計測後に削除）。
+- 既存の不安定テスト（変更前HEADでも失敗）: `cow::tests::rejects_crc_sequence_range_and_base_mismatch`、`tb_load_live` 6件、`strek_smoke::probe_strek_tron`、`strek_micro`（0–3件、ホスト入力スレッドとのタイミング依存）。
+- `tinybasic.sol` の `tb_read_line` は「FIFO空を確認→`halt`」の間にキーが届くと、irq3がIRQC pendingを消してHALTへIRETし、PeCレベルがhighのまま新しいedgeが来ず永久HALTする lost-wakeup 競合がある。エミュレータが速くなると発生頻度が変わるので、`strek_micro` 等の失敗をCPU/Bus変更の回帰と即断しないこと。
+

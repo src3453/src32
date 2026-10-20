@@ -195,3 +195,28 @@ JITも同じ一括処理を自動で使う。profiler無効、JIT feature付き�
 60-frame cubeは `--allow-running --frames 60 --expect-sgc-overlay --expect-gp-noise-background` でCached・cached-relaxed・JITの3方式がGP noise・VPU cube・白いSGC glyphの描画assertionを通過し、実行停止状態も一致した。これは初期化とHALT後のclock進行を含む測定であり、定常アニメーションのframe latencyではない。GUI／GPU／音声の実時間性能や入力体感は未測定。active disk／DMAの改善率もここからは推定しない。
 
 回帰確認は専用CPUテスト（予算途中、乗算、MMIO時刻、timer IRQ、HALT／IRET、DMAによるcode変更とIRQ、profile／step／reset）、Bus batchingテスト、DOS HEX→Q→HELP→EXIT（800 cyclesと通常予算）、実WASMカードのactive loop／HALTからのIRQ復帰を含む。HALT後に追加でIRQを受理する経路ではCPU MMIOのPC/statusも同期しないと、次cycleでhandler位置を古い値に上書きするので注意する。
+
+## Bus／デバイスのサイクル毎オーバーヘッド削減（2026-10-20）
+
+全CPU方式に共通する `Bus::tick_devices` とバイト単位バスアクセスの固定費を削った。ゲストから見える意味（IRQ edge latch、BMC状態、byte調停、DMA、bus error、タイマー値）は変えていない。
+
+一時的なマイクロベンチ（idle platform＋IRQC、release）で測った内訳と結果:
+
+| 経路 | 変更前 | 変更後 |
+|---|---:|---:|
+| `refresh_device_irqs` 1回 | 28–30 ns | 3.3 ns |
+| `tick_devices` 1回 | 80–85 ns | 14 ns |
+| RAM `read_u8` | 44 ns | 12 ns |
+| RAM `read_u32_be`（命令fetch） | 180 ns | 18 ns |
+
+主因は `refresh_device_irqs` が12個の `IrqController::set_source` を個別に呼んでいたことで、これがtick毎に2回、バスアクセス毎に1回（32-bit fetchで4回）走っていた。
+
+- `IrqController::set_source_levels(mask, levels)` で1回のbit演算にまとめた。レベル変化がある時だけ従来の `set_source` を番号順に呼ぶので、edge latchとPeC traceは同一。
+- PeC入力の保留判定は `PeCState` が `event_len != 0` を `Arc<AtomicBool>` に反映し、Busはそれを読む（Mutexを取らない）。ホスト入力の観測タイミングは元々非決定的。
+- `Device::is_plain_memory()`（RAM／BIOS ROM）はアクセス後のIRQ再サンプルを省く。32-bitアクセスが単一plain memory内に収まり、DMACの要求が無いときは調停を1回にして4 byteを読み書きする（beat間にDMA要求は発生し得ず、BMC最終状態は同じ）。DMA要求がある・境界を跨ぐ・debugger経路では従来の4回byteアクセス。
+- `arbitrate_cpu_access` はDMAC要求0のとき `grant(1)` → `claim_cpu()` のみ（grant→release→claimと同じ状態）。
+- `tick_devices` はbusyなDMA channelもactiveなIDCコマンドも無いとき、IDC clockとBMC要求latch（`grant(0)`）だけを進める。
+- `advance_system_cycles(1)` はdeadline探索を省く（全deadlineは `now + 1` 以上）。
+- PeC timer prescalerとRTC（既定で有効）は桁あふれしない限りu64で計算し、u128除算を避ける。
+
+`cargo run --release --bin cpu_bench -- 100000 7 --platform` の中央値: Scalar 544.5→117.6 ms、Pipeline 359.6→76.8 ms、Cached 146.0→42.1 ms。`src32_testbench test.wax --frames 60`（空config、5回の最良値、process起動込み）: Pipeline 3042→769 ms、Cached 1349→465 ms。`dos.wax` Pipeline 143→64 ms。Pipeline／Cachedは20 framesの最終PC・cycles・R1が変更前と一致。Scalarの `test.wax` R1は変更前同士でもhost TRNGで揺れる。GUI／GPUの実時間は未測定。

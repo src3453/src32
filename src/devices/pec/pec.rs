@@ -1,3 +1,4 @@
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use tokio::sync::mpsc::{self, UnboundedSender};
@@ -65,6 +66,9 @@ pub struct PeCState {
     mouse_wheel: i32,
     mouse_buttons: u8,
     pads: [PadState; 4],
+    /// Mirrors `event_len != 0` so the Bus can sample the IRQ level per
+    /// cycle without taking the host-input Mutex.
+    pending: Arc<AtomicBool>,
 }
 
 impl Default for PeCState {
@@ -82,6 +86,7 @@ impl Default for PeCState {
             mouse_wheel: 0,
             mouse_buttons: 0,
             pads: [PadState::default(); 4],
+            pending: Arc::new(AtomicBool::new(false)),
         }
     }
 }
@@ -106,6 +111,7 @@ impl PeCState {
             | (u32::from(code) << 16)
             | u32::from(value);
         self.event_len += 1;
+        self.pending.store(true, Ordering::Release);
         if pec_trace_enabled() {
             if kind == 0 {
                 tracing::info!(
@@ -133,11 +139,16 @@ impl PeCState {
         let event = self.events[self.event_head];
         self.event_head = (self.event_head + 1) % EVENT_CAPACITY;
         self.event_len -= 1;
+        self.pending.store(self.event_len != 0, Ordering::Release);
         Some(event)
     }
 
     pub fn has_pending_events(&self) -> bool {
         self.event_len != 0
+    }
+
+    pub(crate) fn pending_flag(&self) -> Arc<AtomicBool> {
+        Arc::clone(&self.pending)
     }
 
     pub fn apply(&mut self, event: HostInputEvent) {

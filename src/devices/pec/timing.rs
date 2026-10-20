@@ -214,7 +214,19 @@ impl PeCTimingState {
         if self.timer_enable != 0 {
             for (channel, timer) in self.timers.iter_mut().enumerate() {
                 if timer.enabled() && self.timer_enable & (1 << channel) != 0 {
-                    let divisor = u128::from(timer.prescaler) + 1;
+                    // Per-cycle advances never overflow u64; avoid the u128
+                    // runtime division on the 48 MHz device path.
+                    let divisor = u64::from(timer.prescaler) + 1;
+                    if let Some(accumulated) = timer.prescaler_phase.checked_add(cycles) {
+                        if accumulated < divisor {
+                            timer.prescaler_phase = accumulated;
+                        } else {
+                            timer.prescaler_phase = accumulated % divisor;
+                            timer.advance(accumulated / divisor);
+                        }
+                        continue;
+                    }
+                    let divisor = u128::from(divisor);
                     let accumulated = u128::from(timer.prescaler_phase) + cycle_count;
                     let ticks = accumulated / divisor;
                     timer.prescaler_phase = (accumulated % divisor) as u64;
@@ -223,7 +235,17 @@ impl PeCTimingState {
             }
         }
 
-        if cycles != 0 && self.rtc_enabled() && !self.rtc_realtime() {
+        let rtc_fast = cycles != 0
+            && self.rtc_enabled()
+            && !self.rtc_realtime()
+            && self
+                .rtc_subsecond_cycles
+                .checked_add(cycles)
+                .is_some_and(|accumulated| accumulated < u64::from(MASTER_CLOCK));
+        if rtc_fast {
+            // Same result as the general path when no second boundary is crossed.
+            self.rtc_subsecond_cycles += cycles;
+        } else if cycles != 0 && self.rtc_enabled() && !self.rtc_realtime() {
             let frequency = u128::from(MASTER_CLOCK);
             let accumulated = u128::from(self.rtc_subsecond_cycles) + cycle_count;
             let elapsed_seconds = accumulated / frequency;
@@ -656,6 +678,58 @@ mod tests {
     use super::*;
     use crate::devices::irqc::irqc::connect_irqc;
     use std::rc::Rc;
+
+    #[test]
+    fn single_cycle_advances_match_one_batched_advance() {
+        let make = || {
+            let mut state = PeCTimingState::default();
+            state.rtc_subsecond_cycles = u64::from(MASTER_CLOCK) - 5;
+            state.timer_enable = 0b11;
+            state.timers[0] = HardwareTimer {
+                control: 1 | CTRL_ENABLE,
+                compare: u64::MAX,
+                prescaler: 2,
+                prescaler_phase: 1,
+                ..HardwareTimer::default()
+            };
+            state.timers[1] = HardwareTimer {
+                control: CTRL_ENABLE,
+                compare: 4,
+                prescaler: 0,
+                ..HardwareTimer::default()
+            };
+            state
+        };
+        let mut stepped = make();
+        for _ in 0..17 {
+            stepped.advance_system_cycles(1);
+        }
+        let mut batched = make();
+        batched.advance_system_cycles(17);
+        assert_eq!(stepped.rtc_seconds, 1);
+        assert_eq!(stepped.rtc_subsecond_cycles, 12);
+        assert_eq!(
+            (stepped.rtc_seconds, stepped.rtc_subsecond_cycles),
+            (batched.rtc_seconds, batched.rtc_subsecond_cycles)
+        );
+        for (stepped, batched) in stepped.timers.iter().zip(&batched.timers) {
+            assert_eq!(stepped.counter, batched.counter);
+            assert_eq!(stepped.prescaler_phase, batched.prescaler_phase);
+            assert_eq!(stepped.pending, batched.pending);
+            assert_eq!(stepped.control, batched.control);
+        }
+        assert_eq!(stepped.timers[0].counter, 6);
+        assert!(stepped.timers[1].pending);
+
+        // Overflowing sums still take the exact u128 path.
+        let mut huge = make();
+        huge.advance_system_cycles(u64::MAX);
+        assert_eq!(
+            huge.timers[0].counter,
+            ((u128::from(u64::MAX) + 1) / 3) as u64
+        );
+        assert_eq!(huge.timers[0].prescaler_phase, 1);
+    }
 
     fn timing_device() -> PeCTimingDevice {
         PeCTimingDevice {

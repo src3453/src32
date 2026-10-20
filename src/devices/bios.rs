@@ -77,6 +77,10 @@ impl Device for BiosRom {
     fn size(&self) -> u32 {
         BIOS_SIZE as u32
     }
+
+    fn is_plain_memory(&self) -> bool {
+        true
+    }
 }
 
 /// Load the configured BIOS image into a read-only bus window.

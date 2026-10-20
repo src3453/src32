@@ -57,6 +57,10 @@ impl Device for Ram {
     fn size(&self) -> u32 {
         self.data.len() as u32
     }
+
+    fn is_plain_memory(&self) -> bool {
+        true
+    }
 }
 
 pub const DEFAULT_RAM_SIZE: usize = 0x1000000; // 16 MiB
