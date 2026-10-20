@@ -58,6 +58,17 @@ compileは段階的です。同じ開始PCが128回dispatchされると、まず
 
 `jit_stats()`はcompile時間、両段階のcompile関数数、batch関数のcompile数、native命令数、native batch数、fallback cycle、無効化、cache reset、active block数、native code bytesを返します。code bytesはallocatorのpadding・metadataを含みません。統計はCPU resetをまたいで累積し、active blockとcode bytesは現在のcacheを表します。Cachedより高速になる保証はありません。設計・検証条件は`doc/cpu-jit-design.md`を参照してください。
 
+## 1.4 スピンループの早送り
+
+すべてのCPU方式は、変化しない入力を待ち続けるループ（ディスク転送中のDMAC／IDC状態ポーリングなど）の反復をまとめて飛ばします。結果はループを実行した場合と完全に同じです。レジスター、PC、cycle／命令／stall／flush数、decode cache統計、デバイス状態とタイミングがすべて一致します。対象になるのは、ループ先頭から同じ先頭へ戻る1反復が次をすべて満たした場合です。
+
+- CPU状態（レジスター、PC／mode、IRQラッチ。Pipelineでは全パイプラインラッチも）が完全に同じ状態へ戻った。
+- 副作用のあるバスアクセスがない。書き込み・バスエラーがなく、読み出しはplain memory（RAM／BIOS ROM）か、読み出しに副作用のないレジスター（DMACの全レジスター、DATA以外のIDCレジスター）だけ。
+- decode cacheへのfillがない。
+- 反復全体が*静穏区間*に収まっていた。DMAチャネルがバスを要求できず、IDCがsector期限やabortに達せず、timer／RTC IRQや拡張カードのイベントもなく、拡張カードも装着されていない。
+
+このとき静穏区間の終わりか`run`予算の終わりまで反復を飛ばし、デバイスも同じcycle数だけ進めます。ループ先頭は後方への制御移動です（Pipelineでは後方へのtaken branch redirect）。有効なIRQ pending、ホストからのレジスター／PC書き込み、ホストのIRQ入力変化、resetでは観測を破棄します。ホスト入力は非同期なので静穏区間の判定には含みません。`--profile-cpu`と単命令stepは毎サイクル実行します。
+
 ## 2. レジスター
 
 - 汎用レジスター: `R0`～`R31`（32本、各32ビット）

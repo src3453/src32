@@ -108,7 +108,7 @@ enum Decoded {
     Short(ShortInstruction),
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IfId {
     valid: bool,
     pc: u32,
@@ -116,7 +116,7 @@ struct IfId {
     raw: RawInstr,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct IdEx {
     valid: bool,
     pc: u32,
@@ -133,7 +133,7 @@ struct IdEx {
     is_store: bool,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct ExMem {
     valid: bool,
     pc: u32,
@@ -157,7 +157,7 @@ struct ExMem {
     link_value: Option<(usize, u32)>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct MemWb {
     valid: bool,
     pc: u32,
@@ -172,6 +172,79 @@ struct MemWb {
     branch_taken: bool,
     branch_target: u32,
     branch_new_mode: Option<InstructionMode>,
+}
+
+/// Pipeline state after a taken-branch redirect that determines the next
+/// loop iteration (with constant memory and device reads).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SpinState {
+    reg: [u32; 32],
+    fetch_pc: u32,
+    fetch_mode: InstructionMode,
+    retire_pc: u32,
+    retire_mode: InstructionMode,
+    epc: u32,
+    irq_return_mode: InstructionMode,
+    cause: u8,
+    irq_enable: bool,
+    irq_pending: bool,
+    irq_pending_number: u8,
+    irq_line: bool,
+    external_irq_line: bool,
+    external_irq_number: u8,
+    irqc_line: bool,
+    irqc_number: u8,
+    if_id: IfId,
+    id_ex: IdEx,
+    ex_mem: ExMem,
+    mem_wb: MemWb,
+    ex_cycles_left: u32,
+    ex_armed: bool,
+}
+
+#[derive(Clone, Copy)]
+struct SpinProbe {
+    state: SpinState,
+    cycles: u128,
+    instructions: u128,
+    stalls: u128,
+    flushes: u128,
+    effectful_accesses: u64,
+    quiet_until: Option<u128>,
+}
+
+/// Exact fast-forward of spin loops; see `Cpu`'s detector. Loop heads are
+/// the cycles right after a taken-branch redirect.
+/// Loop heads tracked at once: an iteration may take several branches (a
+/// call, a return and the loop's back-jump), each recreating its own head.
+const SPIN_PROBES: usize = 8;
+
+#[derive(Default)]
+struct SpinDetector {
+    enabled: bool,
+    last_flushes: u128,
+    /// Whether the latest taken redirect jumped to or before its branch.
+    backward_redirect: bool,
+    probes: [Option<SpinProbe>; SPIN_PROBES],
+    next_probe: usize,
+    skipped_cycles: u128,
+}
+
+impl SpinDetector {
+    /// Slot holding the probe for `head`, or the round-robin victim.
+    fn slot(&mut self, head: u32) -> usize {
+        if let Some(slot) = self
+            .probes
+            .iter()
+            .position(|probe| probe.is_some_and(|probe| probe.state.fetch_pc == head))
+        {
+            return slot;
+        }
+        let slot = self.next_probe;
+        self.next_probe = (slot + 1) % SPIN_PROBES;
+        self.probes[slot] = None;
+        slot
+    }
 }
 
 pub struct PipelineCpu {
@@ -207,6 +280,7 @@ pub struct PipelineCpu {
     ex_cycles_left: u32,
     ex_armed: bool,
     profile: Option<CpuProfile>,
+    spin: SpinDetector,
 }
 
 fn invalid_id_ex() -> IdEx {
@@ -312,12 +386,20 @@ impl PipelineCpu {
             ex_cycles_left: 0,
             ex_armed: false,
             profile: None,
+            spin: SpinDetector {
+                enabled: true,
+                ..SpinDetector::default()
+            },
         };
         cpu.sync_register_block();
         cpu
     }
 
     pub fn reset(&mut self, pc: u32) {
+        self.spin = SpinDetector {
+            enabled: self.spin.enabled,
+            ..SpinDetector::default()
+        };
         self.reg = [0; 32];
         self.fetch_pc = pc;
         self.fetch_mode = InstructionMode::Normal;
@@ -409,6 +491,7 @@ impl PipelineCpu {
     }
 
     pub fn set_pc(&mut self, pc: u32) {
+        self.forget_spin();
         self.fetch_pc = pc;
         self.retire_pc = pc;
         self.if_id.valid = false;
@@ -425,6 +508,7 @@ impl PipelineCpu {
     }
 
     pub fn set_instruction_mode(&mut self, mode: InstructionMode) {
+        self.forget_spin();
         self.fetch_mode = mode;
         self.sync_register_block();
     }
@@ -474,6 +558,7 @@ impl PipelineCpu {
     }
 
     pub fn set_irq_input(&mut self, level: bool, number: u8) {
+        self.forget_spin();
         self.external_irq_line = level;
         self.external_irq_number = number & 0x0F;
         self.refresh_irq_input();
@@ -494,6 +579,7 @@ impl PipelineCpu {
     }
 
     pub fn set_irq_source(&mut self, number: u8, level: bool) {
+        self.forget_spin();
         self.irq_controller.borrow_mut().set_source(number, level);
     }
 
@@ -709,6 +795,7 @@ impl PipelineCpu {
     }
 
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
+        self.forget_spin();
         if reg >= self.reg.len() {
             return Err(format!("Invalid register index: {reg}"));
         }
@@ -1812,6 +1899,10 @@ impl PipelineCpu {
         let mut redirect: Option<(u32, InstructionMode)> = None;
         if self.id_ex.valid {
             let (em, redir) = self.execute_ex(&self.id_ex);
+            if let Some((target, _)) = redir {
+                // Loop heads for the spin detector are backward redirects.
+                self.spin.backward_redirect = target <= self.id_ex.pc;
+            }
             next_ex_mem = em;
             redirect = redir;
         }
@@ -1936,10 +2027,126 @@ impl PipelineCpu {
         }
     }
 
+    /// Cycles skipped by spin-loop fast-forward since construction or reset.
+    #[doc(hidden)]
+    pub fn spin_skipped_cycles(&self) -> u128 {
+        self.spin.skipped_cycles
+    }
+
+    /// Host-side state changes are not CPU execution; an earlier loop-head
+    /// snapshot must not be compared across them.
+    fn forget_spin(&mut self) {
+        self.spin.probes = [None; SPIN_PROBES];
+    }
+
+    #[doc(hidden)]
+    pub fn set_spin_fast_forward(&mut self, enabled: bool) {
+        self.spin = SpinDetector {
+            enabled,
+            ..SpinDetector::default()
+        };
+    }
+
+    fn spin_state(&self) -> SpinState {
+        SpinState {
+            reg: self.reg,
+            fetch_pc: self.fetch_pc,
+            fetch_mode: self.fetch_mode,
+            retire_pc: self.retire_pc,
+            retire_mode: self.retire_mode,
+            epc: self.epc,
+            irq_return_mode: self.irq_return_mode,
+            cause: self.cause,
+            irq_enable: self.irq_enable,
+            irq_pending: self.irq_pending,
+            irq_pending_number: self.irq_pending_number,
+            irq_line: self.irq_line,
+            external_irq_line: self.external_irq_line,
+            external_irq_number: self.external_irq_number,
+            irqc_line: self.irqc_line,
+            irqc_number: self.irqc_number,
+            if_id: self.if_id,
+            id_ex: self.id_ex,
+            ex_mem: self.ex_mem,
+            mem_wb: self.mem_wb,
+            ex_cycles_left: self.ex_cycles_left,
+            ex_armed: self.ex_armed,
+        }
+    }
+
+    fn spin_probe(&self, quiet_until: Option<u128>) -> SpinProbe {
+        SpinProbe {
+            state: self.spin_state(),
+            cycles: self.cycles,
+            instructions: self.instructions_executed,
+            stalls: self.stall_cycles,
+            flushes: self.flush_events,
+            effectful_accesses: self.bus.effectful_accesses(),
+            quiet_until,
+        }
+    }
+
+    /// Skip whole iterations of a proven spin loop. Called between ticks.
+    fn skip_spin(&mut self, end_cycles: u128) -> bool {
+        if self.flush_events == self.spin.last_flushes {
+            return false;
+        }
+        self.spin.last_flushes = self.flush_events;
+        if !self.spin.backward_redirect {
+            return false;
+        }
+        let slot = self.spin.slot(self.fetch_pc);
+        let Some(probe) = self.spin.probes[slot] else {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        };
+        let repeated = self.cycles > probe.cycles
+            && probe.effectful_accesses == self.bus.effectful_accesses()
+            && probe.state == self.spin_state()
+            && !(self.irq_enable && self.irq_pending);
+        if !repeated {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let Some(quiet_until) = probe.quiet_until else {
+            let quiet = u128::from(self.bus.quiet_cycles());
+            self.spin.probes[slot] = Some(self.spin_probe(Some(self.cycles + quiet)));
+            return false;
+        };
+        if self.cycles > quiet_until {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let period = self.cycles - probe.cycles;
+        let room = u128::from(self.bus.quiet_cycles()).min(end_cycles - self.cycles);
+        let iterations = room / period;
+        if iterations == 0 {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let skipped = iterations * period;
+        self.spin.skipped_cycles += skipped;
+        self.bus
+            .advance_quiet_cycles(skipped.min(u128::from(u64::MAX)) as u64);
+        self.cycles += skipped;
+        self.running_cycles += skipped;
+        self.instructions_executed +=
+            iterations * (self.instructions_executed - probe.instructions);
+        self.stall_cycles += iterations * (self.stall_cycles - probe.stalls);
+        self.flush_events += iterations * (self.flush_events - probe.flushes);
+        self.spin.last_flushes = self.flush_events;
+        self.sync_register_block();
+        self.spin.probes[slot] = Some(self.spin_probe(None));
+        true
+    }
+
     fn run_inner<const PROFILE: bool>(&mut self, max_cycles: usize) {
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
+            if !PROFILE && self.spin.enabled && self.running && self.skip_spin(end_cycles) {
+                continue;
+            }
             let empty = self.pipeline_empty();
             self.tick_with_profile::<PROFILE>();
             if !self.running && empty && self.pipeline_empty() && !self.bus.has_pending_dma() {

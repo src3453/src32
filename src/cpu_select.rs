@@ -188,6 +188,26 @@ impl AnyCpu {
         }
     }
 
+    /// Cycles skipped by exact spin-loop fast-forward.
+    #[doc(hidden)]
+    pub fn spin_skipped_cycles(&self) -> u128 {
+        match self {
+            Self::Pipelined(cpu) => cpu.spin_skipped_cycles(),
+            Self::Scalar(cpu) | Self::Cached(cpu) | Self::Jit(cpu) => cpu.spin_skipped_cycles(),
+        }
+    }
+
+    /// Test hook: enable or disable exact spin-loop fast-forward (default on).
+    #[doc(hidden)]
+    pub fn set_spin_fast_forward(&mut self, enabled: bool) {
+        match self {
+            Self::Pipelined(cpu) => cpu.set_spin_fast_forward(enabled),
+            Self::Scalar(cpu) | Self::Cached(cpu) | Self::Jit(cpu) => {
+                cpu.set_spin_fast_forward(enabled)
+            }
+        }
+    }
+
     pub fn jit_stats(&self) -> Option<crate::cpu::JitStats> {
         match self {
             Self::Jit(cpu) => cpu.jit_stats(),

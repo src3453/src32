@@ -220,3 +220,27 @@ JITも同じ一括処理を自動で使う。profiler無効、JIT feature付き�
 - PeC timer prescalerとRTC（既定で有効）は桁あふれしない限りu64で計算し、u128除算を避ける。
 
 `cargo run --release --bin cpu_bench -- 100000 7 --platform` の中央値: Scalar 544.5→117.6 ms、Pipeline 359.6→76.8 ms、Cached 146.0→42.1 ms。`src32_testbench test.wax --frames 60`（空config、5回の最良値、process起動込み）: Pipeline 3042→769 ms、Cached 1349→465 ms。`dos.wax` Pipeline 143→64 ms。Pipeline／Cachedは20 framesの最終PC・cycles・R1が変更前と一致。Scalarの `test.wax` R1は変更前同士でもhost TRNGで揺れる。GUI／GPUの実時間は未測定。
+
+## I/Oバウンド処理: 待機中デバイスとスピンループ（2026-10-20）
+
+IDCを使うゲストはsol／Cの両ドライバとも転送完了をMMIOポーリングで待つ。FDD既定値では64 KiBの読み込みが約1.15秒（約55M cycles）続き、その間はDMA／IDCがactiveなので待機device一括処理もHALT skipも働かず、全CPU方式が10〜17 MHz（実時間の3〜5倍遅い）だった。CachedやJITもScalarより遅く、ポーリングのMMIO読み出し（4 byte×調停・device探索・IRQ再確認）が主なコストだった。
+
+1. **待機中のIDC/DMAの高速tick（全方式、厳密）**: `Idc::cycles_without_event` が、次のtickがcycle counterの加算以外に何も起こさないことを判定する（sector deadline前、abort要求なし、DMA進行待ちはDMAC側で判定）。DMACの要求maskが0なら `tick_devices` はIDC clockとBMCの`grant(0)`だけを進める。
+2. **副作用のないレジスターの32-bit読み出し（全方式、厳密）**: `Device::peek_u32_be`（DMAC全レジスター、DATA以外のIDCレジスター）を持つレジスターは、DMA要求がなければ調停1回で読む。`find_device` は直前のdeviceを覚える。
+3. **スピンループの早送り（全方式、厳密）**: 仕様は`doc/spec_CPU.md` §1.4。Busは副作用のあるアクセス数（`effectful_accesses`）と静穏区間（`quiet_cycles`）を提供し、CPUは後方ジャンプ先ごとに最大8個のprobeでループ先頭の状態を比較する。1回一致したら静穏区間を測り、次の1反復がその区間内で同じ状態へ戻れば、区間かrun予算の終わりまで反復をまとめて飛ばす（`advance_quiet_cycles`）。
+
+計測（Windows x64 release、`cargo run --release --features jit --bin idc_bench`、3 samples中央値。FDD 32 sectors／HDD 2048 sectorsのpolled DMA READ）:
+
+| ケース | 開始時 | 1+2のみ | 最終 |
+|---|---:|---:|---:|
+| FDD Pipeline | 1466.9 ms | 1065.7 ms | 6.4 ms |
+| FDD Scalar | 1002.4 ms | 627.4 ms | 3.3 ms |
+| FDD Cached | 1509.4 ms | 772.9 ms | 4.1 ms |
+| FDD JIT | 1748.3 ms | 1003.4 ms | 5.1 ms |
+| HDD Pipeline | 1146.6 ms | 881.4 ms | 410.9 ms |
+| HDD Scalar | 700.8 ms | 501.6 ms | 205.0 ms |
+| HDD Cached | 1005.7 ms | 598.4 ms | 265.5 ms |
+
+FDDは98.6%のcycleを飛ばせる。HDDは転送速度が速く、残る約2.8M cyclesは毎cycle DMA beatが実際に動く区間なので、ここは実作業として残る。
+
+実ゲスト（`sol/cpt32/idc.sol`の`idc_read`で64 KiBをFDDから16 sectorずつ読み、全byteを合計する。`src32_testbench --frames 150`、process起動込み、3回の最良値。R1=8,355,904は全方式・変更前後で一致）: Pipeline 7408→747 ms、Scalar 4833→911 ms、Cached 5067→334 ms、cached-relaxed 5138→248 ms、JIT 261 ms。CPU-boundな`cpu_bench`／`cpu_jit_bench`は変化なし。

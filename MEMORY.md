@@ -850,3 +850,12 @@
 - テストの落とし穴: 毎iterationでcodeを書き換えるとdecode cacheが常にmissしてbatchが一度も走らず、自己書換え検出のテストにならない（mutationが通った）。書換えを稀にしてvalidated batchの最中に起きるようにする。またrun(7)のような小予算では16-cycle DIVがbatchに入らない。mutationでテストが実際に経路を通るか確認すること。
 - Cranelift: `finalize_definitions`は約5 µsで支配的でない。`opt_level=speed`は効果なし。single-pass regallocはcompile約40%減だが実績が少ないため不採用。
 
+## I/O-bound guests: waiting devices and spin-loop fast-forward (2026-10-20)
+- IDCドライバ（sol／C）は転送完了をMMIOポーリングで待つため、DMA／IDC active中はrelaxed batchingもHALT skipも効かず、全CPU方式が10〜17 MHzだった。ボトルネックは毎回4 byteに分かれるMMIO状態読み出しと、activeなIDC/DMAの毎サイクルtick。数値は `doc/emulator-performance-plan.md`「I/Oバウンド処理」、ベンチは `cargo run --release --features jit --bin idc_bench`。
+- 新しい契約: `Device::peek_u32_be` は「その4 byteの読み出しに副作用がなく、faultせず、IRQ sourceも変えない」場合だけSomeを返す（DMAC全レジスター、IDCはDATA以外）。これはBusの1回調停読み出しとスピン検出の「純粋な読み出し」判定の根拠になる。読み出しで状態が変わるレジスター（PeC timerのlatch、FIFO pop等）には絶対に実装しない。
+- `Idc::cycles_without_event` は次のtickが何も起こさない残りcycle数。`advance_idle_cycles` はactive中でもこの範囲内なら使える（範囲外はassert）。
+- スピンループ早送り（spec_CPU §1.4）は全CPU方式で既定ON。正しさの前提は「probeから現在までの変化がCPU実行だけで生じた」こと。ホストがレジスター／PC／IRQ入力を書き換える公開APIは必ず `forget_spin()` を呼ぶこと（`write_reg`だけでなく`set_pc`・`set_instruction_mode`・`set_irq_input`・`set_irq_source`）。Cpuの内部writebackは`set_gpr`、公開`write_reg`はprobe破棄付き。これを忘れると `run(1)` を繰り返すテスト（JALR R31）でJALRが飛ばされた。
+- Pipelineのループ先頭は「後方へのtaken redirect」に限定し、probeは先頭PCごとに8個。sol関数呼び出しのpoll loopは1反復で約9回taken branchするため、redirect先ごと1個・後方フィルタなしでは一度も一致しなかった（実ゲストでPipelineだけ改善ゼロ）。合成ベンチの単純ループだけで判断しないこと。
+- 検証は `tests/spin_fast_forward.rs`（早送りON/OFFのlockstep差分、timer IRQ併用、関数呼び出し型poll、ホスト書き換え）。`AnyCpu::set_spin_fast_forward` と `spin_skipped_cycles` はdoc hiddenのテスト用hook。timer期限・IDC期限を無視するmutationはどちらも検出される。
+- sol小ネタ: `while` 本体は末尾で0（継続）／1（終了）を積む。ループ内の分岐に `ret` を入れると「stack underflow at jz」になることがある。`$TMPDIR/..` は `AppData/Local` でありscratchpadのTempではない（Writeツールの出力先と混同した）。
+

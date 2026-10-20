@@ -961,8 +961,36 @@ impl Idc {
     }
 
     pub(crate) fn advance_idle_cycles(&mut self, cycles: u64) {
-        assert!(self.active.is_none(), "cannot batch active IDC commands");
+        assert!(
+            self.cycles_without_event() >= u128::from(cycles),
+            "cannot batch across an IDC deadline"
+        );
         self.cycle = self.cycle.saturating_add(u128::from(cycles));
+    }
+
+    /// How many following `tick` calls are guaranteed to change nothing but
+    /// the cycle counter: no sector load/commit, no abort and no new DMA
+    /// readiness. Unbounded when idle.
+    pub(crate) fn cycles_without_event(&self) -> u128 {
+        let Some(active) = self.active.as_ref() else {
+            return u128::MAX;
+        };
+        if active.abort_requested {
+            return 0;
+        }
+        let waiting_for_deadline = match active.direction {
+            DmaDirection::DeviceToMemory => !active.read_ready,
+            DmaDirection::MemoryToDevice => active.cursor == SECTOR_SIZE,
+        };
+        if !waiting_for_deadline {
+            // Progress depends on DMA beats, which the DMAC request mask tracks.
+            return u128::MAX;
+        }
+        // tick() fires once the incremented cycle reaches the deadline.
+        active
+            .next_deadline_cycle
+            .saturating_sub(self.cycle)
+            .saturating_sub(1)
     }
 
     fn read_data_byte(&mut self) -> u8 {
@@ -1224,6 +1252,11 @@ impl Idc {
 struct IdcRegisters(std::rc::Rc<std::cell::RefCell<Idc>>);
 
 impl Device for IdcRegisters {
+    fn peek_u32_be(&self, address: u32) -> Option<u32> {
+        // DATA lane 0 consumes a byte; every other register read is pure.
+        (address & 3 == 0 && address != 0x24).then(|| self.0.borrow().read_register(address))
+    }
+
     fn read(&mut self, address: u32) -> u8 {
         let register = address & !3;
         let lane = address & 3;

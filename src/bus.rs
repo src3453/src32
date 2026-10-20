@@ -79,6 +79,12 @@ pub trait Device {
     fn is_plain_memory(&self) -> bool {
         false
     }
+    /// Aligned big-endian word at `offset` when reading its four bytes has no
+    /// side effect, cannot fault and cannot change an IRQ source (status and
+    /// configuration registers). `None` keeps the ordinary byte reads.
+    fn peek_u32_be(&self, _offset: u32) -> Option<u32> {
+        None
+    }
     fn reset(&mut self) {}
     /// Add stereo samples at the host output rate. Called serially with MMIO.
     fn render_audio(&mut self, _sample_rate: u32, _left: &mut [i16], _right: &mut [i16]) {}
@@ -112,6 +118,12 @@ pub struct Bus {
     relaxed_limit: u64,
     /// Device index that last answered an instruction-generation query.
     generation_device: Cell<usize>,
+    /// Device index that last served a bus access.
+    access_device: Cell<usize>,
+    /// Bus accesses with possible effects: every write, bus error, and any
+    /// read that is not plain memory or a `peek_u32_be` register. A spinning
+    /// CPU with no such access between two loop heads cannot change devices.
+    effectful_accesses: u64,
 }
 
 impl Bus {
@@ -133,6 +145,8 @@ impl Bus {
             relaxed_cycles: 0,
             relaxed_limit: 0,
             generation_device: Cell::new(0),
+            access_device: Cell::new(0),
+            effectful_accesses: 0,
         }
     }
 
@@ -338,22 +352,29 @@ impl Bus {
         self.service_dma_request(false);
     }
 
-    /// Idle form of the rest of `tick_devices`. With no busy DMA channel and
-    /// no active IDC command there is no abort boundary, IDC failure, IRQ
-    /// change or DMA request, so only the IDC clock and BMC request latch move.
+    /// Waiting form of the rest of `tick_devices`. When no DMA channel can
+    /// request the bus and the IDC tick cannot reach a deadline or abort,
+    /// there is no abort boundary, IDC failure, IRQ change or DMA beat, so only
+    /// the IDC clock and BMC request latch move. Covers idle devices and a
+    /// polled transfer waiting for its next sector.
     fn tick_idle_dma_devices(&mut self) -> bool {
         let (Some(bmc), Some(dmac)) = (&self.bmc, &self.dmac) else {
             return false;
         };
-        if !dmac.borrow().can_batch_idle() {
+        if self
+            .idc
+            .as_ref()
+            .is_some_and(|idc| idc.borrow().cycles_without_event() == 0)
+        {
+            return false;
+        }
+        // The IDC tick leaves its DMA readiness unchanged, so this is the
+        // mask the ordinary path would service after it.
+        if dmac.borrow().request_mask() != 0 {
             return false;
         }
         if let Some(idc) = &self.idc {
-            let mut idc = idc.borrow_mut();
-            if idc.is_busy() {
-                return false;
-            }
-            idc.advance_idle_cycles(1);
+            idc.borrow_mut().advance_idle_cycles(1);
         }
         bmc.borrow_mut().grant(0);
         true
@@ -428,6 +449,47 @@ impl Bus {
             }
             self.advance_system_cycles(cycles);
         }
+    }
+
+    pub(crate) fn effectful_accesses(&self) -> u64 {
+        self.effectful_accesses
+    }
+
+    /// CPU cycles from now during which per-cycle device ticks are known to
+    /// change nothing but clocks: no DMA request, IDC deadline, timer/RTC IRQ
+    /// or expansion event. Pure reads observe constant values meanwhile.
+    /// Host input arrives asynchronously and is not covered.
+    pub(crate) fn quiet_cycles(&self) -> u64 {
+        if self.has_expansion_cards
+            || self
+                .dmac
+                .as_ref()
+                .is_some_and(|dmac| dmac.borrow().request_mask() != 0)
+        {
+            return 0;
+        }
+        let mut quiet = self.idc.as_ref().map_or(u64::MAX, |idc| {
+            idc.borrow()
+                .cycles_without_event()
+                .min(u128::from(u64::MAX)) as u64
+        });
+        if let Some(until) = self.cycles_until_next_event() {
+            // The event is raised by the tick that reaches it.
+            quiet = quiet.min(until.saturating_sub(1));
+        }
+        // Deferred relaxed cycles are already owed to the devices.
+        quiet.saturating_sub(self.relaxed_cycles)
+    }
+
+    /// Advance devices through cycles that `quiet_cycles` proved eventless,
+    /// equivalent to that many `tick_devices` calls with no bus access.
+    pub(crate) fn advance_quiet_cycles(&mut self, cycles: u64) {
+        debug_assert!(cycles <= self.quiet_cycles());
+        self.flush_relaxed_devices();
+        if let Some(idc) = &self.idc {
+            idc.borrow_mut().advance_idle_cycles(cycles);
+        }
+        self.advance_system_cycles(cycles);
     }
 
     pub fn has_pending_dma(&self) -> bool {
@@ -641,6 +703,7 @@ impl Bus {
     }
 
     fn latch_bus_error(&mut self) {
+        self.effectful_accesses += 1;
         if self.access_source == BusAccessSource::Cpu {
             self.bus_error = true;
         }
@@ -695,11 +758,20 @@ impl Bus {
         self.devices.iter().map(|mapped| mapped.region)
     }
 
+    /// Regions never overlap, so the remembered device gives the same answer
+    /// as a full scan whenever it contains `addr`.
     fn find_device_index(&self, addr: u32) -> Option<usize> {
-        self.devices.iter().position(|mapped| {
+        let contains = |mapped: &DeviceMap| {
             addr.checked_sub(mapped.region.start)
                 .is_some_and(|offset| offset < mapped.region.size)
-        })
+        };
+        let remembered = self.access_device.get();
+        if self.devices.get(remembered).is_some_and(contains) {
+            return Some(remembered);
+        }
+        let index = self.devices.iter().position(contains)?;
+        self.access_device.set(index);
+        Some(index)
     }
 
     /// Whether `addr..addr+width` lies in one plain-memory device, so a CPU
@@ -711,6 +783,34 @@ impl Bus {
             mapped.device.is_plain_memory()
                 && mapped.region.size - (addr - mapped.region.start) >= width
         })
+    }
+
+    /// Side-effect-free register word (e.g. a polled DMAC/IDC status) read
+    /// with one arbitration: like plain memory, no DMA request can appear
+    /// between the four byte beats and the read cannot change an IRQ source.
+    fn read_pure_register_u32(&mut self, addr: u32) -> Option<u32> {
+        if self.access_source != BusAccessSource::Cpu {
+            return None;
+        }
+        let index = self.find_device_index(addr)?;
+        let mapped = &self.devices[index];
+        let offset = addr - mapped.region.start;
+        if mapped.region.size - offset < 4 {
+            return None;
+        }
+        self.flush_relaxed_devices();
+        if self
+            .dmac
+            .as_ref()
+            .is_some_and(|dmac| dmac.borrow().request_mask() != 0)
+        {
+            return None;
+        }
+        // Pure, so reading before the grant observes the same value.
+        let value = self.devices[index].device.peek_u32_be(offset)?;
+        self.arbitrate_cpu_access();
+        self.release_cpu_access();
+        Some(value)
     }
 
     /// Plain-memory device holding `addr..addr+width` when a CPU access can
@@ -738,31 +838,13 @@ impl Bus {
     }
 
     pub fn find_device(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
-        for mapped in &mut self.devices {
-            let end = mapped
-                .region
-                .start
-                .checked_add(mapped.region.size)
-                .expect("Existing device range overflow");
-            if addr >= mapped.region.start && addr < end {
-                return Some((&mut *mapped.device, addr - mapped.region.start));
-            }
-        }
-        None
+        let index = self.find_device_index(addr)?;
+        let mapped = &mut self.devices[index];
+        Some((&mut *mapped.device, addr - mapped.region.start))
     }
 
     pub fn find_device_mut(&mut self, addr: u32) -> Option<(&mut dyn Device, u32)> {
-        for mapped in &mut self.devices {
-            let end = mapped
-                .region
-                .start
-                .checked_add(mapped.region.size)
-                .expect("Existing device range overflow");
-            if addr >= mapped.region.start && addr < end {
-                return Some((&mut *mapped.device, addr - mapped.region.start));
-            }
-        }
-        None
+        self.find_device(addr)
     }
 
     /// Return the executable-memory generation at an address without a bus read.
@@ -828,8 +910,12 @@ impl Bus {
         if let Some((device, offset)) = self.find_device(addr) {
             let value = device.read(offset);
             let plain = device.is_plain_memory();
+            let pure = plain || device.peek_u32_be(offset & !3).is_some();
             if device.is_faulted() {
                 self.latch_bus_error();
+            }
+            if !pure {
+                self.effectful_accesses += 1;
             }
             if !plain {
                 self.refresh_device_irqs();
@@ -859,6 +945,7 @@ impl Bus {
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
+        self.effectful_accesses += 1;
         self.flush_relaxed_devices();
         self.arbitrate_cpu_access();
         if let Some((device, offset)) = self.find_device_mut(addr) {
@@ -903,6 +990,9 @@ impl Bus {
             self.release_cpu_access();
             return value;
         }
+        if let Some(value) = self.read_pure_register_u32(addr) {
+            return value;
+        }
         let b0 = self.read_u8(addr) as u32;
         let b1 = self.read_u8(addr.wrapping_add(1)) as u32;
         let b2 = self.read_u8(addr.wrapping_add(2)) as u32;
@@ -917,6 +1007,7 @@ impl Bus {
             return;
         }
         if let Some((index, offset)) = self.plain_memory_span(addr, 4) {
+            self.effectful_accesses += 1;
             self.arbitrate_cpu_access();
             let device = &mut self.devices[index].device;
             for (beat, byte) in value.to_be_bytes().into_iter().enumerate() {

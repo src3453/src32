@@ -150,6 +150,32 @@ time. This is a soft GUI-work limit, not a hard real-time guarantee. Strict mode
 does not use the time slice. Performance reports cycle-budget utilization as
 N/A in cycle-independent mode.
 
+## 1.4 Spin-loop fast-forward
+
+All CPU kinds skip whole iterations of a loop that spins on unchanging inputs,
+such as polling DMAC/IDC status during a disk transfer. Results are identical to
+executing the loop: registers, PC, cycle/instruction/stall/flush counters,
+decode-cache statistics, device state and timing all match. A loop qualifies
+when one complete iteration (from a loop head back to the same head) did all of
+the following:
+
+- returned to an identical CPU state (registers, PC/mode, IRQ latches; on the
+  Pipeline also every pipeline latch);
+- made no effectful bus access: no write, no bus error, and only reads of plain
+  memory (RAM/BIOS ROM) or of registers whose read has no side effect (DMAC
+  registers, IDC registers except DATA);
+- caused no decode-cache fill;
+- ran entirely inside a *quiet window*: no DMA channel can request the bus, the
+  IDC cannot reach a sector deadline or abort, no timer/RTC IRQ or expansion
+  event is due, and no expansion card is installed.
+
+Iterations are then skipped up to the end of the quiet window or of the `run`
+budget, advancing devices by the same number of cycles. Loop heads are backward
+control transfers (on the Pipeline, backward taken-branch redirects); the
+pending IRQ, host register/PC writes, host IRQ input changes and reset discard
+the observation. Host input is asynchronous and is not part of the window.
+Profiling (`--profile-cpu`) and single stepping execute every cycle.
+
 ## 2. Registers
 
 - General-purpose registers: `R0`-`R31` (32 registers, 32-bit)

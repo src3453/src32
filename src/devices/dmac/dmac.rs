@@ -475,6 +475,10 @@ impl Device for DmacRegisters {
         Some((value >> ((3 - (addr & 3)) * 8)) as u8)
     }
 
+    fn peek_u32_be(&self, addr: u32) -> Option<u32> {
+        (addr & 3 == 0).then(|| self.0.borrow().read_register(addr))
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         let value = self.0.borrow().read_register(addr);
         let shift = (3 - (addr & 3)) * 8;

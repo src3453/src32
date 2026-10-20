@@ -215,6 +215,83 @@ struct CachedInstruction {
     instruction: PendingInstruction,
 }
 
+/// Architectural CPU state at an instruction boundary that determines the
+/// next loop iteration (with constant memory and device reads).
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct SpinState {
+    reg: [u32; 32],
+    pc: u32,
+    instr_mode: InstructionMode,
+    epc: u32,
+    irq_return_mode: InstructionMode,
+    cause: u8,
+    irq_enable: bool,
+    irq_pending: bool,
+    irq_pending_number: u8,
+    irq_line: bool,
+    external_irq_line: bool,
+    external_irq_number: u8,
+    irqc_line: bool,
+    irqc_number: u8,
+}
+
+/// One observed iteration of a candidate polling loop.
+#[derive(Clone, Copy)]
+struct SpinProbe {
+    state: SpinState,
+    cycles: u128,
+    instructions: u128,
+    cache_hits: u128,
+    effectful_accesses: u64,
+    fills: u64,
+    /// Last CPU cycle of a quiet device window measured at the loop head,
+    /// once a previous iteration already matched.
+    quiet_until: Option<u128>,
+}
+
+/// Exact fast-forward of loops that spin on unchanging inputs: if one whole
+/// iteration ran inside a quiet device window, made no effectful bus access
+/// and no decode-cache fill, and returned to an identical state, every later
+/// iteration repeats it until the window ends.
+/// Loop heads tracked at once: an iteration may take several branches (a
+/// call, a return and the loop's back-jump), each recreating its own head.
+const SPIN_PROBES: usize = 8;
+
+struct SpinDetector {
+    enabled: bool,
+    last_pc: u32,
+    probes: [Option<SpinProbe>; SPIN_PROBES],
+    next_probe: usize,
+    skipped_cycles: u128,
+}
+
+impl SpinDetector {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last_pc: 0,
+            probes: [None; SPIN_PROBES],
+            next_probe: 0,
+            skipped_cycles: 0,
+        }
+    }
+
+    /// Slot holding the probe for `head`, or the round-robin victim.
+    fn slot(&mut self, head: u32) -> usize {
+        if let Some(slot) = self
+            .probes
+            .iter()
+            .position(|probe| probe.is_some_and(|probe| probe.state.pc == head))
+        {
+            return slot;
+        }
+        let slot = self.next_probe;
+        self.next_probe = (slot + 1) % SPIN_PROBES;
+        self.probes[slot] = None;
+        slot
+    }
+}
+
 pub struct Cpu {
     reg: [u32; 32],
     pc: u32,
@@ -243,10 +320,10 @@ pub struct Cpu {
     instruction_cache: Option<Box<[Option<CachedInstruction>]>>,
     instruction_cache_hits: u128,
     instruction_cache_misses: u128,
-    /// Bumped on every instruction-cache slot write; JIT batch stamps use it
-    /// to prove that previously validated cache hits are still present.
-    #[cfg(feature = "jit")]
+    /// Bumped on every instruction-cache slot write; JIT batch stamps and the
+    /// spin detector use it to prove cached hits are still present.
     instruction_cache_fills: u64,
+    spin: SpinDetector,
     defer_register_sync: bool,
     profile: Option<CpuProfile>,
     pub(crate) relaxed_devices: bool,
@@ -328,8 +405,8 @@ impl Cpu {
                 .then(|| vec![None; INSTRUCTION_CACHE_SIZE].into_boxed_slice()),
             instruction_cache_hits: 0,
             instruction_cache_misses: 0,
-            #[cfg(feature = "jit")]
             instruction_cache_fills: 0,
+            spin: SpinDetector::new(true),
             defer_register_sync: false,
             profile: None,
             relaxed_devices: false,
@@ -342,6 +419,7 @@ impl Cpu {
     }
 
     pub fn reset(&mut self, pc: u32) {
+        self.spin = SpinDetector::new(self.spin.enabled);
         self.bus.flush_relaxed_devices();
         self.relaxed_run = false;
         self.reg = [0; 32];
@@ -440,6 +518,7 @@ impl Cpu {
     }
 
     pub fn set_pc(&mut self, pc: u32) {
+        self.forget_spin();
         self.pc = pc;
         self.sync_register_block();
     }
@@ -449,6 +528,7 @@ impl Cpu {
     }
 
     pub fn set_instruction_mode(&mut self, mode: InstructionMode) {
+        self.forget_spin();
         self.instr_mode = mode;
         self.sync_register_block();
     }
@@ -878,6 +958,7 @@ impl Cpu {
     /// Drive the CPU's external IRQ input. A rising edge latches one request.
     /// IRQC owns source arbitration; the CPU only receives the selected number.
     pub fn set_irq_input(&mut self, level: bool, number: u8) {
+        self.forget_spin();
         self.external_irq_line = level;
         self.external_irq_number = number & 0x0F;
         self.refresh_irq_input();
@@ -900,6 +981,7 @@ impl Cpu {
     /// Drive an external source into IRQC. Sources are edge-latched by the
     /// controller and delivered to the CPU when their enable bit is set.
     pub fn set_irq_source(&mut self, number: u8, level: bool) {
+        self.forget_spin();
         self.irq_controller.borrow_mut().set_source(number, level);
     }
 
@@ -966,7 +1048,13 @@ impl Cpu {
         if reg == REG_ZERO { 0 } else { self.reg[reg] }
     }
 
+    /// Host/debugger register write. Instruction writeback uses `set_gpr`.
     pub fn write_reg(&mut self, reg: usize, value: u32) -> Result<String, String> {
+        self.forget_spin();
+        self.set_gpr(reg, value)
+    }
+
+    fn set_gpr(&mut self, reg: usize, value: u32) -> Result<String, String> {
         if reg >= self.reg.len() {
             return Err(format!("Invalid register index: {reg}"));
         }
@@ -1018,10 +1106,7 @@ impl Cpu {
                 return entry.instruction;
             }
             self.instruction_cache_misses += 1;
-            #[cfg(feature = "jit")]
-            {
-                self.instruction_cache_fills += 1;
-            }
+            self.instruction_cache_fills += 1;
             let instruction = self.read_and_decode_instruction(pc, mode);
             self.instruction_cache.as_mut().unwrap()[index] = Some(CachedInstruction {
                 pc,
@@ -1338,7 +1423,7 @@ impl Cpu {
     }
 
     fn write_short_reg(&mut self, sr: u8, value: u32) {
-        let _ = self.write_reg(Self::short_reg_to_gpr(sr), value);
+        let _ = self.set_gpr(Self::short_reg_to_gpr(sr), value);
     }
 
     fn execute_normal(&mut self, insn: Instruction) {
@@ -1350,7 +1435,7 @@ impl Cpu {
             Instruction::Ld { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.bus.read_u32_be(addr);
-                let _ = self.write_reg(rd as usize, value);
+                let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::St { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
@@ -1360,32 +1445,32 @@ impl Cpu {
             Instruction::Ldil { rd, imm } => {
                 let current = self.read_reg(rd as usize);
                 let value = (current & 0xFFFF_0000) | u32::from(imm);
-                let _ = self.write_reg(rd as usize, value);
+                let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Ldih { rd, imm } => {
                 let current = self.read_reg(rd as usize);
                 let value = (current & 0x0000_FFFF) | (u32::from(imm) << 16);
-                let _ = self.write_reg(rd as usize, value);
+                let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Add { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                let _ = self.write_reg(rd as usize, lhs.wrapping_add(rhs));
+                let _ = self.set_gpr(rd as usize, lhs.wrapping_add(rhs));
             }
             Instruction::Addi { rd, rs1, imm } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = (imm as i32) as u32;
-                let _ = self.write_reg(rd as usize, lhs.wrapping_add(rhs));
+                let _ = self.set_gpr(rd as usize, lhs.wrapping_add(rhs));
             }
             Instruction::Sub { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                let _ = self.write_reg(rd as usize, lhs.wrapping_sub(rhs));
+                let _ = self.set_gpr(rd as usize, lhs.wrapping_sub(rhs));
             }
             Instruction::Slt { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
                 let rhs = self.read_reg(rs2 as usize) as i32;
-                let _ = self.write_reg(rd as usize, u32::from(lhs < rhs));
+                let _ = self.set_gpr(rd as usize, u32::from(lhs < rhs));
             }
             Instruction::Beq { rs1, rs2, offset } => {
                 if self.read_reg(rs1 as usize) == self.read_reg(rs2 as usize) {
@@ -1401,7 +1486,7 @@ impl Cpu {
                 self.pc = Self::branch_target(next_pc, offset);
             }
             Instruction::Jal { offset } => {
-                let _ = self.write_reg(REG_LR, next_pc);
+                let _ = self.set_gpr(REG_LR, next_pc);
                 self.pc = Self::branch_target(next_pc, offset);
             }
             Instruction::Jr { rd } => {
@@ -1412,7 +1497,7 @@ impl Cpu {
                 self.instr_mode = InstructionMode::Short;
             }
             Instruction::Jals { offset } => {
-                let _ = self.write_reg(REG_LR, next_pc);
+                let _ = self.set_gpr(REG_LR, next_pc);
                 self.pc = Self::branch_target(next_pc, offset);
                 self.instr_mode = InstructionMode::Short;
             }
@@ -1422,18 +1507,18 @@ impl Cpu {
             }
             Instruction::Jalr { rd } => {
                 let target = self.read_reg(rd as usize);
-                let _ = self.write_reg(REG_LR, next_pc);
+                let _ = self.set_gpr(REG_LR, next_pc);
                 self.pc = target;
             }
             Instruction::Jalrs { rd } => {
                 let target = self.read_reg(rd as usize);
-                let _ = self.write_reg(REG_LR, next_pc);
+                let _ = self.set_gpr(REG_LR, next_pc);
                 self.pc = target;
                 self.instr_mode = InstructionMode::Short;
             }
             Instruction::Cpuid => {
-                let _ = self.write_reg(REG_CPUID, CPU_ID);
-                let _ = self.write_reg(REG_FEATURES, CPU_FEATURES);
+                let _ = self.set_gpr(REG_CPUID, CPU_ID);
+                let _ = self.set_gpr(REG_FEATURES, CPU_FEATURES);
             }
             Instruction::Halt => {
                 self.bus.flush_relaxed_devices();
@@ -1458,49 +1543,49 @@ impl Cpu {
                 self.irq_enable = true;
             }
             Instruction::And { rd, rs1, rs2 } => {
-                let _ = self.write_reg(
+                let _ = self.set_gpr(
                     rd as usize,
                     self.read_reg(rs1 as usize) & self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Or { rd, rs1, rs2 } => {
-                let _ = self.write_reg(
+                let _ = self.set_gpr(
                     rd as usize,
                     self.read_reg(rs1 as usize) | self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Xor { rd, rs1, rs2 } => {
-                let _ = self.write_reg(
+                let _ = self.set_gpr(
                     rd as usize,
                     self.read_reg(rs1 as usize) ^ self.read_reg(rs2 as usize),
                 );
             }
             Instruction::Sll { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
+                let _ = self.set_gpr(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
             }
             Instruction::Srl { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shr(sh));
+                let _ = self.set_gpr(rd as usize, self.read_reg(rs1 as usize).wrapping_shr(sh));
             }
             Instruction::Sla { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
-                let _ = self.write_reg(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
+                let _ = self.set_gpr(rd as usize, self.read_reg(rs1 as usize).wrapping_shl(sh));
             }
             Instruction::Sra { rd, rs1, rs2 } => {
                 let sh = self.read_reg(rs2 as usize) & 0x1F;
                 let value = self.read_reg(rs1 as usize) as i32;
-                let _ = self.write_reg(rd as usize, (value >> sh) as u32);
+                let _ = self.set_gpr(rd as usize, (value >> sh) as u32);
             }
             Instruction::Sltu { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
-                let _ = self.write_reg(rd as usize, u32::from(lhs < rhs));
+                let _ = self.set_gpr(rd as usize, u32::from(lhs < rhs));
             }
             Instruction::Mul { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as u64;
                 let rhs = self.read_reg(rs2 as usize) as u64;
-                let _ = self.write_reg(rd as usize, lhs.wrapping_mul(rhs) as u32);
+                let _ = self.set_gpr(rd as usize, lhs.wrapping_mul(rhs) as u32);
             }
             Instruction::Div { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
@@ -1512,7 +1597,7 @@ impl Cpu {
                 } else {
                     lhs / rhs
                 };
-                let _ = self.write_reg(rd as usize, result as u32);
+                let _ = self.set_gpr(rd as usize, result as u32);
             }
             Instruction::Mod { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32;
@@ -1524,30 +1609,30 @@ impl Cpu {
                 } else {
                     lhs % rhs
                 };
-                let _ = self.write_reg(rd as usize, result as u32);
+                let _ = self.set_gpr(rd as usize, result as u32);
             }
             Instruction::Mulh { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize) as i32 as i64;
                 let rhs = self.read_reg(rs2 as usize) as i32 as i64;
-                let _ = self.write_reg(rd as usize, ((lhs.wrapping_mul(rhs)) >> 32) as u32);
+                let _ = self.set_gpr(rd as usize, ((lhs.wrapping_mul(rhs)) >> 32) as u32);
             }
             Instruction::Divu { rd, rs1, rs2 } => {
                 let lhs = self.read_reg(rs1 as usize);
                 let rhs = self.read_reg(rs2 as usize);
                 let result = if rhs == 0 { 0 } else { lhs / rhs };
-                let _ = self.write_reg(rd as usize, result);
+                let _ = self.set_gpr(rd as usize, result);
             }
             Instruction::Ldb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.bus.read_u8(addr) as u32;
-                let _ = self.write_reg(rd as usize, value);
+                let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Ldh { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let b0 = self.bus.read_u8(addr) as u32;
                 let b1 = self.bus.read_u8(addr.wrapping_add(1)) as u32;
                 let value = (b0 << 8) | b1;
-                let _ = self.write_reg(rd as usize, value);
+                let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Stb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
@@ -1613,7 +1698,7 @@ impl Cpu {
                 self.pc = self.read_short_reg(rd);
             }
             ShortInstruction::Jal { offset } => {
-                let _ = self.write_reg(REG_LR, next_pc);
+                let _ = self.set_gpr(REG_LR, next_pc);
                 self.pc = Self::branch_target(next_pc, offset);
             }
             ShortInstruction::Ldi { rd, imm } => {
@@ -1687,11 +1772,122 @@ impl Cpu {
         }
     }
 
+    /// Cycles skipped by spin-loop fast-forward since construction or reset.
+    #[doc(hidden)]
+    pub fn spin_skipped_cycles(&self) -> u128 {
+        self.spin.skipped_cycles
+    }
+
+    /// Host-side state changes are not CPU execution; an earlier loop-head
+    /// snapshot must not be compared across them.
+    fn forget_spin(&mut self) {
+        self.spin.probes = [None; SPIN_PROBES];
+    }
+
+    #[doc(hidden)]
+    pub fn set_spin_fast_forward(&mut self, enabled: bool) {
+        self.spin = SpinDetector::new(enabled);
+    }
+
+    fn spin_state(&self) -> SpinState {
+        SpinState {
+            reg: self.reg,
+            pc: self.pc,
+            instr_mode: self.instr_mode,
+            epc: self.epc,
+            irq_return_mode: self.irq_return_mode,
+            cause: self.cause,
+            irq_enable: self.irq_enable,
+            irq_pending: self.irq_pending,
+            irq_pending_number: self.irq_pending_number,
+            irq_line: self.irq_line,
+            external_irq_line: self.external_irq_line,
+            external_irq_number: self.external_irq_number,
+            irqc_line: self.irqc_line,
+            irqc_number: self.irqc_number,
+        }
+    }
+
+    fn spin_probe(&self, quiet_until: Option<u128>) -> SpinProbe {
+        SpinProbe {
+            state: self.spin_state(),
+            cycles: self.cycles,
+            instructions: self.instructions_executed,
+            cache_hits: self.instruction_cache_hits,
+            effectful_accesses: self.bus.effectful_accesses(),
+            fills: self.instruction_cache_fills,
+            quiet_until,
+        }
+    }
+
+    /// Called at instruction boundaries of `run`. Returns true after skipping
+    /// whole iterations of a proven spin loop.
+    fn skip_spin(&mut self, end_cycles: u128) -> bool {
+        let pc = self.pc;
+        let backward = pc <= self.spin.last_pc;
+        self.spin.last_pc = pc;
+        if !backward {
+            return false;
+        }
+        let slot = self.spin.slot(pc);
+        let Some(probe) = self.spin.probes[slot] else {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        };
+        let repeated = self.cycles > probe.cycles
+            && probe.effectful_accesses == self.bus.effectful_accesses()
+            && probe.fills == self.instruction_cache_fills
+            && probe.state == self.spin_state()
+            && !(self.irq_enable && self.irq_pending);
+        if !repeated {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let Some(quiet_until) = probe.quiet_until else {
+            // Matched once: measure the window this next iteration must fit.
+            let quiet = u128::from(self.bus.quiet_cycles());
+            self.spin.probes[slot] = Some(self.spin_probe(Some(self.cycles + quiet)));
+            return false;
+        };
+        if self.cycles > quiet_until {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let period = self.cycles - probe.cycles;
+        let room = u128::from(self.bus.quiet_cycles()).min(end_cycles - self.cycles);
+        let iterations = room / period;
+        if iterations == 0 {
+            self.spin.probes[slot] = Some(self.spin_probe(None));
+            return false;
+        }
+        let skipped = iterations * period;
+        self.spin.skipped_cycles += skipped;
+        self.bus
+            .advance_quiet_cycles(skipped.min(u128::from(u64::MAX)) as u64);
+        self.cycles += skipped;
+        self.running_cycles += skipped;
+        self.instructions_executed +=
+            iterations * (self.instructions_executed - probe.instructions);
+        self.instruction_cache_hits +=
+            iterations * (self.instruction_cache_hits - probe.cache_hits);
+        self.sync_register_block();
+        self.spin.probes[slot] = Some(self.spin_probe(None));
+        true
+    }
+
     fn run_inner<const PROFILE: bool>(&mut self, max_cycles: usize) {
         self.relaxed_run = self.relaxed_devices && !PROFILE;
         let start_cycles = self.cycles;
         let end_cycles = start_cycles.saturating_add(max_cycles as u128);
         while self.cycles < end_cycles {
+            if !PROFILE
+                && self.spin.enabled
+                && self.running
+                && self.state == CpuState::Fetch
+                && self.skip_spin(end_cycles)
+            {
+                continue;
+            }
             #[cfg(feature = "jit")]
             if !PROFILE
                 && self.jit.is_some()
