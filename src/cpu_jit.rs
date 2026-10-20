@@ -2,6 +2,7 @@
 //! Generated code only accesses the explicit [u32; 32] register array.
 use super::*;
 use cranelift_codegen::ir::{AbiParam, InstBuilder, MemFlags, Value, condcodes::IntCC, types};
+use cranelift_codegen::settings::{self, Configurable};
 use cranelift_frontend::{FunctionBuilder, FunctionBuilderContext};
 use cranelift_jit::{JITBuilder, JITModule};
 use cranelift_module::{Linkage, Module};
@@ -135,11 +136,23 @@ impl JitEngine {
         } else {
             "false"
         };
-        let mut builder = JITBuilder::with_flags(
-            &[("enable_verifier", verifier)],
-            cranelift_module::default_libcall_names(),
-        )
-        .map_err(|error| error.to_string())?;
+        let mut flags = settings::builder();
+        flags
+            .set("enable_verifier", verifier)
+            .map_err(|e| e.to_string())?;
+        // Cranelift 0.117's PIC JIT allocates GOT and PLT separately, then
+        // unwraps their distance as i32. Windows can place them >2 GiB apart.
+        // Non-PIC code uses full-width helper addresses and needs no GOT/PLT.
+        // with_flags forces is_pic=true even if passed false: use with_isa.
+        flags.set("is_pic", "false").map_err(|e| e.to_string())?;
+        flags
+            .set("use_colocated_libcalls", "false")
+            .map_err(|e| e.to_string())?;
+        let isa = cranelift_native::builder()
+            .map_err(|e| e.to_string())?
+            .finish(settings::Flags::new(flags))
+            .map_err(|e| e.to_string())?;
+        let mut builder = JITBuilder::with_isa(isa, cranelift_module::default_libcall_names());
         builder.symbol("src32_prepare", prepare as *const u8);
         builder.symbol("src32_finish", finish as *const u8);
         builder.symbol("src32_batch_memory", batch_memory as *const u8);

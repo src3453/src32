@@ -56,6 +56,39 @@ fn native_ran(cpu: &AnyCpu) {
 }
 
 #[test]
+fn repeated_startup_and_reset_execute_both_native_tiers_with_helpers() {
+    // Exercise module creation/recreation and helper imports in both tiers.
+    // ALU-only batches also declare the memory helper, just like the crash log.
+    for memory in [false, true] {
+        let words = [
+            i(0x04, 1, 1, 1),
+            if memory {
+                i(0x02, 1, 0, 0x1000)
+            } else {
+                i(0x04, 2, 1, 3)
+            },
+            i(0x09, 0, 0, -12),
+        ];
+        for _ in 0..16 {
+            let mut cached = boot(CpuKind::Cached, 0, &words);
+            let mut jit = boot(CpuKind::Jit, 0, &words);
+            for _ in 0..3 {
+                for budget in [4096, 1, 2, 7, 64] {
+                    cached.run(budget);
+                    jit.run(budget);
+                    same(&cached, &jit);
+                }
+                assert_eq!(cached.read_mem_u32_be(0x1000), jit.read_mem_u32_be(0x1000));
+                native_ran(&jit);
+                assert!(jit.jit_stats().unwrap().native_batches > 0);
+                cached.reset(0);
+                jit.reset(0);
+            }
+        }
+    }
+}
+
+#[test]
 fn native_alu_matches_cached_at_every_cycle_with_randomized_operands() {
     let ops = [
         0x03, 0x05, 0x06, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x11, 0x12, 0x17,

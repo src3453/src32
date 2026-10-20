@@ -871,3 +871,10 @@
 - 落とし穴: RAMでflushしなくなるとJIT batchが区間を使い切って辞退→strict tierの遅延compileが増え、cubeでJITが遅くなった。非連結batch開始時に区間切れならflushして新区間を開き、連結中の区間切れはchain終了だけにする（辞退扱いしない）。`lazy_tiers…`テストは「別entryがbatch tierを得ることもある」前提に緩めた。
 - 計測: `mmio_bench`でJIT 61→16 ms、relaxed 50→34、Cached 61→49、Pipeline 97→86。`cpu_bench`の2〜5%差はbuild間揺れと同程度で、Bus primitiveは単体で速い（layout差と判断、要追跡）。untrackedファイルは`git stash`で退避されない（`-u`が必要）ので、base比較で新規benchを消さないこと。
 
+
+## JIT startup: Windows GOT/PLT distance panic (2026-10-20)
+- `cranelift-jit 0.117.2` PIC mode allocates GOT and PLT independently and unwraps an i32 displacement in `write_plt_entry_bytes`. Windows address placement can exceed the signed 32-bit range, causing intermittent `TryFromIntError` during helper declaration, even in ALU-only batches.
+- CPU JIT now constructs the native ISA explicitly with `is_pic=false` and `use_colocated_libcalls=false`, then uses `JITBuilder::with_isa`. On x64, non-colocated helper calls use full-width addresses without GOT/PLT. Passing false to `with_flags` does not work: that constructor overrides is_pic to true internally. Preserve this when upgrading Cranelift or changing module setup.
+- Both startup and cache reset use `create_module`; keep their settings identical. Keep debug IR verification and Cached fallback intact.
+- `repeated_startup_and_reset_execute_both_native_tiers_with_helpers` covers ALU-only and memory-helper blocks over repeated creation/reset and compares state with Cached. It exercises both tiers, but does not force the failing ASLR placement. Focused release tests: cpu_jit/cpu/cpu_select/cpu_pipeline/dos_smoke, 83 passed.
+- 実ゲスト検証: config.yaml のない `target/jit-startup-smoke` を cwd にし、release `src32_testbench test.wax --cpu jit --frames 5 --allow-running --skip-render-checks` を別プロセスで10回実行。全回4,000,000 cycles、92 batch compilations、compile_failures=0。描画／GUI検証ではない。ログにあった一時 program.wax は既に消えていた。

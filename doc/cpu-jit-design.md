@@ -1,5 +1,13 @@
 # Cranelift Dynarec 導入案
 
+## Windows での断続的な起動失敗の修正（2026-10-20）
+
+`cranelift-jit 0.117.2` の PIC 経路は、別々に確保した PLT（ジャンプ用コード）と GOT（参照テーブル）の相対距離を `i32::try_from(...).unwrap()` で埋め込む。Windows のメモリ配置で距離が ±2 GiB の範囲を超えると、最初の helper 宣言などで `TryFromIntError` により panic するため、同じゲストでも起動ごとに成否が変わり得る。
+
+CPU JIT は native ISA を明示的に作り、`is_pic=false`、`use_colocated_libcalls=false` を設定して `JITBuilder::with_isa` に渡す。x64 の外部 helper 呼び出しはフル幅のアドレスを使い、GOT/PLT の距離制限を避ける。`JITBuilder::with_flags` は指定した `is_pic=false` を内部で true に上書きするため、この修正の代用にはならない。debug build の IR verifier と既存の Cached fallback は維持する。
+
+`tests/cpu_jit.rs` の `repeated_startup_and_reset_execute_both_native_tiers_with_helpers` は、ALU のみ／memory helper 使用の両方で起動と reset を繰り返し、strict／batch の生成と実行結果を Cached と照合する。これは ASLR の問題配置を強制するテストではなく、変更後の module 再作成と helper 呼び出しの検証である。
+
 最新の改善は「dispatchボトルネック、乗除算・memory対応（2026-10-20）」、その前は「JIT往復削減と段階的compile」を参照。関連する後続実験として `--cpu cached-relaxed` とJITへの待機device batchingを追加した。JITも最大32 cycles（2026-10-20に256へ拡大）にまとめるが、CPU IRQ sampling、各命令のコード世代検証、native blockのcommit、run budget確認は命令境界ごとに保つ。MMIO／timer deadline／HALT／IRETとactive DMA／IDC／expansion時は同期する。[性能調査の結果](emulator-performance-plan.md#実験的cached-relaxedモード)を参照。
 
 2026-10-18。初期実装済み。以下に実装状況と設計方針を記録する。
