@@ -721,6 +721,35 @@ def test_raw_assembly_requires_terminator_at_start_location(tmp_path):
         compile_program("!asm\nNOP", source_path=str(source_path))
 
 
+@pytest.mark.parametrize("mode,width,cell_height", [("col40", 40, 8), ("col80", 80, 8), ("mode80x16", 80, 16)])
+@pytest.mark.parametrize("base", [0x10000000, 0x10004000])
+def test_pcg_cls_clears_all_planes_and_preserves_console_state(mode, width, cell_height, base):
+    pcg_path = Path(__file__).resolve().parents[2] / "sol/cpt32/pcg.sol"
+    vm = SolVM()
+    source = f'''!include "{pcg_path.as_posix()}"
+pcg.initPCG
+pcg.{mode}
+{base} >pcg.pcg_vram_base
+{base} 0x3000 0x58 pcg._pcg_fill
+0xA5 {base - 1} stb
+0xA5 {base + 0x3000} stb
+0xA5 0x10020000 stb
+0xA5 0x10021000 stb
+{cell_height * 29} >pcg.pcg_scroll_y
+{width - 1} 29 pcg.locate
+0x12 pcg.colorfg
+0x23 pcg.colorbg
+0x15 pcg.cls
+pcg.pcg_cur_x pcg.pcg_cur_y pcg.pcg_scroll_y pcg.pcg_vram_row
+pcg.pcg_fg_color pcg.pcg_bg_color pcg.pcg_width pcg.pcg_cell_height
+'''
+    assert vm.run_source(source) == [width - 1, 29, cell_height * 29, 28, 0x12, 0x23, width, cell_height]
+    for plane, expected in [(0, 0), (0x1000, 0x15), (0x2000, 0x15)]:
+        assert all(vm.memory[base + plane + offset] == expected for offset in range(0x1000))
+    for address in (base - 1, base + 0x3000, 0x10020000, 0x10021000):
+        assert vm.memory[address] == 0xA5
+
+
 def test_pcg_console_scrolls_and_clears_only_reused_ring_row():
     repo = Path(__file__).resolve().parents[2]
     pcg_path = repo / "sol/cpt32/pcg.sol"

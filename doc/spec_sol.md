@@ -448,7 +448,21 @@ pcg.col80
 | `print.prnln` | 1 | a -> | スタックのトップの値をポインタとして、標準出力に出力し、改行する |
 | `print.putc` | 1 | a -> | スタックのトップの値を文字として標準出力に出力する |
 
+## PCG画面消去 (sol/cpt32/pcg.sol, 名前空間 `pcg`)
+
+`pcg.cls(color)` は40列・80列・80×30の8×16表示に共通で、`pcg.pcg_vram_base` の文字面4 KiBを0、FG（+0x1000）とBG（+0x2000）の各属性面4 KiBを指定色にします。表示外のring rowも消去し、glyph 0が空でなくても同じFG/BGによって単色になります。カーソル、スクロール、以後の出力色は保持します。ライブラリはゲストへ組み込まれるため、既存のWAXにはソースからの再コンパイルが必要です。
+
+`tests/pcg_cls.sol` は3モードの全plane byteと状態保持を検証するゲストです。次の順でビルドし、`config.yaml` のないディレクトリーをcwdとして `src32_testbench` を実行します（パスはリポジトリーからの相対表記）。
+
+```sh
+python tools/solc/solc.py compile tests/pcg_cls.sol -O speed -o target/pcg-cls.asm
+python tools/asm/asm.py target/pcg-cls.asm -o target/pcg-cls.wax
+# 空のcwdで、実際の絶対パスを指定する。--cpu pipeline でも実行する。
+<repo>/target/release/src32_testbench <repo>/target/pcg-cls.wax 42 --cpu scalar --frames 64 --skip-render-checks
+```
+
 ## 2. 浮動小数点 (sol/solstd/softfloat.sol, 名前空間 `softfloat`)
+
 IEEE 754 binary32 の値を、浮動小数点リテラル (`1.0f` など) がスタックに置く32ビット表現のまま整数演算で扱う。`softfloat.sf32_add`、`softfloat.sf32_sub`、`softfloat.sf32_mul`、`softfloat.sf32_div`、`softfloat.sf32_neg`、`softfloat.sf32_abs`、`softfloat.sf32_eq`、`softfloat.sf32_lt` と、次の整数変換を提供する。比較は `0` が真、`1` が偽である。NaN は順序付けできないため、`softfloat.sf32_eq` と `softfloat.sf32_lt` はどちらも偽を返す。
 
 | 関数 | スタック操作 | 説明 |

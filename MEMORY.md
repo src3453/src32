@@ -896,3 +896,7 @@
 - 原因: `_poll_process` が空になるまで無制限にキューを消費し、各行でTk Textのconfigure/insert/seeを呼んでいた。生成が速いとイベントループに戻れず、キューとTextも無制限に増大した。
 - `ProcessEventQueue` は2048件。lineだけ満杯時にdropし、省略数をmutex保護で回収してGUIに表示する。phase/started/exited/errorは通常のblocking putで必ず届ける。GUI pollは最大256件/約64k文字を1回のText更新にまとめ、backlog時も10msタイマーで必ずTkに戻る。Textは末尾200k文字。child stdoutはreadline(8192)で改行なし巨大出力も分割。コンソールはGUI省略とは独立して出力する（遅いコンソールはreader workerを詰まらせ得るがGUIスレッドでは書かない）。
 - 回帰は `python -m unittest discover -s tools/cpt32-launcher -p 'test_*.py' -v`。100万文字の改行なし出力＋10万行の実subprocess、満杯queueのdrop/終了通知保持、pollのyield、実Tk Textとtimer heartbeat/履歴上限を確認する。WindowsでTMP/TEMPをworkspace内に設定すること。
+## sol PCG CLS parity (2026-10-21)
+- sol版 `pcg.cls` は固定BG領域だけを書き換えていた。C SDKの`pcg_cls`は既に全3plane対応済み。sol版もmutableな`pcg_vram_base`からtext/FG/BG各4KiBを0/color/colorで埋める。40/80/80x16に共通で、表示外ringセルを含めて消し、glyph0が非空でも単色にする。cursor/scroll/output色とfont領域は保持。
+- `test_sol_vm.py` の6ケース（3モード×標準/変更base）は修正前にstale textで失敗し、修正後通過。`tests/pcg_cls.sol`を`solc.py compile -O speed`→`asm.py`でWAX化し、空cwdのrelease src32_testbenchでScalar/Pipelineとも64frames、R1=42、running=falseを確認。`--skip-render-checks`のbyte/state検証で、GUI描画検証ではない。VM/compiler/LSPは165件通過。ゲストWAXはライブラリ変更後に再ビルドが必要。
+- WindowsのPython3.15では親のstderr handleが無効だとLSP子プロセス起動がWinError6になることがある。テストを別Pythonの`subprocess.run(stdout=ログfile, stderr=STDOUT)`で起動すると有効なhandleを継承できる。TMP/TEMPもworkspace内を指定する。

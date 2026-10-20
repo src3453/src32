@@ -67,7 +67,11 @@ fn locate (x y) :
 ;
 
 fn cls (color) :
-    0x10002000 0x1000 color _pcg_fill
+    # Clear the entire ring, including cells exposed by switching to 80 columns.
+    # Equal FG/BG blanks writable glyph zero even if its bitmap is nonempty.
+    pcg_vram_base 0x1000 0 _pcg_fill
+    pcg_vram_base 0x1000 add 0x1000 color _pcg_fill
+    pcg_vram_base 0x2000 add 0x1000 color _pcg_fill
 ;
 
 fn initPCG () :
