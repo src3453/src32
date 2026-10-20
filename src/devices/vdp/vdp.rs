@@ -582,6 +582,12 @@ impl VdpDevice {
 }
 
 impl Device for VdpDevice {
+    /// VRAM, VDP and SGC state advance with host frames (`Vdp::tick`), not the
+    /// bus clock, and raise no IRQ source.
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
         match self.port {
             VdpPort::Vram => self.vdp.borrow().vram.borrow().get(addr as usize).copied(),
@@ -887,6 +893,11 @@ impl VpuRegisterDevice {
     }
 }
 impl Device for VpuRegisterDevice {
+    /// VPU commands run synchronously on write; no clock, IRQ or DMA coupling.
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
         let reg = addr & !3;
         let shift = (3 - (addr & 3)) * 8;

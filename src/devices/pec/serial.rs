@@ -101,6 +101,11 @@ impl UARTDevice {
 }
 
 impl Device for UARTDevice {
+    /// Host-side byte queues; its interrupt enable bit drives no IRQ source.
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
         // DATA_RW consumes RX data, so it has no passive snapshot equivalent.
         if addr == 0 {

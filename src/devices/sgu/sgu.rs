@@ -33,6 +33,11 @@ impl SguDevice {
 }
 
 impl Device for SguDevice {
+    /// SGU registers and PCM RAM are rendered per host frame; no IRQ source.
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+
     fn read(&mut self, addr: u32) -> u8 {
         match self.port {
             SguPort::Regs(chip) => self.sgus[chip].borrow_mut().read_register(addr),

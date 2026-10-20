@@ -526,8 +526,9 @@ impl Cpu {
                 continue;
             }
             if chained {
-                // prepare resynchronizes from the register block.
-                self.sync_register_block();
+                // Usually the deferred window ran out; let the next dispatch
+                // start a fresh one instead of counting a strict-tier decline.
+                break;
             }
             let strict = match functions.strict {
                 Some(strict) => Some(strict),
@@ -577,17 +578,29 @@ impl Cpu {
         if !self.relaxed_run || budget < 2 {
             return false;
         }
-        let cycle_limit = budget.min(u128::from(self.bus.native_idle_budget())) as u64;
         // Longest prefix whose Cached cycle cost fits the bus-free window.
-        let mut cycles = 0;
-        let mut limit = 0;
-        for item in items {
-            let next = cycles + latency(item.instruction);
-            if next > cycle_limit {
-                break;
+        let prefix = |idle: u64| {
+            let cycle_limit = budget.min(u128::from(idle)) as u64;
+            let mut cycles = 0;
+            let mut limit = 0;
+            for item in items {
+                let next = cycles + latency(item.instruction);
+                if next > cycle_limit {
+                    break;
+                }
+                cycles = next;
+                limit += 1;
             }
-            cycles = next;
-            limit += 1;
+            (cycles, limit)
+        };
+        let (mut cycles, mut limit) = prefix(self.bus.native_idle_budget());
+        if (limit == 0 || cycles < 2) && !chained && self.bus.has_deferred_cycles() {
+            // Timing-insensitive accesses no longer end the deferred window;
+            // catch devices up at this instruction boundary, as the relaxed
+            // interpreter does at its window limit, and open a new window.
+            // IRQ inputs are sampled below, after the flush.
+            self.bus.flush_relaxed_devices();
+            (cycles, limit) = prefix(self.bus.native_idle_budget());
         }
         if limit == 0 || cycles < 2 {
             return false;
@@ -796,7 +809,7 @@ unsafe extern "C" fn batch_memory(context: *mut BatchContext, index: u32, cycles
         let (base, offset, width, store) =
             memory_access(item.instruction).expect("batched memory instruction");
         let address = Cpu::add_signed(cpu.read_reg(usize::from(base)), offset);
-        if !cpu.bus.is_plain_memory_range(address, width) {
+        if !cpu.bus.is_timing_insensitive_range(address, width) {
             context.executed = Some(index);
             return BATCH_STOP_BEFORE;
         }

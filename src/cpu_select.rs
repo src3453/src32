@@ -188,6 +188,17 @@ impl AnyCpu {
         }
     }
 
+    /// Test hook: disable Bus optimizations based on timing-insensitive devices.
+    #[doc(hidden)]
+    pub fn set_timing_insensitive_fast_paths(&mut self, enabled: bool) {
+        match self {
+            Self::Pipelined(cpu) => cpu.set_timing_insensitive_fast_paths(enabled),
+            Self::Scalar(cpu) | Self::Cached(cpu) | Self::Jit(cpu) => {
+                cpu.set_timing_insensitive_fast_paths(enabled)
+            }
+        }
+    }
+
     /// Cycles skipped by exact spin-loop fast-forward.
     #[doc(hidden)]
     pub fn spin_skipped_cycles(&self) -> u128 {

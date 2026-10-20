@@ -24,6 +24,10 @@ use crate::devices::vdp::vdp::Vdp;
 struct DeviceMap {
     region: BusRegion,
     device: Box<dyn Device>,
+    /// `Device::is_plain_memory`, sampled at registration.
+    plain: bool,
+    /// `Device::is_timing_insensitive`, sampled at registration.
+    timing_insensitive: bool,
 }
 
 /// Snapshot of one registered system-bus address range.
@@ -76,8 +80,21 @@ pub trait Device {
     /// Side-effect-free storage: accesses never fault, never touch other
     /// devices and cannot change any IRQ source. The Bus then skips IRQ
     /// re-sampling after the access and may arbitrate a word only once.
+    /// Constant for the device's lifetime (the Bus samples it once).
     fn is_plain_memory(&self) -> bool {
         false
+    }
+    /// Constant for the device's lifetime (the Bus samples it once).
+    /// Accesses are unobservable relative to system-clock device progress:
+    /// the device is not an IRQ source, never faults, its values do not
+    /// depend on the system clock or ticked devices (DMA, IDC, PeC timers,
+    /// expansion cards), and its accesses do not change those devices, IRQ
+    /// sources or the CPU. Plain memory qualifies; frame-driven video/audio
+    /// and host-side devices do too. The Bus then skips relaxed-device
+    /// flushes and IRQ re-sampling for the access and may arbitrate a word
+    /// once; JIT batches may perform the access natively.
+    fn is_timing_insensitive(&self) -> bool {
+        self.is_plain_memory()
     }
     /// Aligned big-endian word at `offset` when reading its four bytes has no
     /// side effect, cannot fault and cannot change an IRQ source (status and
@@ -124,6 +141,8 @@ pub struct Bus {
     /// read that is not plain memory or a `peek_u32_be` register. A spinning
     /// CPU with no such access between two loop heads cannot change devices.
     effectful_accesses: u64,
+    /// Test hook: when false, every device is treated as timing-sensitive.
+    honor_timing_insensitive: bool,
 }
 
 impl Bus {
@@ -147,6 +166,7 @@ impl Bus {
             generation_device: Cell::new(0),
             access_device: Cell::new(0),
             effectful_accesses: 0,
+            honor_timing_insensitive: true,
         }
     }
 
@@ -438,6 +458,11 @@ impl Bus {
                 .clamp(1, RELAXED_DEVICE_WINDOW);
         }
         self.relaxed_cycles += cycles;
+    }
+
+    #[cfg(feature = "jit")]
+    pub(crate) fn has_deferred_cycles(&self) -> bool {
+        self.relaxed_cycles != 0
     }
 
     pub(crate) fn flush_relaxed_devices(&mut self) {
@@ -749,6 +774,8 @@ impl Bus {
                 size,
                 name,
             },
+            plain: device.is_plain_memory(),
+            timing_insensitive: device.is_timing_insensitive(),
             device,
         });
     }
@@ -760,6 +787,7 @@ impl Bus {
 
     /// Regions never overlap, so the remembered device gives the same answer
     /// as a full scan whenever it contains `addr`.
+    #[inline]
     fn find_device_index(&self, addr: u32) -> Option<usize> {
         let contains = |mapped: &DeviceMap| {
             addr.checked_sub(mapped.region.start)
@@ -774,15 +802,32 @@ impl Bus {
         Some(index)
     }
 
-    /// Whether `addr..addr+width` lies in one plain-memory device, so a CPU
-    /// access there has no side effect beyond the bytes and bus timing.
+    /// Whether `addr..addr+width` lies in one timing-insensitive device, so a
+    /// CPU access there needs no device synchronization.
     #[cfg(feature = "jit")]
-    pub(crate) fn is_plain_memory_range(&self, addr: u32, width: u32) -> bool {
+    pub(crate) fn is_timing_insensitive_range(&self, addr: u32, width: u32) -> bool {
+        if !self.honor_timing_insensitive {
+            return self.find_device_index(addr).is_some_and(|index| {
+                let mapped = &self.devices[index];
+                mapped.plain && mapped.region.size - (addr - mapped.region.start) >= width
+            });
+        }
         self.find_device_index(addr).is_some_and(|index| {
             let mapped = &self.devices[index];
-            mapped.device.is_plain_memory()
-                && mapped.region.size - (addr - mapped.region.start) >= width
+            mapped.timing_insensitive && mapped.region.size - (addr - mapped.region.start) >= width
         })
+    }
+
+    #[inline]
+    fn is_timing_insensitive_index(&self, index: Option<usize>) -> bool {
+        self.honor_timing_insensitive
+            && index.is_some_and(|index| self.devices[index].timing_insensitive)
+    }
+
+    /// Test hook: disable every optimization based on `is_timing_insensitive`.
+    #[doc(hidden)]
+    pub fn set_timing_insensitive_fast_paths(&mut self, enabled: bool) {
+        self.honor_timing_insensitive = enabled;
     }
 
     /// Side-effect-free register word (e.g. a polled DMAC/IDC status) read
@@ -813,20 +858,24 @@ impl Bus {
         Some(value)
     }
 
-    /// Plain-memory device holding `addr..addr+width` when a CPU access can
-    /// use the single-arbitration path: no DMA master can request the bus
-    /// between beats, and plain memory cannot raise one.
-    fn plain_memory_span(&mut self, addr: u32, width: u32) -> Option<(usize, u32)> {
+    /// Timing-insensitive device holding `addr..addr+width` when a CPU access
+    /// can use the single-arbitration path: no DMA master can request the bus
+    /// between beats, and such a device can neither raise a request nor
+    /// change an IRQ source. No relaxed flush is needed (see the flag).
+    #[inline]
+    fn timing_insensitive_span(&mut self, addr: u32, width: u32) -> Option<(usize, u32)> {
         if self.access_source != BusAccessSource::Cpu {
             return None;
         }
         let index = self.find_device_index(addr)?;
-        let mapped = &self.devices[index];
-        let offset = addr - mapped.region.start;
-        if !mapped.device.is_plain_memory() || mapped.region.size - offset < width {
+        if !self.is_timing_insensitive_index(Some(index)) {
             return None;
         }
-        self.flush_relaxed_devices();
+        let mapped = &self.devices[index];
+        let offset = addr - mapped.region.start;
+        if mapped.region.size - offset < width {
+            return None;
+        }
         if self
             .dmac
             .as_ref()
@@ -905,19 +954,25 @@ impl Bus {
     }
 
     pub fn read_u8(&mut self, addr: u32) -> u8 {
-        self.flush_relaxed_devices();
+        let index = self.find_device_index(addr);
+        let insensitive = self.is_timing_insensitive_index(index);
+        if !insensitive {
+            self.flush_relaxed_devices();
+        }
         self.arbitrate_cpu_access();
-        if let Some((device, offset)) = self.find_device(addr) {
+        if let Some(index) = index {
+            let mapped = &mut self.devices[index];
+            let offset = addr - mapped.region.start;
+            let device = &mut mapped.device;
             let value = device.read(offset);
-            let plain = device.is_plain_memory();
-            let pure = plain || device.peek_u32_be(offset & !3).is_some();
+            let pure = mapped.plain || device.peek_u32_be(offset & !3).is_some();
             if device.is_faulted() {
                 self.latch_bus_error();
             }
             if !pure {
                 self.effectful_accesses += 1;
             }
-            if !plain {
+            if !insensitive {
                 self.refresh_device_irqs();
             }
             self.release_cpu_access();
@@ -946,15 +1001,20 @@ impl Bus {
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
         self.effectful_accesses += 1;
-        self.flush_relaxed_devices();
+        let index = self.find_device_index(addr);
+        let insensitive = self.is_timing_insensitive_index(index);
+        if !insensitive {
+            self.flush_relaxed_devices();
+        }
         self.arbitrate_cpu_access();
-        if let Some((device, offset)) = self.find_device_mut(addr) {
-            device.write(offset, value);
-            let plain = device.is_plain_memory();
+        if let Some(index) = index {
+            let mapped = &mut self.devices[index];
+            let device = &mut mapped.device;
+            device.write(addr - mapped.region.start, value);
             if device.is_faulted() {
                 self.latch_bus_error();
             }
-            if !plain {
+            if !insensitive {
                 self.refresh_device_irqs();
             }
             self.release_cpu_access();
@@ -981,12 +1041,20 @@ impl Bus {
             self.latch_bus_error();
             return 0;
         }
-        if let Some((index, offset)) = self.plain_memory_span(addr, 4) {
+        if let Some((index, offset)) = self.timing_insensitive_span(addr, 4) {
             self.arbitrate_cpu_access();
-            let device = &mut self.devices[index].device;
+            let mapped = &mut self.devices[index];
+            let device = &mut mapped.device;
             let value = u32::from_be_bytes(std::array::from_fn(|beat| {
                 device.read(offset + beat as u32)
             }));
+            debug_assert!(
+                !device.is_faulted(),
+                "timing-insensitive devices never fault"
+            );
+            if !mapped.plain && device.peek_u32_be(offset).is_none() {
+                self.effectful_accesses += 1;
+            }
             self.release_cpu_access();
             return value;
         }
@@ -1006,13 +1074,17 @@ impl Bus {
             self.latch_bus_error();
             return;
         }
-        if let Some((index, offset)) = self.plain_memory_span(addr, 4) {
+        if let Some((index, offset)) = self.timing_insensitive_span(addr, 4) {
             self.effectful_accesses += 1;
             self.arbitrate_cpu_access();
             let device = &mut self.devices[index].device;
             for (beat, byte) in value.to_be_bytes().into_iter().enumerate() {
                 device.write(offset + beat as u32, byte);
             }
+            debug_assert!(
+                !device.is_faulted(),
+                "timing-insensitive devices never fault"
+            );
             self.release_cpu_access();
             return;
         }
@@ -1068,9 +1140,10 @@ mod relaxed_device_tests {
     use crate::devices::pec::timing::connect_pec_timer_rtc;
 
     #[test]
-    fn relaxed_ticks_batch_but_bus_access_and_budget_flush_time() {
+    fn relaxed_ticks_batch_until_sensitive_access_or_budget_flush() {
         let mut bus = Bus::new();
         crate::devices::ram::connect_ram(&mut bus);
+        connect_bmc_dmac(&mut bus);
         let window = RELAXED_DEVICE_WINDOW;
         for _ in 0..window - 1 {
             bus.tick_relaxed_devices();
@@ -1078,11 +1151,17 @@ mod relaxed_device_tests {
         assert_eq!(bus.system_cycles(), 0);
         bus.tick_relaxed_devices();
         assert_eq!(bus.system_cycles(), window);
+        // Timing-insensitive RAM accesses (byte and word) keep deferring.
         bus.tick_relaxed_devices();
         bus.write_u8(0, 7);
-        assert_eq!(bus.system_cycles(), window + 1);
+        bus.write_u32_be(4, 0x1234_5678);
+        assert_eq!(bus.system_cycles(), window);
         bus.tick_relaxed_devices();
         assert_eq!(bus.read_u8(0), 7);
+        assert_eq!(bus.read_u32_be(4), 0x1234_5678);
+        assert_eq!(bus.system_cycles(), window);
+        // A sensitive MMIO access (DMAC register) observes current device time.
+        bus.read_u8(crate::devices::dmac::dmac::DMAC_BASE);
         assert_eq!(bus.system_cycles(), window + 2);
         bus.tick_relaxed_devices();
         bus.flush_relaxed_devices();

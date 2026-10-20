@@ -65,6 +65,11 @@ impl RngDevice {
 }
 
 impl Device for RngDevice {
+    /// Host entropy/PRNG state only; no clock, IRQ or DMA coupling.
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
         match addr {
             // Snapshot latched output without advancing either generator.

@@ -231,15 +231,14 @@ fn lazy_tiers_compile_batch_when_hot_and_strict_only_after_declines() {
     assert!(stats.batch_compilations > 0, "{stats:?}");
     assert_eq!(stats.compilations, stats.batch_compilations, "{stats:?}");
     assert!(stats.batched_instructions > 0, "{stats:?}");
-    let batch_tiers = stats.batch_compilations;
     // One-cycle budgets cannot batch; repeated declines build the strict tier.
+    // (Another entry may still become hot and get its batch tier meanwhile.)
     for _ in 0..200 {
         cached.run(1);
         jit.run(1);
         same(&cached, &jit);
     }
     let stats = jit.jit_stats().unwrap();
-    assert_eq!(stats.batch_compilations, batch_tiers, "{stats:?}");
     assert!(stats.compilations > stats.batch_compilations, "{stats:?}");
 }
 

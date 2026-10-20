@@ -41,8 +41,11 @@ The goal is clarity and experimentation over micro-architectural complexity.
 Select `--cpu cached-relaxed` or YAML `cpu.microarchitecture: cached-relaxed`
 without requiring the JIT feature. This uses Cached instructions and CPUID
 (`0x3F`), but batches idle device progression in groups of at most 256 CPU
-cycles (5.3 us at 48 MHz). All bus reads/writes (including RAM and cold fetches), timer IRQ
-deadlines, HALT/IRET, and `run` budget exits flush deferred cycles. CPU cycle
+cycles (5.3 us at 48 MHz). Accesses to timing-sensitive devices (DMAC, IDC,
+BMC, IRQC, PeC, CPU registers, expansion cards), timer IRQ deadlines,
+HALT/IRET, and `run` budget exits flush deferred cycles. Accesses to
+timing-insensitive devices (RAM/ROM, VDP/VRAM, VPU, SGU, RNG, UART; see §1.5)
+do not, because no device can observe the difference. CPU cycle
 budgets and multiply/divide latency remain unchanged. DMA channels that are
 busy (even when globally disabled), active IDC commands, and any installed
 expansion card retain per-cycle device processing. Idle IDC time advances by
@@ -88,9 +91,10 @@ DMA/IDC or installed expansion cards and no pending enabled CPU IRQ.
 Multiply/divide execute natively with the interpreter's results for division
 by zero and `INT_MIN / -1`. A load/store calls a helper that first hands the
 elapsed batch cycles to the deferred device window, then performs the same Bus
-access as the interpreter, so devices are flushed at the access exactly as in
-`cached-relaxed`. Only accesses wholly inside plain memory (RAM/BIOS ROM) run in
-a batch; any other address stops the batch before the access. The batch also
+access as the interpreter, so device synchronization matches `cached-relaxed`.
+Only accesses wholly inside one timing-insensitive device (§1.5) run in a
+batch; any other address stops the batch before the access. A batch that finds
+the deferred window used up flushes it at its starting instruction boundary. The batch also
 stops right after an access if IRQC output changed or a store changed the
 block's own code. Consecutive batches chain in native registers; the CPU
 register MMIO block and IRQ sampling are synchronized when the chain ends.
@@ -175,6 +179,27 @@ control transfers (on the Pipeline, backward taken-branch redirects); the
 pending IRQ, host register/PC writes, host IRQ input changes and reset discard
 the observation. Host input is asynchronous and is not part of the window.
 Profiling (`--profile-cpu`) and single stepping execute every cycle.
+
+## 1.5 Timing-insensitive devices
+
+A bus device may declare `Device::is_timing_insensitive()` (constant per
+device; plain memory implies it). It promises that the device is not an IRQ
+source, never faults, that its values do not depend on the system clock or on
+ticked devices (DMA, IDC, PeC timers, expansion cards), and that its accesses
+do not change those devices, IRQ sources, or the CPU. RAM, BIOS ROM, VDP
+(VRAM, registers, SGC), VPU, SGU (registers, PCM RAM), RNG and UART declare it;
+DMAC, IDC, BMC, IRQC, PeC input/timer, CPU registers/vectors and expansion cards
+do not. The Bus uses it to:
+
+- skip relaxed-device flushes for those accesses (cached-relaxed/JIT);
+- skip IRQ re-sampling after those accesses (all CPU kinds);
+- perform 32-bit accesses with one bus arbitration when no DMA request is
+  pending (all CPU kinds; the four byte beats still occur in order);
+- let JIT batches perform those accesses natively.
+
+All results are identical to treating every device as timing-sensitive.
+Never declare it for a device whose reads or writes interact with time, DMA,
+IRQs or CPU state.
 
 ## 2. Registers
 

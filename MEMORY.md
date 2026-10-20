@@ -666,7 +666,7 @@
 - IRQC sources and CPU input both use edge detection. Delayed CPU acceptance must preserve pending requests and low/high transitions; sampling only the final source level can lose events. Keep VSync/IRQ0 driven by the host frame loop. Batch sizes above are design candidates, not validated performance settings.
 ## Opt-in cached-relaxed idle device batching (2026-10-18)
 - `--cpu cached-relaxed` / YAML `cpu.microarchitecture: cached-relaxed` uses Cached instruction timing/CPUID with at most 32 deferred device cycles during `run`. JIT also enables the same batching automatically while retaining per-native-instruction IRQ sampling, code generation checks, and CPU budget exits. Ordinary Cached/Pipeline and profile/direct tick/debug step retain strict device progression. Defaults are unchanged.
-- Flush on every bus byte access (including RAM/cold fetch), rejected IDC word accesses, timer deadlines, HALT/IRET, and run-budget exit. IDC owns a separate u128 cycle counter: advance it by the entire idle batch, not one tick. Active IDC, any DMA BUSY channel (including globally disabled channels needing abort handling), or installed expansion cards disable batching.
+- Flush on every bus byte access (including RAM/cold fetch; since 2026-10-20 only timing-sensitive devices, see the timing-insensitive MMIO entry), rejected IDC word accesses, timer deadlines, HALT/IRET, and run-budget exit. IDC owns a separate u128 cycle counter: advance it by the entire idle batch, not one tick. Active IDC, any DMA BUSY channel (including globally disabled channels needing abort handling), or installed expansion cards disable batching.
 - Idle BMC arbitration history and host-input IRQ observation timing may differ. Do not replace active IDC/DMA ticks with `advance_system_cycles(N)`, which only handles system-clock/PeC/expansion progression. Pending IRQ/ACK/source-level behavior must remain intact.
 - A post-HALT IRQ acceptance must call `sync_register_block()` after switching PC/status to the vector. Otherwise next Fetch restores stale CPU MMIO state and skips the handler. `tests/cpu_relaxed.rs::relaxed_halt_boundary_irq_syncs_the_handler_pc_before_next_cycle` covers this specifically. Reset flushes pending time and clears the temporary relaxed-run flag.
 - `connect_pec_input` already attaches timer/RTC; do not separately connect the timing block in the benchmark (overlapping device map). Bus-only IRQC tests must explicitly call `attach_irq_controller`; mapping IRQC MMIO alone does not wire Bus source updates.
@@ -863,3 +863,11 @@
 ## Launcher JIT presets (2026-10-20)
 - Launcher presets are Small=16, Medium=32, Big=64 instructions. Keep preset selection, numeric-to-preset detection, initial state and config/profile loading aligned. The emulator default remains 16 (now Small), and custom values remain 2..256.
 - Launcher help must reflect the 256-instruction limit. Larger blocks can increase generated code and compilation time and may run slower; preset changes do not change JIT safety contracts.
+
+## Timing-insensitive MMIO devices (2026-10-20)
+- `Device::is_timing_insensitive()`（spec_CPU §1.5）: IRQ sourceでない・faultしない・値がシステムクロックやtickされるデバイスに依存しない・アクセスがそれら／IRQ source／CPUを変えない、の約束。RAM/ROM（plain memoryは暗黙に該当）、VDP（VRAM/regs/SGC）、VPU、SGU（regs/PCM RAM）、RNG、UARTが宣言。DMAC・IDC・BMC・IRQC・PeC・CPU regs/vectors・拡張カードは宣言しない。宣言は登録時に`DeviceMap`へキャッシュされるので、デバイス生存中に変えてはならない。
+- 用途: relaxed／JITでflushしない（RAMも含む＝relaxed区間がRAMアクセスで切れなくなった）、全方式でIRQ再確認を省く、DMA要求がなければ32-bitアクセスを調停1回、JIT batch内でnative実行。
+- 検証: `tests/timing_insensitive_mmio.rs` がフラグON/OFF（`set_timing_insensitive_fast_paths`、doc hidden）を全CPU方式でlockstep比較（VRAM/PCM RAM/VDP/timer IRQ/timer counter読み）。PeC timerを誤って宣言するmutationはCachedRelaxedで検出される。新しいデバイスにフラグを付けるときはこのテストにアクセスを追加すること。
+- 落とし穴: RAMでflushしなくなるとJIT batchが区間を使い切って辞退→strict tierの遅延compileが増え、cubeでJITが遅くなった。非連結batch開始時に区間切れならflushして新区間を開き、連結中の区間切れはchain終了だけにする（辞退扱いしない）。`lazy_tiers…`テストは「別entryがbatch tierを得ることもある」前提に緩めた。
+- 計測: `mmio_bench`でJIT 61→16 ms、relaxed 50→34、Cached 61→49、Pipeline 97→86。`cpu_bench`の2〜5%差はbuild間揺れと同程度で、Bus primitiveは単体で速い（layout差と判断、要追跡）。untrackedファイルは`git stash`で退避されない（`-u`が必要）ので、base比較で新規benchを消さないこと。
+

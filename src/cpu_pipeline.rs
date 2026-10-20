@@ -2027,6 +2027,12 @@ impl PipelineCpu {
         }
     }
 
+    /// Test hook: disable Bus optimizations based on timing-insensitive devices.
+    #[doc(hidden)]
+    pub fn set_timing_insensitive_fast_paths(&mut self, enabled: bool) {
+        self.bus.set_timing_insensitive_fast_paths(enabled);
+    }
+
     /// Cycles skipped by spin-loop fast-forward since construction or reset.
     #[doc(hidden)]
     pub fn spin_skipped_cycles(&self) -> u128 {
