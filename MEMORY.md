@@ -892,3 +892,7 @@
 - `GuiApp` は window → presenter → debug_gui の宣言順で自動 Drop される。unsafe 作成した wgpu Surface より先に Window を破棄するため lifetime 契約違反。修正候補だが AMD fail-fast の直接原因と実証したわけではない。描画資源 → Surface → Window の順を保証し、同じ条件で終了を比較すること。
 - `InstanceDescriptor::new_with_display_handle` は WGPU_BACKEND を読まない（from_env / with_env が必要）。全 backend 初期化で GL ドライバーがロードされても、表示 backend が GL と断定できない。今回ランタイムコード変更・GUI再現・完全なstack unwindは未実施。
 - 続く修正で `GuiApp::release_graphics` を `exiting` / `Drop` から呼び、debug GUI → presenter/Surface → Window の順に解放するようにした。`Option::take` により再呼出しは安全。元バイナリ1回、修正版3回（Alt+F4 / Escape / close button）は全て終了コード0で、元障害は比較時に再現せず、完全解消の証明ではない。通常cwd/config/TinyBASIC/JITを使用し、修正版のみRUST_LOG=info。adapterはAMD Radeon RX 7600/Vulkan。ビルド・対象2ファイルrustfmt・diff check通過。詳細は調査doc末尾。
+## Launcher log flooding (2026-10-21)
+- 原因: `_poll_process` が空になるまで無制限にキューを消費し、各行でTk Textのconfigure/insert/seeを呼んでいた。生成が速いとイベントループに戻れず、キューとTextも無制限に増大した。
+- `ProcessEventQueue` は2048件。lineだけ満杯時にdropし、省略数をmutex保護で回収してGUIに表示する。phase/started/exited/errorは通常のblocking putで必ず届ける。GUI pollは最大256件/約64k文字を1回のText更新にまとめ、backlog時も10msタイマーで必ずTkに戻る。Textは末尾200k文字。child stdoutはreadline(8192)で改行なし巨大出力も分割。コンソールはGUI省略とは独立して出力する（遅いコンソールはreader workerを詰まらせ得るがGUIスレッドでは書かない）。
+- 回帰は `python -m unittest discover -s tools/cpt32-launcher -p 'test_*.py' -v`。100万文字の改行なし出力＋10万行の実subprocess、満杯queueのdrop/終了通知保持、pollのyield、実Tk Textとtimer heartbeat/履歴上限を確認する。WindowsでTMP/TEMPをworkspace内に設定すること。

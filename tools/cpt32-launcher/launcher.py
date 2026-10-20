@@ -19,6 +19,36 @@ import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
 
+LOG_QUEUE_EVENTS = 2048
+LOG_LINE_CHARS = 8192
+LOG_HISTORY_CHARS = 200_000
+LOG_POLL_EVENTS = 256
+LOG_POLL_CHARS = 64_000
+
+
+class ProcessEventQueue(queue.Queue):
+    """Bound pending output without dropping lifecycle events."""
+
+    def __init__(self):
+        super().__init__(maxsize=LOG_QUEUE_EVENTS)
+        self.dropped_lines = 0
+
+    def put(self, item, block=True, timeout=None):
+        if item[0] != "line":
+            return super().put(item, block=block, timeout=timeout)
+        try:
+            super().put(item, block=False)
+        except queue.Full:
+            with self.mutex:
+                self.dropped_lines += 1
+
+    def take_dropped_lines(self):
+        with self.mutex:
+            count = self.dropped_lines
+            self.dropped_lines = 0
+            return count
+
+
 CPU_EXECUTION_MODES = ("strict", "best-effort", "cycle-independent")
 DEFAULT_CPU_EXECUTION_MODE = "best-effort"
 DEFAULT_CPU_TIME_SLICE_MS = 8
@@ -336,7 +366,7 @@ class Launcher(tk.Tk):
         self.title("CPT32 ランチャー")
         self.geometry("960x820")
         self.minsize(820, 680)
-        self.result_queue: queue.Queue = queue.Queue()
+        self.result_queue = ProcessEventQueue()
         self.process: subprocess.Popen | None = None
         self.running = False
         self.stop_requested = threading.Event()
@@ -579,6 +609,8 @@ class Launcher(tk.Tk):
     def _log(self, text):
         self.log.configure(state="normal")
         self.log.insert("end", text.rstrip() + "\n")
+        # Tk clips an index before 1.0, so this also handles short histories.
+        self.log.delete("1.0", f"end-{LOG_HISTORY_CHARS + 1}c")
         self.log.see("end")
         self.log.configure(state="disabled")
 
@@ -975,7 +1007,8 @@ class Launcher(tk.Tk):
                 if index == len(steps) - 1:
                     self.result_queue.put(("started", process.pid))
                 with process.stdout:
-                    for line in process.stdout:
+                    # A child may print a huge string without any newlines.
+                    for line in iter(lambda: process.stdout.readline(LOG_LINE_CHARS), ""):
                         self._queue_log(line.rstrip())
                 code = process.wait()
                 if self.stop_requested.is_set():
@@ -992,7 +1025,11 @@ class Launcher(tk.Tk):
 
     def _queue_log(self, text):
         """Send a launch log line to both the GUI queue and Python console."""
-        self.result_queue.put(("line", text))
+        gui_text = text
+        if len(gui_text) > LOG_LINE_CHARS:
+            marker = "[長い行の先頭を省略] "
+            gui_text = marker + gui_text[-(LOG_LINE_CHARS - len(marker)):]
+        self.result_queue.put(("line", gui_text))
         self._console_log(text)
 
     def _console_log(self, text):
@@ -1005,11 +1042,15 @@ class Launcher(tk.Tk):
             pass
 
     def _poll_process(self):
+        lines = []
+        characters = 0
+        dropped = self.result_queue.take_dropped_lines()
         try:
-            while True:
+            for _ in range(LOG_POLL_EVENTS):
                 kind, value = self.result_queue.get_nowait()
                 if kind == "line":
-                    self._log(value)
+                    lines.append(value)
+                    characters += len(value) + 1
                 elif kind == "phase":
                     self.status.set(value)
                 elif kind == "started":
@@ -1018,12 +1059,19 @@ class Launcher(tk.Tk):
                     self.status.set(f"終了コード {value}")
                     self._finish_process()
                 elif kind == "error":
-                    self._log("起動エラー: " + value)
+                    lines.append("起動エラー: " + value)
                     self.status.set("起動に失敗しました")
                     self._finish_process()
+                if characters >= LOG_POLL_CHARS:
+                    break
         except queue.Empty:
             pass
-        self.after(100, self._poll_process)
+        if dropped:
+            lines.append(f"[大量出力のため画面ログを {dropped} 行省略しました]")
+        if lines:
+            self._log("\n".join(lines))
+        # Always yield to Tk input/timers, even if the producer never stops.
+        self.after(10 if not self.result_queue.empty() else 100, self._poll_process)
 
     def _finish_process(self):
         self.process = None

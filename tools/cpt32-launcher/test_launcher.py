@@ -6,6 +6,7 @@ import queue
 import sys
 import tempfile
 import threading
+import time
 from contextlib import redirect_stdout
 from io import StringIO
 from types import MethodType, SimpleNamespace
@@ -25,7 +26,7 @@ class LaunchPipelineTests(unittest.TestCase):
         self.run_dir = self.base / "run"
         self.run_dir.mkdir()
         self.runner = SimpleNamespace(
-            result_queue=queue.Queue(), process=None,
+            result_queue=launcher.ProcessEventQueue(), process=None,
             process_lock=threading.Lock(), stop_requested=threading.Event(),
         )
         self.runner._queue_log = MethodType(launcher.Launcher._queue_log, self.runner)
@@ -60,6 +61,95 @@ class LaunchPipelineTests(unittest.TestCase):
         self.assertIn(("line", "emulator output"), events)
         self.assertIn("emulator output", console.getvalue())
         self.assertIn("emulator", console.getvalue())
+
+    def test_output_flood_is_bounded_and_exit_notification_is_preserved(self):
+        self.runner._console_log = lambda text: None
+        command = [sys.executable, "-c", "import sys; sys.stdout.write('x'*1000000+'\\n'); print('output\\n'*100000)"]
+        worker = threading.Thread(
+            target=launcher.Launcher._spawn_and_read,
+            args=(self.runner, [("emulator", command)], self.run_dir), daemon=True,
+        )
+        worker.start()
+        deadline = time.monotonic() + 15
+        while self.runner.result_queue.qsize() < launcher.LOG_QUEUE_EVENTS and time.monotonic() < deadline:
+            time.sleep(0.005)
+        self.assertEqual(self.runner.result_queue.qsize(), launcher.LOG_QUEUE_EVENTS)
+        events = []
+        while worker.is_alive() and time.monotonic() < deadline:
+            try:
+                events.append(self.runner.result_queue.get(timeout=0.1))
+            except queue.Empty:
+                pass
+        worker.join(timeout=1)
+        self.assertFalse(worker.is_alive(), "output reader failed to finish")
+        while not self.runner.result_queue.empty():
+            events.append(self.runner.result_queue.get_nowait())
+        self.assertIn(("exited", 0), events)
+        self.assertTrue(all(len(value) <= launcher.LOG_LINE_CHARS for kind, value in events if kind == "line"))
+
+    def test_full_output_queue_drops_lines_but_retains_control_events(self):
+        events = self.runner.result_queue
+        for _ in range(launcher.LOG_QUEUE_EVENTS + 50):
+            events.put(("line", "output"))
+        self.assertEqual(events.qsize(), launcher.LOG_QUEUE_EVENTS)
+        self.assertEqual(events.take_dropped_lines(), 50)
+        events.get_nowait()
+        events.put(("exited", 7))
+        self.assertIn(("exited", 7), [events.get_nowait() for _ in range(events.qsize())])
+
+    def test_poll_yields_with_a_backlog_and_batches_widget_updates(self):
+        events = self.runner.result_queue
+        for _ in range(launcher.LOG_QUEUE_EVENTS):
+            events.put(("line", "output"))
+        rendered, scheduled = [], []
+        ui = SimpleNamespace(
+            result_queue=events, _log=rendered.append,
+            after=lambda delay, callback: scheduled.append(delay), _poll_process=lambda: None,
+        )
+        launcher.Launcher._poll_process(ui)
+        self.assertEqual(events.qsize(), launcher.LOG_QUEUE_EVENTS - launcher.LOG_POLL_EVENTS)
+        self.assertEqual(len(rendered), 1)
+        self.assertEqual(scheduled, [10])
+
+    def test_tk_remains_responsive_and_bounds_visible_history_under_backlog(self):
+        root = launcher.tk.Tk()
+        root.withdraw()
+        self.addCleanup(root.destroy)
+        widget = launcher.tk.Text(root)
+        rendered_errors = []
+        root.report_callback_exception = lambda *error: rendered_errors.append(error)
+        for _ in range(launcher.LOG_QUEUE_EVENTS + 25):
+            self.runner.result_queue.put(("line", "x" * 1000))
+        completion = threading.Thread(
+            target=self.runner.result_queue.put, args=(("exited", 0),), daemon=True,
+        )
+        completion.start()
+        status = []
+        ui = SimpleNamespace(
+            result_queue=self.runner.result_queue, log=widget,
+            after=root.after, status=SimpleNamespace(set=status.append),
+            _finish_process=lambda: None,
+        )
+        ui._log = MethodType(launcher.Launcher._log, ui)
+        ui._poll_process = MethodType(launcher.Launcher._poll_process, ui)
+        heartbeats = []
+        def heartbeat():
+            heartbeats.append(len(widget.get("1.0", "end-1c")))
+            if "終了コード 0" not in status:
+                root.after(1, heartbeat)
+            else:
+                root.quit()
+        root.after(0, ui._poll_process)
+        root.after(1, heartbeat)
+        root.after(5000, root.quit)
+        root.mainloop()
+        completion.join(timeout=1)
+        self.assertFalse(rendered_errors, rendered_errors)
+        self.assertFalse(completion.is_alive())
+        self.assertIn("終了コード 0", status)
+        self.assertTrue(ui.result_queue.empty())
+        self.assertGreater(len(heartbeats), 5)
+        self.assertTrue(all(size <= launcher.LOG_HISTORY_CHARS for size in heartbeats))
 
 
     def test_sol_compiler_arguments_are_split_into_argv(self):

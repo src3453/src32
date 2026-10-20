@@ -6,7 +6,7 @@ Windows／Linuxで使えるPython 3.10+・Tkinter製ランチャーです。追�
 python tools/cpt32-launcher/launcher.py
 ```
 
-起動コマンドと各ビルド／エミュレータープロセスの出力はLauncher画面の起動ログに表示し、同じ内容をPythonプロセスの標準出力にもflushして出力します。端末から`python tools/cpt32-launcher/launcher.py`で起動すると、コンソールでログを追えます。
+起動コマンドと各ビルド／エミュレータープロセスの出力はLauncher画面の起動ログに表示し、Pythonプロセスの標準出力にもflushして出力します。端末から`python tools/cpt32-launcher/launcher.py`で起動すると、コンソールでログを追えます。画面ログは末尾20万文字まで保持し、大量出力時は最大2048件の待機キューに入らない行を省略して件数を表示します。コンソールへの出力はこの省略の対象になりません。長い行は8192文字ずつ分割して読み取り、画面更新は1回最大256件／約64000文字で区切るため、出力が続いても操作や終了通知を処理できます。
 
 ROM／WAX／CPT32PKG、CPU方式、通常GUI／monitor、CPU実行ポリシー、デバッグGUI、profile、music stream、BIOS ROM、PCG font、FDD／HDDイメージ（4スロット）、WASM expansion card（8スロット）、IDC disk sound asset rootを設定できます。WASM expansion cardは「選択…」でpackageを選ぶと、そのslotが自動的に有効になります。CPU実行ポリシーは Strict、Best-effort（既定）、Cycle-independent から選べ、時間枠は1〜16 ms（既定8 ms）です。GUI起動時に設定をコマンドラインへ渡し、保存済みランチャープロファイルにも保持します。monitor起動ではCPU実行ポリシーは適用しません。`pipeline`、`cached`、`cached-relaxed`、`jit`、`scalar`に対応し、JITを選ぶとCargo起動に`--features jit`を追加します。詳細設定でJITブロックをSmall=16、Medium=32、Big=64命令から選ぶか、2〜256の具体値を指定できます（既定16）。大きい値では生成コード量やコンパイル時間が増え、遅くなる場合があります。値は設定YAMLとランチャープロファイルに保持されます。既存実行ファイルを指定してビルドせずに起動することもできます。
 
