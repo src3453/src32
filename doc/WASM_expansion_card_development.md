@@ -9,6 +9,7 @@ CPT32 の拡張カードを Rust の `no_std` WASM module として作り、`.cp
 - [`sdk/wasm-expansion-card`](../sdk/wasm-expansion-card/): ABI export macro、host API、`.cpt32card` package builder。
 - [`templates/wasm-expansion-card`](../templates/wasm-expansion-card/): 256 byte register bank を持つ最小カード。
 - [`examples/wasm-expansion-timer`](../examples/wasm-expansion-timer/): 仮想cycle timer、IRQ、lazy package asset を使う実例。
+- [`examples/wasm-psg`](../examples/wasm-psg/): 外部crate `psg` をCargo依存として使うAY/YM音源カード。MMIO、音声、受動debug snapshotを実装。
 
 SDK は Rust 2024、`wasm32-unknown-unknown` target、`no_std` を前提にします。プロジェクトは `cdylib` とし、WASI runtime を使わずホストとのやり取りを ABI のみで行います。
 
@@ -66,6 +67,8 @@ cpt32_wasm_expansion_card::export_card!(MyCard);
 ```
 
 WASM binary には `cpt32_abi_version`, `cpt32_reset`, `cpt32_mmio_read`, `cpt32_mmio_write`, `cpt32_tick` の5 export が必要です。macro が型と名前を合わせて生成します。crate は `#![no_std]` とし、最終 binary に panic handler を用意してください。starter/example の panic handler は回復不能 panic 時に停止し、host fuel limit により無限 loop は上限で trap します。
+
+外部crateが `std` を使う場合も `wasm32-unknown-unknown` でbuildでき、最終moduleがABIのimport制限を満たせば利用できます。adapterの `#![no_std]` は依存先までno_stdにするものではありません。`std` がpanic実装を供給する場合、独自panic handlerは重複定義になるため追加しません。WASI/OS APIが利用可能になるわけではなく、buildに加えて実hostでpackageをロード・実行して検証してください。[PSG example](../examples/wasm-psg/README.md)に依存と検証手順があります。
 
 `Card::mmio_read/write` は slot 相対 byte offset を受け取ります。slot window は 32 MiB ですが、デバイスが使わない offset の read/write はカード側で定義してください。read は `u8` なので SDK 経由では ABI 範囲外値を返しません。
 
