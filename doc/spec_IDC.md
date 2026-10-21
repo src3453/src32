@@ -153,3 +153,11 @@ disk:
 `mode: read_write`のpackage diskは、OS user-data directory内の`CPT32/user_data/<canonical-package-uuid>/dd<slot>.cow`へCOW v1 sidecarを保存する。sidecar fileと完全なheaderはdiskを接続しただけでは作らず、最初の成功した512-byte sector commit時に作成・同期する。以後の書込みはappend-only COW recordとしてcommitされ、読み出しは最新recordとpackage baseを組み合わせる。詳細なbyte layoutは`doc/spec_COW.md`を参照。
 
 既存sidecarのheader、device parameters、またはbase SHA-256が現在のpackage imageと一致しない場合は起動を拒否し、既存sidecarとpackageを変更しない。起動後のCOW read/write/sync/rollback failureはmedia I/O failureとして`ERROR_CODE=6`に報告する。COW error時にpackage baseへ書き戻したり、writeを破棄して続行したりしない。
+
+## 11. 拡張予定：ホスト共有ディレクトリ
+
+Status: **設計方針・未実装**。本節は現行のraw image/CPT32PKG仕様や設定スキーマを変更しない。
+
+[Foundation実装案 §6.4](foundation_os_plan.md)に従い、ホスト共有ディレクトリをIDC slotへ接続するbackendを追加する予定である。ディレクトリの内容を[FS2](spec_FS2.md)互換の仮想sector列へ変換する責任はIDC内に置く。ゲストには通常の512-byte sector媒体として提示し、Foundationは既存と同じFS2ドライバで `/dd/<n>/` にマウントする。
+
+実装前に、YAML設定、仮想容量、名前衝突・属性変換、snapshot/再生成と媒体交換、書込可否・ホストへの書戻し・外部編集との競合を仕様化する。raw sectorの更新途中を、そのままホストのファイル削除・改名等として適用してはならない。現行の `image` キーへディレクトリを指定しても、この拡張を利用できるという意味ではない。
