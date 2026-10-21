@@ -44,7 +44,7 @@ fn unmapped_store_enters_bus_error_handler_for_each_cpu_kind() {
             cpu.irq_cause()
         );
         assert_eq!(cpu.epc(), 4, "{kind:?}");
-        assert_eq!(cpu.irq_cause(), 2, "{kind:?}");
+        assert_eq!(cpu.irq_cause(), 0x8002_0000, "{kind:?}");
         assert_eq!(cpu.pc(), 0x104, "{kind:?}");
     }
 }
@@ -71,7 +71,7 @@ fn unmapped_load_enters_bus_error_handler_for_each_cpu_kind() {
 
         assert!(!cpu.is_running(), "{kind:?}");
         assert_eq!(cpu.epc(), 4, "{kind:?}");
-        assert_eq!(cpu.irq_cause(), 2, "{kind:?}");
+        assert_eq!(cpu.irq_cause(), 0x8002_0000, "{kind:?}");
         assert_eq!(cpu.pc(), 0x104, "{kind:?}");
     }
 }
@@ -90,7 +90,7 @@ fn unmapped_store_without_bus_error_handler_stops_cpu_without_host_panic() {
 
     assert!(!cpu.is_running());
     assert_eq!(cpu.epc(), 4);
-    assert_eq!(cpu.irq_cause(), 2);
+    assert_eq!(cpu.irq_cause(), 0x8002_0000);
     assert_eq!(cpu.pc(), BUS_ERROR_VECTOR);
 }
 
@@ -278,9 +278,9 @@ fn any_cpu_runs_the_same_program_on_scalar_cached_and_pipeline_modes() {
     assert_eq!(scalar[3], 30);
     assert_eq!(cached[3], 30);
     assert_eq!(pipelined[3], 30);
-    assert_eq!(scalar[2], 0x3F);
+    assert_eq!(scalar[2], 0x13F);
     assert_eq!(cached[2], scalar[2]);
-    assert_eq!(pipelined[2], 0x3F | 0x80);
+    assert_eq!(pipelined[2], 0x13F | 0x80);
 }
 
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);

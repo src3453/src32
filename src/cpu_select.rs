@@ -385,10 +385,18 @@ impl AnyCpu {
         }
     }
 
-    pub fn irq_cause(&self) -> u8 {
+    pub fn irq_cause(&self) -> u32 {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.irq_cause(),
             AnyCpu::Pipelined(cpu) => cpu.irq_cause(),
+        }
+    }
+
+    /// STATUS as defined by Extension P (bit 2 = user mode).
+    pub fn status(&self) -> u32 {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.status(),
+            AnyCpu::Pipelined(cpu) => cpu.status(),
         }
     }
 

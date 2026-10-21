@@ -43,6 +43,11 @@ impl BiosRom {
         if image.is_lib {
             return Err("cannot execute .wal library as BIOS".to_owned());
         }
+        if image.protection.is_some() {
+            return Err(
+                "BIOS WAX must not be PROTECTED: the BIOS runs in supervisor mode".to_owned(),
+            );
+        }
         let mut data = Box::new([0u8; BIOS_SIZE]);
         for block in &image.blocks {
             let block_start = u64::from(block.load_address);

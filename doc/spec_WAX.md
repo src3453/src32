@@ -17,22 +17,25 @@ Header offset  size  name
 4             2     version = 2
 6             2     type: 1 = .wax executable, 2 = .wal library
 8             2     arch = 1 (SRC32)
-10            2     flags: bit0 = DEBUG_PRESENT, others 0
+10            2     flags: bit0 = DEBUG_PRESENT, bit1 = PROTECTED, others 0
 12            4     header_size = 64
 16            4     base_addr: lowest .wax block address; 0 for .wal
 20            4     entry_offset: entry = base_addr + entry_offset; 0 for .wal
 24            4     block_table_offset
 28            4     block_count
-32            4     block_entry_size = 12
+32            4     block_entry_size = 12 (16 when PROTECTED)
 36            4     debug_offset (0 when absent)
 40            4     debug_size (0 when absent)
 44            4     file_size (exact byte length)
-48            16    reserved (zero)
+48            4     user_stack_top (PROTECTED only; otherwise 0)
+52            4     user_stack_size (PROTECTED only; otherwise 0)
+56            8     reserved (zero)
 
-Block table entry (12 bytes each):
+Block table entry (12 bytes each, 16 when PROTECTED):
 0             4     load_address: u32 address in .wax; PIC offset in .wal
 4             4     file_offset: payload position in the container
 8             4     size: payload byte length
+12            4     perm (PROTECTED only): bit0 R, bit1 W, bit2 X
 ```
 
 ## Rules
@@ -52,6 +55,60 @@ Block table entry (12 bytes each):
 - `DEBUG_PRESENT` is set iff `debug_size > 0`. Debug is NOLOAD and opaque.
 - Unknown version, architecture, type, or flag bits are rejected. v2 has no
   checksum.
+- `PROTECTED` rules are in "Protected executables" below.
+
+## Protected executables
+
+`PROTECTED` (flags bit1) marks a `.wax` that runs in Extension P **user mode**
+(`doc/spec_CPU_priv.md`). Images without the flag are unchanged and run in
+supervisor mode as before. The flag adds no new version: v2 loaders that do
+not know it reject the file, so a protected program never runs unprotected by
+accident.
+
+Format rules when `PROTECTED` is set:
+
+- Type must be `.wax`. A `.wal` with `PROTECTED` is rejected.
+- `block_entry_size` is 16. Each entry's `perm` is a nonzero mask of R (1),
+  W (2), X (4); other bits are rejected. `perm` uses the same bits as an
+  Extension P region `FLAGS` word.
+- `block_count` is at most 7 (region 0 is the stack, regions 1..7 the blocks).
+- `user_stack_top` and `user_stack_size` are nonzero multiples of 4.
+  The stack is `user_stack_top - user_stack_size .. user_stack_top`. It must
+  not underflow address 0, must not overlap a block, and must end at or below
+  `0xFFFF0000`.
+- No block may reach the CPU-reserved area `0xFFFF0000..`.
+- The entry must lie in a block with X.
+- Header bytes 56..63 stay zero. Without `PROTECTED`, bytes 48..63 stay zero
+  and `block_entry_size` stays 12.
+
+### Hand-off to user mode
+
+The machine always resets in supervisor mode. The **BIOS WAX loader** is the
+component that enters user mode. For a protected image it:
+
+1. Validates the file and writes every block to its `load_address`.
+2. Programs the protection regions (`RGNn_START/END/FLAGS`):
+   - region 0: the user stack, `R|W`;
+   - region `1 + i`: block `i` in table order, with the block's `perm`;
+   - every other region: all zero (disabled).
+3. Sets `USP = user_stack_top`, `EPC = entry`, and `STATUS.PU = 1`. `PIE`
+   selects whether interrupts are enabled in user mode.
+4. Executes `IRET`.
+
+Payload blocks are copied from the file only; the loader does not clear the
+stack or any gap. Devices are not granted. A protected program reaches devices
+through `SYSCALL`, and the BIOS/OS that installed the SYSCALL vector defines
+those services.
+
+Current status:
+
+- `src/wax.rs` and `tools/wax/wax.py` parse and validate protected images and
+  expose the region list (`WaxImage::user_regions`, `user_regions(image)`).
+- The BIOS WAX loader is not implemented yet. Host direct loading (main,
+  testbench, monitor) starts programs in supervisor mode only, so it refuses
+  protected images with an error instead of running them unprotected. The
+  BIOS ROM image itself must not be `PROTECTED`.
+- `sol/cpt32/wax.sol` (DOS `RUN`) rejects the unknown flag.
 
 ## Loading
 
@@ -64,6 +121,11 @@ Block table entry (12 bytes each):
    unchanged.
 
 ## Test vectors
+
+- Protected: code `R|X` at `0x100000`, data `R|W` at `0x110000`, stack
+  `0x1FF000..0x200000`. Regions are stack, code, data. Reject a non-X entry
+  block, a zero or unknown permission bit, a stack overlapping a block or the
+  CPU-reserved area, a misaligned stack, more than 7 blocks, and `.wal`.
 
 - One block: NOP bytes at address 0, `base_addr=0`, `entry_offset=0`.
 - Sparse image: NOP at `0x100`, HALT at `0x10000`; two 4-byte blocks occupy
@@ -78,6 +140,10 @@ Block table entry (12 bytes each):
 
 - `tools/wax/wax.py pack --base 0x100 --block 0x100=code.bin
   --block 0x10000=stub.bin -o app.wax` creates a multi-block image.
+- `tools/wax/wax.py pack --protected --base 0x100000
+  --block 0x100000=code.bin:rx --block 0x110000=data.bin:rw
+  --stack-top 0x200000 --stack-size 0x1000 -o app.wax` creates a protected
+  image. `info` prints the stack and each block's permission.
 - `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` writes one block
   per `.ORG` address region. A `.ORG` at the current PC does not move the start
   address of bytes already emitted. Gaps are omitted; expanding blocks into a

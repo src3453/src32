@@ -16,6 +16,7 @@ fn load_binary_data(path: &str, cpu: &mut AnyCpu, base: u32) {
     if cpt32::wax::is_wax(&data) {
         let img = cpt32::wax::parse(&data).expect("Invalid WAX file");
         assert!(!img.is_lib, ".wal library is not runnable");
+        cpt32::wax::reject_protected_direct_load(&img).expect("Unsupported WAX file");
         for block in &img.blocks {
             cpu.load_program(block.load_address, block.data);
         }
@@ -174,6 +175,11 @@ pub fn execute_command(cpu: &mut AnyCpu, command_line: &str) -> CommandOutput {
                 Ok(data) => {
                     if cpt32::wax::is_wax(&data) {
                         match cpt32::wax::parse(&data) {
+                            Ok(img) if img.protection.is_some() => {
+                                output.lines.push(
+                                    cpt32::wax::reject_protected_direct_load(&img).unwrap_err(),
+                                );
+                            }
                             Ok(img) if !img.is_lib => {
                                 for block in &img.blocks {
                                     cpu.load_program(block.load_address, block.data);
@@ -496,6 +502,12 @@ pub fn run(program_path: Option<&str>, cli_cpu: Option<CpuKind>) {
                     Ok(data) => {
                         if cpt32::wax::is_wax(&data) {
                             match cpt32::wax::parse(&data) {
+                                Ok(img) if img.protection.is_some() => {
+                                    println!(
+                                        "{}",
+                                        cpt32::wax::reject_protected_direct_load(&img).unwrap_err()
+                                    );
+                                }
                                 Ok(img) if !img.is_lib => {
                                     for block in &img.blocks {
                                         cpu.load_program(block.load_address, block.data);

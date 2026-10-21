@@ -1,3 +1,4 @@
+import pytest
 import struct
 import sys
 from pathlib import Path
@@ -120,3 +121,54 @@ def test_cli_packs_repeated_block_arguments(tmp_path):
     ])
     image = parse(output.read_bytes())
     assert [block["load_address"] for block in image["blocks"]] == [0x100, 0x10000]
+
+
+def test_protected_roundtrip_describes_user_regions():
+    from wax import FLAG_PROTECTED, PERM_R, PERM_W, PERM_X, user_regions
+
+    data = pack(0x100000, 0, [(0x100000, b"\0" * 8, PERM_R | PERM_X),
+                              (0x110000, b"\1" * 4, PERM_R | PERM_W)],
+                protection=(0x200000, 0x1000))
+    assert struct.unpack_from(">H", data, 10)[0] == FLAG_PROTECTED
+    assert struct.unpack_from(">I", data, 32)[0] == 16
+    assert struct.unpack_from(">II", data, 48) == (0x200000, 0x1000)
+    image = parse(data)
+    assert image["protection"] == (0x200000, 0x1000)
+    assert [block["perm"] for block in image["blocks"]] == [5, 3]
+    assert user_regions(image) == [(0x1FF000, 0x200000, 3),
+                                   (0x100000, 0x100008, 5),
+                                   (0x110000, 0x110004, 3)]
+    assert user_regions(parse(pack(0, 0, [(0, b"\0" * 4)]))) is None
+
+
+def test_protected_rejects_bad_permissions_stack_and_entry():
+    from wax import PERM_R, PERM_X
+
+    code = b"\0" * 8
+    bad = [
+        ([(0x1000, code, PERM_R)], (0x8000, 0x100)),          # entry not executable
+        ([(0x1000, code, 0)], (0x8000, 0x100)),               # no permission
+        ([(0x1000, code, 8)], (0x8000, 0x100)),               # unknown bit
+        ([(0x1000, code, PERM_X)], (0x1004, 4)),              # stack overlaps code
+        ([(0x1000, code, PERM_X)], (0x8002, 4)),              # misaligned
+        ([(0x1000, code, PERM_X)], (0xFFFF1000, 4)),          # CPU-reserved
+        ([(0x1000 + 0x100 * n, code, PERM_X) for n in range(8)], (0x8000, 0x100)),
+    ]
+    for blocks, protection in bad:
+        with pytest.raises(ValueError):
+            pack(blocks[0][0], 0, blocks, protection=protection)
+    with pytest.raises(ValueError):
+        pack(0, 0, [(0, code, PERM_X)], kind="wal", protection=(0x8000, 4))
+
+
+def test_cli_packs_protected_blocks(tmp_path):
+    from wax import main as wax_main
+
+    code = tmp_path / "code.bin"
+    code.write_bytes(b"\0" * 8)
+    out = tmp_path / "app.wax"
+    wax_main(["pack", "--protected", "--base", "0x1000", "--block", f"0x1000={code}:rx",
+              "--stack-top", "0x8000", "--stack-size", "0x400", "-o", str(out)])
+    image = parse(out.read_bytes())
+    assert image["protection"] == (0x8000, 0x400)
+    assert image["blocks"][0]["perm"] == 5

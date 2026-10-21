@@ -512,9 +512,11 @@ impl Cpu {
         // is synchronized once when the chain ends.
         let mut chained = false;
         loop {
+            // Native code skips user-mode protection checks: S mode only.
             if !self.running
                 || self.state != CpuState::Fetch
                 || self.instr_mode != InstructionMode::Normal
+                || self.sys.user
             {
                 break;
             }
@@ -627,7 +629,7 @@ impl Cpu {
         }
         if self.pc != items[0].pc
             || self.instr_mode != InstructionMode::Normal
-            || (self.irq_enable && self.irq_pending)
+            || (self.sys.ie && self.irq_pending)
         {
             return false;
         }

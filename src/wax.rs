@@ -6,11 +6,31 @@ pub const ARCH_SRC32: u16 = 1;
 pub const TYPE_WAX: u16 = 1;
 pub const TYPE_WAL: u16 = 2;
 pub const HEADER_SIZE: usize = 64;
+pub const FLAG_DEBUG: u16 = 1 << 0;
+/// The executable runs in Extension P user mode (doc/spec_WAX.md).
+pub const FLAG_PROTECTED: u16 = 1 << 1;
+pub const BLOCK_ENTRY_SIZE: u32 = 12;
+pub const PROTECTED_BLOCK_ENTRY_SIZE: u32 = 16;
+/// Region 0 holds the user stack, so a protected image has at most 7 blocks.
+pub const MAX_PROTECTED_BLOCKS: usize = 7;
+/// Block permission bits, equal to Extension P region FLAGS.
+pub const PERM_R: u32 = 1;
+pub const PERM_W: u32 = 2;
+pub const PERM_X: u32 = 4;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WaxBlock<'a> {
     pub load_address: u32,
     pub data: &'a [u8],
+    /// R/W/X bits from a protected image; 0 in an unprotected image.
+    pub perm: u32,
+}
+
+/// User-mode start state requested by a protected `.wax`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WaxProtection {
+    pub stack_top: u32,
+    pub stack_size: u32,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +40,35 @@ pub struct WaxImage<'a> {
     pub entry: u32,
     pub blocks: Vec<WaxBlock<'a>>,
     pub debug: &'a [u8],
+    pub protection: Option<WaxProtection>,
+}
+
+/// One Extension P protection region (`RGNn_START`, `RGNn_END`, `RGNn_FLAGS`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UserRegion {
+    pub start: u32,
+    pub end: u32,
+    pub flags: u32,
+}
+
+impl WaxImage<'_> {
+    /// Regions a loader programs before entering user mode: region 0 is the
+    /// stack (R/W), regions 1.. are the blocks in table order. `None` for an
+    /// unprotected image.
+    pub fn user_regions(&self) -> Option<Vec<UserRegion>> {
+        let protection = self.protection?;
+        let stack = UserRegion {
+            start: protection.stack_top - protection.stack_size,
+            end: protection.stack_top,
+            flags: PERM_R | PERM_W,
+        };
+        let blocks = self.blocks.iter().map(|block| UserRegion {
+            start: block.load_address,
+            end: block.load_address + block.data.len() as u32,
+            flags: block.perm,
+        });
+        Some(std::iter::once(stack).chain(blocks).collect())
+    }
 }
 
 fn be16(d: &[u8], o: usize) -> u16 {
@@ -62,10 +111,19 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
     if hsz as usize != HEADER_SIZE {
         return Err(format!("bad header_size {hsz}"));
     }
-    if flags & !1 != 0 {
+    if flags & !(FLAG_DEBUG | FLAG_PROTECTED) != 0 {
         return Err(format!("bad flags {flags:#x}"));
     }
-    if data[48..HEADER_SIZE].iter().any(|byte| *byte != 0) {
+    let protected = flags & FLAG_PROTECTED != 0;
+    if protected && ftype != TYPE_WAX {
+        return Err("PROTECTED is only valid for .wax executables".into());
+    }
+    // Protected images use 48..56 for the user stack; the rest is reserved.
+    let reserved_start = if protected { 56 } else { 48 };
+    if data[reserved_start..HEADER_SIZE]
+        .iter()
+        .any(|byte| *byte != 0)
+    {
         return Err("reserved header bytes must be 0".into());
     }
     if u64::from(file_size) != data.len() as u64 {
@@ -74,8 +132,18 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
     if block_count == 0 {
         return Err("empty block table".into());
     }
-    if block_entry_size != 12 {
+    let expected_entry_size = if protected {
+        PROTECTED_BLOCK_ENTRY_SIZE
+    } else {
+        BLOCK_ENTRY_SIZE
+    };
+    if block_entry_size != expected_entry_size {
         return Err(format!("bad block_entry_size {block_entry_size}"));
+    }
+    if protected && block_count as usize > MAX_PROTECTED_BLOCKS {
+        return Err(format!(
+            "protected WAX allows at most {MAX_PROTECTED_BLOCKS} blocks"
+        ));
     }
     if table_offset % 4 != 0 || (table_offset as usize) < HEADER_SIZE {
         return Err("block table misaligned or inside header".into());
@@ -98,6 +166,14 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
         if size == 0 {
             return Err("empty data block".into());
         }
+        let perm = if protected {
+            be32(data, offset + 12)
+        } else {
+            0
+        };
+        if protected && (perm == 0 || perm & !(PERM_R | PERM_W | PERM_X) != 0) {
+            return Err("protected block permission must be a nonzero R/W/X mask".into());
+        }
         let load_end = u64::from(load_address) + u64::from(size);
         if load_end > 0x1_0000_0000 {
             return Err("block address range wraps u32".into());
@@ -118,10 +194,11 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
         blocks.push(WaxBlock {
             load_address,
             data: &data[file_offset as usize..file_end as usize],
+            perm,
         });
     }
 
-    if (debug_size != 0) != (flags & 1 != 0) {
+    if (debug_size != 0) != (flags & FLAG_DEBUG != 0) {
         return Err("debug flag/size mismatch".into());
     }
     let debug = if debug_size == 0 {
@@ -164,6 +241,16 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
     {
         return Err("entry outside image blocks".into());
     }
+    let protection = if protected {
+        let protection = WaxProtection {
+            stack_top: be32(data, 48),
+            stack_size: be32(data, 52),
+        };
+        validate_protection(protection, &blocks, entry as u32)?;
+        Some(protection)
+    } else {
+        None
+    };
 
     Ok(WaxImage {
         is_lib,
@@ -171,7 +258,60 @@ pub fn parse(data: &[u8]) -> Result<WaxImage<'_>, String> {
         entry: entry as u32,
         blocks,
         debug,
+        protection,
     })
+}
+
+fn validate_protection(
+    protection: WaxProtection,
+    blocks: &[WaxBlock<'_>],
+    entry: u32,
+) -> Result<(), String> {
+    let WaxProtection {
+        stack_top,
+        stack_size,
+    } = protection;
+    if stack_size == 0 || stack_size % 4 != 0 || stack_top % 4 != 0 {
+        return Err("protected stack top/size must be nonzero multiples of 4".into());
+    }
+    if stack_top > crate::cpu_privilege::CPU_RESERVED_BASE || stack_size > stack_top {
+        return Err("protected stack lies outside user-addressable memory".into());
+    }
+    let stack_start = stack_top - stack_size;
+    let overlaps = |block: &WaxBlock<'_>| {
+        let end = u64::from(block.load_address) + block.data.len() as u64;
+        u64::from(stack_start) < end && u64::from(block.load_address) < u64::from(stack_top)
+    };
+    if blocks.iter().any(overlaps) {
+        return Err("protected stack overlaps an image block".into());
+    }
+    if blocks.iter().any(|block| {
+        u64::from(block.load_address) + block.data.len() as u64
+            > u64::from(crate::cpu_privilege::CPU_RESERVED_BASE)
+    }) {
+        return Err("protected block reaches the CPU-reserved area".into());
+    }
+    let entry_block = blocks.iter().find(|block| {
+        block.load_address <= entry
+            && u64::from(entry) < u64::from(block.load_address) + block.data.len() as u64
+    });
+    if entry_block.is_none_or(|block| block.perm & PERM_X == 0) {
+        return Err("protected entry must lie in an executable block".into());
+    }
+    Ok(())
+}
+
+/// Host loaders start programs in supervisor mode. Entering user mode is the
+/// BIOS WAX loader's job (doc/spec_WAX.md), so a protected image is refused
+/// here instead of silently running unprotected.
+pub fn reject_protected_direct_load(image: &WaxImage<'_>) -> Result<(), String> {
+    if image.protection.is_some() {
+        return Err(
+            "protected WAX must be started by the BIOS WAX loader; direct host loading runs in supervisor mode only"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 /// Load data (WAX v2 or legacy raw) into bus. Returns PC.
@@ -186,6 +326,7 @@ pub fn load_bytes(bus: &mut crate::bus::Bus, data: &[u8]) -> Result<u32, String>
     if img.is_lib {
         return Err("cannot execute .wal library".into());
     }
+    reject_protected_direct_load(&img)?;
     for block in &img.blocks {
         for (index, byte) in block.data.iter().enumerate() {
             bus.write_u8(block.load_address.wrapping_add(index as u32), *byte);
@@ -282,6 +423,146 @@ mod tests {
         let mut out_of_range = pack(0x100, 0, &[(0x100, &[1, 2, 3, 4])]);
         out_of_range[HEADER_SIZE + 4..HEADER_SIZE + 8].copy_from_slice(&u32::MAX.to_be_bytes());
         assert!(parse(&out_of_range).is_err());
+    }
+
+    /// Protected image: 16-byte block entries with permissions, stack in 48..56.
+    fn pack_protected(
+        entry_offset: u32,
+        blocks: &[(u32, &[u8], u32)],
+        stack: (u32, u32),
+    ) -> Vec<u8> {
+        let table_end = HEADER_SIZE + blocks.len() * 16;
+        let mut file_size = table_end;
+        let mut records = Vec::new();
+        for &(address, payload, perm) in blocks {
+            file_size = (file_size + 3) & !3;
+            records.push((address, file_size, payload, perm));
+            file_size += payload.len();
+        }
+        let mut bytes = vec![0; file_size];
+        bytes[..4].copy_from_slice(&MAGIC);
+        bytes[4..6].copy_from_slice(&VERSION.to_be_bytes());
+        bytes[6..8].copy_from_slice(&TYPE_WAX.to_be_bytes());
+        bytes[8..10].copy_from_slice(&ARCH_SRC32.to_be_bytes());
+        bytes[10..12].copy_from_slice(&FLAG_PROTECTED.to_be_bytes());
+        bytes[12..16].copy_from_slice(&(HEADER_SIZE as u32).to_be_bytes());
+        bytes[16..20].copy_from_slice(&blocks[0].0.to_be_bytes());
+        bytes[20..24].copy_from_slice(&entry_offset.to_be_bytes());
+        bytes[24..28].copy_from_slice(&(HEADER_SIZE as u32).to_be_bytes());
+        bytes[28..32].copy_from_slice(&(blocks.len() as u32).to_be_bytes());
+        bytes[32..36].copy_from_slice(&16u32.to_be_bytes());
+        bytes[44..48].copy_from_slice(&(file_size as u32).to_be_bytes());
+        bytes[48..52].copy_from_slice(&stack.0.to_be_bytes());
+        bytes[52..56].copy_from_slice(&stack.1.to_be_bytes());
+        for (index, (address, file_offset, payload, perm)) in records.into_iter().enumerate() {
+            let record = HEADER_SIZE + index * 16;
+            bytes[record..record + 4].copy_from_slice(&address.to_be_bytes());
+            bytes[record + 4..record + 8].copy_from_slice(&(file_offset as u32).to_be_bytes());
+            bytes[record + 8..record + 12].copy_from_slice(&(payload.len() as u32).to_be_bytes());
+            bytes[record + 12..record + 16].copy_from_slice(&perm.to_be_bytes());
+            bytes[file_offset..file_offset + payload.len()].copy_from_slice(payload);
+        }
+        bytes
+    }
+
+    #[test]
+    fn protected_image_describes_user_regions() {
+        let w = pack_protected(
+            0,
+            &[
+                (0x10_0000, &[0; 8], PERM_R | PERM_X),
+                (0x11_0000, &[0; 4], PERM_R | PERM_W),
+            ],
+            (0x20_0000, 0x1000),
+        );
+        let image = parse(&w).unwrap();
+        assert_eq!(
+            image.protection,
+            Some(WaxProtection {
+                stack_top: 0x20_0000,
+                stack_size: 0x1000
+            })
+        );
+        assert_eq!(
+            image.user_regions().unwrap(),
+            vec![
+                UserRegion {
+                    start: 0x1F_F000,
+                    end: 0x20_0000,
+                    flags: PERM_R | PERM_W
+                },
+                UserRegion {
+                    start: 0x10_0000,
+                    end: 0x10_0008,
+                    flags: PERM_R | PERM_X
+                },
+                UserRegion {
+                    start: 0x11_0000,
+                    end: 0x11_0004,
+                    flags: PERM_R | PERM_W
+                },
+            ]
+        );
+        let mut bus = Bus::new();
+        connect_ram(&mut bus);
+        assert!(
+            load_bytes(&mut bus, &w)
+                .unwrap_err()
+                .contains("BIOS WAX loader")
+        );
+    }
+
+    #[test]
+    fn protected_image_rejects_bad_permissions_stack_and_entry() {
+        let stack = (0x20_0000, 0x1000);
+        let code: &[u8] = &[0; 8];
+        // Entry block without X.
+        assert!(parse(&pack_protected(0, &[(0x10_0000, code, PERM_R)], stack)).is_err());
+        // Permission outside R/W/X, or zero.
+        assert!(parse(&pack_protected(0, &[(0x10_0000, code, 8 | PERM_X)], stack)).is_err());
+        assert!(parse(&pack_protected(0, &[(0x10_0000, code, 0)], stack)).is_err());
+        // Stack overlapping code, misaligned, empty, or in the CPU-reserved area.
+        assert!(
+            parse(&pack_protected(
+                0,
+                &[(0x10_0000, code, PERM_X)],
+                (0x10_0004, 4)
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&pack_protected(
+                0,
+                &[(0x10_0000, code, PERM_X)],
+                (0x20_0002, 4)
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&pack_protected(
+                0,
+                &[(0x10_0000, code, PERM_X)],
+                (0x20_0000, 0)
+            ))
+            .is_err()
+        );
+        assert!(
+            parse(&pack_protected(
+                0,
+                &[(0x10_0000, code, PERM_X)],
+                (0xFFFF_1000, 4)
+            ))
+            .is_err()
+        );
+        // Eight blocks exceed the region budget.
+        let blocks: Vec<(u32, &[u8], u32)> = (0..8)
+            .map(|index| (0x10_0000 + index * 0x100, code, PERM_X))
+            .collect();
+        assert!(parse(&pack_protected(0, &blocks, stack)).is_err());
+        // Unprotected entries keep the 12-byte table.
+        let mut wrong_size = pack_protected(0, &[(0x10_0000, code, PERM_X)], stack);
+        wrong_size[10..12].fill(0);
+        assert!(parse(&wrong_size).is_err());
     }
 
     #[test]

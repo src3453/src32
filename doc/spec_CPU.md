@@ -1,7 +1,12 @@
 # SRC32 Specification
-Revision 3.0 (2026-10-18)
+Revision 3.1 (2026-10-21)
 
 # Changelog
+- 3.1 (2026-10-21): Added Extension P (privilege levels and system calls):
+  `SYSCALL`/`MFSR`/`MTSR`, S/U modes, banked R28–R30, user-mode protection
+  regions, and exception CAUSE codes. See `doc/spec_CPU_priv.md`. CPUID bit 8;
+  scalar/cached/JIT report `0x13F`, pipeline `0x1BF`. Illegal instructions now
+  trap instead of stopping the host. Bus error CAUSE is `0x8002_0000`.
 - 3.0 (2026-10-18): Added host-side GUI CPU execution policies; no ISA change.
 - 2.9 (2026-10-18): JIT batches validated warm native instructions inside idle-device windows; no ISA change.
 - 2.8 (2026-10-18): JIT also uses bounded idle-device batching; no ISA change.
@@ -40,7 +45,7 @@ The goal is clarity and experimentation over micro-architectural complexity.
 
 Select `--cpu cached-relaxed` or YAML `cpu.microarchitecture: cached-relaxed`
 without requiring the JIT feature. This uses Cached instructions and CPUID
-(`0x3F`), but batches idle device progression in groups of at most 256 CPU
+(`0x13F`), but batches idle device progression in groups of at most 256 CPU
 cycles (5.3 us at 48 MHz). Accesses to timing-sensitive devices (DMAC, IDC,
 BMC, IRQC, PeC, CPU registers, expansion cards), timer IRQ deadlines,
 HALT/IRET, and `run` budget exits flush deferred cycles. Accesses to
@@ -65,7 +70,7 @@ Pipeline remains the default.
 
 Build with `--features jit` and select `--cpu jit` (or YAML
 `cpu.microarchitecture: jit`). Builds without the feature reject that selection.
-Pipeline remains the default. JIT reports CPUID features `0x3F` and follows
+Pipeline remains the default. JIT reports CPUID features `0x13F` and follows
 Cached instruction, IRQ, bus, and cycle-budget semantics, including 3-cycle
 MUL/MULH and 16-cycle DIV/DIVU/MOD.
 
@@ -73,7 +78,9 @@ Supported Normal-mode instructions are integer ALU, half-immediate, CPUID,
 branch/call/return, MUL/MULH/DIV/DIVU/MOD, and LD/LDH/LDB/ST/STH/STB. The block
 maximum is set by `cpu.jit_block_size` (2..=256, default 16); recommended
 presets are Small=16, Medium=32, and Big=64. Blocks still end at branches and
-unsupported instructions. On measured guests, larger blocks compiled more
+unsupported instructions (including `SYSCALL`, `MFSR` and `MTSR`). Native
+blocks run only in supervisor mode; user mode uses Cached execution because
+native code does not check Extension P protection. On measured guests, larger blocks compiled more
 overlapping code without running faster, so the default remains 16. Short mode,
 mode transitions, HALT, IRET, and non-previewable instruction memory use Cached
 execution. Single-instruction blocks remain interpreted. Only memory exposing
@@ -289,10 +296,13 @@ Bit positions:
   - Bit 4: Extension S (Short Mode)
   - Bit 5: Extension I (Interrupts)
   - Bit 6: Extension F (not implemented and not reported by this CPU)
+  - Bit 7: Extension p (pipelining; pipeline CPU only)
+  - Bit 8: Extension P (privilege levels and system calls)
 
-The current CPU implements Base and Extensions A, L, M, S, and I only. It reports
-`CPU_FEATURES = 0x0000003F`; Extension F remains a future instruction-set
-definition and is not decoded or executed by the current CPU.
+The current CPU implements Base and Extensions A, L, M, S, I and P. It reports
+`CPU_FEATURES = 0x0000013F` (pipeline: `0x000001BF`); Extension F remains a
+future instruction-set definition and is not decoded or executed by the
+current CPU.
 ### 4.6 Extension I (Interrupts)
 
 The CPU exposes one external interrupt input from the separate `IRQC` device:
@@ -312,7 +322,9 @@ PC = 0xFFFF0100 + irq_number * 4
 ```
 
 `IRET` restores the instruction mode that was active at interrupt entry, sets
-`PC = EPC`, and re-enables interrupts.
+`PC = EPC`, and restores `IE` from `STATUS.PIE` (1 for every IRQ entry).
+With Extension P, IRQ entry also saves the mode and switches to supervisor
+mode; see `doc/spec_CPU_priv.md` §6 for the complete trap rule.
 Nested interrupts are disabled in this revision. Source arbitration is not a
 CPU function: the external `IRQC` selects the lowest-numbered enabled pending
 IRQ and drives `irq_valid`/`irq_number`.
@@ -352,6 +364,7 @@ It will add 3 new opcodes to enter Short Mode:
 - `0x1E (imm)` : `JALS off16`: Jump And Link and Enter Short Mode
 - `0x1F (reg)` : `JRS rd`: Jump Register and Enter Short Mode 
 - `0x22 (reg)` : `JALRS rd`: Jump And Link Register and Enter Short Mode
+- `0x23`–`0x25`: `SYSCALL`, `MFSR`, `MTSR` belong to Extension P (§4.8).
 
 ### 4.5.2 Short Mode Instructions
 It will add 1 read-only register to the CPU, `INSTR_MODE`, which indicates the current instruction mode:
@@ -385,7 +398,17 @@ Register 0-14 is mapped to `R0-R14`, and register 15 is mapped to `R31` (LR).
 ## 4.6 Extension I (Interrupts)
 Extension I adds support for external interrupts, additional read-only registers, and the `IRET` instruction to return from interrupt handlers.
 
-- `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, enable IRQs)
+- `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, `IE <- PIE`, restore mode)
+
+## 4.8 Extension P (Privilege Levels and System Calls)
+
+Full definition: `doc/spec_CPU_priv.md`.
+
+- `0x23 (imm)`: `SYSCALL imm16`: trap to `[0xFFFF000C]`; `imm16[7:0]` is the
+  call number (0–255), `imm16[15:8]` a context byte, both copied to CAUSE.
+- `0x24 (imm)`: `MFSR rd, sr`: read system register `imm16` (supervisor only).
+- `0x25 (imm)`: `MTSR sr, rs1`: write system register `imm16` (supervisor only).
+- `HALT`, `IRET`, `MFSR` and `MTSR` are privileged in user mode.
 
 ## 4.7 Extension F (Floating-point instructions, FPU; future definition, not implemented)
 The following encodings describe a future extension only. The current CPU does
@@ -433,9 +456,12 @@ Rules:
 - Implemented RAM: configured from 1 to 256 MiB; default 16 MiB.
 - CPU reads and writes to unmapped addresses raise the Bus Error exception.
 - Bus Error entry records the faulting instruction address in EPC, sets CAUSE
-  to 2, masks interrupts, and transfers to the handler address stored at
-  `0xFFFF0008`. If the vector retains its default self-reference, the CPU halts
-  at the Bus Error vector instead of panicking the host process.
+  to `0x8002_0000`, masks interrupts, and transfers to the handler address
+  stored at `0xFFFF0008`. If the vector retains its default self-reference, the
+  CPU halts at the Bus Error vector instead of panicking the host process.
+- Every exception (illegal instruction, bus error, SYSCALL, privileged
+  instruction, protection fault) follows the trap rule in
+  `doc/spec_CPU_priv.md` §5–6.
 Endianness:
 
 - Byte-addressable memory
@@ -445,7 +471,9 @@ Endianness:
 CPU vectors and state use byte-addressed MMIO. Multi-byte values use big-endian
 byte order; accesses may be byte, halfword, or word sized and may be unaligned.
 
-- `0xFFFF0000..0xFFFF000F`: reset and exception vector words.
+- `0xFFFF0000..0xFFFF000F`: reset and exception vector words: reset `0x00`,
+  illegal/privileged instruction `0x04`, bus error/protection fault `0x08`,
+  SYSCALL `0x0C`.
 - `0xFFFF0100..0xFFFF013F`: sixteen writable IRQ vector instruction slots.
   IRQ entry sets PC to `0xFFFF0100 + CAUSE * 4` and executes the instruction
   stored in that slot.
@@ -455,7 +483,10 @@ byte order; accesses may be byte, halfword, or word sized and may be unaligned.
   `0x200..0x27C`, four bytes each; PC/EPC/CAUSE/STATUS/INSTR_MODE occupy
   offsets `0x280/0x284/0x288/0x28C/0x290` respectively.
 
-`R0` reads as zero and ignores writes. `STATUS` bit 0 is IRQ enable.
+`R0` reads as zero and ignores writes. `STATUS` bit 0 is IRQ enable; bits 1–4
+are Extension P `PIE`, `U`, `PU`, `PSM`. The register view shows the R28–R30
+bank of the current mode. Guest code changes STATUS/EPC/CAUSE with `MTSR`.
+User mode cannot access `0xFFFF0000..0xFFFFFFFF` at all.
 `INSTR_MODE` bit 0 is 0 for Normal mode and 1 for Short mode; writes retain
 only bit 0. CPU-owned state is published at instruction commit, so a CPU store
 to CPU state registers is overwritten by that commit; stores to vector words
@@ -533,14 +564,13 @@ Implemented in this repository:
 
 Planned (future):
 
-- Exception model beyond the current illegal-instruction/bus panic behavior
 - ROM loader/boot flow
 - Integration tests with assembled programs
 
 Planning extensions:
 V: Virtual Memory, MMU, TLB
 C: L1 Cache
-P: Protection/Privilege Levels (depends on I extension)
+P: Protection/Privilege Levels (implemented, see doc/spec_CPU_priv.md)
 p: Pipelining (implemented as Extension p, see doc/spec_CPU_p.md)
 v: Vector instructions, SIMD
 F: Floating-point instructions, FPU

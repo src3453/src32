@@ -21,22 +21,25 @@ Header offset  サイズ  名称
 4             2     version = 2
 6             2     type: 1 = .wax 実行ファイル、2 = .wal ライブラリ
 8             2     arch = 1 (SRC32)
-10            2     flags: bit0 = DEBUG_PRESENT、その他は 0
+10            2     flags: bit0 = DEBUG_PRESENT、bit1 = PROTECTED、その他は 0
 12            4     header_size = 64
 16            4     base_addr: .wax の最小 block address、.wal は 0
 20            4     entry_offset: entry = base_addr + entry_offset、.wal は 0
 24            4     block_table_offset
 28            4     block_count
-32            4     block_entry_size = 12
+32            4     block_entry_size = 12（PROTECTED 時は 16）
 36            4     debug_offset（存在しない場合は 0）
 40            4     debug_size（存在しない場合は 0）
 44            4     file_size（実際の byte 数と一致）
-48            16    reserved（0）
+48            4     user_stack_top（PROTECTED 時のみ。それ以外は 0）
+52            4     user_stack_size（PROTECTED 時のみ。それ以外は 0）
+56            8     reserved（0）
 
-Block table entry（各 12 byte）:
+Block table entry（各 12 byte。PROTECTED 時は 16 byte）:
 0             4     load_address: .wax の u32 address、.wal の PIC offset
 4             4     file_offset: コンテナー内の payload 位置
 8             4     size: payload byte 数
+12            4     perm（PROTECTED 時のみ）: bit0 R、bit1 W、bit2 X
 ```
 
 ## 規則
@@ -54,6 +57,57 @@ Block table entry（各 12 byte）:
   PIC offset です。ライブラリは解析できますが実行できません。
 - `debug_size > 0` の場合に限り `DEBUG_PRESENT` を設定します。debug は NOLOAD で不透明です。
 - 未知の version/arch/type/flag bits は拒否します。v2 に checksum はありません。
+- `PROTECTED` の規則は下の「保護付き実行ファイル」を参照してください。
+
+## 保護付き実行ファイル
+
+`PROTECTED`（flags bit1）は、拡張 P の **ユーザーモード**
+（[[doc/ja/spec_CPU_priv|拡張P仕様]]）で動く `.wax` を示します。フラグのない image は
+変わらず、従来どおりスーパーバイザーモードで動きます。version は上げません。
+このフラグを知らない v2 loader はファイルを拒否するので、保護付きプログラムが
+誤って保護なしで動くことはありません。
+
+`PROTECTED` を設定したときの規則:
+
+- type は `.wax` に限ります。`PROTECTED` 付きの `.wal` は拒否します。
+- `block_entry_size` は 16 です。各 entry の `perm` は R（1）、W（2）、X（4）の
+  0 以外の組み合わせで、それ以外の bit は拒否します。`perm` は拡張 P の
+  領域 `FLAGS` と同じ bit です。
+- `block_count` は最大 7 です（領域 0 がスタック、領域 1..7 が block）。
+- `user_stack_top` と `user_stack_size` は 0 以外の 4 の倍数です。スタックは
+  `user_stack_top - user_stack_size .. user_stack_top` です。address 0 を下回らず、
+  block と重ならず、終端は `0xFFFF0000` 以下でなければなりません。
+- どの block も CPU 予約領域 `0xFFFF0000..` にかかってはいけません。
+- entry は X を持つ block の中に置きます。
+- header の 56..63 byte は 0 のままです。`PROTECTED` がなければ 48..63 byte は 0、
+  `block_entry_size` は 12 のままです。
+
+### ユーザーモードへの受け渡し
+
+マシンは常にスーパーバイザーモードでリセットします。ユーザーモードに入るのは
+**BIOS の WAX loader** です。保護付き image では次を行います。
+
+1. ファイルを検証し、各 block を `load_address` に書き込みます。
+2. 保護領域（`RGNn_START/END/FLAGS`）を設定します。
+   - 領域 0: ユーザースタック、`R|W`
+   - 領域 `1 + i`: テーブル順で i 番目の block、その block の `perm`
+   - それ以外の領域: すべて 0（無効）
+3. `USP = user_stack_top`、`EPC = entry`、`STATUS.PU = 1` にします。`PIE` で
+   ユーザーモード中の割り込み許可を選びます。
+4. `IRET` を実行します。
+
+payload block はファイルからコピーするだけで、スタックや gap は消去しません。
+デバイスは開放しません。保護付きプログラムは `SYSCALL` でデバイスを使い、
+そのサービスは SYSCALL ベクターを設定した BIOS／OS が定義します。
+
+現状:
+
+- `src/wax.rs` と `tools/wax/wax.py` は保護付き image を解析・検証し、領域一覧
+  （`WaxImage::user_regions`、`user_regions(image)`）を提供します。
+- BIOS の WAX loader はまだ実装されていません。ホストの直接ロード（main、
+  testbench、monitor）はスーパーバイザーモードでしか起動しないため、保護付き image は
+  保護なしで動かさずエラーで拒否します。BIOS ROM image 自体は `PROTECTED` にできません。
+- `sol/cpt32/wax.sol`（DOS の `RUN`）は未知のフラグとして拒否します。
 
 ## ロード
 
@@ -64,6 +118,11 @@ Block table entry（各 12 byte）:
 4. CPT32PKG entrypoint は `.wax` または raw `.bin` を指定できます。Manifest は変更しません。
 
 ## テストベクトル
+
+- 保護付き: `0x100000` に `R|X` の code、`0x110000` に `R|W` の data、スタック
+  `0x1FF000..0x200000`。領域はスタック、code、data の順です。entry block に X がない、
+  permission が 0 または未知の bit、スタックが block や CPU 予約領域と重なる、
+  スタックの非アライン、8 block 以上、`.wal` を拒否します。
 
 - 1 block: address 0 に 4 byte NOP、`base_addr=0`、`entry_offset=0`。
 - sparse image: `0x100` に NOP、`0x10000` に HALT。各 4 byte の 2 block は合計 96 byte
@@ -76,6 +135,10 @@ Block table entry（各 12 byte）:
 
 - `tools/wax/wax.py pack --base 0x100 --block 0x100=code.bin
   --block 0x10000=stub.bin -o app.wax` で複数 block を pack できます。
+- `tools/wax/wax.py pack --protected --base 0x100000
+  --block 0x100000=code.bin:rx --block 0x110000=data.bin:rw
+  --stack-top 0x200000 --stack-size 0x1000 -o app.wax` で保護付き image を作れます。
+  `info` はスタックと各 block の permission を表示します。
 - `tools/asm/asm.py input.asm -o output.wax [--entry LABEL]` は `.ORG` の address region ごとに
   block を出力します。現在の PC と同じ address への `.ORG` は、出力済み byte の開始 address を
   変更しません。gap は省略されますが、block を load address に配置してゼロ埋め展開すると

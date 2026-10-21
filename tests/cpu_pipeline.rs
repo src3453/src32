@@ -248,7 +248,7 @@ fn cpuid_advertises_p_and_r0_stays_zero() {
     cpu.load_program(0, &image);
     cpu.run(32);
     assert_eq!(cpu.read_reg(1), 0x5352_4332);
-    assert_eq!(cpu.read_reg(2), 0x3F | 0x80); // Base|A|L|M|S|I + p
+    assert_eq!(cpu.read_reg(2), 0x13F | 0x80); // Base|A|L|M|S|I + P + p
     assert_eq!(cpu.read_reg(0), 0);
 }
 

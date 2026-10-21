@@ -10,6 +10,7 @@ pub const VECTOR_SIZE: u32 = 0x140;
 pub const RESET_VECTOR: u32 = VECTOR_BASE;
 pub const ILLEGAL_INSTRUCTION_VECTOR: u32 = VECTOR_BASE + 0x04;
 pub const BUS_ERROR_VECTOR: u32 = VECTOR_BASE + 0x08;
+pub const SYSCALL_VECTOR: u32 = VECTOR_BASE + 0x0C;
 pub const INTERRUPT_VECTOR: u32 = VECTOR_BASE + 0x100;
 
 /// CPU state exposed through the CPU-reserved MMIO area.
@@ -33,13 +34,14 @@ impl CpuRegisterBlock {
         vectors[0] = RESET_VECTOR;
         vectors[1] = ILLEGAL_INSTRUCTION_VECTOR;
         vectors[2] = BUS_ERROR_VECTOR;
+        vectors[3] = SYSCALL_VECTOR;
         vectors[64] = INTERRUPT_VECTOR;
         Self {
             regs: [0; 32],
             pc: 0,
             epc: 0,
             cause: 0,
-            status: 1,
+            status: 3,
             instr_mode: 0,
             vectors,
         }

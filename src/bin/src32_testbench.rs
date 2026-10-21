@@ -103,6 +103,7 @@ fn main() {
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
         assert!(!img.is_lib, ".wal library is not runnable");
+        cpt32::wax::reject_protected_direct_load(&img).expect("unsupported WAX program");
         for block in &img.blocks {
             cpu.load_program(block.load_address, block.data);
         }

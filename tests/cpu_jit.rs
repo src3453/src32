@@ -370,7 +370,7 @@ fn fallback_memory_arithmetic_short_mode_and_halt_preserve_cycles() {
         jit.run(1);
         same(&cached, &jit);
     }
-    assert_eq!(jit.read_reg(2), 0x3f);
+    assert_eq!(jit.read_reg(2), 0x13f);
     assert_eq!(jit.read_reg(5), 2);
     assert_eq!(jit.read_reg(6), 1);
     assert_eq!(jit.instruction_mode(), InstructionMode::Normal);
@@ -524,15 +524,18 @@ fn dma_rewrites_a_later_native_instruction_during_the_block() {
 }
 
 #[test]
-fn fallback_panics_return_to_rust_without_unwinding_through_native_code() {
+fn fallback_illegal_instruction_traps_after_native_code() {
     let words = [i(4, 1, 1, 1), i(9, 0, 0, -8)];
     let mut jit = boot(CpuKind::Jit, 0, &words);
     jit.run(300);
     native_ran(&jit);
-    jit.write_mem_u32_be(0, r(0x23, 0, 0, 0)); // illegal opcode
-    let error = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| jit.run(1)));
-    assert!(error.is_err());
-    // The module can still be safely reset and execute after the Rust panic.
+    jit.write_mem_u32_be(0, r(0x26, 0, 0, 0)); // illegal opcode
+    jit.run(4);
+    // Extension P: the default illegal-instruction vector halts, no host panic.
+    assert!(!jit.is_running());
+    assert_eq!(jit.irq_cause(), 0x8001_0000);
+    assert_eq!(jit.epc(), 0);
+    // The module can still be safely reset and execute after the trap.
     jit.write_mem_u32_be(0, words[0]);
     jit.reset(0);
     jit.run(300);

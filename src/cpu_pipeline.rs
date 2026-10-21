@@ -6,7 +6,8 @@
 // same architectural state (registers, PC, mode, memory).
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::devices::cpu::{BUS_ERROR_VECTOR, CpuRegisterBlock};
+use crate::cpu_privilege::{Access, EXT_P, Exception, SystemState, format_sr, format_syscall};
+use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -28,7 +29,7 @@ const EXT_M: u32 = 0x08;
 const EXT_S: u32 = 0x10;
 const EXT_I: u32 = 0x20;
 const EXT_P_SMALL: u32 = 0x80; // Extension p (lowercase): pipelining (micro-arch only, no ISA change)
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL;
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL | EXT_P;
 const CPU_ID: u32 = 0x5352_4332;
 
 const INSN_SIZE: u32 = 4;
@@ -78,6 +79,9 @@ enum Instruction {
     Ldih { rd: u8, imm: u16 },
     Unknown(u32),
     Iret,
+    Syscall { imm: u16 },
+    Mfsr { rd: u8, sr: u16 },
+    Mtsr { rs: u8, sr: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -114,6 +118,8 @@ struct IfId {
     pc: u32,
     mode: InstructionMode,
     raw: RawInstr,
+    /// User-mode fetch denied: no bus read happened; trap at commit.
+    fetch_fault: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +137,7 @@ struct IdEx {
     op_b: u32,
     is_load: bool,
     is_store: bool,
+    exception: Option<Exception>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -155,6 +162,10 @@ struct ExMem {
     iret: bool,
     cpuid: bool,
     link_value: Option<(usize, u32)>,
+    /// Taken at commit; flushes the pipeline (doc/spec_CPU_priv.md section 9).
+    exception: Option<Exception>,
+    /// `MTSR` (SR, value), written at commit followed by a flush.
+    mtsr: Option<(u16, u32)>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -172,6 +183,8 @@ struct MemWb {
     branch_taken: bool,
     branch_target: u32,
     branch_new_mode: Option<InstructionMode>,
+    exception: Option<Exception>,
+    mtsr: Option<(u16, u32)>,
 }
 
 /// Pipeline state after a taken-branch redirect that determines the next
@@ -183,10 +196,7 @@ struct SpinState {
     fetch_mode: InstructionMode,
     retire_pc: u32,
     retire_mode: InstructionMode,
-    epc: u32,
-    irq_return_mode: InstructionMode,
-    cause: u8,
-    irq_enable: bool,
+    sys: SystemState,
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
@@ -260,10 +270,7 @@ pub struct PipelineCpu {
     instructions_executed: u128,
     stall_cycles: u128,
     flush_events: u128,
-    epc: u32,
-    irq_return_mode: InstructionMode,
-    cause: u8,
-    irq_enable: bool,
+    sys: SystemState,
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
@@ -296,6 +303,7 @@ fn invalid_id_ex() -> IdEx {
         op_b: 0,
         is_load: false,
         is_store: false,
+        exception: None,
     }
 }
 
@@ -321,6 +329,8 @@ fn invalid_ex_mem() -> ExMem {
         iret: false,
         cpuid: false,
         link_value: None,
+        exception: None,
+        mtsr: None,
     }
 }
 
@@ -339,6 +349,8 @@ fn invalid_mem_wb() -> MemWb {
         branch_taken: false,
         branch_target: 0,
         branch_new_mode: None,
+        exception: None,
+        mtsr: None,
     }
 }
 
@@ -361,10 +373,7 @@ impl PipelineCpu {
             instructions_executed: 0,
             stall_cycles: 0,
             flush_events: 0,
-            epc: 0,
-            irq_return_mode: InstructionMode::Normal,
-            cause: 0,
-            irq_enable: true,
+            sys: SystemState::default(),
             irq_pending: false,
             irq_pending_number: 0,
             irq_line: false,
@@ -379,6 +388,7 @@ impl PipelineCpu {
                 pc: 0,
                 mode: InstructionMode::Normal,
                 raw: RawInstr::Normal(0),
+                fetch_fault: false,
             },
             id_ex: invalid_id_ex(),
             ex_mem: invalid_ex_mem(),
@@ -407,10 +417,7 @@ impl PipelineCpu {
         self.cycles = 0;
         self.running_cycles = 0;
         self.instructions_executed = 0;
-        self.epc = 0;
-        self.irq_return_mode = InstructionMode::Normal;
-        self.cause = 0;
-        self.irq_enable = true;
+        self.sys = SystemState::default();
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
@@ -436,9 +443,9 @@ impl PipelineCpu {
         block.regs = self.reg;
         block.regs[0] = 0;
         block.pc = self.retire_pc;
-        block.epc = self.epc;
-        block.cause = u32::from(self.cause);
-        block.status = u32::from(self.irq_enable);
+        block.epc = self.sys.epc;
+        block.cause = self.sys.cause;
+        block.status = self.sys.status();
         block.instr_mode = match self.fetch_mode {
             InstructionMode::Normal => 0,
             InstructionMode::Short => 1,
@@ -448,11 +455,11 @@ impl PipelineCpu {
     fn sync_from_register_block(&mut self) {
         let block = self.register_block.borrow();
         let irq_enable = block.status & 1 != 0;
-        if self.irq_enable != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
+        if self.sys.ie != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
             tracing::info!(
                 target: "pec_debug",
                 "[PEC-DBG] CPU status resync cpu=pipeline old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
-                self.irq_enable,
+                self.sys.ie,
                 irq_enable,
                 block.pc,
                 block.epc,
@@ -463,9 +470,9 @@ impl PipelineCpu {
         self.reg[REG_ZERO] = 0;
         self.fetch_pc = block.pc;
         self.retire_pc = block.pc;
-        self.epc = block.epc;
-        self.cause = block.cause as u8;
-        self.irq_enable = irq_enable;
+        self.sys.epc = block.epc;
+        self.sys.cause = block.cause;
+        self.sys.set_status(block.status);
         self.fetch_mode = if block.instr_mode & 1 != 0 {
             InstructionMode::Short
         } else {
@@ -546,15 +553,20 @@ impl PipelineCpu {
     }
 
     pub fn epc(&self) -> u32 {
-        self.epc
+        self.sys.epc
     }
 
-    pub fn irq_cause(&self) -> u8 {
-        self.cause
+    pub fn irq_cause(&self) -> u32 {
+        self.sys.cause
     }
 
     pub fn irq_enabled(&self) -> bool {
-        self.irq_enable
+        self.sys.ie
+    }
+
+    /// STATUS as defined by Extension P.
+    pub fn status(&self) -> u32 {
+        self.sys.status()
     }
 
     pub fn set_irq_input(&mut self, level: bool, number: u8) {
@@ -716,15 +728,12 @@ impl PipelineCpu {
             self.retire_mode, decoded.text
         );
         txt.push_str(&format!(
-            "EPC=0x{:08X} CAUSE=0x{:02X} STATUS=0x{:08X} (IRQ {})\n",
-            self.epc,
-            self.cause,
-            u32::from(self.irq_enable),
-            if self.irq_enable {
-                "enabled"
-            } else {
-                "disabled"
-            },
+            "EPC=0x{:08X} CAUSE=0x{:08X} STATUS=0x{:08X} (IRQ {}, {} mode)\n",
+            self.sys.epc,
+            self.sys.cause,
+            self.sys.status(),
+            if self.sys.ie { "enabled" } else { "disabled" },
+            if self.sys.user { "user" } else { "supervisor" },
         ));
         for i in 0..32 {
             txt.push_str(&format!(" R{i:<2}=0x{:08X}", self.read_reg(i)));
@@ -757,6 +766,9 @@ impl PipelineCpu {
             Instruction::Cpuid => "CPUID".to_string(),
             Instruction::Halt => "HALT".to_string(),
             Instruction::Iret => "IRET".to_string(),
+            Instruction::Syscall { imm } => format_syscall(imm),
+            Instruction::Mfsr { rd, sr } => format!("MFSR R{rd}, {}", format_sr(sr)),
+            Instruction::Mtsr { rs, sr } => format!("MTSR {}, R{rs}", format_sr(sr)),
             Instruction::And { rd, rs1, rs2 } => format!("AND R{rd}, R{rs1}, R{rs2}"),
             Instruction::Or { rd, rs1, rs2 } => format!("OR R{rd}, R{rs1}, R{rs2}"),
             Instruction::Xor { rd, rs1, rs2 } => format!("XOR R{rd}, R{rs1}, R{rs2}"),
@@ -897,6 +909,12 @@ impl PipelineCpu {
             0x1F => Instruction::Jrs { rd },
             0x21 => Instruction::Jalr { rd },
             0x22 => Instruction::Jalrs { rd },
+            0x23 => Instruction::Syscall { imm: imm_u16 },
+            0x24 => Instruction::Mfsr { rd, sr: imm_u16 },
+            0x25 => Instruction::Mtsr {
+                rs: rs1,
+                sr: imm_u16,
+            },
             0x3C => Instruction::Ldil { rd, imm: imm_u16 },
             0x3D => Instruction::Ldih { rd, imm: imm_u16 },
             0x3E => Instruction::Cpuid,
@@ -960,6 +978,10 @@ impl PipelineCpu {
         out.valid = true;
         out.pc = if_id.pc;
         out.mode = if_id.mode;
+        if if_id.fetch_fault {
+            out.exception = Some(Exception::ProtectionFault(Access::Fetch));
+            return out;
+        }
         match if_id.raw {
             RawInstr::Normal(raw) => {
                 let insn = Self::decode(raw);
@@ -1051,8 +1073,19 @@ impl PipelineCpu {
                         out.op_a = self.read_arch(rd as usize);
                         out.dest = Some(rd as usize);
                     }
+                    Instruction::Mfsr { rd, .. } => {
+                        out.dest = Some(rd as usize);
+                    }
+                    Instruction::Mtsr { rs, .. } => {
+                        out.srcs[0] = rs as usize;
+                        out.n_srcs = 1;
+                        out.op_a = self.read_arch(rs as usize);
+                    }
                     Instruction::Cpuid => {}
-                    Instruction::Halt | Instruction::Iret | Instruction::Unknown(_) => {}
+                    Instruction::Halt
+                    | Instruction::Iret
+                    | Instruction::Syscall { .. }
+                    | Instruction::Unknown(_) => {}
                 }
             }
             RawInstr::Short(raw) => {
@@ -1185,6 +1218,33 @@ impl PipelineCpu {
         } else {
             id_ex.op_b
         };
+
+        // Exceptions travel to commit as no-ops (no writeback, no memory).
+        let exception = id_ex.exception.or(match id_ex.decoded {
+            Decoded::Normal(
+                Instruction::Halt
+                | Instruction::Iret
+                | Instruction::Mfsr { .. }
+                | Instruction::Mtsr { .. },
+            ) if self.sys.user => Some(Exception::PrivilegedInstruction),
+            Decoded::Normal(Instruction::Unknown(_))
+            | Decoded::Short(ShortInstruction::Unknown(_)) => Some(Exception::IllegalInstruction),
+            Decoded::Normal(Instruction::Syscall { imm }) => Some(Exception::Syscall(imm)),
+            Decoded::Normal(Instruction::Mfsr { sr, .. })
+                if self.sys.read_sr(sr, &self.reg).is_none() =>
+            {
+                Some(Exception::IllegalInstruction)
+            }
+            _ => None,
+        });
+        if exception.is_some() {
+            out.exception = exception;
+            out.writeback = false;
+            out.dest = None;
+            out.is_load = false;
+            out.is_store = false;
+            return (out, None);
+        }
 
         match id_ex.decoded {
             Decoded::Normal(insn) => match insn {
@@ -1378,18 +1438,22 @@ impl PipelineCpu {
                     out.halt = true;
                 }
                 Instruction::Iret => {
+                    // Mode and banks change at commit, which flushes and refetches.
                     out.writeback = false;
                     out.dest = None;
                     out.iret = true;
-                    out.branch_taken = true;
-                    out.branch_target = self.epc;
-                    return (out, Some((self.epc, self.irq_return_mode)));
                 }
-                Instruction::Unknown(raw) => {
-                    panic!(
-                        "Illegal instruction at PC=0x{:08X}: 0x{:08X}",
-                        id_ex.pc, raw
-                    );
+                Instruction::Mfsr { sr, .. } => {
+                    // Older MTSR/traps flush at commit, so SRs are current here.
+                    out.alu_result = self.sys.read_sr(sr, &self.reg).unwrap_or(0);
+                }
+                Instruction::Mtsr { sr, .. } => {
+                    out.writeback = false;
+                    out.dest = None;
+                    out.mtsr = Some((sr, fwd_a));
+                }
+                Instruction::Syscall { .. } | Instruction::Unknown(_) => {
+                    unreachable!("handled as an exception above")
                 }
             },
             Decoded::Short(sinsn) => match sinsn {
@@ -1456,12 +1520,7 @@ impl PipelineCpu {
                     out.branch_new_mode = Some(InstructionMode::Normal);
                     return (out, Some((next_pc_short, InstructionMode::Normal)));
                 }
-                ShortInstruction::Unknown(raw) => {
-                    panic!(
-                        "Illegal short instruction at PC=0x{:08X}: 0x{:04X}",
-                        id_ex.pc, raw
-                    );
-                }
+                ShortInstruction::Unknown(_) => unreachable!("handled as an exception above"),
             },
         }
         (out, None)
@@ -1527,6 +1586,7 @@ impl PipelineCpu {
                 Instruction::Ldil { rd, .. } | Instruction::Ldih { rd, .. } => {
                     [rd as usize, REG_ZERO]
                 }
+                Instruction::Mtsr { rs, .. } => [rs as usize, REG_ZERO],
                 _ => [REG_ZERO, REG_ZERO],
             },
             RawInstr::Short(raw) => match Self::decode_short(raw) {
@@ -1549,7 +1609,7 @@ impl PipelineCpu {
     }
 
     fn accept_pending_irq(&mut self) -> bool {
-        if !self.irq_enable || !self.irq_pending {
+        if !self.sys.ie || !self.irq_pending {
             return false;
         }
         if crate::devices::pec::pec::pec_trace_enabled() {
@@ -1563,13 +1623,12 @@ impl PipelineCpu {
             );
         }
         // Precise interrupt: resume after the last committed instruction.
-        self.epc = self.retire_pc;
-        self.irq_return_mode = self.retire_mode;
-        self.cause = self.irq_pending_number;
+        let cause = u32::from(self.irq_pending_number);
+        self.sys
+            .enter_trap(&mut self.reg, self.retire_pc, cause, self.retire_mode);
         self.irq_pending = false;
-        self.irq_enable = false;
         self.fetch_mode = InstructionMode::Normal;
-        let vector_pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        let vector_pc = IRQ_VECTOR_BASE.wrapping_add(cause * 4);
         self.fetch_pc = vector_pc;
         // The empty-pipeline sync on the next tick reloads fetch_pc from retire_pc.
         // Keep the vector there; EPC already holds the interrupted PC.
@@ -1585,33 +1644,43 @@ impl PipelineCpu {
         true
     }
 
-    fn enter_bus_error(&mut self, fault_pc: u32) {
-        self.epc = fault_pc;
-        self.irq_return_mode = self.retire_mode;
-        self.cause = 2;
-        self.irq_enable = false;
-        self.irq_pending = false;
-        self.fetch_mode = InstructionMode::Normal;
-        self.retire_mode = InstructionMode::Normal;
-        let vector = self.bus.read_u32_be(BUS_ERROR_VECTOR);
-        self.fetch_pc = vector;
-        self.retire_pc = vector;
+    fn enter_bus_error(&mut self, fault_pc: u32, mode: InstructionMode) {
+        tracing::error!(pc = format_args!("0x{fault_pc:08X}"), "CPU Bus Error");
+        self.enter_exception(Exception::BusError, fault_pc, mode);
+    }
+
+    /// Drop every in-flight instruction and restart fetch at `pc`.
+    fn redirect_empty(&mut self, pc: u32, mode: InstructionMode) {
+        self.fetch_pc = pc;
+        self.retire_pc = pc;
+        self.fetch_mode = mode;
+        self.retire_mode = mode;
         self.if_id.valid = false;
         self.id_ex = invalid_id_ex();
         self.ex_mem = invalid_ex_mem();
         self.mem_wb = invalid_mem_wb();
         self.ex_cycles_left = 0;
         self.ex_armed = false;
-        self.running = vector != BUS_ERROR_VECTOR;
-        self.sync_register_block();
-        tracing::error!(pc = format_args!("0x{fault_pc:08X}"), "CPU Bus Error");
     }
 
-    fn commit_mem_wb(&mut self, wb: MemWb) {
+    /// Exception entry (doc/spec_CPU_priv.md section 6) with a flushed pipeline.
+    /// `mode` is the instruction mode to resume at `epc`.
+    fn enter_exception(&mut self, exception: Exception, epc: u32, mode: InstructionMode) {
+        self.sys
+            .enter_trap(&mut self.reg, epc, exception.cause(), mode);
+        let vector = exception.vector();
+        let pc = self.bus.read_u32_be(vector);
+        self.redirect_empty(pc, InstructionMode::Normal);
+        self.running = pc != vector;
+        self.sync_register_block();
+    }
+
+    /// Commit the oldest instruction. Returns true when it trapped, ran IRET
+    /// or MTSR: the pipeline is then flushed and fetch restarts at the new PC.
+    fn commit_mem_wb(&mut self, wb: MemWb) -> bool {
         if !wb.valid {
-            return;
+            return false;
         }
-        self.instructions_executed += 1;
         // Advance the architectural PC. Taken branches (redirected at EX)
         // retire to their target; everything else falls through to the next
         // sequential address in the committed instruction's own mode.
@@ -1619,6 +1688,28 @@ impl PipelineCpu {
             InstructionMode::Normal => INSN_SIZE,
             InstructionMode::Short => SHORT_INSN_SIZE,
         });
+        if wb.exception != Some(Exception::ProtectionFault(Access::Fetch)) {
+            // A denied fetch never executed, as on the scalar CPU.
+            self.instructions_executed += 1;
+        }
+        if let Some(exception) = wb.exception {
+            let epc = match exception {
+                Exception::Syscall(_) => fallthrough,
+                _ => wb.pc,
+            };
+            self.enter_exception(exception, epc, wb.mode);
+            return true;
+        }
+        if let Some((sr, value)) = wb.mtsr {
+            // STATUS may enable IRQs: observe deferred device IRQs first.
+            self.bus.flush_relaxed_devices();
+            if self.sys.write_sr(sr, value, &mut self.reg) {
+                self.redirect_empty(fallthrough, wb.mode);
+            } else {
+                self.enter_exception(Exception::IllegalInstruction, wb.pc, wb.mode);
+            }
+            return true;
+        }
         if wb.branch_taken {
             self.retire_pc = wb.branch_target;
         } else if !wb.iret {
@@ -1652,19 +1743,15 @@ impl PipelineCpu {
                     target: "pec_debug",
                     "[PEC-DBG] CPU IRET cpu=pipeline pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
                     wb.pc,
-                    self.epc,
-                    self.cause,
+                    self.sys.epc,
+                    self.sys.cause,
                     self.running_cycles,
                     self.instructions_executed
                 );
             }
-            // IRET itself was already redirected at EX; the commit restores
-            // the architectural PC/mode saved at interrupt entry.
-            self.fetch_pc = self.epc;
-            self.fetch_mode = self.irq_return_mode;
-            self.retire_pc = self.epc;
-            self.retire_mode = self.irq_return_mode;
-            self.irq_enable = true;
+            let (pc, mode) = self.sys.leave_trap(&mut self.reg);
+            self.redirect_empty(pc, mode);
+            return true;
         }
         if wb.halt {
             // Precise HALT: takes effect at commit like the scalar CPU.
@@ -1678,6 +1765,7 @@ impl PipelineCpu {
             self.ex_armed = false;
             self.ex_cycles_left = 0;
         }
+        false
     }
 
     #[inline(always)]
@@ -1743,7 +1831,7 @@ impl PipelineCpu {
         self.cycles += 1;
         self.running_cycles += 1;
         if self.bus.take_bus_error() {
-            self.enter_bus_error(self.retire_pc);
+            self.enter_bus_error(self.retire_pc, self.retire_mode);
             return;
         }
 
@@ -1754,10 +1842,16 @@ impl PipelineCpu {
         // with next_mem_wb at the end of the tick.
         let wb = self.mem_wb;
         let wb_start = Self::profile_start::<PROFILE>();
-        self.commit_mem_wb(wb);
+        let flushed = self.commit_mem_wb(wb);
         let halted_by_commit = wb.valid && wb.halt;
         if let Some(start) = wb_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Commit, start.elapsed());
+        }
+        if flushed {
+            // IRET may re-enable IRQs: sample at this commit like the scalar CPU.
+            self.accept_pending_irq();
+            self.sync_register_block();
+            return;
         }
         // ---- MEM ----
         let mut next_mem_wb = invalid_mem_wb();
@@ -1776,6 +1870,21 @@ impl PipelineCpu {
             next_mem_wb.cpuid = em.cpuid;
             next_mem_wb.link_value = em.link_value;
             next_mem_wb.branch_new_mode = em.branch_new_mode;
+            next_mem_wb.exception = em.exception;
+            next_mem_wb.mtsr = em.mtsr;
+            let access = if em.is_load {
+                Access::Read
+            } else {
+                Access::Write
+            };
+            if (em.is_load || em.is_store)
+                && em.mem_size != 0
+                && !self.sys.allows(em.mem_addr, u32::from(em.mem_size), access)
+            {
+                // Precise: older instructions have committed; nothing is accessed.
+                self.enter_exception(Exception::ProtectionFault(access), em.pc, em.mode);
+                return;
+            }
             if em.is_load && em.mem_size != 0 {
                 let v = match em.mem_size {
                     4 => self.bus.read_u32_be(em.mem_addr),
@@ -1807,14 +1916,14 @@ impl PipelineCpu {
                 next_mem_wb.writeback = em.writeback;
             }
             if self.bus.take_bus_error() {
-                bus_fault_pc = Some(em.pc);
+                bus_fault_pc = Some((em.pc, em.mode));
             }
         }
         if let Some(start) = memory_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Memory, start.elapsed());
         }
-        if let Some(fault_pc) = bus_fault_pc {
-            self.enter_bus_error(fault_pc);
+        if let Some((fault_pc, mode)) = bus_fault_pc {
+            self.enter_bus_error(fault_pc, mode);
             return;
         }
 
@@ -1943,27 +2052,44 @@ impl PipelineCpu {
         } else if halted_by_commit {
             next_if_id.valid = false;
         } else {
-            match self.fetch_mode {
-                InstructionMode::Normal => {
-                    let raw = self.bus.read_u32_be(self.fetch_pc);
-                    next_if_id = IfId {
-                        valid: true,
-                        pc: self.fetch_pc,
-                        mode: InstructionMode::Normal,
-                        raw: RawInstr::Normal(raw),
-                    };
-                    self.fetch_pc = self.fetch_pc.wrapping_add(INSN_SIZE);
-                }
-                InstructionMode::Short => {
-                    let hi = self.bus.read_u8(self.fetch_pc) as u16;
-                    let lo = self.bus.read_u8(self.fetch_pc.wrapping_add(1)) as u16;
-                    next_if_id = IfId {
-                        valid: true,
-                        pc: self.fetch_pc,
-                        mode: InstructionMode::Short,
-                        raw: RawInstr::Short((hi << 8) | lo),
-                    };
-                    self.fetch_pc = self.fetch_pc.wrapping_add(SHORT_INSN_SIZE);
+            let fetch_len = match self.fetch_mode {
+                InstructionMode::Normal => INSN_SIZE,
+                InstructionMode::Short => SHORT_INSN_SIZE,
+            };
+            if !self.sys.allows(self.fetch_pc, fetch_len, Access::Fetch) {
+                next_if_id = IfId {
+                    valid: true,
+                    pc: self.fetch_pc,
+                    mode: self.fetch_mode,
+                    raw: RawInstr::Normal(0),
+                    fetch_fault: true,
+                };
+                self.fetch_pc = self.fetch_pc.wrapping_add(fetch_len);
+            } else {
+                match self.fetch_mode {
+                    InstructionMode::Normal => {
+                        let raw = self.bus.read_u32_be(self.fetch_pc);
+                        next_if_id = IfId {
+                            valid: true,
+                            pc: self.fetch_pc,
+                            mode: InstructionMode::Normal,
+                            raw: RawInstr::Normal(raw),
+                            fetch_fault: false,
+                        };
+                        self.fetch_pc = self.fetch_pc.wrapping_add(INSN_SIZE);
+                    }
+                    InstructionMode::Short => {
+                        let hi = self.bus.read_u8(self.fetch_pc) as u16;
+                        let lo = self.bus.read_u8(self.fetch_pc.wrapping_add(1)) as u16;
+                        next_if_id = IfId {
+                            valid: true,
+                            pc: self.fetch_pc,
+                            mode: InstructionMode::Short,
+                            raw: RawInstr::Short((hi << 8) | lo),
+                            fetch_fault: false,
+                        };
+                        self.fetch_pc = self.fetch_pc.wrapping_add(SHORT_INSN_SIZE);
+                    }
                 }
             }
         }
@@ -2070,10 +2196,7 @@ impl PipelineCpu {
             fetch_mode: self.fetch_mode,
             retire_pc: self.retire_pc,
             retire_mode: self.retire_mode,
-            epc: self.epc,
-            irq_return_mode: self.irq_return_mode,
-            cause: self.cause,
-            irq_enable: self.irq_enable,
+            sys: self.sys,
             irq_pending: self.irq_pending,
             irq_pending_number: self.irq_pending_number,
             irq_line: self.irq_line,
@@ -2119,7 +2242,7 @@ impl PipelineCpu {
         let repeated = self.cycles > probe.cycles
             && probe.effectful_accesses == self.bus.effectful_accesses()
             && probe.state == self.spin_state()
-            && !(self.irq_enable && self.irq_pending);
+            && !(self.sys.ie && self.irq_pending);
         if !repeated {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
@@ -2196,6 +2319,7 @@ mod hazard_tests {
                 pc: 0,
                 mode: InstructionMode::Normal,
                 raw,
+                fetch_fault: false,
             };
             let decoded = cpu.decode_id(&instruction);
             let sources = cpu.id_sources(&instruction);

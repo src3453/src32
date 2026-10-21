@@ -1,10 +1,11 @@
 // CPU: Central Processing Unit implementation
 // This module defines the SRC32 CPU struct, instruction set, and execution logic for the CPT32 emulator.
 
-// Features: SRC32-ALMSI
+// Features: SRC32-ALMSIP
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::devices::cpu::{BUS_ERROR_VECTOR, CpuRegisterBlock};
+use crate::cpu_privilege::{Access, EXT_P, Exception, SystemState, format_sr, format_syscall};
+use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -94,6 +95,9 @@ enum Instruction {
     Ldih { rd: u8, imm: u16 },
     Unknown(u32),
     Iret,
+    Syscall { imm: u16 },
+    Mfsr { rd: u8, sr: u16 },
+    Mtsr { rs: u8, sr: u16 },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -123,7 +127,7 @@ const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/st
 const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and division instructions
 const EXT_S: u32 = 0x10; // Extension S (Short Mode)
 const EXT_I: u32 = 0x20; // Extension I (Interrupts)
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I; // CPUID features bitfield
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0100;
 
@@ -222,10 +226,7 @@ struct SpinState {
     reg: [u32; 32],
     pc: u32,
     instr_mode: InstructionMode,
-    epc: u32,
-    irq_return_mode: InstructionMode,
-    cause: u8,
-    irq_enable: bool,
+    sys: SystemState,
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
@@ -301,10 +302,7 @@ pub struct Cpu {
     running_cycles: u128,
     instructions_executed: u128,
     instr_mode: InstructionMode,
-    epc: u32,
-    irq_return_mode: InstructionMode,
-    cause: u8,
-    irq_enable: bool,
+    sys: SystemState,
     irq_pending: bool,
     irq_pending_number: u8,
     irq_line: bool,
@@ -385,10 +383,7 @@ impl Cpu {
             running_cycles: 0,
             instructions_executed: 0,
             instr_mode: InstructionMode::Normal,
-            epc: 0,
-            irq_return_mode: InstructionMode::Normal,
-            cause: 0,
-            irq_enable: true,
+            sys: SystemState::default(),
             irq_pending: false,
             irq_pending_number: 0,
             irq_line: false,
@@ -429,10 +424,7 @@ impl Cpu {
         self.running_cycles = 0;
         self.instructions_executed = 0;
         self.instr_mode = InstructionMode::Normal;
-        self.epc = 0;
-        self.irq_return_mode = InstructionMode::Normal;
-        self.cause = 0;
-        self.irq_enable = true;
+        self.sys = SystemState::default();
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
@@ -458,9 +450,9 @@ impl Cpu {
         block.regs = self.reg;
         block.regs[0] = 0;
         block.pc = self.pc;
-        block.epc = self.epc;
-        block.cause = u32::from(self.cause);
-        block.status = u32::from(self.irq_enable);
+        block.epc = self.sys.epc;
+        block.cause = self.sys.cause;
+        block.status = self.sys.status();
         block.instr_mode = match self.instr_mode {
             InstructionMode::Normal => 0,
             InstructionMode::Short => 1,
@@ -482,12 +474,12 @@ impl Cpu {
     fn sync_from_register_block(&mut self) {
         let block = self.register_block.borrow();
         let irq_enable = block.status & 1 != 0;
-        if self.irq_enable != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
+        if self.sys.ie != irq_enable && crate::devices::pec::pec::pec_trace_enabled() {
             tracing::info!(
                 target: "pec_debug",
                 "[PEC-DBG] CPU status resync cpu={} old_irq_enabled={} block_irq_enabled={} block_pc=0x{:08X} block_epc=0x{:08X} cause={}",
                 self.trace_cpu_name(),
-                self.irq_enable,
+                self.sys.ie,
                 irq_enable,
                 block.pc,
                 block.epc,
@@ -497,9 +489,9 @@ impl Cpu {
         self.reg = block.regs;
         self.reg[REG_ZERO] = 0;
         self.pc = block.pc;
-        self.epc = block.epc;
-        self.cause = block.cause as u8;
-        self.irq_enable = irq_enable;
+        self.sys.epc = block.epc;
+        self.sys.cause = block.cause;
+        self.sys.set_status(block.status);
         self.instr_mode = if block.instr_mode & 1 != 0 {
             InstructionMode::Short
         } else {
@@ -672,6 +664,7 @@ impl Cpu {
         let phase = self.state;
         let phase_start = Self::profile_start::<PROFILE>();
         match phase {
+            CpuState::Fetch if !self.fetch_allowed() => {}
             CpuState::Fetch => {
                 let raw = match self.instr_mode {
                     InstructionMode::Normal => self.fetch_u32(),
@@ -809,6 +802,7 @@ impl Cpu {
     fn execute_cached_cycle<const PROFILE: bool>(&mut self) {
         let phase = self.state;
         match phase {
+            CpuState::Fetch if !self.fetch_allowed() => {}
             CpuState::Fetch => {
                 let fetch_start = Self::profile_start::<PROFILE>();
                 let instruction = self.fetch_cached_instruction();
@@ -880,7 +874,7 @@ impl Cpu {
     }
 
     fn accept_pending_irq(&mut self) -> bool {
-        if !self.irq_enable || !self.irq_pending {
+        if !self.sys.ie || !self.irq_pending {
             return false;
         }
 
@@ -895,13 +889,12 @@ impl Cpu {
                 self.instructions_executed
             );
         }
-        self.epc = self.pc;
-        self.irq_return_mode = self.instr_mode;
-        self.cause = self.irq_pending_number;
+        let cause = u32::from(self.irq_pending_number);
+        self.sys
+            .enter_trap(&mut self.reg, self.pc, cause, self.instr_mode);
         self.irq_pending = false;
-        self.irq_enable = false;
         self.instr_mode = InstructionMode::Normal;
-        self.pc = IRQ_VECTOR_BASE.wrapping_add(u32::from(self.cause) * 4);
+        self.pc = IRQ_VECTOR_BASE.wrapping_add(cause * 4);
         self.instruction = None;
         self.running = true;
         self.state = CpuState::Fetch;
@@ -922,37 +915,62 @@ impl Cpu {
             _ => {}
         }
         if self.bus.take_bus_error() {
-            self.enter_bus_error(instruction_pc);
+            tracing::error!(pc = format_args!("0x{instruction_pc:08X}"), "CPU Bus Error");
+            self.enter_exception(Exception::BusError, instruction_pc);
         }
     }
 
-    fn enter_bus_error(&mut self, fault_pc: u32) {
-        self.epc = fault_pc;
-        self.irq_return_mode = self.instr_mode;
-        self.cause = 2;
-        self.irq_enable = false;
-        self.irq_pending = false;
+    /// Exception entry (doc/spec_CPU_priv.md section 6). `epc` is the faulting
+    /// instruction, or the next one for SYSCALL. A vector word still holding
+    /// its own address halts the CPU at that vector.
+    fn enter_exception(&mut self, exception: Exception, epc: u32) {
+        self.sys
+            .enter_trap(&mut self.reg, epc, exception.cause(), self.instr_mode);
         self.instr_mode = InstructionMode::Normal;
-        self.pc = self.bus.read_u32_be(BUS_ERROR_VECTOR);
+        let vector = exception.vector();
+        self.pc = self.bus.read_u32_be(vector);
         self.instruction = None;
         self.state = CpuState::Fetch;
-        self.running = self.pc != BUS_ERROR_VECTOR;
+        self.running = self.pc != vector;
         if !self.running {
             self.state = CpuState::Halt;
         }
-        tracing::error!(pc = format_args!("0x{fault_pc:08X}"), "CPU Bus Error");
+    }
+
+    /// User-mode protection check; a denied access enters the protection
+    /// fault before the bus is touched.
+    fn access_allowed(&mut self, addr: u32, len: u32, access: Access, instruction_pc: u32) -> bool {
+        if self.sys.allows(addr, len, access) {
+            return true;
+        }
+        self.enter_exception(Exception::ProtectionFault(access), instruction_pc);
+        false
+    }
+
+    /// Fetch protection for the instruction at PC.
+    fn fetch_allowed(&mut self) -> bool {
+        let len = match self.instr_mode {
+            InstructionMode::Normal => INSN_SIZE,
+            InstructionMode::Short => SHORT_INSN_SIZE,
+        };
+        self.access_allowed(self.pc, len, Access::Fetch, self.pc)
     }
 
     pub fn epc(&self) -> u32 {
-        self.epc
+        self.sys.epc
     }
 
-    pub fn irq_cause(&self) -> u8 {
-        self.cause
+    pub fn irq_cause(&self) -> u32 {
+        self.sys.cause
     }
 
     pub fn irq_enabled(&self) -> bool {
-        self.irq_enable
+        self.sys.ie
+    }
+
+    /// STATUS as defined by Extension P.
+    pub fn status(&self) -> u32 {
+        self.sys.status()
     }
 
     /// Drive the CPU's external IRQ input. A rising edge latches one request.
@@ -1230,6 +1248,12 @@ impl Cpu {
             0x1F => Instruction::Jrs { rd },
             0x21 => Instruction::Jalr { rd },
             0x22 => Instruction::Jalrs { rd },
+            0x23 => Instruction::Syscall { imm: imm_u16 },
+            0x24 => Instruction::Mfsr { rd, sr: imm_u16 },
+            0x25 => Instruction::Mtsr {
+                rs: rs1,
+                sr: imm_u16,
+            },
             0x3C => Instruction::Ldil { rd, imm: imm_u16 },
             0x3D => Instruction::Ldih { rd, imm: imm_u16 },
             0x3E => Instruction::Cpuid,
@@ -1302,6 +1326,9 @@ impl Cpu {
             Instruction::Cpuid => "CPUID".to_string(),
             Instruction::Halt => "HALT".to_string(),
             Instruction::Iret => "IRET".to_string(),
+            Instruction::Syscall { imm } => format_syscall(imm),
+            Instruction::Mfsr { rd, sr } => format!("MFSR R{}, {}", rd, format_sr(sr)),
+            Instruction::Mtsr { rs, sr } => format!("MTSR {}, R{}", format_sr(sr), rs),
             Instruction::And { rd, rs1, rs2 } => format!("AND R{}, R{}, R{}", rd, rs1, rs2),
             Instruction::Or { rd, rs1, rs2 } => format!("OR R{}, R{}, R{}", rd, rs1, rs2),
             Instruction::Xor { rd, rs1, rs2 } => format!("XOR R{}, R{}, R{}", rd, rs1, rs2),
@@ -1420,6 +1447,30 @@ impl Cpu {
         base.wrapping_add((offset as i32) as u32)
     }
 
+    /// Instructions that raise a privileged-instruction exception in U mode.
+    fn is_privileged(insn: Instruction) -> bool {
+        matches!(
+            insn,
+            Instruction::Halt
+                | Instruction::Iret
+                | Instruction::Mfsr { .. }
+                | Instruction::Mtsr { .. }
+        )
+    }
+
+    /// Base register, offset, width and kind of a Normal-mode load/store.
+    fn data_access(insn: Instruction) -> Option<(u8, i16, u32, Access)> {
+        match insn {
+            Instruction::Ld { base, offset, .. } => Some((base, offset, 4, Access::Read)),
+            Instruction::Ldh { base, offset, .. } => Some((base, offset, 2, Access::Read)),
+            Instruction::Ldb { base, offset, .. } => Some((base, offset, 1, Access::Read)),
+            Instruction::St { base, offset, .. } => Some((base, offset, 4, Access::Write)),
+            Instruction::Sth { base, offset, .. } => Some((base, offset, 2, Access::Write)),
+            Instruction::Stb { base, offset, .. } => Some((base, offset, 1, Access::Write)),
+            _ => None,
+        }
+    }
+
     fn branch_target(next_pc: u32, offset: i16) -> u32 {
         next_pc.wrapping_add((offset as i32) as u32)
     }
@@ -1437,8 +1488,20 @@ impl Cpu {
     }
 
     fn execute_normal(&mut self, insn: Instruction) {
+        let instruction_pc = self.pc;
         let next_pc = self.pc.wrapping_add(INSN_SIZE);
         self.pc = next_pc;
+
+        if self.sys.user && Self::is_privileged(insn) {
+            self.enter_exception(Exception::PrivilegedInstruction, instruction_pc);
+            return;
+        }
+        if let Some((base, offset, len, access)) = Self::data_access(insn) {
+            let addr = Self::add_signed(self.read_reg(base as usize), offset);
+            if !self.access_allowed(addr, len, access, instruction_pc) {
+                return;
+            }
+        }
 
         match insn {
             Instruction::Nop => {}
@@ -1451,6 +1514,23 @@ impl Cpu {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.read_reg(rd as usize);
                 self.bus.write_u32_be(addr, value);
+            }
+            Instruction::Syscall { imm } => {
+                self.enter_exception(Exception::Syscall(imm), next_pc);
+            }
+            Instruction::Mfsr { rd, sr } => match self.sys.read_sr(sr, &self.reg) {
+                Some(value) => {
+                    let _ = self.set_gpr(rd as usize, value);
+                }
+                None => self.enter_exception(Exception::IllegalInstruction, instruction_pc),
+            },
+            Instruction::Mtsr { rs, sr } => {
+                // STATUS may enable IRQs: observe deferred device IRQs first.
+                self.bus.flush_relaxed_devices();
+                let value = self.read_reg(rs as usize);
+                if !self.sys.write_sr(sr, value, &mut self.reg) {
+                    self.enter_exception(Exception::IllegalInstruction, instruction_pc);
+                }
             }
             Instruction::Ldil { rd, imm } => {
                 let current = self.read_reg(rd as usize);
@@ -1542,15 +1622,15 @@ impl Cpu {
                         "[PEC-DBG] CPU IRET cpu={} pc=0x{:08X} epc=0x{:08X} cause={} running_cycles={} instructions={}",
                         self.trace_cpu_name(),
                         self.pc,
-                        self.epc,
-                        self.cause,
+                        self.sys.epc,
+                        self.sys.cause,
                         self.running_cycles,
                         self.instructions_executed
                     );
                 }
-                self.pc = self.epc;
-                self.instr_mode = self.irq_return_mode;
-                self.irq_enable = true;
+                let (pc, mode) = self.sys.leave_trap(&mut self.reg);
+                self.pc = pc;
+                self.instr_mode = mode;
             }
             Instruction::And { rd, rs1, rs2 } => {
                 let _ = self.set_gpr(
@@ -1657,18 +1737,31 @@ impl Cpu {
                     .write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
             }
             Instruction::Unknown(raw) => {
-                panic!(
-                    "Illegal instruction at PC=0x{:08X}: 0x{:08X}",
-                    next_pc - INSN_SIZE,
-                    raw
+                tracing::error!(
+                    pc = format_args!("0x{instruction_pc:08X}"),
+                    raw = format_args!("0x{raw:08X}"),
+                    "Illegal instruction"
                 );
+                self.enter_exception(Exception::IllegalInstruction, instruction_pc);
             }
         }
     }
 
     fn execute_short(&mut self, insn: ShortInstruction) {
+        let instruction_pc = self.pc;
         let next_pc = self.pc.wrapping_add(SHORT_INSN_SIZE);
         self.pc = next_pc;
+
+        let data_access = match insn {
+            ShortInstruction::Ld { rs1, .. } => Some((self.read_short_reg(rs1), Access::Read)),
+            ShortInstruction::St { rd, .. } => Some((self.read_short_reg(rd), Access::Write)),
+            _ => None,
+        };
+        if let Some((addr, access)) = data_access {
+            if !self.access_allowed(addr, 4, access, instruction_pc) {
+                return;
+            }
+        }
 
         match insn {
             ShortInstruction::Mov { rd, rs1 } => {
@@ -1718,11 +1811,12 @@ impl Cpu {
                 self.instr_mode = InstructionMode::Normal;
             }
             ShortInstruction::Unknown(raw) => {
-                panic!(
-                    "Illegal short instruction at PC=0x{:08X}: 0x{:04X}",
-                    next_pc - SHORT_INSN_SIZE,
-                    raw
+                tracing::error!(
+                    pc = format_args!("0x{instruction_pc:08X}"),
+                    raw = format_args!("0x{raw:04X}"),
+                    "Illegal short instruction"
                 );
+                self.enter_exception(Exception::IllegalInstruction, instruction_pc);
             }
         }
     }
@@ -1735,15 +1829,12 @@ impl Cpu {
             pc, self.instr_mode, decoded.text
         );
         txt.push_str(&format!(
-            "EPC=0x{:08X} CAUSE=0x{:02X} STATUS=0x{:08X} (IRQ {})\n",
-            self.epc,
-            self.cause,
-            u32::from(self.irq_enable),
-            if self.irq_enable {
-                "enabled"
-            } else {
-                "disabled"
-            },
+            "EPC=0x{:08X} CAUSE=0x{:08X} STATUS=0x{:08X} (IRQ {}, {} mode)\n",
+            self.sys.epc,
+            self.sys.cause,
+            self.sys.status(),
+            if self.sys.ie { "enabled" } else { "disabled" },
+            if self.sys.user { "user" } else { "supervisor" },
         ));
         for i in 0..32 {
             txt.push_str(&format!(" R{:<2}=0x{:08X}", i, self.read_reg(i)));
@@ -1810,10 +1901,7 @@ impl Cpu {
             reg: self.reg,
             pc: self.pc,
             instr_mode: self.instr_mode,
-            epc: self.epc,
-            irq_return_mode: self.irq_return_mode,
-            cause: self.cause,
-            irq_enable: self.irq_enable,
+            sys: self.sys,
             irq_pending: self.irq_pending,
             irq_pending_number: self.irq_pending_number,
             irq_line: self.irq_line,
@@ -1854,7 +1942,7 @@ impl Cpu {
             && probe.effectful_accesses == self.bus.effectful_accesses()
             && probe.fills == self.instruction_cache_fills
             && probe.state == self.spin_state()
-            && !(self.irq_enable && self.irq_pending);
+            && !(self.sys.ie && self.irq_pending);
         if !repeated {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;

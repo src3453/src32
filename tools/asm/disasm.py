@@ -84,6 +84,14 @@ class DecodedInsn:
     target: int | None = None
 
 
+# Extension P system register names (see asm.SYSTEM_REGS).
+SYSTEM_REG_NAMES = {0x00: "STATUS", 0x01: "EPC", 0x02: "CAUSE", 0x08: "USP", 0x09: "UFP", 0x0A: "UGP"} | {
+    0x10 + 4 * n + index: f"RGN{n}_{field}"
+    for n in range(8)
+    for index, field in enumerate(("START", "END", "FLAGS"))
+}
+
+
 def decode_normal(pc: int, raw: int) -> DecodedInsn:
     op = (raw >> 26) & 0x3F
     rd = (raw >> 21) & 0x1F
@@ -206,6 +214,15 @@ def decode_normal(pc: int, raw: int) -> DecodedInsn:
     if op == 0x22:
         base.asm = f"JALRS {reg_name(rd)}"
         base.next_mode = MODE_SHORT
+        return base
+    if op == 0x23:
+        imm = raw & 0xFFFF
+        context = imm >> 8
+        base.asm = f"SYSCALL {imm & 0xFF}" + (f", {context}" if context else "")
+        return base
+    if op in (0x24, 0x25):
+        name = SYSTEM_REG_NAMES.get(raw & 0xFFFF, f"0x{raw & 0xFFFF:04X}")
+        base.asm = f"MFSR {reg_name(rd)}, {name}" if op == 0x24 else f"MTSR {name}, {reg_name(rs1)}"
         return base
     if op == 0x3C:
         base.asm = f"LDIL {reg_name(rd)}, 0x{raw & 0xFFFF:04X}"

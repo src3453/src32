@@ -214,7 +214,7 @@ fn cpuid_reports_updated_features() {
     cpu.run(16);
 
     assert_eq!(cpu.read_reg(1), 0x5352_4332);
-    assert_eq!(cpu.read_reg(2), 0x3F);
+    assert_eq!(cpu.read_reg(2), 0x13F); // Base|A|L|M|S|I + P
 }
 
 #[test]

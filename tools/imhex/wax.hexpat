@@ -32,23 +32,36 @@ struct WAXHeader {
     u32 debug_offset;
     u32 debug_size;
     u32 file_size;
-    u8 reserved[16];
+    // flags bit1 = PROTECTED: user-mode stack fields, 16-byte block entries.
+    u32 user_stack_top;
+    u32 user_stack_size;
+    u8 reserved[8];
     // Optional NOLOAD data is shown at its file offset without enlarging the header.
     u8 debug_payload[debug_size] @ debug_offset;
 };
 
 WAXHeader header @ 0x00;
 
+bitfield WAXPermission {
+    read : 1;
+    write : 1;
+    execute : 1;
+    padding : 29;
+};
+
 struct WAXBlockEntry {
     u32 load_address;
     u32 file_offset;
     u32 size;
+    if (header.block_entry_size == 16) {
+        WAXPermission perm;
+    }
 
-    // This is placed at file_offset and does not extend the 12-byte table entry.
+    // This is placed at file_offset and does not extend the table entry.
     u8 payload[size] @ file_offset;
 };
 
-// v2 block entries are 12 bytes. Each payload is displayed at its file offset,
+// v2 block entries are 12 bytes (16 with PROTECTED permissions). Each payload is displayed at its file offset,
 // while load_address records where the emulator maps it in guest memory.
 WAXBlockEntry blocks[header.block_count] @ header.block_table_offset;
 

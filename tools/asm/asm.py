@@ -56,6 +56,10 @@ OP_INFO = {
     "LDIH": (0x3D, "I2"),
     "CPUID": (0x3E, "R0"),
     "HALT": (0x3F, "R0"),
+    # Extension P (doc/spec_CPU_priv.md)
+    "SYSCALL": (0x23, "SYS"),
+    "MFSR": (0x24, "MFSR"),
+    "MTSR": (0x25, "MTSR"),
     "S.MOV": (0x0, "SR2"),
     "S.ADD": (0x1, "SR3"),
     "S.ADDI": (0x2, "SI8S"),
@@ -68,6 +72,27 @@ OP_INFO = {
     "S.LDI": (0x9, "SI8U"),
     "S.RET": (0xF, "S0"),
 }
+
+
+# Extension P system registers: names accepted by MFSR/MTSR.
+SYSTEM_REGS = {"STATUS": 0x00, "EPC": 0x01, "CAUSE": 0x02, "USP": 0x08, "UFP": 0x09, "UGP": 0x0A} | {
+    f"RGN{n}_{field}": 0x10 + 4 * n + index
+    for n in range(8)
+    for index, field in enumerate(("START", "END", "FLAGS"))
+}
+
+
+def parse_system_reg(token: str, lineno: int) -> int:
+    name = token.strip().upper()
+    if name in SYSTEM_REGS:
+        return SYSTEM_REGS[name]
+    try:
+        value = parse_number(token)
+    except ValueError:
+        raise ValueError(f"line {lineno}: unknown system register: {token}") from None
+    if value not in SYSTEM_REGS.values():
+        raise ValueError(f"line {lineno}: unknown system register number: {token}")
+    return value
 
 
 def strip_comment(line: str) -> str:
@@ -710,6 +735,32 @@ class Assembler:
                     raise ValueError(f"line {entry.lineno}: {op} expects 1 operand")
                 rd = parse_reg(tokens[1], entry.lineno)
                 self.emit_insn(enc_r(opcode, rd, 0, 0))
+                continue
+
+            if kind == "SYS":
+                # SYSCALL number[, context]: imm16 = context << 8 | number.
+                if len(tokens) not in {2, 3}:
+                    raise ValueError(f"line {entry.lineno}: SYSCALL expects 1 or 2 operands")
+                number = check_u8(self.parse_imm_or_label(tokens[1], entry.lineno), entry.lineno, "syscall number")
+                context = 0
+                if len(tokens) == 3:
+                    context = check_u8(self.parse_imm_or_label(tokens[2], entry.lineno), entry.lineno, "syscall context")
+                self.emit_insn(enc_i(opcode, 0, 0, (context << 8) | number))
+                continue
+
+            if kind == "MFSR":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: MFSR expects 2 operands")
+                rd = parse_reg(tokens[1], entry.lineno)
+                self.emit_insn(enc_i(opcode, rd, 0, parse_system_reg(tokens[2], entry.lineno)))
+                continue
+
+            if kind == "MTSR":
+                if len(tokens) != 3:
+                    raise ValueError(f"line {entry.lineno}: MTSR expects 2 operands")
+                sr = parse_system_reg(tokens[1], entry.lineno)
+                rs = parse_reg(tokens[2], entry.lineno)
+                self.emit_insn(enc_i(opcode, 0, rs, sr))
                 continue
 
             if kind == "R":

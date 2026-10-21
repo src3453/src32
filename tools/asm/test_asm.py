@@ -35,6 +35,29 @@ def test_jump_family_accepts_relative_numeric_targets_with_prefix():
     assert assemble_hex("S.JAL R!0\nafter:\nS.RET") == assemble_hex("S.JAL after\nafter:\nS.RET")
 
 
+def test_extension_p_instructions_encode_imm16_fields():
+    assert assemble_hex("SYSCALL 42") == "8c00002a"
+    assert assemble_hex("SYSCALL 42, 3") == "8c00032a"
+    assert assemble_hex("MFSR R7, CAUSE") == "90e00002"
+    assert assemble_hex("MTSR RGN1_END, R2") == "94020015"
+    assert assemble_hex("MTSR 0x08, SP") == assemble_hex("MTSR USP, R28")
+    for bad in ("SYSCALL 256", "SYSCALL 1, 256", "MFSR R1, 0x03", "MTSR NOPE, R1"):
+        try:
+            assemble_hex(bad)
+        except ValueError:
+            continue
+        raise AssertionError(bad)
+
+
+def test_disassembler_names_extension_p_operands():
+    from disasm import disassemble
+
+    text = disassemble(bytes.fromhex("8c00032a90e0000294020015"))
+    assert "SYSCALL 42, 3" in text
+    assert "MFSR R7, CAUSE" in text
+    assert "MTSR RGN1_END, R2" in text
+
+
 def test_ldih_and_ldil_encode_16_bit_immediates():
     assert assemble_hex("LDIH R1, 0x000F\nLDIL R1, 0xFFFC") == "f420000ff020fffc"
 

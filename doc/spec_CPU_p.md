@@ -7,15 +7,20 @@ Revision 0.1 (2026-10-15). Status: implemented (`src/cpu_pipeline.rs`).
 Case is significant. Uppercase `P` (Protection/Privilege Levels) and
 lowercase `p` (Pipelining) are different extensions:
 
-- `P`: Protection/Privilege Levels (depends on Extension I). Not implemented.
+- `P`: Protection/Privilege Levels (depends on Extension I). Implemented; see
+  `doc/spec_CPU_priv.md`. CPUID bit 8.
 - `p`: Pipelining. Micro-architecture only; **no ISA change**. Implemented.
 
 `p` is advertised by CPUID bit 7:
 
 - `EXT_P_SMALL = 0x80` (the name keeps the lowercase-`p` meaning; the
   constant follows Rust upper-case convention).
-- A pipelined CPU reports `CPU_FEATURES = 0xBF`
-  (`Base|A|L|M|S|I` plus `p`). The scalar reference CPU still reports `0x3F`.
+- A pipelined CPU reports `CPU_FEATURES = 0x1BF`
+  (`Base|A|L|M|S|I|P` plus `p`). The scalar reference CPU reports `0x13F`.
+- Extension P changes of mode, banks or protection regions (`SYSCALL`, `MTSR`,
+  `IRET`, every exception) are handled at commit and flush the pipeline, so no
+  in-flight instruction sees a stale privilege state. `IRET` therefore
+  redirects at commit, not EX.
 - Bit 6 stays reserved for Extension F (defined, not implemented).
 
 ## 2. Micro-architecture (what `p` guarantees)
