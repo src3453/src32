@@ -343,6 +343,50 @@ int main(void) {
         self.assertIn('SYSCALL 0', text)
         self.assertNotIn('HALT', text)
 
+    def test_data_origin_rom_layout(self):
+        sys.path.insert(0, str(ROOT / 'tools/wax'))
+        from wax import parse as parse_wax
+        source = self.work / 'rom.c'
+        source.write_text('''int counter = 5;
+int zeroed;
+int table[3] = {1, 2, 3};
+static const char message[] = "ok";
+int main(void) {
+  counter += 29; zeroed += 2; table[2] += 2;
+  return counter + zeroed + table[2] + (message[0] == 'o');
+}
+''', encoding='utf-8')
+        for opt in ('-O0', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(source, opt, '--origin', '0x20000', '--data-origin', '0x80000',
+                            '--stack-top', '0x100000', '-o', image)
+                blocks = parse_wax(image.read_bytes())['blocks']
+                # Writable data is not part of the image; only its load copy is.
+                self.assertTrue(all(block['load_address'] + len(block['data']) <= 0x80000
+                                    for block in blocks), blocks)
+                self.execute(image, 42)
+                self.execute(image, 42, 'pipeline')
+        self.driver(source, '--data-origin', '0x80004', '-o', self.work / 'odd.wax', success=False)
+        self.driver(source, '--data-origin', '0x80000', '--protected', '-o', self.work / 'p.wax',
+                    success=False)
+        overlap = self.driver(source, '--origin', '0x20000', '--data-origin', '0xFFFF8',
+                              '--stack-top', '0x100000', '-o', self.work / 'overlap.wax', success=False)
+        self.assertIn('writable data area', overlap.stdout + overlap.stderr)
+
+    def test_jump_intrinsic_sets_r1_and_stack(self):
+        source = self.work / 'jump.c'
+        source.write_text('''#include <cpt32/cpu.h>
+void landing(void) { cpt32_halt(); }
+int main(void) {
+  cpt32_jump((uint32_t)(uintptr_t)landing, 42u, 0x90000u);
+}
+''', encoding='utf-8')
+        image = self.work / 'jump.wax'
+        self.driver(source, '-I', ROOT / 'sdk/cpt32/include', '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+
     def test_extension_p_intrinsic_diagnostics(self):
         header = '#include <cpt32/cpu.h>\n'
         cases = {

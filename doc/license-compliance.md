@@ -6,7 +6,7 @@
 
 CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`（MIT）を適用します。第三者のコード・フォント・ライセンス本文は各権利者の条件を維持します。第三者の条件を MIT に置き換えるものではありません。
 
-所有者から `assets/bios.rom`、`sound.cpp`、`sound.hpp` は自作であると確認済みです。さらに3WS88PWN4も所有者自身のプロジェクトであり、MIT適用に問題ないとの確認を受けました。`examples/wasm-3ws88pwn4/` はルートMITの適用範囲に含め、Cargoの宣言と単体配布用LICENSEも追加しています。BIOS のソースは `sol/bios.sol` です。Git のコミット著者は src3453 ですが、著者一覧だけから全素材の権利を証明することはできません。
+所有者から `assets/bios.rom`、`sound.cpp`、`sound.hpp` は自作であると確認済みです。さらに3WS88PWN4も所有者自身のプロジェクトであり、MIT適用に問題ないとの確認を受けました。`examples/wasm-3ws88pwn4/` はルートMITの適用範囲に含め、Cargoの宣言と単体配布用LICENSEも追加しています。BIOS のソースは `bios/main.c`（C 版、`assets/bios.rom` の生成元）と旧 sol 版の `sol/bios.sol` です。Git のコミット著者は src3453 ですが、著者一覧だけから全素材の権利を証明することはできません。
 
 ## 依存パッケージの確認結果
 

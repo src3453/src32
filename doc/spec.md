@@ -208,6 +208,10 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
   - `config.yaml` の `bios.image` に ROM ファイルを指定する（相対 path は config 基準、最大 64 KiB）。
   - raw バイナリは ROM 先頭 (`0xFF000000`) に配置され、そこから起動する。WAX はロード範囲が ROM ウィンドウ内のものだけ受け付け、entry から起動する。
   - ROM ウィンドウへの guest 書き込みは無視される。指定がなければ RAM 先頭 (`0x0`) から起動する。
+
+- 起動順序（C 版 BIOS `assets/bios.rom`、[`bios/`](../bios/README.md)）:
+  - RAM `0x0`（ホストがロード済み）→ ROM（予約・未実装）→ IDC dd0〜dd3 のブートセクタ（LBA 0、末尾 `0x55 0xAA`）の順に試す。
+  - レジスタ・IRQ・メモリの引き渡し契約は [BIOS 仕様](spec_BIOS.md) を参照。
 ---
 
 # 3. Memory Map

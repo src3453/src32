@@ -84,6 +84,13 @@ def _quoted_bytes(text: str) -> bytes:
     return bytes(result)
 
 
+_ZERO_INITIALIZERS = ("zeroinitializer", "0", "null", "false")
+
+
+def _align(value: int, alignment: int) -> int:
+    return (value + alignment - 1) & -alignment
+
+
 def symbol(name: str) -> str:
     """Encode names injectively, including punctuation, without assembler aliases."""
     return "llvm_" + name.encode("utf-8").hex()
@@ -220,6 +227,7 @@ class _Global:
     typ: object
     initializer: str
     alignment: int
+    constant: bool = False
 
 
 class DataImage:
@@ -230,6 +238,7 @@ class DataImage:
         self.base = base
         self.end = base
         self.symbols: dict[str, int] = {}
+        self.writable_base = self.writable_end = self.writable_copy_end = None
         self.globals: list[_Global] = []
         for line in str(module).splitlines():
             if re.match(r"^@" + _NAME + r"\s*=", line):
@@ -274,20 +283,51 @@ class DataImage:
             raise CompileError(f"global @{value.name} has no initializer")
         if value.linkage.name == "common" and initializer != "zeroinitializer" and initializer != "0":
             raise CompileError("common globals must be zero initialized")
-        self.globals.append(_Global(value.name, typ, initializer, alignment))
+        self.globals.append(_Global(value.name, typ, initializer, alignment, marker[1] == "constant"))
 
-    def assign(self, base: int, function_addresses: dict[str, int] | None = None):
-        """Publish all addresses before resolving any initializer (including cycles)."""
+    def assign(self, base: int, function_addresses: dict[str, int] | None = None,
+               writable_base: int | None = None):
+        """Publish all addresses before resolving any initializer (including cycles).
+
+        With `writable_base` (ROM images), LLVM `constant` globals stay at
+        `base` while writable globals move to `writable_base`, initialized
+        ones first so that the zero-initialized tail can be cleared instead
+        of copied; see `writable_layout`.
+        """
         if not 0 <= base <= 0xFFFFFFFF:
             raise CompileError("data origin is outside the 32-bit address space")
         self.base = base
+        self.writable_base = writable_base
         self.symbols.clear()
         for name, address in (function_addresses or {}).items():
             if not 0 <= address <= 0xFFFFFFFF:
                 raise CompileError(f"function @{name} is outside the 32-bit address space")
             self.symbols[name] = address
-        position = base
-        for item in self.globals:
+        if writable_base is None:
+            self.end = self._place(self.globals, base)
+            self.writable_end = self.writable_copy_end = None
+            return self.symbols
+        if not 0 <= writable_base <= 0xFFFFFFFF or writable_base % 8:
+            raise CompileError("writable data origin must be an 8-byte-aligned 32-bit address")
+        self.end = self._place(self.read_only_globals(), base)
+        initialized, zeroed = self.writable_globals()
+        self.writable_copy_end = _align(self._place(initialized, writable_base), 4)
+        self.writable_end = _align(max(self._place(zeroed, self.writable_copy_end), self.writable_copy_end), 4)
+        if writable_base < self.end and base < self.writable_end:
+            raise CompileError("writable data overlaps the read-only image")
+        return self.symbols
+
+    def read_only_globals(self):
+        return [item for item in self.globals if self.writable_base is None or item.constant]
+
+    def writable_globals(self):
+        writable = [item for item in self.globals if not item.constant]
+        # Syntactic test: initializers may reference symbols not yet placed.
+        zero = [item for item in writable if item.initializer.strip() in _ZERO_INITIALIZERS]
+        return [item for item in writable if item not in zero], zero
+
+    def _place(self, items, position):
+        for item in items:
             position = (position + item.alignment - 1) & -item.alignment
             if item.name in self.symbols:
                 raise CompileError(f"duplicate function/global symbol @{item.name}")
@@ -297,8 +337,7 @@ class DataImage:
             position += self.layout.size(item.typ)
             if position > 0x100000000:
                 raise CompileError("static data exceeds the 32-bit address space")
-        self.end = position
-        return self.symbols
+        return position
 
     def _typed(self, text: str):
         text = text.strip()
@@ -454,10 +493,34 @@ class DataImage:
             raise CompileError(f"initializer type {actual} does not match {expected}")
         return self.constant(expected, initializer)
 
-    def emit(self, function_addresses: dict[str, int], base: int) -> list[str]:
-        self.assign(base, function_addresses)
+    def emit(self, function_addresses: dict[str, int], base: int,
+             writable_base: int | None = None) -> list[str]:
+        self.assign(base, function_addresses, writable_base)
         result = []
-        for item in self.globals:
+        for item in self.read_only_globals():
             result.extend((f".ORG 0x{self.symbols[item.name]:08X}", f"{symbol(item.name)}:"))
             result.extend(f".BYTE 0x{byte:02X}" for byte in self.constant(item.typ, item.initializer))
+        if writable_base is not None:
+            # ROM load image of the initialized writable globals, copied by the
+            # startup code to [writable_base, writable_copy_end). No labels:
+            # references use the RAM addresses resolved by the backend.
+            image = bytearray(self.writable_copy_end - writable_base)
+            for item in self.writable_globals()[0]:
+                offset = self.symbols[item.name] - writable_base
+                raw = self.constant(item.typ, item.initializer)
+                image[offset:offset + len(raw)] = raw
+            result.append(f".ORG 0x{self.load_base:08X}")
+            result.extend(f".BYTE 0x{byte:02X}" for byte in image)
         return result
+
+    @property
+    def load_base(self) -> int:
+        """ROM address of the writable-data load image (ROM layout only)."""
+        return _align(self.end, 4)
+
+    @property
+    def image_end(self) -> int:
+        """First address after everything stored in the output image."""
+        if self.writable_base is None:
+            return self.end
+        return self.load_base + (self.writable_copy_end - self.writable_base)

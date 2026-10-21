@@ -46,6 +46,9 @@ def parser() -> argparse.ArgumentParser:
     p.set_defaults(optimization="-O0")
     p.add_argument("--origin", type=address, default=0)
     p.add_argument("--stack-top", type=address, default=0x00100000)
+    p.add_argument("--data-origin", type=address,
+                   help="ROM layout: place writable globals in RAM at this address; startup copies "
+                        "their initial values from the image and clears zero-initialized data")
     p.add_argument("--entry", default="main", help="C/LLVM entry function (default: main)")
     p.add_argument("--protected", action="store_true",
                    help="emit an Extension P user-mode program as a PROTECTED .wax "
@@ -171,6 +174,10 @@ def run(args) -> Path:
         raise DriverError("--origin must be 4-byte aligned")
     if not args.stack_top or args.stack_top % 8:
         raise DriverError("--stack-top must be nonzero and 8-byte aligned")
+    if args.data_origin is not None and args.data_origin % 8:
+        raise DriverError("--data-origin must be 8-byte aligned")
+    if args.data_origin is not None and args.protected:
+        raise DriverError("--data-origin cannot be combined with --protected")
     if not args.entry or "\x00" in args.entry:
         raise DriverError("--entry must name a function")
     for define in args.defines:
@@ -305,7 +312,7 @@ def run(args) -> Path:
         from backend import compile_module
         layout_info = {}
         assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
-                                  protected=args.protected, info=layout_info)
+                                  protected=args.protected, info=layout_info, data_origin=args.data_origin)
         if args.save_temps:
             (work / "output.a").write_text(assembly, encoding="utf-8")
         if args.S:

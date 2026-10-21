@@ -75,6 +75,12 @@ uint32_t cpt32_run_user(void (*entry)(void), uint32_t user_stack_top);
 /* SYSCALLハンドラから、ユーザープログラムを終了してcpt32_run_userへ戻ります。 */
 CPT32_NORETURN void cpt32_return_to_kernel(uint32_t code);
 
+/* Far jump that never returns: R1 = r1, R28 (SP) = sp, R29 (FP) = 0, then
+ * PC = entry. Interrupt state and mode are unchanged. Used by loaders such as
+ * the BIOS to hand a register argument and a fresh stack to the next stage. */
+/* R1とSPを設定してentryへ分岐し、戻りません（ブートローダーの引き渡し用）。 */
+CPT32_NORETURN void cpt32_jump(uint32_t entry, uint32_t r1, uint32_t sp);
+
 /* SYSCALL trap frame: r[0] = CAUSE, r[n] = Rn at the SYSCALL (r[28] unused,
  * reads 0). Writing r[1] sets the value cpt32_syscall returns. */
 typedef struct cpt32_trap_frame {

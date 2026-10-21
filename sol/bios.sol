@@ -2,6 +2,11 @@
 
 # CPT32 BIOS: POST (hardware survey) + IPL (jump to 0x0).
 #
+# Legacy sol version. assets/bios.rom is now built from the C BIOS
+# (bios/main.c, `python bios/build.py`), which adds the boot loader
+# (RAM -> ROM -> IDC dd0..dd3, doc/spec_BIOS.md). Building the commands
+# below overwrites that ROM with this boot-loader-less version.
+#
 # Build as a RAM program (default origin, runs from 0x0):
 #   python3 tools/solc/solc.py compile sol/bios.sol -o bios.asm
 #   python3 tools/asm/asm.py -o bios.bin bios.asm

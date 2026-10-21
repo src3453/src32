@@ -12,7 +12,7 @@
 #   level: debug
 
 # BIOS ROM image (POST + IPL, runs from 0xFF000000, 64 KiB max).
-# Build it with: sol/bios.sol header commands -> assets/bios.rom.
+# Build it with: python bios/build.py -> assets/bios.rom (C BIOS, doc/spec_BIOS.md).
 # Relative paths are resolved from the directory containing config.yaml.
 # Omit this section to boot the guest program straight from RAM at 0x0.
 #bios:

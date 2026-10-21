@@ -60,7 +60,7 @@ function(src32_add_library name)
 endfunction()
 
 function(src32_add_executable name)
-    cmake_parse_arguments(ARG "PROTECTED" "OPTIMIZATION;ORIGIN;STACK_TOP;ENTRY;USER_STACK_SIZE;NEWLIB_SOURCE;NEWLIB_HEAP_SIZE"
+    cmake_parse_arguments(ARG "PROTECTED" "OPTIMIZATION;ORIGIN;STACK_TOP;DATA_ORIGIN;ENTRY;USER_STACK_SIZE;NEWLIB_SOURCE;NEWLIB_HEAP_SIZE"
         "SOURCES;INCLUDE_DIRECTORIES;DEFINITIONS;LIBRARIES" ${ARGN})
     if(ARG_UNPARSED_ARGUMENTS OR ARG_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "Invalid src32_add_executable arguments: ${ARG_UNPARSED_ARGUMENTS};${ARG_KEYWORDS_MISSING_VALUES}")
@@ -106,7 +106,7 @@ function(src32_add_executable name)
         message(FATAL_ERROR "OPTIMIZATION must be 0, 1 or 2")
     endif()
     list(APPEND arguments "-O${ARG_OPTIMIZATION}")
-    foreach(option ORIGIN STACK_TOP ENTRY USER_STACK_SIZE)
+    foreach(option ORIGIN STACK_TOP DATA_ORIGIN ENTRY USER_STACK_SIZE)
         if(DEFINED ARG_${option})
             string(TOLOWER "${option}" flag)
             string(REPLACE "_" "-" flag "${flag}")

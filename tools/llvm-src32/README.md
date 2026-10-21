@@ -72,7 +72,8 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 `--origin`、`--stack-top`、`--entry` で配置・起動関数を指定。
 `--save-temps DIR` は各入力の IR、リンク済み `linked.ll`、`output.a` を保存。
 `--depfile PATH` は出力生成成功後に Make 形式の依存ルールを書き出します。
-`.bin` 出力は raw バイト列で配置・エントリ情報を持ちません。非ゼロ origin では WAX を使ってください。
+`.bin` 出力は raw バイト列で配置・エントリ情報を持ちません。非ゼロ origin では WAX を使ってください（ROM image のように読み込む側が配置を知っている場合を除く）。
+`--data-origin ADDR`（CMake `DATA_ORIGIN`）は ROM 用配置です。LLVM の `constant`（`const` 修飾の文字列・表など）はコードの後ろに残し、書込み可能な静的データは RAM の `ADDR`（8-byte 整列）に置きます。初期値を持つ変数を先に並べ、その初期値イメージを定数の後ろへ格納し、起動コードが `main` より前に word 単位でコピーし、続くゼロ初期化領域を 0 で埋めます。出力イメージに RAM 側の block は含まれません。`--protected` とは併用できず、起動時 SP が書込み可能データ領域に入る配置は拒否します。利用例は [C 版 BIOS](../../bios/README.md)。
 
 ## Extension P（特権レベルと SYSCALL）
 
@@ -85,6 +86,7 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 | `cpt32_run_user(entry, user_stack_top)` | カーネルの SP/FP/再開PC/STATUS を保存し、`USP`・`EPC`・`STATUS.PU` を設定して `IRET` | Sモードのみ。ユーザーのIEはカーネルと同じ。保護領域は事前に設定。再入不可 |
 | `cpt32_return_to_kernel(code)` | 保存したカーネル状態へ `IRET` し、`cpt32_run_user` が code を返す | SYSCALLハンドラーから呼ぶ。戻らない |
 | `cpt32_halt()` | `HALT` | Sモードのみ |
+| `cpt32_jump(entry, r1, sp)` | R1=r1、R28(SP)=sp、R29(FP)=0 を設定して `JR entry` | 戻らない。モード・IEは変えない。ブートローダーの引き渡し用 |
 
 `void syscall_dispatch(cpt32_trap_frame *frame)` を定義すると、`main` の前に SYSCALL ベクター（`0xFFFF000C`）を登録します。
 入口は S のスタック（Uからの呼出しでもバンク切替えでカーネルの R28）に136 byteを確保し、`frame->r[0]` に CAUSE、`frame->r[n]` に Rn（`r[28]` は未使用で0）を保存して呼び出します。

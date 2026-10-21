@@ -20,7 +20,7 @@ _SYSTEM_REGISTERS = {0x00, 0x01, 0x02, 0x08, 0x09, 0x0A} | {
     0x10 + 4 * region + field for region in range(8) for field in range(3)}
 # C-callable compiler intrinsics. Each is lowered inline; none may be defined.
 _INTRINSICS = ("cpt32_halt", "cpt32_syscall", "cpt32_mfsr", "cpt32_mtsr",
-               "cpt32_run_user", "cpt32_return_to_kernel")
+               "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump")
 # Intrinsics that execute supervisor-only instructions (HALT, MFSR, MTSR, IRET).
 _SUPERVISOR_INTRINSICS = ("cpt32_halt", "cpt32_mfsr", "cpt32_mtsr",
                           "cpt32_run_user", "cpt32_return_to_kernel")
@@ -126,6 +126,8 @@ class _Code:
                 value = image.resolve(expression)
                 if extra:
                     value >>= extra[0]
+            elif kind == "image":
+                value = getattr(image, expression)
             elif kind == "bytes":
                 ty, text, offset = expression
                 _, untyped = parse_type(text, image.module)
@@ -903,6 +905,7 @@ class _Function:
         signatures = {
             "cpt32_halt": (0, "void"), "cpt32_syscall": (6, "i32"), "cpt32_mfsr": (1, "i32"),
             "cpt32_mtsr": (2, "void"), "cpt32_run_user": (2, "i32"), "cpt32_return_to_kernel": (1, "void"),
+            "cpt32_jump": (3, "void"),
         }
         count, result = signatures[name]
         if len(values) != count or str(inst.type) != result:
@@ -925,6 +928,15 @@ class _Function:
             sr = self.constant_operand(values[0], "system register", _SYSTEM_REGISTERS)
             self.load(values[1], 1)
             c.emit(f"MTSR 0x{sr:02X}, R1")
+        elif name == "cpt32_jump":
+            # Far jump that never returns: R1 = r1, SP = sp, FP = 0, PC = entry.
+            # Loaded through R12/R1/R28 last so earlier loads cannot clobber them.
+            self.load(values[0], 12)
+            self.load(values[2], 2)
+            self.load(values[1], 1)
+            c.move(28, 2)
+            c.move(29, 0)
+            c.emit("JR R12")
         elif name == "cpt32_run_user":
             # Save the kernel SP/FP/resume PC/STATUS, then IRET into user mode
             # at entry with USP = user stack top. cpt32_return_to_kernel(code)
@@ -1238,7 +1250,7 @@ class _Function:
 
 
 class _Module:
-    def __init__(self, module, origin, stack_top, entry, protected=False):
+    def __init__(self, module, origin, stack_top, entry, protected=False, data_origin=None):
         self.module = module
         self.layout = Layout(module)
         self.image = DataImage(module)
@@ -1246,6 +1258,7 @@ class _Module:
         self.definitions = {f.name: f for f in module.functions if not f.is_declaration}
         self.origin, self.stack_top, self.entry = origin, stack_top, entry
         self.protected = protected
+        self.data_origin = data_origin
         self.uses_kernel_context = False
         self.data_start = None
 
@@ -1274,6 +1287,28 @@ class _Module:
         c.label("__llvm_src32_start")
         c.imm(28, self.stack_top)
         c.move(29, 0)
+        if self.data_origin is not None:
+            # ROM layout: copy initialized writable data to RAM, clear the rest.
+            copy, copied = c.fresh("data_copy"), c.fresh("data_copied")
+            clear, cleared = c.fresh("bss_clear"), c.fresh("bss_cleared")
+            c.imm(10, ("image", "load_base"))
+            c.imm(11, self.data_origin)
+            c.imm(12, ("image", "writable_copy_end"))
+            c.label(copy)
+            c.emit(f"BEQ R11, R12, {copied}")
+            c.mem("LD", 13, 10)
+            c.mem("ST", 13, 11)
+            c.emit("ADDI R10, R10, 4")
+            c.emit("ADDI R11, R11, 4")
+            c.emit(f"JMP {copy}")
+            c.label(copied)
+            c.imm(12, ("image", "writable_end"))
+            c.label(clear)
+            c.emit(f"BEQ R11, R12, {cleared}")
+            c.mem("ST", 0, 11)
+            c.emit("ADDI R11, R11, 4")
+            c.emit(f"JMP {clear}")
+            c.label(cleared)
         irq_dispatch = self.definitions.get("irqc_dispatch")
         if irq_dispatch is not None:
             if list(irq_dispatch.arguments) or str(irq_dispatch.global_value_type.get_function_return()) != "void":
@@ -1348,15 +1383,18 @@ class _Module:
         functions = {name: c.labels[symbol(name)] for name in self.definitions}
         base = _round(c.pc, 8)
         self.data_start = base
-        self.image.assign(base, functions)
-        if self.origin < self.stack_top <= self.image.end:
+        self.image.assign(base, functions, self.data_origin)
+        if self.origin < self.stack_top <= self.image.image_end:
             raise CompileError("initial stack top overlaps the generated code/data image")
+        if self.data_origin is not None and self.data_origin < self.stack_top <= self.image.writable_end:
+            raise CompileError("initial stack top overlaps the writable data area")
         c.resolve(self.image)
-        lines = c.lines + self.image.emit(functions, base)
+        lines = c.lines + self.image.emit(functions, base, self.data_origin)
         return "\n".join(lines) + "\n"
 
 
-def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None):
+def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None,
+                   data_origin=None):
     """Lower an official llvmlite ModuleRef into standalone SRC32 assembly.
 
     The module is verified by LLVM, keeps its big-endian 32-bit target layout,
@@ -1365,17 +1403,25 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
     `protected` emits a user-mode program (Extension P): startup exits with
     SYSCALL 0 and supervisor intrinsics are rejected. When `info` is a dict
     it receives `data_start`, the first address after code.
+    `data_origin` builds a ROM image: writable globals live in RAM at that
+    address and startup copies their initial values from a load image placed
+    after the read-only data, then clears the zero-initialized tail.
     """
     if not 0 <= origin <= 0xFFFFFFFC or origin % 4:
         raise CompileError("origin must be a word-aligned 32-bit address")
     if not 8 <= stack_top <= 0xFFFFFFF8 or stack_top % 8:
         raise CompileError("stack top must be an 8-byte-aligned 32-bit address")
+    if data_origin is not None:
+        if not 0 <= data_origin <= 0xFFFFFFF8 or data_origin % 8:
+            raise CompileError("data origin must be an 8-byte-aligned 32-bit address")
+        if protected:
+            raise CompileError("data origin (ROM layout) cannot be combined with a protected program")
     try:
         module.verify()
     except RuntimeError as exc:
         raise CompileError(f"LLVM verification failed: {exc}") from exc
     try:
-        compiled = _Module(module, origin, stack_top, entry, protected)
+        compiled = _Module(module, origin, stack_top, entry, protected, data_origin)
         assembly = compiled.compile()
         if info is not None:
             info["data_start"] = compiled.data_start
