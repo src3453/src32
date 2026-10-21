@@ -183,7 +183,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 |---|---|
 | `/bin`, `/lib`, `/etc`, `/home` | 起動ディスクの FS2 上のディレクトリ（`/` の実体は起動ディスクのルート） |
 | `/dev` | 仮想。`con`、`kbd`、`null`、`uart0`、`rtc` など。open するとデバイスサービスへの CHANNEL が返る |
-| `/dd/<n>/` | IDC slot n（0〜3、BIOS の dd0〜dd3 と同じ番号）の FS ルート。例：`/dd/0/example.txt`。媒体がないときはアクセス時に `E_NO_MEDIA` |
+| `/dd/<n>/` | IDC slot n（0〜3、BIOS の dd0〜dd3 と同じ番号）の FS ルート。FS2 と DSFS を扱う（DSFS は初期版では読み取り専用、§6.3）。例：`/dd/0/example.txt`。媒体がないときはアクセス時に `E_NO_MEDIA` |
 | `/os` | 仮想で、読み取り専用の情報。`proc/<pid>/{status,name,handles}`、`kernel/{version,memory,scheduler,uptime}`、`services/<name>/` |
 | `/tmp` | RAM 上の一時 FS（fs サービス内） |
 
@@ -205,6 +205,18 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 - 読み書きmount中はDIRTYを保持し、異常終了後は通常mountを拒否してfsckを要求します。ジャーナルはなく、任意の中断からの自動回復や内容保全は保証しません。
 - ホストツール（配置予定 `tools/fs2/`）を先に作り、ゲスト側は読み取りから始めます。
 - DSFS媒体は `/dd/<n>` に平坦なディレクトリとしてread-only mountします。既存の `sdk/cpt32` のDSFSコードを参考にします。
+
+### 6.3 `/dd/` でのDSFS互換
+
+既存の [DSFS媒体](spec_DSFS.md) はFS2へ変換せず、そのまま `/dd/<n>/` から参照できるようにします。これはVFSの互換ドライバによる公開で、DSFSのディスク形式を拡張するものではありません。以下は実装予定の契約です。
+
+- **形式の識別と検証**：slotごとにsuperblockのmagic/versionを確認し、FS2またはDSFSのドライバで検証してから公開します。ブート署名 `55 AA` だけでは形式を判定しません。破損した媒体を別形式として読み直したり、自動formatしたりしません。
+- **平坦な名前空間**：DSFSのファイルを直下に並べます。例として `HELLO.TXT` は `/dd/1/HELLO.TXT` で開け、`/dd/1/hello.txt` でも同じファイルを参照します。列挙では元の大文字8.3名を返します。DSFS内にサブディレクトリを合成せず、`/dd/1/..` はVFS側の `/dd` に戻ります。
+- **共通API**：FS2と同じディレクトリ列挙・stat・open・read・seek・closeを使います。アプリやシェルがDSFS専用APIを選ぶ必要はありません。媒体なしは `E_NO_MEDIA`、不正構造は `E_FORMAT`、未対応versionは `E_UNSUPPORTED` として扱います。
+- **初期版は読み取り専用**：書き込みopen、create、write、truncate、delete、rename、mkdir、rmdir、chmod、chownは `E_READ_ONLY` とし、UID 0にも書き込みを許可しません。DSFS自体に書き込み機能があっても、Foundationの初期互換ドライバでは公開しません。
+- **属性の補完**：DSFSにないUID/modeはVFS上で補い、uid=0、ファイルmode=`0x0024`（owner/other R）、ルートmode=`0x002D`（owner/other RX）とします。32-bit UNIX秒は64-bitへゼロ拡張し、ミリ秒部は0にします。元媒体に属性を書き戻しません。実行権限は既定では付与しません（[FS2仕様 §11](spec_FS2.md)）。
+- **FS2との受け渡し**：シェルのCOPYなどでDSFSのファイルをFS2へ読み出して保存できます。保存先の名前・UID・mode・時刻はFS2側の作成規則に従います。別mountへのrenameで変換を代用せず、DSFSをFoundationの `/` 用FS2起動媒体として扱いません。
+- **受け入れ確認**：既存ツールで作ったDSFSイメージを使い、列挙・大小文字の異なる名前での読み出し・EOF・属性補完・`..`・媒体交換を確認します。拒否される更新操作の前後で媒体のbyte列が変わらないことも検証します。
 
 ## 7. API ライブラリ libfnd とシェル
 
