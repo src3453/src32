@@ -87,6 +87,7 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 | `cpt32_return_to_kernel(code)` | 保存したカーネル状態へ `IRET` し、`cpt32_run_user` が code を返す | SYSCALLハンドラーから呼ぶ。戻らない |
 | `cpt32_halt()` | `HALT` | Sモードのみ |
 | `cpt32_jump(entry, r1, sp)` | R1=r1、R28(SP)=sp、R29(FP)=0 を設定して `JR entry` | 戻らない。モード・IEは変えない。ブートローダーの引き渡し用 |
+| `cpt32_ctx_resume(frame)` | `cpt32_ctx_current = frame`、trap depth = 0 にしてトラップスタブの復元経路へ分岐 | `kernel_trap` が必要。Sモードのみ。戻らない。最初のコンテキストの開始用 |
 
 `void syscall_dispatch(cpt32_trap_frame *frame)` を定義すると、`main` の前に SYSCALL ベクター（`0xFFFF000C`）を登録します。
 入口は S のスタック（Uからの呼出しでもバンク切替えでカーネルの R28）に136 byteを確保し、`frame->r[0]` に CAUSE、`frame->r[n]` に Rn（`r[28]` は未使用で0）を保存して呼び出します。
@@ -95,6 +96,20 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 
 サンプル: [`examples/syscall-user-c`](../../examples/syscall-user-c/README.md)（カーネルとユーザープログラムを1つの WAX にまとめたもの）。
 
+#### 文脈切替トラップスタブ（`kernel_trap`）
+
+`cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame)` と `void kernel_panic(uint32_t cause, uint32_t epc)` を定義すると、起動コードは IRQ slot 0〜15（`JR R30`、S バンクの R30 = スタブ）と例外ベクター `0xFFFF0004`/`08`/`0C` をすべてスタブへ向け、IRQC ENABLE を 0 にします。契約は [Foundation 仕様 §3](../../doc/spec_Foundation.md) です。
+
+- トラップ時、スタブは全レジスタ・CAUSE・EPC・STATUS を `*cpt32_ctx_current`（34 語の `cpt32_ctx_frame`）へ保存します。U からなら `r[28..30]` は `USP`/`UFP`/`UGP`、S（idle など）からなら現在の R28〜R30 です。
+- R28 を `--stack-top`（カーネルスタック頂上）、R29 を 0 にして、割込み禁止のまま `kernel_trap(frame)` を呼びます。戻り値の frame を `cpt32_ctx_current` にし、EPC、STATUS（PIE/PU/PSM のみ）、R1〜R31 を復元して `IRET` します。S frame へ戻るときは R28/R29 を frame から読み、R30 はスタブのアドレスのまま保ちます。
+- 保護領域には触れません。別プロセスの frame を返す前に、カーネルが `cpt32_mtsr` で書き換えてください。
+- `cpt32_trap_depth` は 1 から始まり、カーネル実行中は 1 です。この間のトラップ（`cpt32_ctx_resume` 前の SYSCALL やカーネル内の例外）は frame を書き換えず、`kernel_panic(cause, epc)` を呼びます。
+- `cpt32_ctx_current` と `cpt32_trap_depth` はスタブが用意するので、C では `<cpt32/cpu.h>` の extern 宣言で参照します（定義するとエラー）。`irqc_dispatch`/`syscall_dispatch`/`--protected` とは併用できません。
+- `cpt32_ctx_resume` 後、`main` のスタックは捨てられます（スタブは毎回 `--stack-top` から使います）。
+- S モードのコードは R30 を変えてはいけません（このバックエンドは R30 を使いません）。
+
+サンプル: [`examples/kernel-trap-c`](../../examples/kernel-trap-c/README.md)（協調切替、S モード idle からの脱出、タイマープリエンプション）。
+
 ### `--protected`（ユーザーモード実行ファイル）
 
 ```sh
@@ -102,8 +117,8 @@ python tools/llvm-src32/driver.py app.c --protected --origin 0x100000 --stack-to
 ```
 
 - 出力は [保護付き WAX](../../doc/spec_WAX.md)。コード block は R/X、データ（静的データとゼロ初期化領域）block は R/W、ユーザースタックは `--stack-top` の下 `--user-stack-size` byte（既定 0x4000、8の倍数）です。
-- 起動コードは HALT できないので、`main` の戻り値を R1 に置いて `SYSCALL 0` を発行します。**`SYSCALL 0` を exit とするのはこのツールチェーンの規約**で、読み込む BIOS/OS が定義します。
-- `cpt32_halt`、`cpt32_mfsr`、`cpt32_mtsr`、`cpt32_run_user`、`cpt32_return_to_kernel`、`irqc_dispatch`、`syscall_dispatch` はSモード専用なのでエラーです。デバイスは BIOS/OS が SYSCALL で提供します。
+- 起動コードは HALT できないので、`main` の戻り値を R1 に置いて `SYSCALL 0` を発行します。**`SYSCALL 0` を exit とするのはこのツールチェーンの規約**で、読み込む BIOS/OS が定義します（Foundation では 0 番は `sys_info` で、終了は `proc_exit` です。[Foundation §12](../../doc/spec_Foundation.md)）。
+- `cpt32_halt`、`cpt32_mfsr`、`cpt32_mtsr`、`cpt32_run_user`、`cpt32_return_to_kernel`、`cpt32_ctx_resume`、`irqc_dispatch`、`syscall_dispatch`、`kernel_trap` はSモード専用なのでエラーです。デバイスは BIOS/OS が SYSCALL で提供します。
 - 現在、保護付き WAX を起動できるのは BIOS の WAX loader（未実装）だけです。ホストの直接ロードは拒否します。
 - CMake では `src32_add_executable(... PROTECTED USER_STACK_SIZE 0x4000)`。
 

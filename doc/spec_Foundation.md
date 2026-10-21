@@ -1,6 +1,6 @@
 # Foundation カーネル ABI 仕様 v1
 
-Revision 1.0、2026-10-22。Status: **仕様確定・未実装**。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
+Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。それ以外（カーネル本体、IPC、システムコール、sol 対応）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -64,9 +64,11 @@ S モードの R30 は、常にスタブのアドレスでなければなりま�
 5. `f` の内容を復元します。
    - `EPC = f.EPC`
    - `STATUS = (f.STATUS & (PIE|PU|PSM))`（復元中の IE は 0 のまま）
-   - `f.PU = 1` なら `USP/UFP/UGP` を書き、そうでなければ R28–R30 を直接書く
+   - `f.PU = 1` なら `USP/UFP/UGP` を書き、S バンクの R28 をカーネルスタック頂上に戻す。そうでなければ R28 と R29 を直接書く。R30 はスタブのアドレスのまま保つ（S frame の語 30 は記録用で、復元しない）
    - R1–R27 と R31 を書く
-6. 最後に `IRET` します。`IRET` の直後、全レジスタは `f` の値と一致しなければなりません。
+6. 最後に `IRET` します。`IRET` の直後、全レジスタは `f` の値と一致しなければなりません（S frame の R30 を除く）。
+
+`cpt32_trap_depth` の初期値は 1 です。そのため、最初の `cpt32_ctx_resume(frame)` より前のトラップは `kernel_panic` に入ります。`cpt32_ctx_resume` は、`cpt32_ctx_current = frame`、depth = 0 にして手順 5 から実行する intrinsic で、戻りません。実装は `tools/llvm-src32`（`backend.py` の `emit_ctx_stub`）、例は `examples/kernel-trap-c` です。
 
 スタブは保護領域に触れません。返す frame が別プロセスのものなら、`kernel_trap` が戻る前に、カーネルが §5.3 の手順で保護領域を書き換えなければなりません。
 

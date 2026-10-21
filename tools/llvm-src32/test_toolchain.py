@@ -387,6 +387,66 @@ int main(void) {
         self.execute(image, 42)
         self.execute(image, 42, 'pipeline')
 
+    def test_kernel_trap_context_switch_example(self):
+        # kernel_trap stub (doc/spec_Foundation.md §3): cooperative switches
+        # that check live values across SYSCALLs, an S-mode idle context left
+        # by the timer IRQ, and timer preemption of tasks that never yield.
+        example = ROOT / 'examples/kernel-trap-c'
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / ('trap' + opt[1:] + '.wax')
+                self.driver(example / 'user.c', example / 'kernel.c',
+                            '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
+                for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                    with self.subTest(cpu=cpu):
+                        self.execute(image, 42, cpu)
+
+    def test_kernel_trap_panics_before_first_resume(self):
+        # The trap depth starts at 1, so a SYSCALL before cpt32_ctx_resume
+        # reaches kernel_panic with its CAUSE and EPC instead of kernel_trap.
+        source = self.work / 'panic.c'
+        source.write_text('''#include <cpt32/cpu.h>
+static const uint32_t halt_code[2] = {0xFC000000u, 0xFC000000u};
+static volatile uint32_t trapped;
+cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *f) { trapped = 1; return f; }
+void kernel_panic(uint32_t cause, uint32_t epc) {
+  uint32_t ok = cause == 0x80030507u && epc != 0u && !trapped && cpt32_trap_depth == 1u
+                && cpt32_ctx_current == 0;
+  cpt32_jump((uint32_t)(uintptr_t)halt_code, ok ? 42u : 1u, 0x90000u);
+}
+int main(void) { cpt32_syscall(7, 5, 0, 0, 0, 0); return 2; }
+''', encoding='utf-8')
+        image = self.work / 'panic.wax'
+        self.driver(source, '-I', ROOT / 'sdk/cpt32/include', '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+
+    def test_kernel_trap_diagnostics(self):
+        header = '#include <cpt32/cpu.h>\n'
+        trap = 'cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *f) { return f; }\n'
+        panic = 'void kernel_panic(uint32_t c, uint32_t e) { (void)c; (void)e; for (;;) {} }\n'
+        main = 'int main(void) { return 0; }\n'
+        cases = {
+            'nopanic.c': (header + trap + main, [], 'requires void kernel_panic'),
+            # Without <cpt32/cpu.h>, whose prototype Clang would check first.
+            'signature.c': ('#include <stdint.h>\nvoid kernel_trap(uint32_t *f) { (void)f; }\n'
+                            + panic + main, [], 'cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *)'),
+            'combined.c': (header + trap + panic + 'void syscall_dispatch(cpt32_trap_frame *f) { (void)f; }\n'
+                           + main, [], 'cannot be combined with syscall_dispatch'),
+            'global.c': (header + trap + panic + 'cpt32_ctx_frame *cpt32_ctx_current;\n' + main,
+                         [], 'declare it extern'),
+            'resume.c': (header + 'static cpt32_ctx_frame f;\n'
+                         'int main(void) { cpt32_ctx_resume(&f); }\n', [], 'requires a kernel_trap'),
+            'protected.c': (header + trap + panic + main, ['--protected'], 'needs supervisor mode'),
+        }
+        for name, (text, extra, message) in cases.items():
+            with self.subTest(case=name):
+                source = self.work / name
+                source.write_text(text, encoding='utf-8')
+                result = self.driver(source, '-I', ROOT / 'sdk/cpt32/include', *extra,
+                                     '-o', self.work / (name + '.wax'), success=False)
+                self.assertIn(message, result.stderr)
+
     def test_extension_p_intrinsic_diagnostics(self):
         header = '#include <cpt32/cpu.h>\n'
         cases = {

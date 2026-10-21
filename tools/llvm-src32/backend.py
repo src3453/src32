@@ -20,14 +20,21 @@ _SYSTEM_REGISTERS = {0x00, 0x01, 0x02, 0x08, 0x09, 0x0A} | {
     0x10 + 4 * region + field for region in range(8) for field in range(3)}
 # C-callable compiler intrinsics. Each is lowered inline; none may be defined.
 _INTRINSICS = ("cpt32_halt", "cpt32_syscall", "cpt32_mfsr", "cpt32_mtsr",
-               "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump")
+               "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump", "cpt32_ctx_resume")
 # Intrinsics that execute supervisor-only instructions (HALT, MFSR, MTSR, IRET).
 _SUPERVISOR_INTRINSICS = ("cpt32_halt", "cpt32_mfsr", "cpt32_mtsr",
-                          "cpt32_run_user", "cpt32_return_to_kernel")
+                          "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_ctx_resume")
 _KERNEL_CONTEXT = "__llvm_src32_kernel_context"
 # Trap frame passed to syscall_dispatch: word 0 = CAUSE, word n = Rn
 # (word 28 is unused and reads 0). 128 bytes, plus 8 bytes for the argument.
 _TRAP_FRAME = 128
+# Context-switching trap stub (doc/spec_Foundation.md §3): defining
+# kernel_trap installs every IRQ/exception vector. cpt32_ctx_frame words:
+# 0 = CAUSE, n = Rn (28..30 = interrupted bank), 31 = R31, 32 = EPC, 33 = STATUS.
+_CTX_CURRENT, _CTX_DEPTH = "cpt32_ctx_current", "cpt32_trap_depth"
+_CTX_EPC, _CTX_STATUS = 128, 132
+_CTX_RESTORE = "__llvm_src32_ctx_restore"
+_STATUS_RESTORED = 0x1A  # PIE | PU | PSM; IE stays 0 until IRET
 
 
 def _round(n, a=4):
@@ -905,7 +912,7 @@ class _Function:
         signatures = {
             "cpt32_halt": (0, "void"), "cpt32_syscall": (6, "i32"), "cpt32_mfsr": (1, "i32"),
             "cpt32_mtsr": (2, "void"), "cpt32_run_user": (2, "i32"), "cpt32_return_to_kernel": (1, "void"),
-            "cpt32_jump": (3, "void"),
+            "cpt32_jump": (3, "void"), "cpt32_ctx_resume": (1, "void"),
         }
         count, result = signatures[name]
         if len(values) != count or str(inst.type) != result:
@@ -936,6 +943,17 @@ class _Function:
             self.load(values[1], 1)
             c.move(28, 2)
             c.move(29, 0)
+            c.emit("JR R12")
+        elif name == "cpt32_ctx_resume":
+            # Leave the kernel for good: make frame current, clear the trap
+            # depth and run the stub's restore path (spec_Foundation §3.3).
+            self.owner.uses_ctx_resume = True
+            self.load(values[0], 1)
+            c.imm(2, ("label", symbol(_CTX_CURRENT)))
+            c.mem("ST", 1, 2)
+            c.imm(2, ("label", symbol(_CTX_DEPTH)))
+            c.mem("ST", 0, 2)
+            c.imm(12, ("label", _CTX_RESTORE))
             c.emit("JR R12")
         elif name == "cpt32_run_user":
             # Save the kernel SP/FP/resume PC/STATUS, then IRET into user mode
@@ -1260,7 +1278,115 @@ class _Module:
         self.protected = protected
         self.data_origin = data_origin
         self.uses_kernel_context = False
+        self.uses_ctx_resume = False
         self.data_start = None
+
+    def check_kernel_trap(self, kernel_trap):
+        arguments = list(kernel_trap.arguments)
+        result = kernel_trap.global_value_type.get_function_return()
+        if len(arguments) != 1 or not arguments[0].type.is_pointer or not result.is_pointer:
+            raise CompileError("trap handler must have signature "
+                               "cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *)")
+        for handler in ("irqc_dispatch", "syscall_dispatch"):
+            if handler in self.definitions:
+                raise CompileError(f"kernel_trap owns every CPU vector and cannot be combined with {handler}")
+        panic = self.definitions.get("kernel_panic")
+        if (panic is None or len(list(panic.arguments)) != 2
+                or str(panic.global_value_type.get_function_return()) != "void"
+                or any(str(a.type) != "i32" for a in panic.arguments)):
+            raise CompileError("kernel_trap requires void kernel_panic(uint32_t cause, uint32_t epc)")
+        for value in self.module.global_variables:
+            if value.name in (_CTX_CURRENT, _CTX_DEPTH) and not value.is_declaration:
+                raise CompileError(f"@{value.name} is provided by the kernel_trap stub; declare it extern")
+
+    def emit_ctx_stub(self):
+        """Save the trapped context into *cpt32_ctx_current, call kernel_trap on
+        a fresh kernel stack and resume the frame it returns (spec_Foundation §3.3)."""
+        c = self.code
+        panic, from_s, saved = c.fresh("ctx_panic"), c.fresh("ctx_from_s"), c.fresh("ctx_saved")
+        to_s, registers = c.fresh("ctx_to_s"), c.fresh("ctx_registers")
+        c.label("__llvm_src32_ctx_entry")
+        # The S-bank R28 is valid here: the kernel stack top after a user
+        # trap, or the interrupted S stack. Two words below it are scratch.
+        c.add_const(28, 28, -8)
+        c.mem("ST", 1, 28, 0)
+        c.mem("ST", 2, 28, 4)
+        c.imm(1, ("label", symbol(_CTX_DEPTH)))
+        c.mem("LD", 2, 1)
+        c.emit(f"BNE R2, R0, {panic}")
+        c.imm(1, ("label", symbol(_CTX_CURRENT)))
+        c.mem("LD", 1, 1)
+        for register in list(range(3, 28)) + [31]:
+            c.mem("ST", register, 1, register * 4)
+        for register in (1, 2):
+            c.mem("LD", 2, 28, (register - 1) * 4)
+            c.mem("ST", 2, 1, register * 4)
+        c.add_const(28, 28, 8)
+        for sr, offset in (("CAUSE", 0), ("EPC", _CTX_EPC), ("STATUS", _CTX_STATUS)):
+            c.emit(f"MFSR R2, {sr}")
+            c.mem("ST", 2, 1, offset)
+        c.emit("ADDI R3, R0, 8")  # STATUS.PU: trapped from user mode
+        c.emit("AND R3, R2, R3")
+        c.emit(f"BEQ R3, R0, {from_s}")
+        for sr, register in (("USP", 28), ("UFP", 29), ("UGP", 30)):
+            c.emit(f"MFSR R2, {sr}")
+            c.mem("ST", 2, 1, register * 4)
+        c.emit(f"JMP {saved}")
+        c.label(from_s)
+        for register in (28, 29, 30):
+            c.mem("ST", register, 1, register * 4)
+        c.label(saved)
+        c.imm(2, ("label", symbol(_CTX_DEPTH)))
+        c.emit("ADDI R3, R0, 1")
+        c.mem("ST", 3, 2)
+        c.imm(28, self.stack_top)
+        c.move(29, 0)
+        c.add_const(28, 28, -8)
+        c.mem("ST", 1, 28)  # argument 0: the saved frame
+        c.imm(12, ("label", symbol("kernel_trap")))
+        c.emit("JALR R12")
+        c.imm(2, ("label", symbol(_CTX_CURRENT)))
+        c.mem("ST", 1, 2)
+        c.imm(2, ("label", symbol(_CTX_DEPTH)))
+        c.mem("ST", 0, 2)
+        # Resume the frame in R1. cpt32_ctx_resume enters here too.
+        c.label(_CTX_RESTORE)
+        c.mem("LD", 2, 1, _CTX_EPC)
+        c.emit("MTSR EPC, R2")
+        c.mem("LD", 2, 1, _CTX_STATUS)
+        c.emit(f"ADDI R3, R0, {_STATUS_RESTORED}")
+        c.emit("AND R2, R2, R3")
+        c.emit("MTSR STATUS, R2")
+        c.emit("ADDI R3, R0, 8")
+        c.emit("AND R3, R2, R3")
+        c.emit(f"BEQ R3, R0, {to_s}")
+        for sr, register in (("USP", 28), ("UFP", 29), ("UGP", 30)):
+            c.mem("LD", 2, 1, register * 4)
+            c.emit(f"MTSR {sr}, R2")
+        c.imm(28, self.stack_top)  # S-bank SP for the next trap from user mode
+        c.emit(f"JMP {registers}")
+        c.label(to_s)
+        # Resuming S code (the idle thread): R30 keeps the stub address.
+        c.mem("LD", 28, 1, 28 * 4)
+        c.mem("LD", 29, 1, 29 * 4)
+        c.label(registers)
+        for register in list(range(2, 28)) + [31]:
+            c.mem("LD", register, 1, register * 4)
+        c.mem("LD", 1, 1, 4)
+        c.emit("IRET")
+        # A trap while the kernel runs: keep the current frame and panic.
+        c.label(panic)
+        c.emit("MFSR R1, CAUSE")
+        c.emit("MFSR R2, EPC")
+        c.add_const(28, 28, -8)
+        c.mem("ST", 1, 28, 0)
+        c.mem("ST", 2, 28, 4)
+        c.imm(12, ("label", symbol("kernel_panic")))
+        c.emit("JALR R12")
+        stop = c.fresh("ctx_panic_stop")
+        c.label(stop)
+        c.emit("HALT")
+        c.emit(f"JMP {stop}")
 
     def compile(self):
         c = self.code
@@ -1273,8 +1399,11 @@ class _Module:
             if (len(arguments) != 1 or not arguments[0].type.is_pointer
                     or str(syscall_dispatch.global_value_type.get_function_return()) != "void"):
                 raise CompileError("SYSCALL dispatcher must have signature void syscall_dispatch(cpt32_trap_frame *)")
+        kernel_trap = self.definitions.get("kernel_trap")
+        if kernel_trap is not None:
+            self.check_kernel_trap(kernel_trap)
         if self.protected:
-            for handler in ("irqc_dispatch", "syscall_dispatch"):
+            for handler in ("irqc_dispatch", "syscall_dispatch", "kernel_trap"):
                 if handler in self.definitions:
                     raise CompileError(f"{handler} installs CPU vectors and needs supervisor mode; "
                                        "it is unavailable with --protected")
@@ -1326,6 +1455,19 @@ class _Module:
             c.imm(11, 0xFFFF000C)  # Extension P SYSCALL vector word
             c.imm(10, ("label", "__llvm_src32_syscall_entry"))
             c.mem("ST", 10, 11)
+        if kernel_trap is not None:
+            # Every trap enters the stub: IRQ slots run JR R30, and the S-bank
+            # R30 keeps the stub address. Device IRQs start masked.
+            c.imm(11, 0xFFFF0044)
+            c.mem("STH", 0, 11)
+            c.imm(30, ("label", "__llvm_src32_ctx_entry"))
+            c.imm(11, 0xFFFF0100)
+            c.imm(10, (0x0B << 26) | (30 << 21))  # JR R30
+            for line in range(16):
+                c.mem("ST", 10, 11, line * 4)
+            c.imm(11, 0xFFFF0000)
+            for vector in (0x04, 0x08, 0x0C):
+                c.mem("ST", 30, 11, vector)
         c.imm(12, ("label", symbol(self.entry)))
         c.emit("JALR R12")
         if self.protected:
@@ -1370,6 +1512,8 @@ class _Module:
                     c.mem("LD", register, 28, 8 + register * 4)
             c.add_const(28, 28, _TRAP_FRAME + 8)
             c.emit("IRET")
+        if kernel_trap is not None:
+            self.emit_ctx_stub()
         for function in self.definitions.values():
             linkage = function.linkage.name
             if linkage not in ("external", "internal", "private"):
@@ -1381,6 +1525,15 @@ class _Module:
             for _ in range(4):
                 c.emit(".DWORD 0")
         functions = {name: c.labels[symbol(name)] for name in self.definitions}
+        if kernel_trap is not None:
+            # The stub's globals; C reaches them through extern declarations.
+            # The depth starts at 1 so a trap before cpt32_ctx_resume panics.
+            for name, initial in ((_CTX_CURRENT, 0), (_CTX_DEPTH, 1)):
+                c.label(symbol(name))
+                c.emit(f".DWORD {initial}")
+                functions[name] = c.labels[symbol(name)]
+        elif self.uses_ctx_resume:
+            raise CompileError("cpt32_ctx_resume requires a kernel_trap definition")
         base = _round(c.pc, 8)
         self.data_start = base
         self.image.assign(base, functions, self.data_origin)

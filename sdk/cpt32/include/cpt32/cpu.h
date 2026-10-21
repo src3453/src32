@@ -93,4 +93,38 @@ typedef struct cpt32_trap_frame {
 /* 定義するとSYSCALLベクタが登録され、SYSCALL時にフレームを渡して呼ばれます。 */
 void syscall_dispatch(cpt32_trap_frame *frame);
 
+/* Context-switching trap stub (doc/spec_Foundation.md §3). r[0] = CAUSE,
+ * r[n] = Rn; r[28..30] = the interrupted mode's R28..R30 (USP/UFP/UGP after
+ * a user trap). status: only PIE, PU and PSM are restored. */
+typedef struct cpt32_ctx_frame {
+    uint32_t r[32];
+    uint32_t epc;
+    uint32_t status;
+} cpt32_ctx_frame;
+
+/* Define kernel_trap (together with kernel_panic) to own every IRQ and
+ * exception vector. Each trap saves the full context into *cpt32_ctx_current,
+ * calls kernel_trap on a fresh kernel stack (--stack-top) with interrupts
+ * off, and resumes the frame it returns. Program the protection regions
+ * before returning another process's frame. Cannot be combined with
+ * irqc_dispatch or syscall_dispatch. S-mode code must leave R30 unchanged. */
+/* 定義すると全IRQ・例外ベクタを登録し、保存したフレームを渡して呼ばれます。戻り値のフレームへ復帰します。 */
+cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame);
+
+/* Called instead of kernel_trap for a trap taken while the kernel runs (or
+ * before the first cpt32_ctx_resume). Must not return. */
+/* カーネル実行中のトラップで呼ばれます。戻ってはいけません。 */
+CPT32_NORETURN void kernel_panic(uint32_t cause, uint32_t epc);
+
+/* Provided by the stub: the frame the next trap saves into, and 1 while the
+ * kernel runs (0 while a resumed context runs). */
+extern cpt32_ctx_frame *cpt32_ctx_current;
+extern uint32_t cpt32_trap_depth;
+
+/* Leave the kernel and resume frame through the stub's restore path; the
+ * calling stack is abandoned. Use it once to start the first context.
+ * Requires kernel_trap. Supervisor mode only. */
+/* frameへ復帰し、戻りません（最初のコンテキストの開始用、Sモードのみ）。 */
+CPT32_NORETURN void cpt32_ctx_resume(cpt32_ctx_frame *frame);
+
 #endif
