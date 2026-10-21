@@ -3,7 +3,7 @@ GNU Unifont Plane 0 bitmap data
 
 Version: GNU Unifont 18.0.01
 Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
-Project and license information: https://unifoundry.com/unifont.html
+Project and license information: https://unifoundry.com/unifont/index.html
 
 SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
 SHA-256 (generated ROM): 0787d651d2f0b6353aaa924ca5b4c569e56f9ad339462c0f04d80733ccb7368f
@@ -18,3 +18,21 @@ This repository includes the unmodified upstream gzip-compressed Plane 0
 .hex source and a generated fixed-size glyph ROM. The converter maps source
 records by Unicode code point; absent BMP code points and UTF-16 surrogate
 code units use the U+FFFD replacement glyph.
+
+Verified release attribution (2026-10-21)
+-----------------------------------------
+Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception.
+
+CPT32 distributes the font data under the OFL-1.1 alternative.
+The complete official OFL text is included in licenses/UNIFONT-OFL-1.1.txt.
+Release attribution and the original BDF header are preserved in
+licenses/UNIFONT-18.0.01-NOTICE.txt. The upstream common LICENSE.txt,
+including the alternative GPL terms, is in licenses/UNIFONT-UPSTREAM.txt.
+
+The original HEX glyph data is unchanged. CPT32 converts it into a
+fixed-size ROM as described above; the ROM remains under OFL-1.1.
+The verified BDF header and release OFL text do not declare a Reserved Font Name.
+
+Verified against the official 18.0.01 source archive linked from:
+https://unifoundry.com/unifont/unifont-utilities.html
+The archive HEX and bundled decompressed HEX are byte-identical.

@@ -4,7 +4,7 @@
 
 ## 適用範囲
 
-CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`（MIT）を適用します。第三者のコード・フォント・ライセンス本文は各権利者の条件を維持します。第三者の条件を MIT に置き換えるものではありません。権利未確認として以下に列挙したファイルは、確認完了までルート MIT の許諾対象に含めません。
+CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`（MIT）を適用します。第三者のコード・フォント・ライセンス本文は各権利者の条件を維持します。第三者の条件を MIT に置き換えるものではありません。
 
 所有者から `assets/bios.rom`、`sound.cpp`、`sound.hpp` は自作であると確認済みです。さらに3WS88PWN4も所有者自身のプロジェクトであり、MIT適用に問題ないとの確認を受けました。`examples/wasm-3ws88pwn4/` はルートMITの適用範囲に含め、Cargoの宣言と単体配布用LICENSEも追加しています。BIOS のソースは `sol/bios.sol` です。Git のコミット著者は src3453 ですが、著者一覧だけから全素材の権利を証明することはできません。
 
@@ -25,15 +25,25 @@ CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`�
 | VS Code sol 拡張 | package-lock の production 依存8パッケージ（Language Client / Protocol / Types / JSON-RPC / semver 等）を収録。拡張フォルダーにも LICENSE と通知全文を配置。開発ツールを配布する場合は別途その依存も対象になる。 |
 | Berkeley SoftFloat 3e | BSD-3-Clause。既存の COPYING、ソースのヘッダー、UPSTREAM.md を保持。ゲストバイナリだけを配る場合も通知全文を同梱する。 |
 | UNSCII-8 | 上流の PD / CC0 宣言を保存。CGA.F08 を削除し、UNSCII.F08 に置換。CP437 の256スロット、1文字8 byte、合計2048 byte。図柄は変わるが、文字コード・VRAM・MMIOの契約は変更しない。上流にない4文字（0x0F、0x7F、0xA9、0xF9）は `?` で代替。 |
-| GNU Unifont | MIT 対象外。OFL-1.1 の選択肢を利用し、フォント部分の条件を維持。共通上流 LICENSE 全文を保存したが、下記のバージョン別権利表示確認は未完了。 |
+| GNU Unifont | MIT 対象外。OFL-1.1 の選択肢を利用。公式18.0.01アーカイブの標準BDFから著作権表示を保存し、同梱HEXとの一致を確認。リリースのOFL全文も同梱。変換したROMもOFL-1.1を維持。 |
 | SVG 内の Source Sans Pro | `doc/cpt32-architecture.svg` の埋め込み WOFF の name table で Adobe 2010–2018、Reserved Font Name “Source”、OFL-1.1 を確認。`licenses/SOURCE-SANS-PRO.txt` を同梱。 |
 
 一部の crate は公開アーカイブにライセンス本文を含めないため、`.cargo_vcs_info.json` が指定する正確な上流コミットから取得して `licenses/overrides.json` に URL と本文を保存しています。
 `crc32c`、`dispatch`、`hexf-parse`、`sptr` は、その上流コミットにも独立した本文が見つかりませんでした。Cargo の宣言・作者情報と SPDX v3.26.0 の標準条文を記録しました。`r-efi` の本文は `AUTHORS` にあります。標準条文による補完は、未知の著作権表示を創作したり、上流の権利を認定したりするものではありません。
 
-## 配布前に残る確認
+## Unifont の確認完了
 
-- 同梱 Unifont の既存記録は18.0.01を指しますが、その版の LICENSE URL は今回404でした。`https://unifoundry.com/LICENSE.txt` から共通条文を取得しました。そこには著作権者欄のプレースホルダーが残っているため、該当データのリリースに対応する実際の著作権者・Reserved Font Name・条文を確認して補完するまで、Unifont入り配布物の完全な適合確認は完了扱いにできません。
+公式の [Unifont ページ](https://unifoundry.com/unifont/index.html) と [LICENSE.txt](https://unifoundry.com/LICENSE.txt) はフォントへのOFL-1.1の適用とソフトウェアへの同梱を明示しています。さらに [Utilities ページ](https://unifoundry.com/unifont/unifont-utilities.html) が配布する18.0.01アーカイブを取得して、以下を確認しました。
+
+- `font/precompiled/unifont-18.0.01.hex` と同梱gzipを展開したデータはbyte単位で一致。非圧縮HEXのSHA-256は `2ab7801c809b76541a10b25858c1a962bdb650eee56b4c7df1f325b56e3955ee`。
+- 同じリリースの標準BDFに実際の著作権表示（1998–2026、Roman Czyborra、Paul Hardy、Qianqian Fang ほか）があり、`licenses/UNIFONT-18.0.01-NOTICE.txt` にヘッダーを保存。
+- 同リリースの `OFL-1.1.txt` を `licenses/UNIFONT-OFL-1.1.txt` に保存。確認したBDFヘッダーとOFL本文にはReserved Font Nameの指定がありません。共通LICENSE内の記入例を、このフォントの権利者や名前の指定とは扱いません。
+- 元データと生成ROMのハッシュも既存の `assets/UNIFONT-LICENSE.txt` の記録と一致。ライセンス通知とROM変換の説明を同ファイルに追記し、GUIへ埋め込む通知全文にも収録。
+
+これにより、前回記載したUnifontの版別権利表示の未確認事項は解消しました。フォントと変換ROMのOFL条件を保持し、CPT32自作部分にはMITを適用します。アーカイブのURLとSHA-256は版別通知に記録しています。
+
+## 配布時の注意
+
 - 実行形式・生成ROM・曲・テスト素材・ユーザーが追加したカード等の全データの権利を、Cargo/npm の一覧だけで証明することはできません。特に曲・サンプルを追加して配布するときは、その素材も確認してください。86Box のドライブ音素材は従来どおり同梱しません。
 
 ## 再生成・配布

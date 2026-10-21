@@ -1,0 +1,44 @@
+GNU Unifont 18.0.01 release attribution
+
+Official release archive: https://unifoundry.com/pub/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
+Archive SHA-256: eab60847aac34c8768765cecc7821faf50de2636187b452b9b5fa50a12b00bc3
+
+The bundled assets/unifont-18.0.01.hex.gz decompresses byte-for-byte to
+font/precompiled/unifont-18.0.01.hex from that release.
+Uncompressed HEX SHA-256: 2ab7801c809b76541a10b25858c1a962bdb650eee56b4c7df1f325b56e3955ee
+
+The following is the unmodified BDF header of the standard Plane 0 font
+from the same release (font/precompiled/unifont-18.0.01.bdf.gz).
+Its COPYRIGHT property preserves the upstream rights and license notice.
+The OFL terms are in UNIFONT-OFL-1.1.txt.
+
+STARTFONT 2.1
+FONT -gnu-Unifont-Medium-R-Normal-Sans-16-160-75-75-c-80-iso10646-1
+SIZE 16 75 75
+FONTBOUNDINGBOX 16 16 0 -2
+STARTPROPERTIES 24
+COPYRIGHT "Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception."
+FONT_VERSION "18.0.01"
+FONT_TYPE "Bitmap"
+FOUNDRY "GNU"
+FAMILY_NAME "Unifont"
+WEIGHT_NAME "Medium"
+SLANT "R"
+SETWIDTH_NAME "Normal"
+ADD_STYLE_NAME "Sans Serif"
+PIXEL_SIZE 16
+POINT_SIZE 160
+RESOLUTION_X 75
+RESOLUTION_Y 75
+SPACING "C"
+AVERAGE_WIDTH 80
+CHARSET_REGISTRY "ISO10646"
+CHARSET_ENCODING "1"
+UNDERLINE_POSITION -2
+UNDERLINE_THICKNESS 1
+CAP_HEIGHT 10
+X_HEIGHT 8
+FONT_ASCENT 14
+FONT_DESCENT 2
+DEFAULT_CHAR 65533
+ENDPROPERTIES

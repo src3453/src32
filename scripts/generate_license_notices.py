@@ -88,6 +88,8 @@ def generate() -> str:
 
     for path, name, license_id in [
         ("assets/UNIFONT-LICENSE.txt", "GNU Unifont bitmap data", "OFL-1.1 (selected alternative)"),
+        ("licenses/UNIFONT-18.0.01-NOTICE.txt", "GNU Unifont 18.0.01 release attribution", "OFL-1.1 (selected alternative)"),
+        ("licenses/UNIFONT-OFL-1.1.txt", "GNU Unifont official OFL terms", "OFL-1.1"),
         ("assets/UNSCII-LICENSE.txt", "UNSCII-8 CP437 font bank", "CC0-1.0 / public domain"),
         ("licenses/UNSCII-UPSTREAM.md", "UNSCII upstream declaration", "CC0-1.0 / public domain"),
         ("licenses/CC0-1.0.txt", "CC0 standard terms", "CC0-1.0"),
@@ -106,9 +108,9 @@ def generate() -> str:
         "Extra alternatives/texts are retained; listing a license does not relicense CPT32.\n"
         "MPL-2.0 covered source: option-ext 0.2.0, unmodified, available at\n"
         "https://crates.io/api/v1/crates/option-ext/0.2.0/download\n"
-        "UNVERIFIED: version-specific Unifont copyright notices remain subject to review;\n"
-        "this is not a compliance certificate.\n"
-        "See doc/license-compliance.md for distribution obligations and unresolved provenance.\n"
+        "GNU Unifont 18.0.01 attribution was verified against the official release archive;\n"
+        "its font data and the CPT32 glyph ROM retain OFL-1.1.\n"
+        "See doc/license-compliance.md for distribution obligations and audit scope.\n"
         "Package notice references are SHA-256 identifiers of the full texts below.\n\n"
         + "\n\n".join(records)
         + "\n\n==================== FULL LICENSE / NOTICE TEXTS ====================\n\n"

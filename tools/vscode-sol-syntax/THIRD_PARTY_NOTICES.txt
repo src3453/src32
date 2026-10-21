@@ -6,9 +6,9 @@ dependencies; sol VS Code extension production npm dependencies; bundled fonts/S
 Extra alternatives/texts are retained; listing a license does not relicense CPT32.
 MPL-2.0 covered source: option-ext 0.2.0, unmodified, available at
 https://crates.io/api/v1/crates/option-ext/0.2.0/download
-UNVERIFIED: version-specific Unifont copyright notices remain subject to review;
-this is not a compliance certificate.
-See doc/license-compliance.md for distribution obligations and unresolved provenance.
+GNU Unifont 18.0.01 attribution was verified against the official release archive;
+its font data and the CPT32 glyph ROM retain OFL-1.1.
+See doc/license-compliance.md for distribution obligations and audit scope.
 Package notice references are SHA-256 identifiers of the full texts below.
 
 ab_glyph 0.2.32
@@ -2276,7 +2276,17 @@ Source: https://registry.npmjs.org/vscode-languageserver-types/-/vscode-language
 GNU Unifont bitmap data
 License: OFL-1.1 (selected alternative)
 Source: assets/UNIFONT-LICENSE.txt
-  assets/UNIFONT-LICENSE.txt: 05b1e619a15dc1c132094966d24b4264d5471550180bcfb63e7a15368c91743d
+  assets/UNIFONT-LICENSE.txt: f307f52c34de25143cffb7727dc8eee4bc1b0881c0b5917269c4a0dfabdef00d
+
+GNU Unifont 18.0.01 release attribution
+License: OFL-1.1 (selected alternative)
+Source: licenses/UNIFONT-18.0.01-NOTICE.txt
+  licenses/UNIFONT-18.0.01-NOTICE.txt: 0cd7ecf5b51aefc0064e75aa433e7556cbc4acdcb297a7c0e6f77f83110f4d31
+
+GNU Unifont official OFL terms
+License: OFL-1.1
+Source: licenses/UNIFONT-OFL-1.1.txt
+  licenses/UNIFONT-OFL-1.1.txt: ddd1809be6c7da406c9969515f6877ecdccf2bc194a2ff21088398565c2863fd
 
 UNSCII-8 CP437 font bank
 License: CC0-1.0 / public domain
@@ -2406,28 +2416,6 @@ LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON
 ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
 (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
 SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
-
---- 05b1e619a15dc1c132094966d24b4264d5471550180bcfb63e7a15368c91743d ---
-GNU Unifont Plane 0 bitmap data
-================================
-
-Version: GNU Unifont 18.0.01
-Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
-Project and license information: https://unifoundry.com/unifont.html
-
-SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
-SHA-256 (generated ROM): 0787d651d2f0b6353aaa924ca5b4c569e56f9ad339462c0f04d80733ccb7368f
-
-GNU Unifont fonts are dual-licensed under the SIL Open Font License (OFL)
-version 1.1 and the GNU General Public License version 2 or later (GPL-2+)
-with the GNU Font Embedding Exception. The OFL 1.1 and the complete GPL-2+
-Font Embedding Exception terms are published in the GNU Unifont project's
-LICENSE.txt. Consult that upstream license file for the complete legal text.
-
-This repository includes the unmodified upstream gzip-compressed Plane 0
-.hex source and a generated fixed-size glyph ROM. The converter maps source
-records by Unicode code point; absent BMP code points and UTF-16 surrogate
-code units use the U+FFFD replacement glyph.
 
 --- 05c60b829931ef7f1f130735843c11f5cf9cc69546eca5fc941d014781c68e31 ---
 [package]
@@ -2716,6 +2704,52 @@ SERVICES; LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER
 CAUSED AND ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY,
 OR TORT (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
 OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+
+--- 0cd7ecf5b51aefc0064e75aa433e7556cbc4acdcb297a7c0e6f77f83110f4d31 ---
+GNU Unifont 18.0.01 release attribution
+
+Official release archive: https://unifoundry.com/pub/unifont/unifont-18.0.01/unifont-18.0.01.tar.gz
+Archive SHA-256: eab60847aac34c8768765cecc7821faf50de2636187b452b9b5fa50a12b00bc3
+
+The bundled assets/unifont-18.0.01.hex.gz decompresses byte-for-byte to
+font/precompiled/unifont-18.0.01.hex from that release.
+Uncompressed HEX SHA-256: 2ab7801c809b76541a10b25858c1a962bdb650eee56b4c7df1f325b56e3955ee
+
+The following is the unmodified BDF header of the standard Plane 0 font
+from the same release (font/precompiled/unifont-18.0.01.bdf.gz).
+Its COPYRIGHT property preserves the upstream rights and license notice.
+The OFL terms are in UNIFONT-OFL-1.1.txt.
+
+STARTFONT 2.1
+FONT -gnu-Unifont-Medium-R-Normal-Sans-16-160-75-75-c-80-iso10646-1
+SIZE 16 75 75
+FONTBOUNDINGBOX 16 16 0 -2
+STARTPROPERTIES 24
+COPYRIGHT "Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception."
+FONT_VERSION "18.0.01"
+FONT_TYPE "Bitmap"
+FOUNDRY "GNU"
+FAMILY_NAME "Unifont"
+WEIGHT_NAME "Medium"
+SLANT "R"
+SETWIDTH_NAME "Normal"
+ADD_STYLE_NAME "Sans Serif"
+PIXEL_SIZE 16
+POINT_SIZE 160
+RESOLUTION_X 75
+RESOLUTION_Y 75
+SPACING "C"
+AVERAGE_WIDTH 80
+CHARSET_REGISTRY "ISO10646"
+CHARSET_ENCODING "1"
+UNDERLINE_POSITION -2
+UNDERLINE_THICKNESS 1
+CAP_HEIGHT 10
+X_HEIGHT 8
+FONT_ASCENT 14
+FONT_DESCENT 2
+DEFAULT_CHAR 65533
+ENDPROPERTIES
 
 --- 0d25d03b5ab49576178ad0cae7a2648d12c17ad0452fe49c07e55e4b59aa5257 ---
 Copyright (c) 2020 Yevhenii Reizner
@@ -13868,6 +13902,98 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
+--- ddd1809be6c7da406c9969515f6877ecdccf2bc194a2ff21088398565c2863fd ---
+The SIL Open Font License version 1.1 is copied below, and is also
+available with a FAQ at http://scripts.sil.org/OFL.
+
+
+-----------------------------------------------------------
+SIL OPEN FONT LICENSE Version 1.1 - 26 February 2007
+-----------------------------------------------------------
+
+PREAMBLE
+The goals of the Open Font License (OFL) are to stimulate worldwide
+development of collaborative font projects, to support the font creation
+efforts of academic and linguistic communities, and to provide a free and
+open framework in which fonts may be shared and improved in partnership
+with others.
+
+The OFL allows the licensed fonts to be used, studied, modified and
+redistributed freely as long as they are not sold by themselves. The
+fonts, including any derivative works, can be bundled, embedded,
+redistributed and/or sold with any software provided that any reserved
+names are not used by derivative works. The fonts and derivatives,
+however, cannot be released under any other type of license. The
+requirement for fonts to remain under this license does not apply
+to any document created using the fonts or their derivatives.
+
+DEFINITIONS
+"Font Software" refers to the set of files released by the Copyright
+Holder(s) under this license and clearly marked as such. This may
+include source files, build scripts and documentation.
+
+"Reserved Font Name" refers to any names specified as such after the
+copyright statement(s).
+
+"Original Version" refers to the collection of Font Software components as
+distributed by the Copyright Holder(s).
+
+"Modified Version" refers to any derivative made by adding to, deleting,
+or substituting -- in part or in whole -- any of the components of the
+Original Version, by changing formats or by porting the Font Software to a
+new environment.
+
+"Author" refers to any designer, engineer, programmer, technical
+writer or other person who contributed to the Font Software.
+
+PERMISSION & CONDITIONS
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of the Font Software, to use, study, copy, merge, embed, modify,
+redistribute, and sell modified and unmodified copies of the Font
+Software, subject to the following conditions:
+
+1) Neither the Font Software nor any of its individual components,
+in Original or Modified Versions, may be sold by itself.
+
+2) Original or Modified Versions of the Font Software may be bundled,
+redistributed and/or sold with any software, provided that each copy
+contains the above copyright notice and this license. These can be
+included either as stand-alone text files, human-readable headers or
+in the appropriate machine-readable metadata fields within text or
+binary files as long as those fields can be easily viewed by the user.
+
+3) No Modified Version of the Font Software may use the Reserved Font
+Name(s) unless explicit written permission is granted by the corresponding
+Copyright Holder. This restriction only applies to the primary font name as
+presented to the users.
+
+4) The name(s) of the Copyright Holder(s) or the Author(s) of the Font
+Software shall not be used to promote, endorse or advertise any
+Modified Version, except to acknowledge the contribution(s) of the
+Copyright Holder(s) and the Author(s) or with their explicit written
+permission.
+
+5) The Font Software, modified or unmodified, in part or in whole,
+must be distributed entirely under this license, and must not be
+distributed under any other license. The requirement for fonts to
+remain under this license does not apply to any document created
+using the Font Software.
+
+TERMINATION
+This license becomes null and void if any of the above conditions are
+not met.
+
+DISCLAIMER
+THE FONT SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO ANY WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT
+OF COPYRIGHT, PATENT, TRADEMARK, OR OTHER RIGHT. IN NO EVENT SHALL THE
+COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY,
+INCLUDING ANY GENERAL, SPECIAL, INDIRECT, INCIDENTAL, OR CONSEQUENTIAL
+DAMAGES, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+FROM, OUT OF THE USE OR INABILITY TO USE THE FONT SOFTWARE OR FROM
+OTHER DEALINGS IN THE FONT SOFTWARE.
+
 --- e0cfa1006a64520633de6bfbf563f5b1bea04ef0c5b73f049681931fa297dda3 ---
 Copyright (c) 2015 The cobs.rs Developers
 
@@ -14763,6 +14889,46 @@ DEALINGS IN THE SOFTWARE.
 The above is the version of the MIT "Expat" License used by X.org:
 
     http://cgit.freedesktop.org/xorg/xserver/tree/COPYING
+
+--- f307f52c34de25143cffb7727dc8eee4bc1b0881c0b5917269c4a0dfabdef00d ---
+GNU Unifont Plane 0 bitmap data
+================================
+
+Version: GNU Unifont 18.0.01
+Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
+Project and license information: https://unifoundry.com/unifont/index.html
+
+SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
+SHA-256 (generated ROM): 0787d651d2f0b6353aaa924ca5b4c569e56f9ad339462c0f04d80733ccb7368f
+
+GNU Unifont fonts are dual-licensed under the SIL Open Font License (OFL)
+version 1.1 and the GNU General Public License version 2 or later (GPL-2+)
+with the GNU Font Embedding Exception. The OFL 1.1 and the complete GPL-2+
+Font Embedding Exception terms are published in the GNU Unifont project's
+LICENSE.txt. Consult that upstream license file for the complete legal text.
+
+This repository includes the unmodified upstream gzip-compressed Plane 0
+.hex source and a generated fixed-size glyph ROM. The converter maps source
+records by Unicode code point; absent BMP code points and UTF-16 surrogate
+code units use the U+FFFD replacement glyph.
+
+Verified release attribution (2026-10-21)
+-----------------------------------------
+Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception.
+
+CPT32 distributes the font data under the OFL-1.1 alternative.
+The complete official OFL text is included in licenses/UNIFONT-OFL-1.1.txt.
+Release attribution and the original BDF header are preserved in
+licenses/UNIFONT-18.0.01-NOTICE.txt. The upstream common LICENSE.txt,
+including the alternative GPL terms, is in licenses/UNIFONT-UPSTREAM.txt.
+
+The original HEX glyph data is unchanged. CPT32 converts it into a
+fixed-size ROM as described above; the ROM remains under OFL-1.1.
+The verified BDF header and release OFL text do not declare a Reserved Font Name.
+
+Verified against the official 18.0.01 source archive linked from:
+https://unifoundry.com/unifont/unifont-utilities.html
+The archive HEX and bundled decompressed HEX are byte-identical.
 
 --- f428305bbf2e70fbd807af0f3c7ac1b7acfb95311640f451e9d2e48db6d7e96b ---
 MIT License
