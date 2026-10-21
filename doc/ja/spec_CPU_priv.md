@@ -217,6 +217,7 @@ CPU状態MMIOビュー`0xFFFF0200..`とデバッガーは、現在のモード�
 - JIT: native blockはSモードでだけ動きます。UモードはCached interpreterを使います。
   `SYSCALL`、`MFSR`、`MTSR`は常にblockを終わらせます。
 - spin-loop fast-forwardは特権状態も比較します。
+- Cツールチェーン: `tools/llvm-src32` は `cpt32_syscall`／`cpt32_mfsr`／`cpt32_mtsr`／`cpt32_run_user`／`cpt32_return_to_kernel` のintrinsic、`syscall_dispatch` フック、`--protected` のWAX出力を提供します。READMEと `examples/syscall-user-c` を参照してください。
 
 ## 10. 例
 

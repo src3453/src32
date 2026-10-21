@@ -14,6 +14,22 @@ from llvmlite import binding as llvm
 from data import CompileError, DataImage, Layout, parse_type, split_top, symbol
 
 
+# Extension P (doc/spec_CPU_priv.md) system register numbers accepted by
+# cpt32_mfsr/cpt32_mtsr: STATUS, EPC, CAUSE, USP, UFP, UGP, RGN0..7 fields.
+_SYSTEM_REGISTERS = {0x00, 0x01, 0x02, 0x08, 0x09, 0x0A} | {
+    0x10 + 4 * region + field for region in range(8) for field in range(3)}
+# C-callable compiler intrinsics. Each is lowered inline; none may be defined.
+_INTRINSICS = ("cpt32_halt", "cpt32_syscall", "cpt32_mfsr", "cpt32_mtsr",
+               "cpt32_run_user", "cpt32_return_to_kernel")
+# Intrinsics that execute supervisor-only instructions (HALT, MFSR, MTSR, IRET).
+_SUPERVISOR_INTRINSICS = ("cpt32_halt", "cpt32_mfsr", "cpt32_mtsr",
+                          "cpt32_run_user", "cpt32_return_to_kernel")
+_KERNEL_CONTEXT = "__llvm_src32_kernel_context"
+# Trap frame passed to syscall_dispatch: word 0 = CAUSE, word n = Rn
+# (word 28 is unused and reads 0). 128 bytes, plus 8 bytes for the argument.
+_TRAP_FRAME = 128
+
+
 def _round(n, a=4):
     return (n + a - 1) // a * a
 
@@ -815,10 +831,8 @@ class _Function:
             self.fail("unsupported ABI call argument attribute")
         if re.search(r"\[\s*\"", text):
             self.fail("call operand bundles are unsupported")
-        if name == "cpt32_halt":
-            if values or str(inst.type) != "void":
-                self.fail("cpt32_halt must be called with no arguments and no return value")
-            c.emit("HALT")
+        if name in _INTRINSICS:
+            self.privilege_intrinsic(inst, name, values)
             return
         if name.startswith("llvm."):
             self.intrinsic(inst, name, values)
@@ -872,6 +886,86 @@ class _Function:
             else:
                 self.narrow(1, _bits(inst.type) or 32)
                 self.store(inst)
+
+    def constant_operand(self, value, what, valid):
+        if value.value_kind != llvm.ValueKind.constant_int:
+            self.fail(f"{what} must be an integer constant")
+        number = value.get_constant_value() & 0xFFFFFFFF
+        if number not in valid:
+            self.fail(f"{what} {number:#x} is out of range")
+        return number
+
+    def privilege_intrinsic(self, inst, name, values):
+        """SRC32 HALT and Extension P intrinsics (sdk/cpt32/include/cpt32/cpu.h)."""
+        c = self.c
+        if self.owner.protected and name in _SUPERVISOR_INTRINSICS:
+            self.fail(f"{name} uses a supervisor instruction and is unavailable with --protected")
+        signatures = {
+            "cpt32_halt": (0, "void"), "cpt32_syscall": (6, "i32"), "cpt32_mfsr": (1, "i32"),
+            "cpt32_mtsr": (2, "void"), "cpt32_run_user": (2, "i32"), "cpt32_return_to_kernel": (1, "void"),
+        }
+        count, result = signatures[name]
+        if len(values) != count or str(inst.type) != result:
+            self.fail(f"{name} must take {count} arguments and return {result}; include <cpt32/cpu.h>")
+        if name == "cpt32_halt":
+            c.emit("HALT")
+        elif name == "cpt32_syscall":
+            # Number and context are immediates; arguments in R1..R4, result in R1.
+            number = self.constant_operand(values[0], "syscall number", range(256))
+            context = self.constant_operand(values[1], "syscall context", range(256))
+            for register, value in enumerate(values[2:], start=1):
+                self.load(value, register)
+            c.emit(f"SYSCALL {number}, {context}")
+            self.store(inst)
+        elif name == "cpt32_mfsr":
+            sr = self.constant_operand(values[0], "system register", _SYSTEM_REGISTERS)
+            c.emit(f"MFSR R1, 0x{sr:02X}")
+            self.store(inst)
+        elif name == "cpt32_mtsr":
+            sr = self.constant_operand(values[0], "system register", _SYSTEM_REGISTERS)
+            self.load(values[1], 1)
+            c.emit(f"MTSR 0x{sr:02X}, R1")
+        elif name == "cpt32_run_user":
+            # Save the kernel SP/FP/resume PC/STATUS, then IRET into user mode
+            # at entry with USP = user stack top. cpt32_return_to_kernel(code)
+            # resumes here with R1 = code.
+            self.owner.uses_kernel_context = True
+            resume = c.fresh("user_return")
+            self.load(values[0], 2)
+            self.load(values[1], 3)
+            c.imm(12, ("label", _KERNEL_CONTEXT))
+            c.mem("ST", 28, 12, 0)
+            c.mem("ST", 29, 12, 4)
+            c.imm(4, ("label", resume))
+            c.mem("ST", 4, 12, 8)
+            c.emit("MFSR R4, STATUS")
+            c.mem("ST", 4, 12, 12)
+            c.emit("MTSR USP, R3")
+            c.emit("MTSR EPC, R2")
+            # STATUS = PU | (IE << 1): user mode keeps the kernel's IE.
+            c.emit("ADDI R5, R0, 1")
+            c.emit("AND R4, R4, R5")
+            c.emit("ADD R4, R4, R4")
+            c.emit("ADDI R4, R4, 8")
+            c.emit("MTSR STATUS, R4")
+            c.emit("IRET")
+            c.label(resume)
+            self.store(inst)
+        else:  # cpt32_return_to_kernel
+            self.owner.uses_kernel_context = True
+            self.load(values[0], 1)
+            c.imm(12, ("label", _KERNEL_CONTEXT))
+            c.mem("LD", 28, 12, 0)
+            c.mem("LD", 29, 12, 4)
+            c.mem("LD", 4, 12, 8)
+            c.emit("MTSR EPC, R4")
+            # STATUS = saved IE << 1 (PU = 0): IRET resumes the kernel in S mode.
+            c.mem("LD", 4, 12, 12)
+            c.emit("ADDI R5, R0, 1")
+            c.emit("AND R4, R4, R5")
+            c.emit("ADD R4, R4, R4")
+            c.emit("MTSR STATUS, R4")
+            c.emit("IRET")
 
     @staticmethod
     def call_argument_text(text):
@@ -1118,18 +1212,33 @@ class _Function:
 
 
 class _Module:
-    def __init__(self, module, origin, stack_top, entry):
+    def __init__(self, module, origin, stack_top, entry, protected=False):
         self.module = module
         self.layout = Layout(module)
         self.image = DataImage(module)
         self.code = _Code(origin)
         self.definitions = {f.name: f for f in module.functions if not f.is_declaration}
         self.origin, self.stack_top, self.entry = origin, stack_top, entry
+        self.protected = protected
+        self.uses_kernel_context = False
+        self.data_start = None
 
     def compile(self):
         c = self.code
-        if "cpt32_halt" in self.definitions:
-            raise CompileError("function @cpt32_halt is reserved for the SRC32 HALT intrinsic")
+        for name in _INTRINSICS:
+            if name in self.definitions:
+                raise CompileError(f"function @{name} is reserved for a compiler intrinsic")
+        syscall_dispatch = self.definitions.get("syscall_dispatch")
+        if syscall_dispatch is not None:
+            arguments = list(syscall_dispatch.arguments)
+            if (len(arguments) != 1 or not arguments[0].type.is_pointer
+                    or str(syscall_dispatch.global_value_type.get_function_return()) != "void"):
+                raise CompileError("SYSCALL dispatcher must have signature void syscall_dispatch(cpt32_trap_frame *)")
+        if self.protected:
+            for handler in ("irqc_dispatch", "syscall_dispatch"):
+                if handler in self.definitions:
+                    raise CompileError(f"{handler} installs CPU vectors and needs supervisor mode; "
+                                       "it is unavailable with --protected")
         entry = self.definitions[self.entry]
         if list(entry.arguments):
             raise CompileError("freestanding entry must take no arguments (use int main(void))")
@@ -1152,9 +1261,18 @@ class _Module:
             c.imm(10, (0x0B << 26) | (30 << 21))  # JR R30
             for line in range(16):
                 c.mem("ST", 10, 11, line * 4)
+        if syscall_dispatch is not None:
+            c.imm(11, 0xFFFF000C)  # Extension P SYSCALL vector word
+            c.imm(10, ("label", "__llvm_src32_syscall_entry"))
+            c.mem("ST", 10, 11)
         c.imm(12, ("label", symbol(self.entry)))
         c.emit("JALR R12")
-        c.emit("HALT")
+        if self.protected:
+            # User mode cannot HALT: report main's result in R1 with SYSCALL 0
+            # (exit), which the loading OS/BIOS defines.
+            c.emit("SYSCALL 0")
+        else:
+            c.emit("HALT")
         stop = c.fresh("stop")
         c.label(stop)
         c.jump(stop)
@@ -1172,13 +1290,38 @@ class _Module:
                     c.mem("LD", register, 28, (register - 1) * 4)
             c.add_const(28, 28, 128)
             c.emit("IRET")
+        if syscall_dispatch is not None:
+            # R28 is the supervisor bank here even for a SYSCALL from user mode.
+            c.label("__llvm_src32_syscall_entry")
+            c.add_const(28, 28, -(_TRAP_FRAME + 8))
+            for register in range(1, 32):
+                if register != 28:
+                    c.mem("ST", register, 28, 8 + register * 4)
+            c.mem("ST", 0, 28, 8 + 28 * 4)
+            c.emit("MFSR R1, CAUSE")
+            c.mem("ST", 1, 28, 8)
+            c.add_const(1, 28, 8)
+            c.mem("ST", 1, 28, 0)  # argument 0: frame pointer
+            c.imm(12, ("label", symbol("syscall_dispatch")))
+            c.emit("JALR R12")
+            for register in range(1, 32):
+                if register != 28:
+                    c.mem("LD", register, 28, 8 + register * 4)
+            c.add_const(28, 28, _TRAP_FRAME + 8)
+            c.emit("IRET")
         for function in self.definitions.values():
             linkage = function.linkage.name
             if linkage not in ("external", "internal", "private"):
                 raise CompileError(f"function @{function.name}: unsupported linkage {linkage}")
             _Function(self, function).emit()
+        if self.uses_kernel_context:
+            # Saved kernel SP, FP, resume PC and STATUS for cpt32_run_user.
+            c.label(_KERNEL_CONTEXT)
+            for _ in range(4):
+                c.emit(".DWORD 0")
         functions = {name: c.labels[symbol(name)] for name in self.definitions}
         base = _round(c.pc, 8)
+        self.data_start = base
         self.image.assign(base, functions)
         if self.origin < self.stack_top <= self.image.end:
             raise CompileError("initial stack top overlaps the generated code/data image")
@@ -1187,12 +1330,15 @@ class _Module:
         return "\n".join(lines) + "\n"
 
 
-def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main"):
+def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None):
     """Lower an official llvmlite ModuleRef into standalone SRC32 assembly.
 
     The module is verified by LLVM, keeps its big-endian 32-bit target layout,
     and must contain all referenced external definitions. Unsupported semantics
     produce CompileError with the function, block, and instruction context.
+    `protected` emits a user-mode program (Extension P): startup exits with
+    SYSCALL 0 and supervisor intrinsics are rejected. When `info` is a dict
+    it receives `data_start`, the first address after code.
     """
     if not 0 <= origin <= 0xFFFFFFFC or origin % 4:
         raise CompileError("origin must be a word-aligned 32-bit address")
@@ -1203,7 +1349,11 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main"):
     except RuntimeError as exc:
         raise CompileError(f"LLVM verification failed: {exc}") from exc
     try:
-        return _Module(module, origin, stack_top, entry).compile()
+        compiled = _Module(module, origin, stack_top, entry, protected)
+        assembly = compiled.compile()
+        if info is not None:
+            info["data_start"] = compiled.data_start
+        return assembly
     except CompileError:
         raise
     except (ValueError, TypeError, KeyError, IndexError, RuntimeError) as exc:

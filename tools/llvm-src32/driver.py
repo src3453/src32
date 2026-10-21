@@ -47,6 +47,11 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--origin", type=address, default=0)
     p.add_argument("--stack-top", type=address, default=0x00100000)
     p.add_argument("--entry", default="main", help="C/LLVM entry function (default: main)")
+    p.add_argument("--protected", action="store_true",
+                   help="emit an Extension P user-mode program as a PROTECTED .wax "
+                        "(code R/X, data R/W, user stack below --stack-top)")
+    p.add_argument("--user-stack-size", type=address, default=0x4000,
+                   help="user stack bytes below --stack-top with --protected (default 0x4000)")
     p.add_argument("--save-temps", type=Path, metavar="DIR")
     p.add_argument("--depfile", type=Path, metavar="PATH", help="write Make-style dependencies after successful compilation")
     p.add_argument("--clang", help="Clang executable path; otherwise use CLANG or PATH")
@@ -163,7 +168,12 @@ def run(args) -> Path:
     for define in args.defines:
         if not define or define.startswith("-"):
             raise DriverError(f"invalid macro definition: {define!r}")
+    if args.protected and (not args.user_stack_size or args.user_stack_size % 8
+                           or args.user_stack_size > args.stack_top):
+        raise DriverError("--user-stack-size must be a nonzero multiple of 8 that fits below --stack-top")
     output = args.output or args.inputs[0].with_suffix(".ll" if args.emit_llvm else ".a" if args.S else ".wax")
+    if args.protected and not (args.emit_llvm or args.S) and output.suffix.lower() != ".wax":
+        raise DriverError("--protected needs .wax output: raw .bin cannot carry permissions")
     if not (args.emit_llvm or args.S) and output.suffix.lower() not in (".wax", ".bin"):
         raise DriverError("binary output must have a .wax or .bin extension; use -S for assembly")
     if output.resolve() in {source.resolve() for source in args.inputs}:
@@ -258,7 +268,9 @@ def run(args) -> Path:
             emit_dependencies()
             return output
         from backend import compile_module
-        assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry)
+        layout_info = {}
+        assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
+                                  protected=args.protected, info=layout_info)
         if args.save_temps:
             (work / "output.a").write_text(assembly, encoding="utf-8")
         if args.S:
@@ -270,10 +282,33 @@ def run(args) -> Path:
             binary = assembler.assemble(assembly, source="<llvm-src32>", base_dir=str(ROOT))
             if wax:
                 wax_module = load_python(ROOT.parent / "wax" / "wax.py", "_llvm_src32_wax")
-                binary = wax_module.pack(assembler.image_base, args.origin - assembler.image_base, assembler.blocks)
+                blocks = assembler.blocks
+                protection = None
+                if args.protected:
+                    blocks = protected_blocks(blocks, layout_info["data_start"])
+                    protection = (args.stack_top, args.user_stack_size)
+                try:
+                    binary = wax_module.pack(assembler.image_base, args.origin - assembler.image_base,
+                                             blocks, protection=protection)
+                except ValueError as exc:
+                    raise DriverError(f"cannot pack WAX: {exc}") from exc
             output.write_bytes(binary)
         emit_dependencies()
     return output
+
+
+def protected_blocks(blocks, data_start):
+    """Split assembled blocks at the code/data boundary: code R/X, data R/W."""
+    perm_rx, perm_rw = 1 | 4, 1 | 2
+    result = []
+    for address, data in blocks:
+        data = bytes(data)
+        split = min(max(data_start - address, 0), len(data))
+        if split:
+            result.append((address, data[:split], perm_rx))
+        if split < len(data):
+            result.append((address + split, data[split:], perm_rw))
+    return result
 
 
 def main(argv=None) -> int:

@@ -190,6 +190,106 @@ int main(void) {
         self.execute(image, 42)
         self.execute(image, 42, 'pipeline')
 
+    def test_user_mode_syscall_example(self):
+        # Extension P: kernel.c runs user.c in user mode; user.c checks the
+        # caller mode, a SYSCALL result, the context byte path and a refused
+        # kernel-memory poke, then exits with 42 through SYSCALL 0.
+        example = ROOT / 'examples/syscall-user-c'
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(example / 'user.c', example / 'kernel.c',
+                            ROOT / 'sdk/cpt32/src/pcg.c', '-I', ROOT / 'sdk/cpt32/include',
+                            opt, '-o', image)
+                for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                    with self.subTest(cpu=cpu):
+                        self.execute(image, 42, cpu)
+
+    def test_user_mode_store_to_kernel_memory_faults(self):
+        # The control program exits with 42. With -DTOUCH the user code first
+        # stores to kernel data; the protection fault reaches the default
+        # (self-referencing) bus-error vector, which halts before the exit.
+        source = self.work / 'touch.c'
+        source.write_text('''#include <cpt32/cpu.h>
+volatile uint32_t kernel_word;
+void user_entry(void) {
+#ifdef TOUCH
+    kernel_word = 1;
+#endif
+    CPT32_SYSCALL1(0, 42);
+    for (;;) {}
+}
+void user_end(void) {}
+void syscall_dispatch(cpt32_trap_frame *frame) { cpt32_return_to_kernel(frame->r[1]); }
+int main(void) {
+    cpt32_mtsr(CPT32_SR_RGN_START(0), (uint32_t)(uintptr_t)user_entry);
+    cpt32_mtsr(CPT32_SR_RGN_END(0), (uint32_t)(uintptr_t)user_end);
+    cpt32_mtsr(CPT32_SR_RGN_FLAGS(0), CPT32_PERM_R | CPT32_PERM_X);
+    cpt32_mtsr(CPT32_SR_RGN_START(1), 0x80000u);
+    cpt32_mtsr(CPT32_SR_RGN_END(1), 0x90000u);
+    cpt32_mtsr(CPT32_SR_RGN_FLAGS(1), CPT32_PERM_R | CPT32_PERM_W);
+    if (kernel_word != 0) return 1;
+    return (int)cpt32_run_user(user_entry, 0x90000u);
+}
+''', encoding='utf-8')
+        include = ROOT / 'sdk/cpt32/include'
+        control = self.work / 'control.wax'
+        self.driver(source, '-I', include, '-o', control)
+        touch = self.work / 'touch.wax'
+        self.driver(source, '-I', include, '-DTOUCH', '-o', touch)
+        for cpu in ('scalar', 'pipeline'):
+            with self.subTest(cpu=cpu):
+                self.execute(control, 42, cpu)
+                result = subprocess.run(
+                    [str(self.harness), str(touch), '42', '--cpu', cpu],
+                    cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                    errors='replace', timeout=120)
+                self.assertNotEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_protected_wax_output(self):
+        sys.path.insert(0, str(ROOT / 'tools/wax'))
+        from wax import parse as parse_wax, user_regions
+        source = self.work / 'app.c'
+        source.write_text('int counter = 5;\nint main(void) { return counter + 37; }\n',
+                          encoding='utf-8')
+        image = self.work / 'app.wax'
+        self.driver(source, '--protected', '--origin', '0x10000', '--stack-top', '0x40000',
+                    '--user-stack-size', '0x2000', '-o', image)
+        parsed = parse_wax(image.read_bytes())
+        self.assertEqual(parsed['protection'], (0x40000, 0x2000))
+        self.assertEqual([block['perm'] for block in parsed['blocks']], [5, 3])
+        self.assertEqual(user_regions(parsed)[0], (0x3E000, 0x40000, 3))
+        self.assertEqual(parsed['entry'], 0x10000)
+        assembly = self.work / 'app.a'
+        self.driver(source, '--protected', '--origin', '0x10000', '--stack-top', '0x40000',
+                    '-S', '-o', assembly)
+        text = assembly.read_text(encoding='utf-8')
+        self.assertIn('SYSCALL 0', text)
+        self.assertNotIn('HALT', text)
+
+    def test_extension_p_intrinsic_diagnostics(self):
+        header = '#include <cpt32/cpu.h>\n'
+        cases = {
+            'halt.c': (header + 'int main(void) { cpt32_halt(); return 0; }\n',
+                       ['--protected'], 'unavailable with --protected'),
+            'handler.c': (header + 'void syscall_dispatch(cpt32_trap_frame *f) { (void)f; }\n'
+                          'int main(void) { return 0; }\n', ['--protected'], 'needs supervisor mode'),
+            'number.c': (header + 'int main(void) { volatile uint32_t n = 1;\n'
+                         'return (int)cpt32_syscall(n, 0, 0, 0, 0, 0); }\n', [],
+                         'syscall number must be an integer constant'),
+            'range.c': (header + 'int main(void) { return (int)CPT32_SYSCALL0(256); }\n',
+                        [], 'out of range'),
+            'sr.c': (header + 'int main(void) { return (int)cpt32_mfsr(3); }\n',
+                     [], 'system register 0x3 is out of range'),
+        }
+        for name, (text, extra, message) in cases.items():
+            with self.subTest(case=name):
+                source = self.work / name
+                source.write_text(text, encoding='utf-8')
+                result = self.driver(source, '-I', ROOT / 'sdk/cpt32/include', *extra,
+                                     '-o', self.work / (name + '.wax'), success=False)
+                self.assertIn(message, result.stderr)
+
     def test_optimized_static_helper_calls(self):
         source = self.work / 'static.c'
         source.write_text('''

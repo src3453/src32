@@ -5,6 +5,7 @@
 CPT32 の RAM 上で起動し、引数なしの `int main(void)` を呼び、戻り値を R1 に残して HALT します。
 
 `<cpt32/cpu.h>` の `cpt32_halt()` はSRC32の`HALT`命令を出力するintrinsicです。引数・戻り値はなく、有効なIRQが受理されると呼出し直後から再開します。この関数名は予約済みで、ユーザー定義しないでください。inline assembly全般が使えるわけではなく、引き続き拒否されます。
+拡張P（特権レベルとSYSCALL）用のintrinsicとSYSCALLハンドラーは下の「Extension P」を参照してください。
 
 CMake 用モジュールは `cmake/SRC32.cmake`。
 
@@ -73,6 +74,37 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 `--depfile PATH` は出力生成成功後に Make 形式の依存ルールを書き出します。
 `.bin` 出力は raw バイト列で配置・エントリ情報を持ちません。非ゼロ origin では WAX を使ってください。
 
+## Extension P（特権レベルと SYSCALL）
+
+[拡張P](../../doc/spec_CPU_priv.md) のための intrinsic を `<cpt32/cpu.h>` で宣言しています。すべて呼出し位置へ直接展開され、同名の関数は定義できません。
+
+| intrinsic | 展開 | 制約 |
+|---|---|---|
+| `cpt32_syscall(number, context, a1, a2, a3, a4)` | a1〜a4 を R1〜R4 に置き `SYSCALL number, context`、R1 を返す | number・context は0〜255の整数定数。U/Sどちらでも使用可。`CPT32_SYSCALL0..4` マクロあり |
+| `cpt32_mfsr(sr)` / `cpt32_mtsr(sr, value)` | `MFSR` / `MTSR` | sr は `CPT32_SR_*` の定数。Sモードのみ |
+| `cpt32_run_user(entry, user_stack_top)` | カーネルの SP/FP/再開PC/STATUS を保存し、`USP`・`EPC`・`STATUS.PU` を設定して `IRET` | Sモードのみ。ユーザーのIEはカーネルと同じ。保護領域は事前に設定。再入不可 |
+| `cpt32_return_to_kernel(code)` | 保存したカーネル状態へ `IRET` し、`cpt32_run_user` が code を返す | SYSCALLハンドラーから呼ぶ。戻らない |
+| `cpt32_halt()` | `HALT` | Sモードのみ |
+
+`void syscall_dispatch(cpt32_trap_frame *frame)` を定義すると、`main` の前に SYSCALL ベクター（`0xFFFF000C`）を登録します。
+入口は S のスタック（Uからの呼出しでもバンク切替えでカーネルの R28）に136 byteを確保し、`frame->r[0]` に CAUSE、`frame->r[n]` に Rn（`r[28]` は未使用で0）を保存して呼び出します。
+戻ると `frame` から R1〜R31 を復元して `IRET` するので、`frame->r[1]` に書いた値が `cpt32_syscall` の戻り値になります。
+番号は `CPT32_CAUSE_SYSCALL_NUMBER(frame->r[0])`、コンテキストは `CPT32_CAUSE_SYSCALL_CONTEXT(...)` で取り出します。
+
+サンプル: [`examples/syscall-user-c`](../../examples/syscall-user-c/README.md)（カーネルとユーザープログラムを1つの WAX にまとめたもの）。
+
+### `--protected`（ユーザーモード実行ファイル）
+
+```sh
+python tools/llvm-src32/driver.py app.c --protected --origin 0x100000 --stack-top 0x200000 --user-stack-size 0x4000 -o app.wax
+```
+
+- 出力は [保護付き WAX](../../doc/spec_WAX.md)。コード block は R/X、データ（静的データとゼロ初期化領域）block は R/W、ユーザースタックは `--stack-top` の下 `--user-stack-size` byte（既定 0x4000、8の倍数）です。
+- 起動コードは HALT できないので、`main` の戻り値を R1 に置いて `SYSCALL 0` を発行します。**`SYSCALL 0` を exit とするのはこのツールチェーンの規約**で、読み込む BIOS/OS が定義します。
+- `cpt32_halt`、`cpt32_mfsr`、`cpt32_mtsr`、`cpt32_run_user`、`cpt32_return_to_kernel`、`irqc_dispatch`、`syscall_dispatch` はSモード専用なのでエラーです。デバイスは BIOS/OS が SYSCALL で提供します。
+- 現在、保護付き WAX を起動できるのは BIOS の WAX loader（未実装）だけです。ホストの直接ロードは拒否します。
+- CMake では `src32_add_executable(... PROTECTED USER_STACK_SIZE 0x4000)`。
+
 ## C++ 開発サンプル
 
 [`examples/hello-cpp`](../../examples/hello-cpp/README.md) はクラスを使う複数翻訳単位と C SDK の混在プロジェクトです。CMake と CLI の両方でビルドできます。
@@ -111,7 +143,7 @@ stdio、malloc、ファイル、OS API は付属しません。標準ヘッダ�
 
 ## SRC32 ABI とメモリ配置
 
-- R0 はゼロ、R28 は SP、R29 は FP、R31 は LR。IRQライブラリ使用時はR30がベクタの分岐先用に予約されます。その他のレジスタは caller-saved。
+- R0 はゼロ、R28 は SP、R29 は FP、R31 は LR。IRQライブラリ使用時はR30がベクタの分岐先用に予約されます。その他のレジスタは caller-saved。拡張Pでは R28〜R30 がS/Uでバンクされます。
 - スタックは下向き、呼出境界は8-byte整列。引数は呼出時 SP から順に4-byte単位で格納。i64 と aggregate は big-endian の連続 word。
 - callee は旧 FP、LR を8 byte保存し、その位置を FP とする。第1引数は FP+8。SSA 値・ローカルは FP より下の独立スロット。
 - 32-bit戻り値は R1。64-bit戻り値は low=R1、high=R2。8 byte超の aggregate 戻り値は LLVM の sret ポインタを使用。

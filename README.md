@@ -12,6 +12,7 @@ Windows／Linuxで起動設定を操作できるPython GUIランチャーを用�
 - **CPT32 Cライブラリ** — sol版の描画・IRQ・ストレージ・音楽APIを、LLVM/SRC32向けfreestanding Cへ移植。SDKは [`sdk/cpt32`](sdk/cpt32/README.md)、サンプルは [`3D Cube`](examples/3d-cube-c/README.md)、[`Terrain Flight`](examples/vpu-terrain-flight-c/README.md)、[`DOS`](examples/dos-c/README.md)、[`TinyBASIC`](examples/tinybasic-c/README.md)。
 - **C++17 + LLVM サンプル** — クラスを使う複数ファイルと C SDK をリンクし、文字画面に結果を表示。CMake／CLI の手順は [`Hello C++`](examples/hello-cpp/README.md)。
 - **C 外部ライブラリデモ** — [`Berkeley SoftFloat Release 3e`](examples/softfloat-c/README.md) を組み込み、浮動小数点の四則演算・丸め・例外フラグをゲストで検証して表示。
+- **ユーザーモード SYSCALL サンプル** — 拡張Pで C のカーネルが保護領域を設定し、ユーザーモードのプログラムから SYSCALL を受け付ける。[`syscall-user-c`](examples/syscall-user-c/README.md)。
 - **開発サンプル** — [`3d_cube.sol`](3d_cube.sol)、[`mouse_cursor.sol`](mouse_cursor.sol)、[`vpu_tnl_triangle.sol`](vpu_tnl_triangle.sol) など。
 - **CPT32 DOS / TinyBASIC** — sol版 [`dos.sol`](dos.sol)、[`tinybasic.sol`](tinybasic.sol) と、freestanding C移植 [`DOS`](examples/dos-c/README.md)・[`TinyBASIC`](examples/tinybasic-c/README.md)。
 

@@ -232,6 +232,10 @@ current mode.
 - JIT: native blocks run only in S mode. U mode uses the Cached interpreter.
   `SYSCALL`, `MFSR` and `MTSR` always end a block.
 - Spin-loop fast-forward compares the privilege state too.
+- C toolchain: `tools/llvm-src32` provides `cpt32_syscall`/`cpt32_mfsr`/
+  `cpt32_mtsr`/`cpt32_run_user`/`cpt32_return_to_kernel` intrinsics, a
+  `syscall_dispatch` hook and `--protected` WAX output; see its README and
+  `examples/syscall-user-c`.
 
 ## 10. Examples
 
