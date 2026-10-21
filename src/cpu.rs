@@ -1029,6 +1029,16 @@ impl Cpu {
         self.bus.mix_expansion_audio(rate, left, right);
     }
 
+    pub fn expansion_card_debug_info(
+        &self,
+    ) -> Vec<crate::devices::expansion::ExpansionCardDebugInfo> {
+        self.bus.expansion_card_debug_info()
+    }
+
+    pub fn reset_expansion_card_debug_stats(&mut self) {
+        self.bus.reset_expansion_card_debug_stats();
+    }
+
     pub fn write_mem_u8(&mut self, addr: u32, value: u8) {
         self.bus.set_access_source(BusAccessSource::Debugger);
         self.bus.write_u8(addr, value);

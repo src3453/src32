@@ -14,6 +14,7 @@ use crate::devices::bmc::{Bmc, connect_bmc};
 use crate::devices::dmac::dmac::{Dmac, connect_dmac};
 use crate::devices::expansion::{
     EXPANSION_BASE, EXPANSION_SLOT_COUNT, EXPANSION_SLOT_SIZE, ExpansionCard,
+    ExpansionCardDebugInfo,
 };
 use crate::devices::irqc::irqc::IrqController;
 use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
@@ -77,6 +78,11 @@ pub trait Device {
     fn irq_asserted(&self) -> bool {
         false
     }
+    /// Debugger snapshot; only WASM expansion cards return `Some`.
+    fn expansion_card_debug_info(&self) -> Option<ExpansionCardDebugInfo> {
+        None
+    }
+    fn reset_expansion_card_debug_stats(&mut self) {}
     /// Side-effect-free storage: accesses never fault, never touch other
     /// devices and cannot change any IRQ source. The Bus then skips IRQ
     /// re-sampling after the access and may arbitrate a word only once.
@@ -288,6 +294,23 @@ impl Bus {
             }
         }
         event_ran
+    }
+
+    /// Debugger snapshots of installed expansion cards in slot order.
+    pub fn expansion_card_debug_info(&self) -> Vec<ExpansionCardDebugInfo> {
+        self.expansion_devices
+            .iter()
+            .flatten()
+            .filter_map(|&index| self.devices[index].device.expansion_card_debug_info())
+            .collect()
+    }
+
+    pub fn reset_expansion_card_debug_stats(&mut self) {
+        for index in self.expansion_devices.iter().flatten().copied() {
+            self.devices[index]
+                .device
+                .reset_expansion_card_debug_stats();
+        }
     }
 
     pub fn reset_expansion_cards(&mut self) {

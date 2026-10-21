@@ -19,6 +19,127 @@ const MEMORY_LIMIT: usize = 64 * 1024 * 1024;
 // Leave fuel headroom for polyphonic synthesis and resampling in each call.
 const AUDIO_BLOCK_FRAMES: usize = 64;
 
+/// Guest entry points metered separately in [`ExpansionCardDebugInfo`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ExpansionCallKind {
+    /// Module start function plus `cpt32_abi_version` during load.
+    Start,
+    Reset,
+    MmioRead,
+    MmioWrite,
+    Tick,
+    DebugRead,
+    AudioRender,
+}
+
+impl ExpansionCallKind {
+    pub const COUNT: usize = 7;
+    pub const ALL: [Self; Self::COUNT] = [
+        Self::Start,
+        Self::Reset,
+        Self::MmioRead,
+        Self::MmioWrite,
+        Self::Tick,
+        Self::DebugRead,
+        Self::AudioRender,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Start => "start + cpt32_abi_version",
+            Self::Reset => "cpt32_reset",
+            Self::MmioRead => "cpt32_mmio_read",
+            Self::MmioWrite => "cpt32_mmio_write",
+            Self::Tick => "cpt32_tick",
+            Self::DebugRead => "cpt32_debug_read",
+            Self::AudioRender => "cpt32_audio_render",
+        }
+    }
+}
+
+/// Cumulative fuel accounting for one guest entry point. A call that runs out
+/// of fuel counts the whole per-call budget.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ExpansionCallStats {
+    pub calls: u64,
+    pub fuel_total: u64,
+    pub fuel_last: u64,
+    pub fuel_peak: u64,
+}
+
+impl ExpansionCallStats {
+    fn record(&mut self, fuel: u64) {
+        self.calls += 1;
+        self.fuel_total += fuel;
+        self.fuel_last = fuel;
+        self.fuel_peak = self.fuel_peak.max(fuel);
+    }
+}
+
+/// Side-effect-free snapshot of one installed card for debuggers.
+#[derive(Clone, Debug)]
+pub struct ExpansionCardDebugInfo {
+    pub slot: u8,
+    pub label: String,
+    pub faulted: bool,
+    pub fault_reason: Option<String>,
+    pub irq_asserted: bool,
+    pub deadline: Option<u64>,
+    /// Fuel granted to every guest call.
+    pub fuel_limit: u64,
+    pub calls: [ExpansionCallStats; ExpansionCallKind::COUNT],
+    /// `cpt32_host` imports declared by the module.
+    pub imports: Vec<String>,
+    pub has_debug_read: bool,
+    pub has_audio: bool,
+    /// Current size of the exported `memory`, if the module exports one.
+    pub memory_bytes: Option<usize>,
+    pub memory_limit: usize,
+    pub asset_count: i32,
+}
+
+impl ExpansionCardDebugInfo {
+    pub fn call(&self, kind: ExpansionCallKind) -> &ExpansionCallStats {
+        &self.calls[kind as usize]
+    }
+
+    /// Highest single-call fuel use as a fraction of the per-call budget.
+    pub fn peak_fuel_ratio(&self) -> f64 {
+        let peak = self
+            .calls
+            .iter()
+            .map(|call| call.fuel_peak)
+            .max()
+            .unwrap_or(0);
+        peak as f64 / self.fuel_limit as f64
+    }
+
+    /// Short human-readable list of the host features the card uses.
+    pub fn features(&self) -> Vec<&'static str> {
+        let imports = |names: &[&str]| self.imports.iter().any(|i| names.contains(&i.as_str()));
+        let mut features = vec!["MMIO"];
+        if imports(&["schedule_tick"]) {
+            features.push("tick timer");
+        }
+        if imports(&["irq_set"]) {
+            features.push("IRQ");
+        }
+        if imports(&["current_cycles"]) {
+            features.push("cycle clock");
+        }
+        if imports(&["asset_count", "asset_size", "asset_read_byte"]) {
+            features.push("assets");
+        }
+        if self.has_audio {
+            features.push("audio");
+        }
+        if self.has_debug_read {
+            features.push("debug read");
+        }
+        features
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct ExpansionRuntime {
     engine: Engine,
@@ -172,6 +293,7 @@ impl ExpansionRuntime {
         let instance = linker
             .instantiate(&mut store, &module)
             .map_err(|error| context(format!("instantiation failed: {error}")))?;
+        let mut start_fuel = GUEST_FUEL - store.get_fuel().unwrap_or(0);
         let abi_version = instance
             .get_typed_func::<(), i32>(&mut store, "cpt32_abi_version")
             .map_err(|error| context(error.to_string()))?;
@@ -181,6 +303,7 @@ impl ExpansionRuntime {
         let version = abi_version
             .call(&mut store, ())
             .map_err(|error| context(format!("cpt32_abi_version trapped: {error}")))?;
+        start_fuel += GUEST_FUEL - store.get_fuel().unwrap_or(0);
         if version != 1 {
             return Err(context(format!(
                 "unsupported ABI version {version}; expected 1"
@@ -229,10 +352,22 @@ impl ExpansionRuntime {
             None
         };
 
+        let memory = instance.get_memory(&mut store, "memory");
+        let imports = module
+            .imports()
+            .map(|import| import.name().to_owned())
+            .collect();
+        let mut stats = [ExpansionCallStats::default(); ExpansionCallKind::COUNT];
+        stats[ExpansionCallKind::Start as usize].record(start_fuel);
+
         Ok(ExpansionCard {
             slot,
             label: label.to_owned(),
             store,
+            memory,
+            imports,
+            stats,
+            fault_reason: None,
             _instance: instance,
             reset,
             mmio_read,
@@ -393,6 +528,10 @@ pub(crate) struct ExpansionCard {
     slot: u8,
     label: String,
     store: Store<HostState>,
+    memory: Option<Memory>,
+    imports: Vec<String>,
+    stats: [ExpansionCallStats; ExpansionCallKind::COUNT],
+    fault_reason: Option<String>,
     // Keep the instance alive explicitly alongside its typed exports.
     _instance: Instance,
     reset: TypedFunc<(), ()>,
@@ -410,6 +549,30 @@ impl ExpansionCard {
 
     pub fn is_faulted(&self) -> bool {
         self.store.data().faulted
+    }
+
+    pub fn debug_info(&self) -> ExpansionCardDebugInfo {
+        let state = self.store.data();
+        ExpansionCardDebugInfo {
+            slot: self.slot,
+            label: self.label.clone(),
+            faulted: state.faulted,
+            fault_reason: self.fault_reason.clone(),
+            irq_asserted: state.irq_asserted,
+            deadline: state.deadline,
+            fuel_limit: GUEST_FUEL,
+            calls: self.stats,
+            imports: self.imports.clone(),
+            has_debug_read: self.debug_read.is_some(),
+            has_audio: self.audio.is_some(),
+            memory_bytes: self.memory.map(|memory| memory.data_size(&self.store)),
+            memory_limit: MEMORY_LIMIT,
+            asset_count: state.assets.count(),
+        }
+    }
+
+    pub fn reset_debug_stats(&mut self) {
+        self.stats = Default::default();
     }
 
     pub fn irq_asserted(&self) -> bool {
@@ -434,7 +597,8 @@ impl ExpansionCard {
             return;
         }
         let reset = self.reset.clone();
-        if let Err(error) = self.call_guest(|store| reset.call(store, ())) {
+        if let Err(error) = self.call_guest(ExpansionCallKind::Reset, |store| reset.call(store, ()))
+        {
             self.fault(format!("cpt32_reset trapped: {error}"));
         }
     }
@@ -451,17 +615,21 @@ impl ExpansionCard {
         }
         self.store.data_mut().deadline = None;
         let tick = self.tick.clone();
-        if let Err(error) = self.call_guest(|store| tick.call(store, ())) {
+        if let Err(error) = self.call_guest(ExpansionCallKind::Tick, |store| tick.call(store, ())) {
             self.fault(format!("cpt32_tick trapped: {error}"));
         }
     }
 
     fn call_guest<T>(
         &mut self,
+        kind: ExpansionCallKind,
         call: impl FnOnce(&mut Store<HostState>) -> wasmtime::Result<T>,
     ) -> wasmtime::Result<T> {
         self.store.set_fuel(GUEST_FUEL)?;
-        call(&mut self.store)
+        let result = call(&mut self.store);
+        let used = GUEST_FUEL - self.store.get_fuel().unwrap_or(0);
+        self.stats[kind as usize].record(used);
+        result
     }
 
     fn fault(&mut self, reason: String) {
@@ -472,6 +640,7 @@ impl ExpansionCard {
         state.faulted = true;
         state.deadline = None;
         state.irq_asserted = false;
+        self.fault_reason = Some(reason.clone());
         tracing::error!(slot = self.slot, label = %self.label, %reason, "WASM expansion card faulted");
     }
 }
@@ -492,7 +661,9 @@ impl Device for ExpansionCard {
             let count = (frames - start).min(block_frames);
             let mut bytes = [0u8; AUDIO_BLOCK_FRAMES * 4];
             let result = self
-                .call_guest(|store| render.call(store, (count as i32, sample_rate as i32)))
+                .call_guest(ExpansionCallKind::AudioRender, |store| {
+                    render.call(store, (count as i32, sample_rate as i32))
+                })
                 .and_then(|ptr| {
                     memory
                         .read(&self.store, ptr as u32 as usize, &mut bytes[..count * 4])
@@ -520,7 +691,9 @@ impl Device for ExpansionCard {
             return 0;
         };
         let mmio_read = self.mmio_read.clone();
-        match self.call_guest(|store| mmio_read.call(store, offset)) {
+        match self.call_guest(ExpansionCallKind::MmioRead, |store| {
+            mmio_read.call(store, offset)
+        }) {
             Ok(value) if (0..=255).contains(&value) => value as u8,
             Ok(value) => {
                 self.fault(format!("cpt32_mmio_read returned non-byte value {value}"));
@@ -539,7 +712,9 @@ impl Device for ExpansionCard {
         }
         let debug_read = self.debug_read.clone()?;
         let offset = i32::try_from(offset).ok()?;
-        match self.call_guest(|store| debug_read.call(store, offset)) {
+        match self.call_guest(ExpansionCallKind::DebugRead, |store| {
+            debug_read.call(store, offset)
+        }) {
             Ok(value) if (0..=255).contains(&value) => Some(value as u8),
             Ok(-1) => None,
             Ok(value) => {
@@ -562,9 +737,9 @@ impl Device for ExpansionCard {
             return;
         };
         let mmio_write = self.mmio_write.clone();
-        if let Err(error) =
-            self.call_guest(|store| mmio_write.call(store, (offset, i32::from(value))))
-        {
+        if let Err(error) = self.call_guest(ExpansionCallKind::MmioWrite, |store| {
+            mmio_write.call(store, (offset, i32::from(value)))
+        }) {
             self.fault(format!("cpt32_mmio_write trapped: {error}"));
         }
     }
@@ -591,6 +766,14 @@ impl Device for ExpansionCard {
 
     fn reset(&mut self) {
         self.reset_card();
+    }
+
+    fn expansion_card_debug_info(&self) -> Option<ExpansionCardDebugInfo> {
+        Some(self.debug_info())
+    }
+
+    fn reset_expansion_card_debug_stats(&mut self) {
+        self.reset_debug_stats();
     }
 }
 

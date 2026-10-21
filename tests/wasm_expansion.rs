@@ -978,3 +978,75 @@ fn shared_wasm_memory_is_rejected() {
     );
     fs::remove_dir_all(dir).unwrap();
 }
+
+#[test]
+fn debug_info_reports_features_and_per_entry_point_fuel() {
+    use cpt32::devices::expansion::ExpansionCallKind;
+    let dir = temporary_directory();
+    let mut bus = Bus::new();
+    install_package(&mut bus, &dir, 0, CARD, &[]);
+    install_package(&mut bus, &dir, 3, &audio_card("", 0), &[]);
+
+    let cards = bus.expansion_card_debug_info();
+    assert_eq!(cards.iter().map(|c| c.slot).collect::<Vec<_>>(), [0, 3]);
+    let card = &cards[0];
+    assert!(card.label.ends_with("slot-0.cpt32card"), "{}", card.label);
+    assert_eq!(card.imports, ["schedule_tick", "irq_set"]);
+    assert!(card.has_debug_read && !card.has_audio);
+    assert_eq!(card.memory_bytes, None);
+    assert_eq!(card.features(), ["MMIO", "tick timer", "IRQ", "debug read"]);
+    assert_eq!(card.deadline, Some(5));
+    let start = card.call(ExpansionCallKind::Start);
+    assert_eq!(start.calls, 1);
+    assert!(start.fuel_total > 0);
+    assert!(cards[1].has_audio);
+    assert_eq!(cards[1].memory_bytes, Some(65536));
+    assert!(cards[1].features().contains(&"audio"));
+
+    bus.read_u8(EXPANSION_BASE);
+    bus.read_u8(EXPANSION_BASE);
+    bus.write_u8(EXPANSION_BASE, 1);
+    let card = &bus.expansion_card_debug_info()[0];
+    let read = card.call(ExpansionCallKind::MmioRead);
+    assert_eq!(read.calls, 2);
+    assert!(read.fuel_last > 0 && read.fuel_peak >= read.fuel_last);
+    assert_eq!(read.fuel_total, read.fuel_last * 2);
+    assert_eq!(card.call(ExpansionCallKind::MmioWrite).calls, 1);
+    assert_eq!(card.call(ExpansionCallKind::Tick).calls, 0);
+    assert!(card.peak_fuel_ratio() > 0.0 && card.peak_fuel_ratio() < 0.01);
+
+    bus.reset_expansion_card_debug_stats();
+    let card = &bus.expansion_card_debug_info()[0];
+    assert!(
+        card.calls
+            .iter()
+            .all(|stats| stats.calls == 0 && stats.fuel_peak == 0)
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn debug_info_records_fuel_exhaustion_as_full_budget_and_fault_reason() {
+    use cpt32::devices::expansion::ExpansionCallKind;
+    let dir = temporary_directory();
+    let mut bus = Bus::new();
+    let spin = generated_card_module(1, "i32", "(loop $spin br $spin) i32.const 0", true, "");
+    install_package(&mut bus, &dir, 1, &spin, &[]);
+    bus.read_u8(EXPANSION_BASE + EXPANSION_SLOT_SIZE);
+    assert!(bus.take_bus_error());
+
+    let card = &bus.expansion_card_debug_info()[0];
+    assert!(card.faulted);
+    assert!(
+        card.fault_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("cpt32_mmio_read trapped")),
+        "{:?}",
+        card.fault_reason
+    );
+    let read = card.call(ExpansionCallKind::MmioRead);
+    assert_eq!(read.calls, 1);
+    assert_eq!(read.fuel_peak, card.fuel_limit);
+    assert_eq!(card.peak_fuel_ratio(), 1.0);
+    fs::remove_dir_all(dir).unwrap();
+}

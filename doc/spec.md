@@ -392,6 +392,8 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 `Windows > Debug Controls` はCPU状態、PC、命令モード、合計サイクル数、合計実行命令数を表示する。`Run CPU (Realtime)` チェックボックスと Pause / Run / Step ボタンはエミュレーション全体の実行可否（`DebugUiState::running`）を制御する。Step 系ボタンは実行を停止した状態で少量だけ進めるため、ステップ後は Run で再開する必要がある。
 
 `Windows > Audio Mixer` はSGU 1/2、IDCディスク音、拡張カード音声の各出力をフレーム単位で計測し、RMSとピークをdBFSで表示する。バーはRMSを−60～0 dBFSの範囲で示し、−60 dBFS未満は最小値に丸める。無音の数値表示は−∞ dBFS。各音源は個別にミュートできる。計測値はミュート中も生成された音声から計算されるため、ミュート操作は音源の状態進行を止めない。
+
+メインメニューの `Expansion Cards` は装着中のWASM拡張カードを slot 順に列挙する。`Overview`（`Windows > WASM Expansion Cards` と同じ）は全カードを一覧表にし、slot、package、状態（running / IRQ high / FAULTED）、1回のguest呼び出しあたり最大fuel使用率、直近GUIフレームのfuel合計と呼び出し回数、使用機能（MMIO、tick timer、IRQ、cycle clock、assets、audio、debug read）を表示する。メニューの各 `Slot N: package` 項目または一覧の `Details` は、カードごとの詳細ウィンドウを開く。詳細ではfault理由、IRQ線、次のtick期限、`cpt32_host` import、任意export、asset数、exportされた linear memory の現在サイズ／上限、およびentry point（start+`cpt32_abi_version`、`cpt32_reset`、`cpt32_mmio_read`、`cpt32_mmio_write`、`cpt32_tick`、`cpt32_debug_read`、`cpt32_audio_render`）別の累計呼び出し回数・直近フレームの回数とfuel・最終／平均／最大fuelと上限比を表示する。fuel使用量は各呼び出し前に設定した上限（10,000,000）から呼び出し後の残量を引いた値で、fuel枯渇やtrapで終わった呼び出しも計上する（枯渇時は上限全体）。使用率80%以上のバーは赤で示す。Memory Monitor等のデバッガ読み出しは `cpt32_debug_read` として計上される。`Reset statistics` は全カードの統計を0にするだけで、カード状態・fault・時刻には影響しない。統計の収集はGUIの有無に関係なく常時行う（`Bus::expansion_card_debug_info`）。
 `Debug Controls` の `Reset` はCPUをアドレス `0x00000000` から再初期化し、CPUの総サイクル数・稼働サイクル数・実行命令数を0にし、IRQコントローラの保留要求・許可・入力レベルを消去して一時停止する。ゲストRAMとバスのシステム時刻は保持する。
 
 ここは以前ドキュメントに書かれておらず、あいまいだった点を明記する:

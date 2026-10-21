@@ -526,6 +526,26 @@ impl AnyCpu {
         }
     }
 
+    pub fn expansion_card_debug_info(
+        &self,
+    ) -> Vec<crate::devices::expansion::ExpansionCardDebugInfo> {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.expansion_card_debug_info()
+            }
+            AnyCpu::Pipelined(cpu) => cpu.expansion_card_debug_info(),
+        }
+    }
+
+    pub fn reset_expansion_card_debug_stats(&mut self) {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.reset_expansion_card_debug_stats()
+            }
+            AnyCpu::Pipelined(cpu) => cpu.reset_expansion_card_debug_stats(),
+        }
+    }
+
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {

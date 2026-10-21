@@ -12,6 +12,9 @@ use cpt32::bus::Bus;
 use cpt32::cpu::InstructionMode;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
+use cpt32::devices::expansion::{
+    EXPANSION_SLOT_COUNT, ExpansionCallKind, ExpansionCallStats, ExpansionCardDebugInfo,
+};
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input, pec_trace_enabled};
 use cpt32::devices::pec::rng::connect_rng;
@@ -1165,6 +1168,68 @@ struct DebugUiState {
     runtime_percent_history: VecDeque<f32>,
     audio_muted: [bool; 4],
     audio_levels: [(f32, f32); 4],
+    expansion: ExpansionDebugState,
+}
+
+/// Per-frame view of WASM expansion-card statistics for the debug GUI.
+#[derive(Default)]
+struct ExpansionDebugState {
+    cards: Vec<ExpansionCardDebugInfo>,
+    previous:
+        [Option<[ExpansionCallStats; ExpansionCallKind::COUNT]>; EXPANSION_SLOT_COUNT as usize],
+    /// (calls, fuel) per entry point since the previous GUI frame.
+    frame: [[(u64, u64); ExpansionCallKind::COUNT]; EXPANSION_SLOT_COUNT as usize],
+    detail_open: [bool; EXPANSION_SLOT_COUNT as usize],
+}
+
+impl ExpansionDebugState {
+    fn update(&mut self, cards: Vec<ExpansionCardDebugInfo>) {
+        for card in &cards {
+            let slot = usize::from(card.slot);
+            let previous = self.previous[slot].unwrap_or(card.calls);
+            for (delta, (now, before)) in self.frame[slot]
+                .iter_mut()
+                .zip(card.calls.iter().zip(previous.iter()))
+            {
+                *delta = (
+                    now.calls.saturating_sub(before.calls),
+                    now.fuel_total.saturating_sub(before.fuel_total),
+                );
+            }
+            self.previous[slot] = Some(card.calls);
+        }
+        self.cards = cards;
+    }
+
+    fn frame_totals(&self, slot: u8) -> (u64, u64) {
+        self.frame[usize::from(slot)]
+            .iter()
+            .fold((0, 0), |(calls, fuel), &(c, f)| (calls + c, fuel + f))
+    }
+}
+
+fn expansion_card_status(card: &ExpansionCardDebugInfo) -> &'static str {
+    if card.faulted {
+        "FAULTED"
+    } else if card.irq_asserted {
+        "running (IRQ high)"
+    } else {
+        "running"
+    }
+}
+
+fn fuel_bar(ui: &Ui, ratio: f64, width: f32) {
+    let percent = ratio * 100.0;
+    let bar = ProgressBar::new(ratio.clamp(0.0, 1.0) as f32)
+        .size([width, 14.0])
+        .overlay_text(format!("{percent:.2}%"));
+    if ratio >= 0.8 {
+        let red = ui.push_style_color(StyleColor::PlotHistogram, [0.85, 0.20, 0.20, 1.0]);
+        bar.build(ui);
+        red.pop();
+    } else {
+        bar.build(ui);
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -1177,6 +1242,7 @@ enum DebugWindow {
     Performance,
     MonitorConsole,
     AudioMixer,
+    ExpansionCards,
 }
 
 impl DebugWindow {
@@ -1189,8 +1255,9 @@ impl DebugWindow {
         Self::Performance,
         Self::MonitorConsole,
         Self::AudioMixer,
+        Self::ExpansionCards,
     ];
-    const COUNT: usize = 8;
+    const COUNT: usize = 9;
 
     fn label(self) -> &'static str {
         match self {
@@ -1202,6 +1269,7 @@ impl DebugWindow {
             Self::Performance => "Performance",
             Self::MonitorConsole => "src32 Debug Monitor Console",
             Self::AudioMixer => "Audio Mixer",
+            Self::ExpansionCards => "WASM Expansion Cards",
         }
     }
 }
@@ -1234,6 +1302,7 @@ impl DebugUiState {
             runtime_percent_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
             audio_muted: [false; 4],
             audio_levels: [(0.0, 0.0); 4],
+            expansion: ExpansionDebugState::default(),
         }
     }
 
@@ -1297,6 +1366,7 @@ impl DebugUiState {
         vdp: &Rc<RefCell<Vdp>>,
         cpu_execution: &mut CpuExecutionSettings,
     ) {
+        self.expansion.update(cpu.expansion_card_debug_info());
         ui.main_menu_bar(|| {
             ui.menu("Windows", || {
                 for window in DebugWindow::ALL {
@@ -1308,6 +1378,30 @@ impl DebugUiState {
                     {
                         let visible = &mut self.visible_windows[index];
                         *visible = !*visible;
+                    }
+                }
+            });
+            ui.menu("Expansion Cards", || {
+                let overview = DebugWindow::ExpansionCards as usize;
+                if ui
+                    .menu_item_config("Overview")
+                    .selected(self.visible_windows[overview])
+                    .build()
+                {
+                    self.visible_windows[overview] = !self.visible_windows[overview];
+                }
+                ui.separator();
+                if self.expansion.cards.is_empty() {
+                    ui.text_disabled("No cards installed");
+                }
+                for card in &self.expansion.cards {
+                    let open = &mut self.expansion.detail_open[usize::from(card.slot)];
+                    let mut label = format!("Slot {}: {}", card.slot, card.label);
+                    if card.faulted {
+                        label.push_str(" (faulted)");
+                    }
+                    if ui.menu_item_config(label).selected(*open).build() {
+                        *open = !*open;
                     }
                 }
             });
@@ -1372,6 +1466,189 @@ impl DebugUiState {
         }
         if self.visible_windows[DebugWindow::AudioMixer as usize] {
             self.draw_audio_mixer(ui);
+        }
+        if self.visible_windows[DebugWindow::ExpansionCards as usize] {
+            self.draw_expansion_overview(ui, cpu);
+        }
+        self.draw_expansion_details(ui, cpu);
+    }
+
+    fn draw_expansion_overview(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
+        let table_flags = TableFlags::BORDERS | TableFlags::ROW_BG | TableFlags::RESIZABLE;
+        let mut reset_stats = false;
+        ui.window(DebugWindow::ExpansionCards.label())
+            .size([900.0, 300.0], Condition::FirstUseEver)
+            .build(|| {
+                if self.expansion.cards.is_empty() {
+                    ui.text("No WASM expansion cards are installed (config.yaml expansion_card).");
+                    return;
+                }
+                ui.text(format!(
+                    "Fuel budget per guest call: {}. Peak = highest single call / budget; per-frame values cover the last GUI frame.",
+                    self.expansion.cards[0].fuel_limit
+                ));
+                if let Some(_table) =
+                    ui.begin_table_with_flags("ExpansionCardOverview", 8, table_flags)
+                {
+                    for column in [
+                        "Slot",
+                        "Package",
+                        "Status",
+                        "Peak fuel/call",
+                        "Fuel/frame",
+                        "Calls/frame",
+                        "Features",
+                        "",
+                    ] {
+                        ui.table_setup_column(column);
+                    }
+                    ui.table_headers_row();
+                    for card in &self.expansion.cards {
+                        let (calls, fuel) = self.expansion.frame_totals(card.slot);
+                        ui.table_next_row();
+                        ui.table_next_column();
+                        ui.text(card.slot.to_string());
+                        ui.table_next_column();
+                        ui.text(&card.label);
+                        ui.table_next_column();
+                        ui.text(expansion_card_status(card));
+                        ui.table_next_column();
+                        fuel_bar(ui, card.peak_fuel_ratio(), 120.0);
+                        ui.table_next_column();
+                        ui.text(fuel.to_string());
+                        ui.table_next_column();
+                        ui.text(calls.to_string());
+                        ui.table_next_column();
+                        ui.text(card.features().join(", "));
+                        ui.table_next_column();
+                        let open = &mut self.expansion.detail_open[usize::from(card.slot)];
+                        if ui.small_button(format!("Details##card{}", card.slot)) {
+                            *open = true;
+                        }
+                    }
+                }
+                reset_stats = ui.button("Reset statistics");
+            });
+        if reset_stats {
+            cpu.reset_expansion_card_debug_stats();
+        }
+    }
+
+    fn draw_expansion_details(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
+        let table_flags = TableFlags::BORDERS | TableFlags::ROW_BG;
+        let mut reset_stats = false;
+        for card in &self.expansion.cards {
+            let slot = usize::from(card.slot);
+            if !self.expansion.detail_open[slot] {
+                continue;
+            }
+            let frame = self.expansion.frame[slot];
+            ui.window(format!(
+                "WASM card slot {}: {}###wasm_card_{slot}",
+                card.slot, card.label
+            ))
+            .opened(&mut self.expansion.detail_open[slot])
+            .size([760.0, 460.0], Condition::FirstUseEver)
+            .build(|| {
+                ui.text(format!("Package: {}", card.label));
+                ui.text(format!("Status: {}", expansion_card_status(card)));
+                if let Some(reason) = &card.fault_reason {
+                    ui.text_colored([1.0, 0.4, 0.4, 1.0], format!("Fault: {reason}"));
+                }
+                ui.text(format!(
+                    "IRQ line: {}   Next tick: {}",
+                    if card.irq_asserted { "high" } else { "low" },
+                    card.deadline
+                        .map_or_else(|| "none".to_string(), |cycle| format!("cycle {cycle}"))
+                ));
+                ui.text(format!("Features: {}", card.features().join(", ")));
+                ui.text(format!(
+                    "Host imports: {}",
+                    if card.imports.is_empty() {
+                        "none".to_string()
+                    } else {
+                        card.imports.join(", ")
+                    }
+                ));
+                let optional: Vec<_> = [
+                    (card.has_debug_read, "cpt32_debug_read"),
+                    (card.has_audio, "cpt32_audio_render"),
+                ]
+                .into_iter()
+                .filter_map(|(present, name)| present.then_some(name))
+                .collect();
+                ui.text(format!(
+                    "Optional exports: {}",
+                    if optional.is_empty() {
+                        "none".to_string()
+                    } else {
+                        optional.join(", ")
+                    }
+                ));
+                ui.text(format!("Package assets: {}", card.asset_count));
+                match card.memory_bytes {
+                    Some(bytes) => {
+                        ui.text(format!(
+                            "Linear memory: {} KiB / {} KiB",
+                            bytes / 1024,
+                            card.memory_limit / 1024
+                        ));
+                        fuel_bar(ui, bytes as f64 / card.memory_limit as f64, 300.0);
+                    }
+                    None => ui.text("Linear memory: not exported"),
+                }
+                ui.separator();
+                ui.text(format!("Peak fuel per call ({} budget):", card.fuel_limit));
+                fuel_bar(ui, card.peak_fuel_ratio(), 300.0);
+                if let Some(_table) =
+                    ui.begin_table_with_flags(format!("ExpansionCardCalls{slot}"), 8, table_flags)
+                {
+                    for column in [
+                        "Entry point",
+                        "Calls",
+                        "Calls/frame",
+                        "Fuel/frame",
+                        "Last fuel",
+                        "Avg fuel",
+                        "Peak fuel",
+                        "Peak %",
+                    ] {
+                        ui.table_setup_column(column);
+                    }
+                    ui.table_headers_row();
+                    for kind in ExpansionCallKind::ALL {
+                        let stats = card.call(kind);
+                        let (frame_calls, frame_fuel) = frame[kind as usize];
+                        ui.table_next_row();
+                        for text in [
+                            kind.label().to_string(),
+                            stats.calls.to_string(),
+                            frame_calls.to_string(),
+                            frame_fuel.to_string(),
+                            stats.fuel_last.to_string(),
+                            if stats.calls == 0 {
+                                "-".to_string()
+                            } else {
+                                (stats.fuel_total / stats.calls).to_string()
+                            },
+                            stats.fuel_peak.to_string(),
+                            format!(
+                                "{:.2}%",
+                                stats.fuel_peak as f64 * 100.0 / card.fuel_limit as f64
+                            ),
+                        ] {
+                            ui.table_next_column();
+                            ui.text(text);
+                        }
+                    }
+                }
+                if ui.button(format!("Reset statistics##card{slot}")) {
+                    reset_stats = true;
+                }
+            });
+        }
+        if reset_stats {
+            cpu.reset_expansion_card_debug_stats();
         }
     }
 

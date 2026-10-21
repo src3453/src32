@@ -128,6 +128,8 @@ cargo run --release --bin cpt32 -- path/to/program.bin
 
 package、manifest、module、import/export に問題があれば起動時に拒否されます。guest trap、fuel 枯渇、host API の規約違反はカードを fault 状態にし、以後の guest call は行いません。fault 後の read は `0`、write は無視され、CPU access は Bus Error になります。
 
+`--debug-gui` で起動すると、メニューバーの `Expansion Cards` から各カードのデバッグウィンドウを開けます。一覧では fuel 使用率（1 呼び出しあたりの最大値と上限比）、フレームごとの fuel と呼び出し回数、使用している host 機能を確認でき、カード別ウィンドウでは export ごとの fuel 統計、import、memory 使用量、fault 理由を表示します。上限に近い export（特に `cpt32_audio_render`）は fault の前兆なので、処理を分割するか状態を軽くしてください。
+
 ## 実行制限と package の注意
 
 - ABI v1 module は `cpt32_host` の許可 import のみ使えます。WASI、任意 host function、filesystem access はありません。
