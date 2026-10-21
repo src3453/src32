@@ -1146,6 +1146,7 @@ fn runtime_bar_state(runtime_percent: f64) -> (f32, bool) {
 
 struct DebugUiState {
     running: bool,
+    show_licenses: bool,
     visible_windows: [bool; DebugWindow::COUNT],
     monitor_input: String,
     monitor_output: VecDeque<String>,
@@ -1212,6 +1213,7 @@ impl DebugUiState {
     fn new(start_paused: bool) -> Self {
         Self {
             running: !start_paused,
+            show_licenses: false,
             visible_windows: [false; DebugWindow::COUNT],
             monitor_input: String::new(),
             monitor_output: VecDeque::from([
@@ -1309,7 +1311,43 @@ impl DebugUiState {
                     }
                 }
             });
+            ui.menu("Help", || {
+                if ui.menu_item("About / Third-party licenses") {
+                    self.show_licenses = true;
+                }
+            });
         });
+
+        if self.show_licenses {
+            ui.window("About CPT32 / Third-party licenses")
+                .opened(&mut self.show_licenses)
+                .size([800.0, 600.0], Condition::FirstUseEver)
+                .build(|| {
+                    ui.text(BUILD_TITLE);
+                    ui.text("Thanks to the authors and maintainers of our dependencies.");
+                    ui.child_window("License notices")
+                        .horizontal_scrollbar(true)
+                        .build(|| {
+                            static LINES: std::sync::OnceLock<Vec<&'static str>> =
+                                std::sync::OnceLock::new();
+                            let lines = LINES.get_or_init(|| {
+                                concat!(
+                                    include_str!("../LICENSE"),
+                                    "\nThird-party components retain their own licenses.\n\n",
+                                    include_str!("../THIRD_PARTY_NOTICES.txt")
+                                )
+                                .lines()
+                                .collect()
+                            });
+                            let mut clipper = imgui::ListClipper::new(lines.len() as i32).begin(ui);
+                            while clipper.step() {
+                                for index in clipper.display_start()..clipper.display_end() {
+                                    ui.text(lines[index as usize]);
+                                }
+                            }
+                        });
+                });
+        }
 
         if self.visible_windows[DebugWindow::Controls as usize] {
             self.draw_controls(ui, cpu, cpu_execution);

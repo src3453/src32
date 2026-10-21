@@ -1,0 +1,4 @@
+# Preserve the upstream font bytes so the recorded source hash survives checkout.
+assets/unscii-8.hex -text
+THIRD_PARTY_NOTICES.txt text eol=lf
+tools/vscode-sol-syntax/THIRD_PARTY_NOTICES.txt text eol=lf

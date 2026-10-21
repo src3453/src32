@@ -2,6 +2,7 @@
 name = "cpt32"
 version = "0.1.0"
 edition = "2024"
+license = "MIT"
 default-run = "cpt32"
 
 [features]

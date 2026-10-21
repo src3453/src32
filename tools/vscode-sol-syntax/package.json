@@ -3,6 +3,7 @@
     "displayName": "vscode-sol-syntax",
     "description": "Syntax highlighter and language server for sol.",
     "version": "0.0.2",
+    "license": "MIT",
     "engines": {
         "vscode": "^1.131.0"
     },

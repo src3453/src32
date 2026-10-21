@@ -27,7 +27,7 @@
 pcg:
   # Raw PCG font bank image: exactly 2 KiB (one bank) or 4 KiB (both banks).
   # Relative paths are resolved from the directory containing config.yaml.
-  # font: "assets/font.bin"
+  # font: "assets/UNSCII.F08"
 
 # Connect up to four raw disk images. Relative paths are resolved from the
 # directory containing config.yaml. Each configured image must already exist.

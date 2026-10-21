@@ -111,10 +111,12 @@ PCG の raw font file は引数ではなく、起動時の `config.yaml` で指�
 
 ```yaml
 pcg:
-  font: "assets/font.bin"
+  font: "assets/UNSCII.F08"
 ```
 
 旧来の `<program.bin> [font.bin]` 形式は使えません。
+
+同梱の8×8フォントは PD / CC0 の UNSCII です。旧 `assets/CGA.F08` を指定していた設定は `assets/UNSCII.F08` に変更してください。文字配置は CP437 を維持しますが、図柄は変わります。
 
 CPU の対話型モニターは次のように起動します。
 
@@ -232,3 +234,7 @@ driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止�
 - [チュートリアルと開発ガイド](doc/Guides.md)
 
 英語原文があるページには `doc/ja/` 以下に対応する日本語版があります。
+
+## ライセンス・謝辞
+
+CPT32 のオリジナル部分は [MIT License](LICENSE) です。外部コード・フォントは各ライセンスを維持します。[謝辞](ACKNOWLEDGEMENTS.md)、[ライセンス全文](THIRD_PARTY_NOTICES.txt)、[確認結果と未確認範囲](doc/license-compliance.md) を参照してください。GUI の `Help → About / Third-party licenses` からも通知を読めます。

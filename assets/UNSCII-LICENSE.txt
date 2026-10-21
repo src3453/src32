@@ -1,0 +1,18 @@
+UNSCII-8 bitmap font by Ville-Matias Heikkila (Viznut) and contributors
+
+Upstream: https://github.com/viznut/unscii
+Commit: 257b4dfeb50651510fe8b9cf4f151a148a4490e4
+Source: https://raw.githubusercontent.com/viznut/unscii/257b4dfeb50651510fe8b9cf4f151a148a4490e4/fontfiles/unscii-8.hex
+Source SHA-256: 03094f7fbab7085cf6a6b624cee61e47e71ce5d0c2f308c2f4436afdc17f776c
+Bank SHA-256: df00deee83d985e0a846fcf7c002bb9b94e009c1765e30003f19825cb3e6fbce
+
+Upstream declares UNSCII public domain (or CC0), except Unifont-derived
+files. Only unscii-8.hex is included; unscii-16-full is not used.
+See licenses/UNSCII-UPSTREAM.md and licenses/CC0-1.0.txt.
+
+Rebuild: python tools/build_unscii_font.py
+UNSCII.F08 is a 2048-byte, 256-glyph CP437 bank. ASCII is unchanged in
+encoding; CP437 graphics/control slots map to Unicode UNSCII glyphs.
+NUL is blank; missing glyphs use question mark. Each row is MSB-left.
+Missing mappings in this upstream revision: CP437 0x0F, 0x7F, 0xA9, 0xF9.
+The artwork differs from the removed IBM CGA font.
