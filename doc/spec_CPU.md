@@ -280,7 +280,7 @@ Bit positions:
 - `0x3E (reg)`: `CPUID`: Write CPU ID/features to fixed registers:
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
-- `0x3F (reg)`: `HALT`: Stop instruction execution until an enabled IRQ is accepted; `IRET` resumes after the `HALT`
+- `0x3F (reg)`: `HALT`: Stop instruction execution. Without Extension I the CPU stays stopped; Extension I defines the wake-up (§4.6)
 `BEQ`/`BNE` note:
 
 - In encoding, `rs2` is stored in the `rd` field for immediate mode.
@@ -396,9 +396,10 @@ Register 0-14 is mapped to `R0-R14`, and register 15 is mapped to `R31` (LR).
 - `0xF (imm)`: `S.RET`: Return from Short Mode to Normal Mode (rd and imm8 fields are ignored). `PC <- PC + 2`, then `INSTR_MODE <- 0`.
 
 ## 4.6 Extension I (Interrupts)
-Extension I adds support for external interrupts, additional read-only registers, and the `IRET` instruction to return from interrupt handlers.
+Extension I adds support for external interrupts, additional read-only registers, and the `IRET` instruction to return from interrupt handlers. `IRET` is not part of the Base ISA.
 
 - `0x20 (reg)`: `IRET`: Return from interrupt (`PC <- EPC`, `IE <- PIE`, restore mode)
+- `HALT` wake-up: a halted CPU resumes when an enabled IRQ is accepted. `EPC` holds the instruction after the `HALT`, so `IRET` resumes there.
 
 ## 4.8 Extension P (Privilege Levels and System Calls)
 
@@ -448,7 +449,7 @@ Rules:
 - `CPUID`: writes ID/features to fixed registers
   - `R1 <- CPU_ID`
   - `R2 <- CPU_FEATURES`
-- `HALT`: stop instruction execution until an enabled IRQ is accepted; `IRET` resumes at the instruction after `HALT`
+- `HALT`: stop instruction execution (wake-up by IRQ is defined by Extension I)
 
 ## 6. Memory Model (Current Emulator)
 
