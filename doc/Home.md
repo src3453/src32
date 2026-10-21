@@ -28,6 +28,7 @@ tags:
 - [[doc/ja/spec_CPU_p|Extension p 仕様（日本語）]] ↔ [[doc/spec_CPU_p|Extension p — Pipelining]]
 - [[doc/ja/spec_CPU_priv|Extension P 仕様（日本語）]] ↔ [[doc/spec_CPU_priv|Extension P — Privilege Levels and System Calls]]
 - [[doc/ja/spec_WAX|WAX 仕様（日本語）]] ↔ [[doc/spec_WAX|WAX container spec]]
+- [[doc/ja/spec_WAX_v3|WAX/WAL v3 仕様（日本語）]] ↔ [[doc/spec_WAX_v3|WAX/WAL v3 specification]]
 - [[doc/ja/spec_COW|COW 仕様（日本語）]] ↔ [[doc/spec_COW|COW sidecar format]]
 - [[doc/ja/spec_CPT32PKG|CPT32PKG 仕様（日本語）]] ↔ [[doc/spec_CPT32PKG|CPT32PKG package format]]
 - [[doc/ja/squeezvox/README|SQV4 converter（日本語）]] ↔ [[doc/squeezvox/README|SQV4 file converter]]

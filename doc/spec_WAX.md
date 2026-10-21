@@ -1,5 +1,9 @@
 # WAX (Where's All the eXecutables?) container spec v2
 
+This page describes the implemented v2 format. The separately specified
+[WAX/WAL v3](spec_WAX_v3.md) adds mandatory CPU protection, dependencies and
+library symbols; v3 tooling and loading are not implemented yet.
+
 WAX is a sparse SRC32 executable container. `.wax` is an executable and
 `.wal` is a PIC library without relocation. The format uses a block table so
 unmapped address gaps consume no file space. v2 is incompatible with v1;

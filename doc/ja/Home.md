@@ -31,6 +31,7 @@ lang: ja
 - [[doc/ja/spec_CPU_p|SRC32 Extension p 仕様]] ↔ [[doc/spec_CPU_p|Extension p — Pipelining]]
 - [[doc/ja/spec_ABI|SRC32 ABI 仕様]] ↔ [[doc/spec_ABI|SRC32 ABI Specification]]
 - [[doc/ja/spec_WAX|WAX コンテナー仕様]] ↔ [[doc/spec_WAX|WAX container spec]]
+- [[doc/ja/spec_WAX_v3|WAX/WAL v3 仕様]] ↔ [[doc/spec_WAX_v3|WAX/WAL v3 specification]]
 - [[doc/ja/spec_COW|COW sidecar 仕様]] ↔ [[doc/spec_COW|COW sidecar format]]
 - [[doc/ja/spec_CPT32PKG|CPT32PKG package 仕様]] ↔ [[doc/spec_CPT32PKG|CPT32PKG package format]]
 

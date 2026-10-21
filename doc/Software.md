@@ -23,6 +23,7 @@ tags:
 
 - [[doc/spec_CPT32PKG|CPT32PKG package format]] / [[doc/ja/spec_CPT32PKG|日本語版]] — ゲストプログラムと媒体の read-only package
 - [[doc/spec_WAX|WAX container spec]] / [[doc/ja/spec_WAX|日本語版]] — `.wax` 実行形式 / `.wal` ライブラリ（ゲスト loader: `sol/cpt32/wax.sol`、DOS: `RUN NAME`）
+- [[doc/spec_WAX_v3|WAX/WAL v3]] / [[doc/ja/spec_WAX_v3|日本語版]] — CPU 保護・依存関係・ライブラリシンボル・公開 ABI（仕様策定済み、未実装）
 - [[doc/spec_COW|COW sidecar format]] / [[doc/ja/spec_COW|日本語版]] — 書き込み可能 overlay
 - [[doc/spec_DSFS|DSFS 仕様]] — フロッピーディスク用シンプルファイルシステム（ツール: `tools/dsfs/dsfs.py`、ゲストライブラリ: `sol/cpt32/idc.sol`, `sol/cpt32/dsfs.sol`）
 - [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v1/v2 specification]] / [[doc/ja/squeezvox/squeezvox4_spec_stub|日本語版]]

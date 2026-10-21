@@ -38,6 +38,10 @@ saved mode). To start a user program, S sets `EPC` and `STATUS.PU`, then runs
 
 ### 2.1 Boot policy
 
+The separately specified [WAX/WAL v3](spec_WAX_v3.md) user-module format
+(not implemented yet) budgets these same eight regions across the executable,
+all libraries and stack. It adds no CPU registers or supervisor-call bypass.
+
 - Reset always enters S, so existing programs, raw `.bin` images and
   unprotected `.wax` images run exactly as before.
 - User mode is opt-in per executable: a `.wax` with the `PROTECTED` flag
