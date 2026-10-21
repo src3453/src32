@@ -106,8 +106,8 @@ def generate() -> str:
         "Extra alternatives/texts are retained; listing a license does not relicense CPT32.\n"
         "MPL-2.0 covered source: option-ext 0.2.0, unmodified, available at\n"
         "https://crates.io/api/v1/crates/option-ext/0.2.0/download\n"
-        "UNVERIFIED: version-specific Unifont copyright notices and the provenance of\n"
-        "examples/wasm-3ws88pwn4 remain subject to review; this is not a compliance certificate.\n"
+        "UNVERIFIED: version-specific Unifont copyright notices remain subject to review;\n"
+        "this is not a compliance certificate.\n"
         "See doc/license-compliance.md for distribution obligations and unresolved provenance.\n"
         "Package notice references are SHA-256 identifiers of the full texts below.\n\n"
         + "\n\n".join(records)
