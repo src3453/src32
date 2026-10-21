@@ -1,6 +1,6 @@
 # Foundation OS 実装案
 
-Status: **実装案（未実装）**、2026-10-22。本書は、CPT32 上で動かす OS「Foundation」の構成・契約の候補・開発順序をまとめたものです。規範となる仕様ではありません。カーネル ABI・IPC・syscall・トラップは [spec_Foundation.md](spec_Foundation.md) で確定しました。番号・構造体・規則が本書と異なる場合は、仕様の方が優先します。各フェーズで、`doc/spec_Foundation*.md` などの仕様を別途確定させてから実装します。
+Status: **実装案（未実装）**、2026-10-22。本書は、CPT32 上で動かす OS「Foundation」の構成・契約の候補・開発順序をまとめたものです。規範となる仕様ではありません。FSとVFSは [spec_FS2.md](spec_FS2.md) で策定しました。カーネル ABI・IPC・syscall・トラップは [spec_Foundation.md](spec_Foundation.md) で確定しました。番号・構造体・規則が本書と異なる場合は、仕様の方が優先します。各フェーズで、`doc/spec_Foundation*.md` などの仕様を別途確定させてから実装します。
 
 名前には「すべての基礎になる」という意味を込めています。
 
@@ -12,7 +12,7 @@ Status: **実装案（未実装）**、2026-10-22。本書は、CPT32 上で動�
 | スケジューリング | プリエンプティブ。固定優先度とし、同じ優先度の中ではラウンドロビンにする |
 | API | アプリには DOS 風の分かりやすい独自 API を提供する。POSIX 互換は目指さない（fork、signal、errno、link は導入しない） |
 | 名前空間 | Unix 風の単一ルート。区切りは `/`。ドライブ文字は使わない |
-| ファイルシステム | 新しい階層型 FS（仮称 **FDFS**、Foundation Disk File System）。DSFS は互換用に読めるようにする |
+| ファイルシステム | [FS2 (File System 2)](spec_FS2.md)。階層・256文字名・UID権限・ミリ秒時刻を持つ。DSFS は互換用に読めるようにする |
 | シェル | DOS の知見（`examples/dos-c`、`dos.sol`）を生かして新しく作る |
 | 実装言語 | カーネルは C11。サービス・ライブラリ・アプリは C11 または C++17（freestanding） |
 | 重視する点 | 分かりやすさ。機能より契約の明確さを優先する |
@@ -53,7 +53,7 @@ Status: **実装案（未実装）**、2026-10-22。本書は、CPT32 上で動�
    ├ init      起動設定を読み、サービスとシェルを起動
    ├ console   PCG/VDP の文字表示、キー入力（PeC の入力窓だけを付与）
    ├ disk      ドライブ単位のキュー・キャッシュ（blk_io 経由）
-   └ fs        VFS, FDFS, DSFS(互換), /dev, /dd, /os
+   └ fs        VFS, FS2, DSFS(互換), /dev, /dd, /os
 ```
 
 ### 3.1 リポジトリ配置案
@@ -69,11 +69,11 @@ foundation/
 ├─ bin/{shell,...}/      シェルと外部コマンド
 ├─ tools/                ブートイメージ packer、ディスクイメージ作成
 └─ tests/                ホスト単体テスト、testbench シナリオ
-tools/fdfs/              FDFS のホストツール（mkfs / fsck / put / get / ls）
-doc/spec_Foundation.md, spec_Foundation_API.md, spec_FDFS.md （各フェーズで作成）
+tools/fs2/               FS2 のホストツール（mkfs / fsck / put / get / ls）
+doc/spec_Foundation.md, spec_Foundation_API.md, spec_FS2.md （各フェーズで作成）
 ```
 
-アロケータ・パス解決・FDFS のディスク構造処理などの純粋なロジックは、SRC32 の intrinsic に依存しない C11 で書きます。こうするとホストの C コンパイラでも単体テストできます。
+アロケータ・パス解決・FS2 のディスク構造処理などの純粋なロジックは、SRC32 の intrinsic に依存しない C11 で書きます。こうするとホストの C コンパイラでも単体テストできます。
 
 ## 4. カーネル
 
@@ -163,7 +163,7 @@ MMIO の付与は、起動設定で許可したサービスにだけ、byte 単�
 ## 5. 起動の流れ
 
 1. BIOS が LBA0（stage1）を `0x0` にロードして分岐する（R1 = drive）。
-2. stage1 は FDFS の superblock から、ブート領域（連続した予約 LBA）の位置と長さを読みます。それを `0x00010000` にロードし、R1 = drive のまま分岐します。
+2. stage1 は FS2 の superblock を検証し、予約ブート領域の FNDBOOT（2 MiB 以下）を `0x00200000` に読みます。カーネルを `0x00010000` へコピーし、R1 = drive、R2 = `0x00200000` でカーネル入口へ分岐します（Foundation ABI §11）。
 3. ブートイメージ `FNDBOOT` の構成は、カーネルの raw image と、同梱モジュールの表（`init`、`console`、`disk`、`fs` の v2 PROTECTED WAX）です。
    カーネルは次の順に初期化します。
    1. ベクタを設定する。
@@ -181,7 +181,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 
 | パス | 実体 |
 |---|---|
-| `/bin`, `/lib`, `/etc`, `/home` | 起動ディスクの FDFS 上のディレクトリ（`/` の実体は起動ディスクのルート） |
+| `/bin`, `/lib`, `/etc`, `/home` | 起動ディスクの FS2 上のディレクトリ（`/` の実体は起動ディスクのルート） |
 | `/dev` | 仮想。`con`、`kbd`、`null`、`uart0`、`rtc` など。open するとデバイスサービスへの CHANNEL が返る |
 | `/dd/<n>/` | IDC slot n（0〜3、BIOS の dd0〜dd3 と同じ番号）の FS ルート。例：`/dd/0/example.txt`。媒体がないときはアクセス時に `E_NO_MEDIA` |
 | `/os` | 仮想で、読み取り専用の情報。`proc/<pid>/{status,name,handles}`、`kernel/{version,memory,scheduler,uptime}`、`services/<name>/` |
@@ -190,29 +190,28 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 - `dev`、`dd`、`os`、`tmp` は予約名です。起動ディスクのルートに同名のエントリがあっても隠し、作成も拒否します。
 - セクタの生アクセスは、ファイルとしては公開しません。DISK ハンドルを使う専用 API で行います。
 - 管理操作（終了要求など）は、`/os` への書き込みではなくプロセス API で行います。
-- 初期版では、シンボリックリンク・ハードリンク・ユーザー権限・mount コマンドを導入しません。
+- 初期版では、シンボリックリンク・ハードリンク・mount コマンドを導入しません。UID権限はFS2仕様に従います。ユーザー分離を有効にする前に、現行カーネルABIにないUID認証経路を定めます。
 
-### 6.2 FDFS 設計の要点（`doc/spec_FDFS.md` で確定させる）
+### 6.2 FS2 設計の要点（[FS2仕様](spec_FS2.md)）
 
-- ブロックは 512 bytes で、IDC の LBA と一致させます（DSFS と同じ考え方）。
-- 構造：block 0 はブートセクタ、block 1 は superblock、その後にブート領域、ブロックビットマップ、inode 表、データ領域が続きます。
-- inode は 128 bytes 固定です。種類、サイズ、時刻（Unix 秒）、エクステント 8 個を直接持ち、それを超える分は間接エクステントブロック 1 個で持ちます。
-- ディレクトリは 64-byte のエントリを並べたファイルです（inode 番号と名前）。`.` と `..` は、エントリとしては持たず、パス解決で処理します。
-- 名前は 1〜59 bytes です。`/`、NUL、制御文字は使えません。
-- 整合性：
-  - 書き込み順序を規定します（データ → inode → ディレクトリ → ビットマップ）。
-  - superblock に mounted/dirty フラグを持ちます。
-  - ホストとゲストの両方に fsck を用意します。
-  - ジャーナリングは後のフェーズで検討します。
-- ホストツール `tools/fdfs/fdfs.py`（`mkfs`、`fsck`、`ls`、`put`、`get`、`mkdir`、`install-boot`）を先に作ります。ゲスト側の実装は読み取りから始めます。
-- 互換用に、DSFS の媒体は `/dd/<n>` に平坦なディレクトリとしてマウントできるようにします。最初は読み取り専用です。既存の `sdk/cpt32` の DSFS コードを再利用します。
+従来の仮称FDFSはFS2 (File System 2)へ置き換えました。本節と異なる場合はFS2仕様を優先します。実装はまだありません。
+
+- DSFS由来の512-byte block、big-endian、ブート署名、MSB-firstビットマップを使います。
+- block 0はブートセクタ、block 1はsuperblock。その後は予約ブート領域、ビットマップ、128-byte inode表、データ領域です。
+- 空きはビットマップ、ファイル内の順序は各データblock先頭の次block番号で管理します。payloadは508 bytesで、非連続割り当てが可能です。
+- ディレクトリは1040-byte固定長エントリのストリームです。名前はUTF-8、最大256 Unicode scalar values / 1024 bytes。保存時の大小文字を保ち、Unicode 16.0.0 full case foldingで照合します。
+- 時刻は符号付き64-bit UNIX秒と0〜999のミリ秒部。権限はUIDとowner/otherのRWXだけを持ち、GIDはありません。
+- VFSがパス、mount境界、資格情報、権限、ハンドルを一元管理します。DSFS、RAM、デバイス、OS情報も共通操作で扱います。
+- 読み書きmount中はDIRTYを保持し、異常終了後は通常mountを拒否してfsckを要求します。ジャーナルはなく、任意の中断からの自動回復や内容保全は保証しません。
+- ホストツール（配置予定 `tools/fs2/`）を先に作り、ゲスト側は読み取りから始めます。
+- DSFS媒体は `/dd/<n>` に平坦なディレクトリとしてread-only mountします。既存の `sdk/cpt32` のDSFSコードを参考にします。
 
 ## 7. API ライブラリ libfnd とシェル
 
 - 名前は `fnd_` で始めます。戻り値は `fnd_status`（0 または負のエラー）で、結果は出力引数で返します。
   - ファイル：`fnd_file_open(path, mode, &h)`、`fnd_file_read`、`fnd_file_write`、`fnd_file_seek`、`fnd_file_close`、`fnd_file_delete`、`fnd_file_rename`。
   - ディレクトリ：DOS の FindFirst/FindNext 風の `fnd_dir_open`／`fnd_dir_next`／`fnd_dir_close`、`fnd_dir_make`、`fnd_dir_remove`。
-  - カレントディレクトリ：`fnd_cwd_set`／`fnd_cwd_get`。libfnd が保持して絶対パスに変換し、サーバーには絶対パスだけを送ります。
+  - カレントディレクトリ：`fnd_cwd_set`／`fnd_cwd_get`。fsがcwdの生存参照を保持し、libfndが絶対パスに変換して送ります。途中の `..` は消去せず、mount境界・型・探索権限の検査をVFSに任せます（FS2 §11）。
   - プロセス：`fnd_proc_exec(path, args, &ph)`、`fnd_proc_wait`。
   - コンソール：`fnd_con_write`、`fnd_con_read_line`、`fnd_con_getkey`。
   - 標準ハンドル：`fnd_std_in()`、`fnd_std_out()`（起動情報から取得する）。
@@ -232,7 +231,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 | 2 IPC | ハンドル、call/recv/reply、相手終了時の解除、console サービス | console 経由の文字表示。サーバーが終了したら call が `E_PEER_GONE` になる |
 | 3 プロセス | `proc_spawn`/`exit`/`wait`、所有権表、`FNDBOOT` の同梱モジュール | 起動・終了を繰り返しても RAM とハンドルが漏れない。WAX v3 §8 の領域ケースのうち v2 で可能なもの |
 | 4 ディスク | `blk_io`（転送先の検証）、disk サービス、DSFS 読み取りマウント | FDD 読み込み中も他スレッドが進む。不正バッファでは `E_ACCESS` になり RAM は変化しない |
-| 5 FDFS | 仕様、ホストツール、ゲストの読み取り → 書き込み | ホストの fsck とゲストの結果が一致する。書き込み途中で中断しても fsck で復旧できる |
+| 5 FS2 | 仕様、ホストツール、ゲストの読み取り → 書き込み | ホストの fsck とゲストの結果が一致する。書込中断後はDIRTYでmountを拒否し、fsckの検査・修復可能範囲を確認する |
 | 6 シェル | libfnd、shell、外部コマンド、stage1 からのディスク起動 | ディスクから起動して `DIR`、`TYPE`、アプリ起動を確認する |
 | 7 拡張 | WAX v3／WAL（libfnd の WAL 化）、再配置可能な WAX、`/tmp`、拡張カードのドライバ | WAX v3 §8 の全ケース |
 
@@ -243,8 +242,8 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 | 論点 | 推奨 |
 |---|---|
 | アプリのアドレスモデル | 初期は固定スロット。将来は R30 origin で再配置可能な WAX |
-| ファイル名の大文字小文字 | 大文字小文字を保存し、比較では ASCII の大文字小文字を区別しない（DOS 由来の使いやすさを優先） |
-| ファイル名の文字コード | 初期版は ASCII 印字可能文字のみ。UTF-8 は後で検討する |
+| ファイル名の大文字小文字 | FS2仕様で確定：保存名を維持し、Unicode 16.0.0 full case foldingで比較する |
+| ファイル名の文字コード | FS2仕様で確定：UTF-8、最大256 Unicode scalar values / 1024 bytes |
 | WAX ローダの置き場所 | カーネル内（所有権表と原子的な起動を一箇所で扱うため） |
 | tick とタイムスライス | 1 ms と 10 ms |
 | ゲスト側の設定形式 | 1 行に 1 コマンドのテキスト。YAML はホスト側の設定にだけ使う |
