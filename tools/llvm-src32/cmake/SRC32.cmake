@@ -60,7 +60,7 @@ function(src32_add_library name)
 endfunction()
 
 function(src32_add_executable name)
-    cmake_parse_arguments(ARG "PROTECTED" "OPTIMIZATION;ORIGIN;STACK_TOP;ENTRY;USER_STACK_SIZE"
+    cmake_parse_arguments(ARG "PROTECTED" "OPTIMIZATION;ORIGIN;STACK_TOP;ENTRY;USER_STACK_SIZE;NEWLIB_SOURCE;NEWLIB_HEAP_SIZE"
         "SOURCES;INCLUDE_DIRECTORIES;DEFINITIONS;LIBRARIES" ${ARGN})
     if(ARG_UNPARSED_ARGUMENTS OR ARG_KEYWORDS_MISSING_VALUES)
         message(FATAL_ERROR "Invalid src32_add_executable arguments: ${ARG_UNPARSED_ARGUMENTS};${ARG_KEYWORDS_MISSING_VALUES}")
@@ -120,11 +120,21 @@ function(src32_add_executable name)
         # Extension P user-mode program: PROTECTED .wax for the BIOS WAX loader.
         list(APPEND arguments --protected)
     endif()
+    if(DEFINED ARG_NEWLIB_SOURCE)
+        get_filename_component(newlib_source "${ARG_NEWLIB_SOURCE}" ABSOLUTE BASE_DIR "${CMAKE_CURRENT_SOURCE_DIR}")
+        list(APPEND arguments --newlib-source "${newlib_source}")
+    endif()
+    if(DEFINED ARG_NEWLIB_HEAP_SIZE)
+        if(NOT DEFINED ARG_NEWLIB_SOURCE)
+            message(FATAL_ERROR "NEWLIB_HEAP_SIZE requires NEWLIB_SOURCE")
+        endif()
+        list(APPEND arguments --newlib-heap-size "${ARG_NEWLIB_HEAP_SIZE}")
+    endif()
     get_filename_component(tool_root "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/.." ABSOLUTE)
     set(image "${CMAKE_CURRENT_BINARY_DIR}/${name}.wax")
     set(depfile "${CMAKE_CURRENT_BINARY_DIR}/${name}.d")
     file(GLOB_RECURSE compiler_dependencies CONFIGURE_DEPENDS
-        "${tool_root}/*.py" "${tool_root}/runtime/*.c" "${tool_root}/runtime/include/*.h")
+        "${tool_root}/*.py" "${tool_root}/runtime/*.c" "${tool_root}/runtime/*.h")
     add_custom_command(OUTPUT "${image}"
         COMMAND "${SRC32_PYTHON_EXECUTABLE}" "${tool_root}/driver.py"
             ${sources} ${arguments} --depfile "${depfile}" -o "${image}"

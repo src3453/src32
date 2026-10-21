@@ -76,6 +76,82 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_unsigned_multiply_overflow_and_three_way_compare(self):
+        # Keep operands dynamic so Clang cannot constant-fold the boundaries.
+        source = self.work / 'overflow.c'
+        source.write_text('''
+static volatile unsigned pairs[][2] = {
+    {0, 0xffffffffu}, {0xffffffffu, 0}, {0xffffffffu, 1},
+    {0x80000000u, 2}, {0x10000u, 0x10000u},
+    {0x7fffffffu, 2}, {0xffffffffu, 0xffffffffu}};
+static int cmp(int a, int b) { return (a > b) - (a < b); }
+int main(void) {
+    for (unsigned i=0; i<7; ++i) {
+        unsigned a=pairs[i][0], b=pairs[i][1], product;
+        unsigned long long full=(unsigned long long)a*b;
+        int overflow=__builtin_mul_overflow(a,b,&product);
+        if (product != (unsigned)full || overflow != (full > 0xffffffffu)) return 100+i;
+    }
+    if(cmp(-2147483647-1,2147483647)!=-1 || cmp(1,-1)!=1 || cmp(-1,-1)!=0) return 110;
+    return 42;
+}
+''', encoding='utf-8')
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / 'overflow.wax'
+                self.driver(source, opt, '-o', image)
+                self.execute(image, 42)
+                self.execute(image, 42, 'pipeline')
+
+    def test_constant_pointer_arithmetic(self):
+        source = self.ir('''
+@data = global [4 x i8] c"abc\\00"
+@address = global i32 add (i32 ptrtoint (ptr @data to i32), i32 2)
+@distance = global i32 sub (i32 ptrtoint (ptr @data to i32), i32 ptrtoint (ptr getelementptr ([4 x i8], ptr @data, i32 0, i32 2) to i32))
+define i32 @main() {
+  %p = load i32, ptr @address
+  %ptr = inttoptr i32 %p to ptr
+  %byte = load i8, ptr %ptr
+  %d = load i32, ptr @distance
+  %ok1 = icmp eq i8 %byte, 99
+  %ok2 = icmp eq i32 %d, -2
+  %ok = and i1 %ok1, %ok2
+  %result = select i1 %ok, i32 42, i32 100
+  ret i32 %result
+}
+''')
+        image = self.work / 'constant.wax'
+        self.driver(source, '-o', image)
+        self.execute(image, 42)
+
+    def test_three_way_compare_intrinsics(self):
+        functions, checks = [], []
+        for index, (a, b) in enumerate(((0, 0), (0, 1), (1, 0),
+                                      (0x80000000, 0x7fffffff), (0xffffffff, 0))):
+            for kind in ('scmp', 'ucmp'):
+                signed = lambda n: n - 0x100000000 if n & 0x80000000 else n
+                x, y = (signed(a), signed(b)) if kind == 'scmp' else (a, b)
+                expected = (x > y) - (x < y)
+                name = f'{kind}_{index}'
+                functions.append(f'''define i32 @{name}(i32 %a, i32 %b) {{
+  %r = call i32 @llvm.{kind}.i32.i32(i32 %a, i32 %b)
+  ret i32 %r
+}}''')
+                checks.append(f'''  %v{len(checks)} = call i32 @{name}(i32 {a}, i32 {b})
+  %ok{len(checks)} = icmp eq i32 %v{len(checks)}, {expected}''')
+        main = '\n'.join(checks)
+        main += '\n  %sum0 = and i1 %ok0, %ok1\n'
+        for i in range(2, len(checks)):
+            main += f'  %sum{i-1} = and i1 %sum{i-2}, %ok{i}\n'
+        main += f'  %result = select i1 %sum{len(checks)-2}, i32 42, i32 100\n  ret i32 %result\n'
+        source = self.ir('declare i32 @llvm.scmp.i32.i32(i32, i32)\n'
+                         'declare i32 @llvm.ucmp.i32.i32(i32, i32)\n' +
+                         '\n'.join(functions) + '\ndefine i32 @main() {\n' + main + '}\n')
+        image = self.work / 'compare.wax'
+        self.driver(source, '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+
     def test_unsigned_saturating_subtraction(self):
         # Direct IR prevents Clang folding constants or replacing the intrinsic.
         # Include non-C widths, the unsigned sign boundary, and both i64 words.

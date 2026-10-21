@@ -55,6 +55,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--save-temps", type=Path, metavar="DIR")
     p.add_argument("--depfile", type=Path, metavar="PATH", help="write Make-style dependencies after successful compilation")
     p.add_argument("--clang", help="Clang executable path; otherwise use CLANG or PATH")
+    p.add_argument("--newlib-source", type=Path, help="external Newlib source root (optional portable integer/string/allocator profile)")
+    p.add_argument("--newlib-heap-size", type=address, default=65536, help="reserved Newlib heap bytes (default 65536; multiple of 8)")
     return p
 
 
@@ -80,9 +82,15 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-pic", "-fno-pie",
                "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
-               "-isystem", str(ROOT / "runtime" / "include"),
                "-std=c++17" if cxx else "-std=c11",
                "-O0" if runtime else args.optimization, "-S", "-emit-llvm"]
+    newlib = getattr(args, "newlib", None)
+    for include in newlib.headers() if newlib else [ROOT / "runtime" / "include"]:
+        command.extend(["-isystem", str(include)])
+    if newlib:
+        command.append("-DPREFER_SIZE_OVER_SPEED=1")
+        if runtime and source.name == "nano-mallocr.c":
+            command.extend(["-include", str(ROOT / "runtime/newlib/include/port.h")])
     if cxx:
         command.extend(["-fno-exceptions", "-fno-rtti", "-fno-threadsafe-statics",
                         "-fno-use-cxa-atexit", "-Xclang", "-mno-constructor-aliases"])
@@ -171,6 +179,8 @@ def run(args) -> Path:
     if args.protected and (not args.user_stack_size or args.user_stack_size % 8
                            or args.user_stack_size > args.stack_top):
         raise DriverError("--user-stack-size must be a nonzero multiple of 8 that fits below --stack-top")
+    if not args.newlib_source and args.newlib_heap_size != 65536:
+        raise DriverError("--newlib-heap-size requires --newlib-source")
     output = args.output or args.inputs[0].with_suffix(".ll" if args.emit_llvm else ".a" if args.S else ".wax")
     if args.protected and not (args.emit_llvm or args.S) and output.suffix.lower() != ".wax":
         raise DriverError("--protected needs .wax output: raw .bin cannot carry permissions")
@@ -220,6 +230,12 @@ def run(args) -> Path:
             if any(source.resolve().is_relative_to(work) for source in args.inputs):
                 raise DriverError("--save-temps must not contain input files (intermediates may overwrite them)")
         linked = None
+        args.newlib = None
+        if args.newlib_source:
+            from newlib import Newlib
+            clang = clang or find_clang(args.clang)
+            args.newlib = Newlib(args.newlib_source, clang, args.newlib_heap_size)
+            dependencies.add(args.newlib.root / "COPYING.NEWLIB")
         for index, source in enumerate(args.inputs):
             parsed_source = source
             if source.suffix.lower() in SOURCE_SUFFIXES:
@@ -241,6 +257,25 @@ def run(args) -> Path:
                     linked.verify()
                 except RuntimeError as exc:
                     raise DriverError(f"linking {source}: {exc}") from exc
+        if args.newlib:
+            while True:
+                defined = {f.name for f in linked.functions if not f.is_declaration}
+                missing = {f.name for f in linked.functions if f.is_declaration} - defined
+                pending = args.newlib.pending(missing, defined)
+                if not pending:
+                    break
+                for name, source, defines in pending:
+                    ir = work / f"newlib-{name}.ll"
+                    dep = ir.with_suffix(".d") if args.depfile else None
+                    # Do not leak application defines/includes into upstream libc.
+                    compile_c(clang, source, ir, args, defines=defines, runtime=True, depfile=dep)
+                    dependencies.add(source.resolve())
+                    if dep:
+                        dependencies.update(read_dependencies(dep))
+                    module = parse_module(ir)
+                    check_link_layout(linked, module, source)
+                    linked.link_in(module)
+                    linked.verify()
         defined = {f.name for f in linked.functions if not f.is_declaration}
         declared = {f.name for f in linked.functions if f.is_declaration}
         needed = set(RUNTIME_NAMES) & declared - defined

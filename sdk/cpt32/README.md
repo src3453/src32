@@ -3,6 +3,7 @@
 [`sol/cpt32`](../../sol/cpt32/) の実装済み機能を、[`tools/llvm-src32`](../../tools/llvm-src32/README.md) 用の freestanding C API へ移植しています。ホスト用ライブラリやWASMカードSDKではありません。solの関数ABIとはバイナリ互換ではありません。
 
 公開関数の短い説明は、[`include/cpt32/`](include/cpt32/) の各ヘッダーで関数宣言の直前に記載しています。
+別途用意したNewlibの文字列・整数・ソート・動的メモリ確保は、ツールチェーンの`--newlib-source`で利用できます。対応範囲と手順は[外部Newlibサンプル](../../examples/newlib-c/README.md)を参照してください。
 
 ## モジュール
 

@@ -368,6 +368,18 @@ class DataImage:
                 else:
                     raise CompileError(f"GEP indexes into non-aggregate type {current}")
             return address & 0xFFFFFFFF
+        arithmetic = re.fullmatch(r"(add|sub)\s*\((.*)\)", text, re.S)
+        if arithmetic:
+            parts = split_top(arithmetic[2])
+            if len(parts) != 2:
+                raise CompileError(f"malformed constant arithmetic: {text}")
+            left_ty, left = parse_type(parts[0], self.module)
+            right_ty, right = parse_type(parts[1], self.module)
+            if str(left_ty) != str(right_ty) or not _INTEGER.fullmatch(str(left_ty)):
+                raise CompileError(f"constant arithmetic requires matching integers: {text}")
+            a, b = self.resolve(left), self.resolve(right)
+            value = a + b if arithmetic[1] == "add" else a - b
+            return value & ((1 << self._width(left_ty)) - 1)
         cast = re.fullmatch(r"(bitcast|addrspacecast|ptrtoint|inttoptr|trunc|zext|sext)\s*\((.*)\)", text, re.S)
         if cast:
             parts = split_top(cast[2], " to ")

@@ -1141,6 +1141,32 @@ class _Function:
 
     def intrinsic(self, inst, name, values):
         c = self.c
+        if name in ("llvm.scmp.i32.i32", "llvm.ucmp.i32.i32"):
+            self.load(values[0], 1)
+            self.load(values[1], 2)
+            compare = "SLT" if ".scmp." in name else "SLTU"
+            c.emit(f"{compare} R3, R1, R2")
+            c.emit(f"{compare} R4, R2, R1")
+            c.emit("SUB R1, R4, R3")
+            self.store(inst)
+            return
+        if name == "llvm.umul.with.overflow.i32":
+            # a*b overflows exactly when b != 0 and a > UINT32_MAX/b.
+            # Test before truncation; the aggregate's i1 occupies one byte.
+            self.load(values[0], 1)
+            self.load(values[1], 2)
+            c.move(4, 0)
+            done = c.fresh("umul_overflow_done")
+            c.emit(f"BEQ R2, R0, {done}")
+            c.imm(3, 0xffffffff)
+            c.emit("DIVU R3, R3, R2")
+            c.emit("SLTU R4, R3, R1")
+            c.label(done)
+            c.emit("MUL R1, R1, R2")
+            self.store(inst, 1)
+            c.mem("ST", 0, 29, self.slots[inst] + 4)
+            c.mem("STB", 4, 29, self.slots[inst] + self.layout.offset(inst.type, 1))
+            return
         if name.startswith("llvm.usub.sat."):
             bits = _bits(inst.type)
             wide = bits > 32
