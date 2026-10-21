@@ -167,3 +167,58 @@ def test_cli_raw_binary_output_remains_the_default(tmp_path, monkeypatch):
     asm_main()
     output = tmp_path / "raw.asm.bin"
     assert output.read_bytes() == bytes(8) + bytes.fromhex("fc000000")
+
+
+def test_perm_splits_adjacent_sparse_blocks_and_records_masks():
+    asm = Assembler(strip=True, sparse=True)
+    asm.assemble(".PROTECTED 0x200000, 0x1000\n.ORG 0x100000\n.PERM rx\nHALT\n.PERM r\n.BYTE 7\n"
+                 ".ORG 0x100008\n.PERM rw\n.DWORD 0\n")
+    assert asm.protection == (0x200000, 0x1000)
+    assert asm.protected_blocks() == [
+        (0x100000, bytes.fromhex("fc000000"), 5),
+        (0x100004, b"\x07", 1),
+        (0x100008, b"\x00\x00\x00\x00", 3),
+    ]
+
+
+def test_perm_rejects_unknown_letters_and_protected_only_once():
+    for source, message in (
+        (".PERM rz\nHALT", ".PERM expects"),
+        (".PROTECTED 0x1000, 0x100\n.PROTECTED 0x1000, 0x100", "only appear once"),
+        (".PROTECTED 0x1000", "stack top and a stack size"),
+    ):
+        try:
+            Assembler(sparse=True).assemble(source)
+        except ValueError as exc:
+            assert message in str(exc)
+        else:
+            raise AssertionError(f"{source!r} must fail")
+
+
+def test_cli_writes_protected_wax_from_directives(tmp_path, monkeypatch):
+    source = tmp_path / "user.asm"
+    source.write_text(
+        ".PROTECTED 0x00C00000, 0x40000\n.ORG 0x00800000\n.PERM rx\nentry: SYSCALL 0x11\n"
+        ".PERM r\n.DB 0x41, 0\n.ORG 0x00800008\n.PERM rw\n.DWORD 0\n",
+        encoding="utf-8",
+    )
+    output = tmp_path / "user.wax"
+    monkeypatch.setattr(sys, "argv", [str(ASM_SCRIPT), str(source), "-o", str(output)])
+    asm_main()
+    image = parse_wax(output.read_bytes())
+    assert image["protection"] == (0x00C00000, 0x40000)
+    assert [(b["load_address"], b["perm"]) for b in image["blocks"]] == [
+        (0x00800000, 5), (0x00800004, 1), (0x00800008, 3)]
+    assert image["entry"] == 0x00800000
+
+
+def test_cli_rejects_protected_directive_for_raw_output(tmp_path, monkeypatch):
+    source = tmp_path / "user.asm"
+    source.write_text(".PROTECTED 0x1000, 0x100\n.PERM rx\nHALT\n", encoding="utf-8")
+    monkeypatch.setattr(sys, "argv", [str(ASM_SCRIPT), str(source), "-o", str(tmp_path / "user.bin")])
+    try:
+        asm_main()
+    except SystemExit as exc:
+        assert exc.code == 2
+    else:
+        raise AssertionError("raw output must reject .PROTECTED")

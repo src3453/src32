@@ -9,6 +9,8 @@ translation_of: CHANGELOG.md
 構成の推奨事項については、[Keep a Changelog](http://keepachangelog.com/) を参照してください。
 
 ## [未リリース]
+- `!abi_compat` ディレクティブに対応しました。ハイライト、ディレクティブ名と ABI 名（`"bare"`／`"Foundation"`）の補完、配置違反・未知の名前・ファイル間の食い違いの診断を、同梱コンパイラで行います。インクルード先のファイルで起きたエラーは、パスを含むメッセージとして現在のファイルの先頭に表示します。
+- 同梱のコンパイラ、VM、言語サーバーを `tools/solc` と同期しました。
 - declaration / definition / hover / document highlight / references / workspace symbol provider を追加し、「宣言へ移動」「定義へ移動」「すべての参照を検索」「ワークスペースシンボルへ移動」とホバーが使えるようにしました。`!include` したファイルや `namespace.name` 修飾子をまたいで解決します。
 - document symbol provider を追加し、名前空間・関数・定数・変数・ローカル変数・マクロをアウトラインに表示できるようにしました。
 - 名前空間ブロック、別名付き `!include` namespace、`namespace.name` 修飾子をセマンティックハイライトで名前空間として扱うようにしました。

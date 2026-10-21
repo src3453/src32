@@ -475,3 +475,36 @@ def test_lsp_analyzes_nested_namespace_scopes(tmp_path):
         diagnostics = run(broken)
         assert [(item["severity"], item["message"], item["range"]["start"]) for item in diagnostics] == [
             (1, "unknown word: outer.inner.MISSING", {"line": 5, "character": 0})]
+
+
+def test_lsp_completes_and_diagnoses_abi_compat(tmp_path):
+    for server in (SERVER, BUNDLED_SERVER):
+        lib = tmp_path / "lib.sol"
+        lib.write_text('!abi_compat "Foundation"\nfn f () : 1 ret ;\n', encoding="utf-8")
+        main = tmp_path / "main.sol"
+        uri = main.as_uri()
+        p = subprocess.Popen([sys.executable, str(server)], stdin=subprocess.PIPE, stdout=subprocess.PIPE)
+        send(p.stdin, {"jsonrpc":"2.0", "id":1, "method":"initialize", "params":{}})
+        assert "completionProvider" in receive(p.stdout)["result"]["capabilities"]
+        text = '!abi_compat "F\n'
+        send(p.stdin, {"jsonrpc":"2.0", "method":"textDocument/didOpen", "params":{"textDocument":{"uri":uri,"version":1,"text":text}}})
+        receive(p.stdout)
+        send(p.stdin, {"jsonrpc":"2.0", "id":2, "method":"textDocument/completion", "params":{"textDocument":{"uri":uri},"position":{"line":0,"character":14}}})
+        items = receive(p.stdout)["result"]
+        assert [item["textEdit"]["newText"] for item in items] == ['"Foundation"']
+        assert items[0]["textEdit"]["range"]["start"]["character"] == 12
+        send(p.stdin, {"jsonrpc":"2.0", "id":3, "method":"textDocument/completion", "params":{"textDocument":{"uri":uri},"position":{"line":0,"character":4}}})
+        assert [item["label"] for item in receive(p.stdout)["result"]] == ["!abi_compat"]
+        for source, expected_line, message in (
+            ('1 drop\n!abi_compat "Foundation"\n', 1, "must appear at the top level"),
+            ('!abi_compat "Foundation"\nfn irq3 () : retn ;\n', 1, "IRQ handler functions"),
+            ('!include "lib.sol"\nf drop\n', 0, str(lib)),
+        ):
+            send(p.stdin, {"jsonrpc":"2.0", "method":"textDocument/didChange", "params":{"textDocument":{"uri":uri,"version":2},"contentChanges":[{"text":source}]}})
+            diagnostics = receive(p.stdout)["params"]["diagnostics"]
+            assert message in diagnostics[0]["message"]
+            assert diagnostics[0]["range"]["start"]["line"] == expected_line
+        send(p.stdin, {"jsonrpc":"2.0", "id":4, "method":"shutdown", "params":{}})
+        assert receive(p.stdout)["result"] is None
+        send(p.stdin, {"jsonrpc":"2.0", "method":"exit", "params":{}})
+        p.wait(timeout=10)

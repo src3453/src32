@@ -27,6 +27,21 @@ UINT32_MAX = 2**32 - 1
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
+# `!abi_compat` names and the majors each one supports (doc/spec_Foundation.md section 13).
+ABI_BARE = "bare"
+ABI_FOUNDATION = "Foundation"
+SUPPORTED_ABIS = {ABI_BARE: (1,), ABI_FOUNDATION: (1,)}
+FOUNDATION_STACK_TOP = 0x00C00000
+FOUNDATION_STACK_SIZE_BYTES = 0x00040000
+# Instructions a Foundation U-mode program must not use inside `!asm`.
+FOUNDATION_PRIVILEGED_ASM = frozenset({"HALT", "IRET", "MFSR", "MTSR"})
+# Directive argument counts used to tell directive operands from top-level code.
+_DIRECTIVE_OPERANDS = {
+    "!const": 2, "!define": 2, "!undef": 1, "!keepfn": 1, "!var": 1,
+    "!stack_top": 1, "!var_base": 1, "!rodata_base": 1,
+    "!required_stack_size": 1, "!force_stack_size": 1,
+}
+
 logger = logging.getLogger(__name__)
 
 
@@ -171,6 +186,12 @@ class Program:
     stack_top: int = 0x000FFFFC
     var_base: int = 0x00100000
     read_only_data_base: int = STRING_POOL_BASE
+    # End (exclusive) of the global variables allocated from var_base.
+    var_end: int = 0x00100000
+    abi: str = ABI_BARE
+    abi_major: int = 1
+    # Layout settings given by a source directive or an explicit API/CLI value.
+    explicit_layout: frozenset[str] = frozenset()
 
 def to_i32(value: int) -> int:
     value &= UINT32_MAX
@@ -364,6 +385,22 @@ def parse_number(token: str) -> int:
 
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
+
+def _check_foundation_asm(tok: RawAssemblyToken) -> None:
+    """Reject privileged instructions at the start of `!asm` lines (a misuse check, not a guarantee)."""
+    for offset, raw_line in enumerate(tok.text.splitlines(), start=1):
+        line = raw_line.split(";", 1)[0].strip()
+        while True:
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*:\s*", line)
+            if not match:
+                break
+            line = line[match.end():]
+        mnemonic = line.split(None, 1)[0].upper() if line else ""
+        if mnemonic in FOUNDATION_PRIVILEGED_ASM:
+            location = SourceLocation(tok.location.path, tok.location.line + offset, 1)
+            raise SolVMError(format_error(
+                f'privileged instruction {mnemonic} is not allowed in !asm with !abi_compat "{ABI_FOUNDATION}"', location))
+
 
 def compile_program(source: str, var_base: int | None = None, read_only_data_base: int | None = None, stack_top: int | None = None, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
     var_base_overridden = var_base is not None
@@ -899,10 +936,80 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
     def current_namespace() -> str | None:
         return ".".join(namespace_stack) if namespace_stack else None
 
+    # `!abi_compat` must precede every function, top-level word, `!namespace`,
+    # `!asm`, `!data` and `!db` of its own file. Track which files already
+    # have such content, skipping the operands of the other directives.
+    abi_declarations: list[tuple[str | None, str, int, SourceLocation | None]] = []
+    files_with_content: set[str | None] = set()
+    # Remaining operands of the previous directive; `!var` may take one more number.
+    operands_pending = 0
+    var_value_optional = False
+
+    def note_file_content(tok: object) -> None:
+        nonlocal operands_pending, var_value_optional
+        if isinstance(tok, NamespaceMarker):
+            return
+        location = getattr(tok, "location", None)
+        path = location.path if location else None
+        if isinstance(tok, RawAssemblyToken):
+            files_with_content.add(path)
+            return
+        if operands_pending:
+            operands_pending -= 1
+            return
+        if var_value_optional:
+            var_value_optional = False
+            if NUMBER_RE.match(tok):
+                return
+        if tok in _DIRECTIVE_OPERANDS:
+            operands_pending = _DIRECTIVE_OPERANDS[tok]
+            var_value_optional = tok == "!var"
+            return
+        if tok == "!end":
+            return
+        files_with_content.add(path)
+
     while i < len(tokens):
         tok = tokens[i]
         if isinstance(tok, str) and tok.startswith("\\!"):
             tok = tok[1:]
+        if tok == "!abi_compat":
+            location = getattr(tok, "location", None)
+
+            def abi_error(message: str) -> SolVMError:
+                return SolVMError(format_error(message, location))
+
+            if i + 1 >= len(tokens) or not isinstance(tokens[i + 1], str):
+                raise abi_error('!abi_compat requires an ABI name such as "Foundation"')
+            name_tok = tokens[i + 1]
+            if not (len(name_tok) >= 2 and name_tok.startswith('"') and name_tok.endswith('"')):
+                raise abi_error(f"!abi_compat ABI name must be a string literal: {name_tok}")
+            abi_name = _decode_string_literal(name_tok)
+            consumed = 2
+            abi_major = 1
+            # The optional major must be on the directive's line so that a
+            # number starting the next line stays top-level code.
+            major_tok = tokens[i + 2] if i + 2 < len(tokens) else None
+            if (
+                isinstance(major_tok, SourceToken)
+                and location is not None
+                and major_tok.location[:2] == location[:2]
+            ):
+                if not re.fullmatch(r"[0-9]+|0[xX][0-9a-fA-F]+", major_tok):
+                    raise abi_error(f"invalid major version for !abi_compat: {major_tok}")
+                abi_major = int(major_tok, 0)
+                consumed = 3
+            if abi_name not in SUPPORTED_ABIS:
+                raise abi_error(f'unknown ABI for !abi_compat: "{abi_name}" (expected "{ABI_BARE}" or "{ABI_FOUNDATION}")')
+            if abi_major not in SUPPORTED_ABIS[abi_name]:
+                raise abi_error(f'unsupported major version for !abi_compat "{abi_name}": {abi_major}')
+            path = location.path if location else None
+            if path in files_with_content or operands_pending:
+                raise abi_error("!abi_compat must appear at the top level before any function, code, !namespace, !asm, !data or !db in its file")
+            abi_declarations.append((path, abi_name, abi_major, location))
+            i += consumed
+            continue
+        note_file_content(tok)
         if SOLC_DEBUG and i % 50 == 0:
             print(f"DEBUG first-pass i={i} tok={tok}")
         if isinstance(tok, NamespaceMarker):
@@ -982,7 +1089,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                         raise SolVMError(f"invalid local name: {local_name}")
                     init_value = None
                     consumed = 2
-                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                    if k + 2 < len(body_tokens) and isinstance(body_tokens[k + 2], str) and NUMBER_RE.match(body_tokens[k + 2]):
                         init_value = parse_number(body_tokens[k + 2])
                         consumed = 3
                     local_index = len(locals_list)
@@ -1034,6 +1141,37 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
         i += 1
     if namespace_stack:
         raise SolVMError(f"unterminated namespace: {'.'.join(namespace_stack)}")
+
+    abi = ABI_BARE
+    abi_major = 1
+    if abi_declarations:
+        first_path, abi, abi_major, _ = abi_declarations[0]
+        for path, name, major, location in abi_declarations[1:]:
+            if (name, major) != (abi, abi_major):
+                raise SolVMError(format_error(
+                    f'!abi_compat mismatch: {path or "<source>"} requires "{name}" {major}, '
+                    f'but {first_path or "<source>"} requires "{abi}" {abi_major}',
+                    location,
+                ))
+        if not any(path == source_path for path, _, _, _ in abi_declarations):
+            path, name, major, location = abi_declarations[0]
+            if name != ABI_BARE:
+                raise SolVMError(format_error(
+                    f'!abi_compat mismatch: {path or "<source>"} requires "{name}" {major}, '
+                    f'but the main program {source_path or "<source>"} uses "{ABI_BARE}" (no !abi_compat)',
+                    location,
+                ))
+    if abi == ABI_FOUNDATION:
+        for irq_number, handler in sorted(irq_handlers.items()):
+            location = functions[internal_function_name(None, handler)]["location"]
+            raise SolVMError(format_error(
+                f'IRQ handler functions are not allowed with !abi_compat "{ABI_FOUNDATION}": {handler}', location))
+        for tok in tokens:
+            if isinstance(tok, RawAssemblyToken):
+                _check_foundation_asm(tok)
+        if not stack_top_overridden:
+            stack_top = FOUNDATION_STACK_TOP
+        effective_stack_size_bytes = FOUNDATION_STACK_SIZE_BYTES
 
     # Only emit functions reachable from the top-level program.  Function
     # bodies are compiled after the main program, so emitting every collected
@@ -1133,6 +1271,14 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
         stack_top=stack_top,
         var_base=var_base,
         read_only_data_base=read_only_data_base,
+        var_end=next_var_addr,
+        abi=abi,
+        abi_major=abi_major,
+        explicit_layout=frozenset(
+            {"stack_top"} if stack_top_overridden else set()
+        ) | frozenset({"var_base"} if var_base_overridden else set())
+        | frozenset({"rodata_base"} if rodata_base_overridden else set())
+        | frozenset(directive_seen),
     )
 
 '''
@@ -1205,7 +1351,7 @@ def compile_program(source: str, var_base: int | None = None, read_only_data_bas
                     # optional init value
                     init_value = None
                     consumed = 2
-                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                    if k + 2 < len(body_tokens) and isinstance(body_tokens[k + 2], str) and NUMBER_RE.match(body_tokens[k + 2]):
                         init_value = parse_number(body_tokens[k + 2])
                         consumed = 3
                     local_index = len(locals_list)
@@ -1326,6 +1472,8 @@ class SolVM:
 
     def load(self, source: str, source_path: str | None = None, read_only_data_base: int | None = None, remove_unused_functions: bool = True) -> None:
         self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
+        if self.program.abi != ABI_BARE:
+            raise SolVMError(f'the sol VM cannot run programs declaring !abi_compat "{self.program.abi}"; compile them with solc instead')
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)

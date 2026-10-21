@@ -2,13 +2,27 @@
 
 from __future__ import annotations
 
+import importlib.util
+import os
 import re
 from collections import defaultdict
 
-from sol_vm import STACK_SIZE_BYTES, Instruction, Program, SolVMError, compile_program
-
+from sol_vm import ABI_FOUNDATION, STACK_SIZE_BYTES, Instruction, Program, SolVMError, compile_program
 
 ENTRY_LABEL = "__solc_entry"
+CODE_END_LABEL = "__solc_code_end"
+# Foundation user slots (doc/spec_Foundation.md section 5.2) and the default slot 5 origin.
+FOUNDATION_SLOTS = (
+    (0x00400000, 0x00480000),
+    (0x00480000, 0x00500000),
+    (0x00500000, 0x00580000),
+    (0x00580000, 0x00600000),
+    (0x00600000, 0x00800000),
+    (0x00800000, 0x00C00000),
+    (0x00C00000, 0x01000000),
+)
+FOUNDATION_ORIGIN = 0x00800000
+FOUNDATION_SYSCALL_PROC_EXIT = 0x11
 STACK_CACHE_REGS = tuple(f"R{i}" for i in range(1, 13))
 SHORT_MODE_SWITCH_COST = 2
 
@@ -167,7 +181,9 @@ def _format_imm16(value: int) -> tuple[str, str]:
 
 def _emit_load_imm32(lines: list[str], reg: str, value: int) -> None:
     high, low = _format_imm16(value)
-    lines.append(f"    ADDI {reg}, R0, 0")
+    # LDIH sets bits 31:16 (preserving 15:0) and LDIL sets bits 15:0
+    # (preserving 31:16), so together they fully determine the 32-bit
+    # register regardless of its prior value. No zeroing is needed first.
     lines.append(f"    LDIH {reg}, {high}")
     lines.append(f"    LDIL {reg}, {low}")
 
@@ -450,7 +466,16 @@ class _StackCacheEmitter:
         self.head = 0
 
 
-def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None, use_short_mode: bool = True, short_tag_counter: list[int] | None = None, stack_size_bytes: int = STACK_SIZE_BYTES) -> None:
+def _emit_program_end(lines: list[str], foundation: bool) -> None:
+    if foundation:
+        # A Foundation U-mode process ends with proc_exit(0) instead of HALT.
+        lines.append("    ADDI R1, R0, 0")
+        lines.append(f"    SYSCALL 0x{FOUNDATION_SYSCALL_PROC_EXIT:02X}")
+    else:
+        lines.append("    HALT")
+
+
+def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruction, pc: int = 0, debug: bool = False, current_func: str | None = None, functions_map: dict[str, int] | None = None, use_short_mode: bool = True, short_tag_counter: list[int] | None = None, stack_size_bytes: int = STACK_SIZE_BYTES, foundation: bool = False) -> None:
     if short_tag_counter is None:
         short_tag_counter = [0]
     op = inst.op
@@ -802,13 +827,13 @@ def _emit_instruction(lines: list[str], cache: _StackCacheEmitter, inst: Instruc
     if op == "halt":
         cache.flush()
         cache.reset_empty()
-        lines.append("    HALT")
+        _emit_program_end(lines, foundation)
         return
 
     raise SolCompileError(f"unsupported opcode for compile: {op}")
 
 
-def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True) -> str:
+def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int = 0x000FFFFC, use_short_mode: bool = True, org: int = 0) -> str:
     if program.effective_stack_size_bytes < 0 or program.effective_stack_size_bytes > STACK_SIZE_BYTES:
         raise SolCompileError(
             f"effective stack size {program.effective_stack_size_bytes} exceeds fixed capacity {STACK_SIZE_BYTES}"
@@ -817,8 +842,11 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
         raise SolCompileError(
             f"required stack size {program.required_stack_size_bytes} exceeds effective stack size {program.effective_stack_size_bytes}"
         )
+    foundation = program.abi == ABI_FOUNDATION
     if ENTRY_LABEL in program.labels:
         raise SolCompileError(f"label '{ENTRY_LABEL}' is reserved")
+    if CODE_END_LABEL in program.labels:
+        raise SolCompileError(f"label '{CODE_END_LABEL}' is reserved")
     labels_by_pc: dict[int, list[str]] = defaultdict(list)
     for label_name, pc in sorted(program.labels.items(), key=lambda x: (x[1], x[0])):
         labels_by_pc[pc].append(label_name)
@@ -826,9 +854,26 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     lines: list[str] = []
     short_tag_counter = [0]
     short_plan = _plan_short_mode(program.instructions, use_short_mode)
-    lines.append(".ORG 0x00000000")
+    if foundation:
+        # PROTECTED WAX: the kernel sets USP to the declared stack top, so
+        # the entry code must not load R28 itself.
+        lines.append(f".PROTECTED {_format_imm(stack_top)}, {_format_imm(program.effective_stack_size_bytes)}")
+        lines.append(".PERM rx")
+    lines.append(".ORG 0x00000000" if org == 0 else f".ORG {_format_imm(org)}")
     lines.append(f"{ENTRY_LABEL}:")
-    _emit_load_imm32(lines, "R28", stack_top)
+    if not foundation:
+        _emit_load_imm32(lines, "R28", stack_top)
+    irq_handlers = program.irq_handlers or {}
+    if irq_handlers:
+        # R30 is reserved for the IRQ dispatcher address. The vector table is
+        # writable MMIO, so install one indirect jump instruction per vector
+        # instead of placing code at the 0xFFFFxxxx addresses in the binary.
+        lines.append("    LDIH R30, __solc_irq_dispatch")
+        lines.append("    LDIL R30, __solc_irq_dispatch")
+        _emit_load_imm32(lines, "R13", 0xFFFF0000)
+        _emit_load_imm32(lines, "R14", (0x0B << 26) | (30 << 21))  # JR R30
+        for irq_number in range(16):
+            lines.append(f"    ST R14, [R13 + {0x100 + irq_number * 4}]")
     cache = _StackCacheEmitter(lines, use_short_mode=use_short_mode, short_tag_counter=short_tag_counter)
 
     current_func: str | None = None
@@ -885,13 +930,62 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
             use_short_mode=use_short_mode and short_plan[pc],
             short_tag_counter=short_tag_counter,
             stack_size_bytes=program.effective_stack_size_bytes,
+            foundation=foundation,
         )
 
     if not program.instructions or program.instructions[-1].op != "halt":
         cache.flush()
-        lines.append("    HALT")
+        _emit_program_end(lines, foundation)
+
+    # The common dispatcher is reached through the writable vector slots.
+    # Preserve the interrupted register file, inspect CAUSE, invoke the
+    # matching zero-argument sol function, restore state, and return via IRET.
+    if irq_handlers:
+        dispatch_label = "__solc_irq_dispatch"
+        restore_label = "__solc_irq_restore"
+        if dispatch_label in program.labels or restore_label in program.labels:
+            raise SolCompileError("solc IRQ dispatcher label is reserved")
+        lines.append(f"{dispatch_label}:")
+        lines.append("    ADDI R28, R28, -124")
+        for reg in range(1, 32):
+            if reg != 28:
+                lines.append(f"    ST R{reg}, [R28 + {(reg - 1) * 4}]")
+        _emit_load_imm32(lines, "R13", 0xFFFF0288)
+        lines.append("    LD R14, [R13 + 0]")
+        for irq_number, _function_name in sorted(irq_handlers.items()):
+            case_label = f"__solc_irq_case_{irq_number}"
+            lines.append(f"    ADDI R15, R0, {irq_number}")
+            lines.append(f"    BEQ R14, R15, {case_label}")
+        lines.append(f"    JMP {restore_label}")
+
+        for irq_number, function_name in sorted(irq_handlers.items()):
+            case_label = f"__solc_irq_case_{irq_number}"
+            if case_label in program.labels:
+                raise SolCompileError(f"solc IRQ label is reserved: {case_label}")
+            start = program.labels[function_name]
+            following = [program.labels[name] for name in program.functions if program.labels[name] > start]
+            end = min(following) if following else len(program.instructions)
+            if any(program.instructions[pc].op == "ret" for pc in range(start, end)):
+                raise SolCompileError(f"IRQ handler '{function_name}' cannot return a value")
+            lines.append(f"{case_label}:")
+            frame_size = 4 * (2 + program.functions[function_name]["n_locals"])
+            lines.append(f"    ADDI R28, R28, -{frame_size}")
+            lines.append(f"    JAL {function_name}")
+            lines.append(f"    JMP {restore_label}")
+
+        lines.append(f"{restore_label}:")
+        for reg in range(1, 32):
+            if reg != 28:
+                lines.append(f"    LD R{reg}, [R28 + {(reg - 1) * 4}]")
+        lines.append("    ADDI R28, R28, 124")
+        lines.append("    IRET")
 
     lines = _coalesce_short_trampolines(lines)
+
+    if foundation:
+        lines.append(f"{CODE_END_LABEL}:")
+        _emit_foundation_data(lines, program)
+        return "\n".join(lines)
 
     if program.read_only_data:
         emitted_orgs: set[int] = set()
@@ -904,12 +998,124 @@ def emit_src32_from_program(program: Program, debug: bool=False, stack_top: int 
     return "\n".join(lines)
 
 
-def compile_to_src32_asm(source: str, debug: bool=False, var_base: int = 0x00100000, stack_top: int = 0x000FFFFC, read_only_data_base: int = 0x00020000, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True) -> str:
+def _rodata_end(program: Program) -> int:
+    return max((addr + len(data) for addr, data in program.read_only_data), default=program.read_only_data_base)
+
+
+def _emit_foundation_data(lines: list[str], program: Program) -> None:
+    """Emit rodata as an R block and the global variables as a zeroed RW block."""
+    if program.read_only_data:
+        lines.append(".PERM r")
+        emitted_orgs: set[int] = set()
+        for addr, data in sorted(program.read_only_data):
+            if addr not in emitted_orgs:
+                lines.append(f".ORG {_format_imm(addr)}")
+                emitted_orgs.add(addr)
+            lines.append(f".DB {', '.join(f'0x{byte:02X}' for byte in data)}")
+    var_size = program.var_end - program.var_base
+    if var_size > 0:
+        # Variables are initialized by the program itself; the block only
+        # reserves RW memory inside the process image.
+        lines.append(".PERM rw")
+        lines.append(f".ORG {_format_imm(program.var_base)}")
+        for offset in range(0, var_size, 64):
+            lines.append(".DB " + ", ".join(["0"] * min(64, var_size - offset)))
+
+
+def _load_assembler():
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "asm", "asm.py")
+    spec = importlib.util.spec_from_file_location("_solc_src32_asm", path)
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _foundation_code_end(asm_text: str) -> int:
+    # Only the code is needed; data placement is validated separately with
+    # clearer messages than the assembler's .ORG overlap error.
+    code_text = asm_text.split(f"\n{CODE_END_LABEL}:", 1)[0] + f"\n{CODE_END_LABEL}:"
+    assembler = _load_assembler().Assembler(strip=True, sparse=True)
     try:
-        program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
+        assembler.assemble(code_text)
+    except ValueError as exc:
+        raise SolCompileError(f"cannot assemble Foundation program: {exc}") from exc
+    return assembler.symbols[CODE_END_LABEL]
+
+
+def _align4(value: int) -> int:
+    return (value + 3) & ~3
+
+
+def _check_foundation_layout(program: Program, org: int, code_end: int) -> None:
+    slot = next(((start, end) for start, end in FOUNDATION_SLOTS if start <= org < end), None)
+    if slot is None:
+        raise SolCompileError(f'origin {_format_imm(org)} is not inside a Foundation user slot (0x00400000..0x00FFFFFF)')
+    stack_size = program.effective_stack_size_bytes
+    if program.stack_top % 4 or stack_size % 4 or stack_size == 0:
+        raise SolCompileError("Foundation stack top and size must be nonzero multiples of 4")
+    ranges = [("code", org, code_end)]
+    if program.read_only_data:
+        ranges.append(("rodata", min(addr for addr, _ in program.read_only_data), _rodata_end(program)))
+    if program.var_end > program.var_base:
+        ranges.append(("variables", program.var_base, program.var_end))
+    ranges.append(("stack", program.stack_top - stack_size, program.stack_top))
+    slot_start, slot_end = slot
+    for name, start, end in ranges:
+        if start < slot_start or end > slot_end:
+            raise SolCompileError(
+                f"Foundation {name} {_format_imm(start)}..{_format_imm(end)} does not fit the user slot "
+                f"{_format_imm(slot_start)}..{_format_imm(slot_end)}")
+    ordered = sorted(ranges, key=lambda item: item[1])
+    for (name_a, _, end_a), (name_b, start_b, _) in zip(ordered, ordered[1:]):
+        if start_b < end_a:
+            raise SolCompileError(f"Foundation {name_a} overlaps {name_b}")
+    if [name for name, _, _ in ordered] != [name for name, _, _ in ranges]:
+        raise SolCompileError("Foundation layout must place code, rodata, variables and stack in ascending order")
+
+
+def _compile_foundation(program: Program, compile_again, *, debug: bool, org: int | None, use_short_mode: bool,
+                        var_base: int | None, read_only_data_base: int | None) -> str:
+    origin = FOUNDATION_ORIGIN if org is None else org
+    user_layout = program.explicit_layout
+    check_static_stack_safety(program, stack_capacity_bytes=program.effective_stack_size_bytes // 4 * 4)
+    # rodata follows the code and the variables follow rodata. Code size does
+    # not depend on those addresses (they always load through LDIH/LDIL), so
+    # this converges after one recompilation; the bound only guards that.
+    for _ in range(4):
+        asm = emit_src32_from_program(program, debug=debug, stack_top=program.stack_top,
+                                      use_short_mode=use_short_mode, org=origin)
+        code_end = _foundation_code_end(asm)
+        rodata_base = program.read_only_data_base if "rodata_base" in user_layout else _align4(code_end)
+        rodata_end = rodata_base + (_rodata_end(program) - program.read_only_data_base)
+        new_var_base = program.var_base if "var_base" in user_layout else _align4(rodata_end)
+        if rodata_base == program.read_only_data_base and new_var_base == program.var_base:
+            _check_foundation_layout(program, origin, code_end)
+            return asm
+        program = compile_again(
+            var_base=var_base if var_base is not None else (None if "var_base" in user_layout else new_var_base),
+            read_only_data_base=read_only_data_base if read_only_data_base is not None
+            else (None if "rodata_base" in user_layout else rodata_base),
+        )
+    raise SolCompileError("Foundation layout did not converge")
+
+
+def compile_to_src32_asm(source: str, debug: bool=False, var_base: int | None = None, stack_top: int | None = None, read_only_data_base: int | None = None, source_path: str | None = None, use_short_mode: bool = True, remove_unused_functions: bool = True, org: int | None = None) -> str:
+    try:
+        program = compile_program(source, var_base=var_base, read_only_data_base=read_only_data_base, stack_top=stack_top, source_path=source_path, remove_unused_functions=remove_unused_functions)
     except SolVMError as exc:
         raise SolCompileError(str(exc)) from exc
-    stack_capacity_bytes = min(program.effective_stack_size_bytes, stack_top + 4)
+    if program.abi == ABI_FOUNDATION:
+        def compile_again(**layout) -> Program:
+            try:
+                return compile_program(source, stack_top=stack_top, source_path=source_path,
+                                       remove_unused_functions=remove_unused_functions, **layout)
+            except SolVMError as exc:
+                raise SolCompileError(str(exc)) from exc
+
+        return _compile_foundation(program, compile_again, debug=debug, org=org, use_short_mode=use_short_mode,
+                                   var_base=var_base, read_only_data_base=read_only_data_base)
+    stack_capacity_bytes = min(program.effective_stack_size_bytes, program.stack_top + 4)
     stack_capacity_bytes = max(0, stack_capacity_bytes) // 4 * 4
     check_static_stack_safety(program, stack_capacity_bytes=stack_capacity_bytes)
-    return emit_src32_from_program(program, debug=debug, stack_top=stack_top, use_short_mode=use_short_mode)
+    return emit_src32_from_program(program, debug=debug, stack_top=program.stack_top, use_short_mode=use_short_mode, org=org if org is not None else 0)

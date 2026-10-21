@@ -264,7 +264,7 @@ TODO: 番号を変更する
 | `!var_base address` | グローバル変数の割当ベースアドレスを指定する（1回のみ。既定値は0x00100000）。 |
 | `!rodata_base address` | 読み取り専用データの割当ベースアドレスを指定する（1回のみ。既定値は0x00020000）。 |
 | `!namespace name -` | 名前空間ブロックを開始する。ブロック内の関数・定数・変数は名前空間 `name` に属する。名前空間ブロックは入れ子にでき、内側の名前空間の完全名は `outer.inner` のように `.` で連結される。ブロックは `!end` で終了する。 |
-| `!abi_compat "name" [major]` | プログラムが前提とする ABI をコンパイラに指示する。`"bare"`（既定）と `"Foundation"` を定義する。仕様は [Foundation §13](spec_Foundation.md)（仕様確定・未実装）。 |
+| `!abi_compat "name" [major]` | プログラムが前提とする ABI をコンパイラに指示する。`"bare"`（既定）と `"Foundation"` を定義する。仕様は [Foundation §13](spec_Foundation.md)。 |
 
 これらの値はコンパイル時の配置に使われる。solcの`--stack-top`、`--var-base`、`--read-only-data-base`オプションで同じ値を指定した場合は、コマンドラインオプションがソース内のディレクティブより優先される。指定したアドレスは`0..0xFFFFFFFF`の範囲とし、ディレクティブは対応するスタック・変数・読み取り専用データを使う前に記述する。
 
@@ -285,7 +285,13 @@ outer.inner.read_base outer.inner.read_outer outer.read_base
 ```
 
 ## `!abi_compat`
-`!abi_compat "Foundation"`（または `!abi_compat "Foundation" 1`）を書いたプログラムは、Foundation OS の U モードプロセスとしてコンパイルされる。言語の意味と関数の呼び出し規約は変わらず、起動コード・終了処理・配置・出力形式・`irqN` 関数と `!asm` 内の特権命令の扱いだけが変わる。ディレクティブの置き場所、ファイル間で宣言が食い違った場合の規則、コード生成の差分は [Foundation カーネル ABI 仕様 §13](spec_Foundation.md) を参照。**Status: 仕様確定・未実装**（現在の solc はこのディレクティブを受け付けない）。
+`!abi_compat "Foundation"`（または `!abi_compat "Foundation" 1`）を書いたプログラムは、Foundation OS の U モードプロセスとしてコンパイルされる。言語の意味と関数の呼び出し規約は変わらず、起動コード・終了処理・配置・出力形式・`irqN` 関数と `!asm` 内の特権命令の扱いだけが変わる。ディレクティブの置き場所、ファイル間で宣言が食い違った場合の規則、コード生成の差分は [Foundation カーネル ABI 仕様 §13](spec_Foundation.md) を参照。**Status: 実装済み**（solc、sol VM、LSP／VS Code 拡張）。Foundation カーネル本体はまだないため、生成物の実行はテスト用の S モード ハーネス上でのみ確認している。
+
+- 省略可能な major は、ディレクティブと**同じ行**に書く。次の行の先頭にある数値はトップレベルのコードとして扱う（`!abi_compat "bare"` の次の行の `1` は push される）。
+- `"Foundation"` のプログラムは sol VM（`solc.py run`、REPL）では実行できず、エラーになる。`solc.py compile` で得たアセンブリを `tools/asm/asm.py prog.a -o prog.wax` でアセンブルすると、PROTECTED WAX になる（コード RX、rodata R、変数 RW、スタックは WAX の stack 欄）。solc は `.PROTECTED` と `.PERM` のアセンブラ指令（[CPU 仕様 §7.1](spec_CPU.md)）を出力する。
+- 既定の配置は origin `0x00800000`（スロット 5）、rodata はコード直後、変数は rodata 直後（いずれも 4-byte 境界）、スタック頂上 `0x00C00000`、容量 256 KiB。`--org`／`--read-only-data-base`／`--var-base`／`--stack-top` とソース内の `!rodata_base`／`!var_base`／`!stack_top`／`!force_stack_size` は既定より優先する。origin を含むスロットに、コード・rodata・変数・スタックが重ならずにこの順で収まらなければコンパイルエラーになる。
+- `!var` の初期値は従来どおり起動時のコードが書き込む。RW ブロックはその領域をゼロで確保するだけである。
+- システムコールのラッパーは [`sol/foundation/fnd.sol`](../sol/foundation/fnd.sol)（`fnd_` で始まる名前、名前空間なし）。
 
 ## `!asm`
 `!asm`ディレクティブは、以降の行をアセンブリコードとして扱うことを指定する。`!end`ディレクティブが現れるまで、すべての行はアセンブリコードとして解釈される。
@@ -432,6 +438,7 @@ solには、標準ライブラリ(`sol/solstd`)とCPT32用ライブラリ(`sol/c
 | `sol/cpt32/idc.sol` | `idc` | IDCドライバ（`idc_read` など）と `IDC_*` 定数 |
 | `sol/cpt32/dsfs.sol` | `dsfs` | DSFS操作（`dsfs_mount` など）と `DSFS_*` 定数 |
 | `sol/cpt32/vpu.sol` | `vpu` | VPUのFIFOコマンドヘルパ |
+| `sol/foundation/fnd.sol` | なし（`fnd_` 接頭辞） | Foundation OS のシステムコール ラッパー `fnd_*` と `FND_*` 定数。`!abi_compat "Foundation"` を宣言しているため、Foundation のプログラムからだけ使える |
 
 例:
 ```

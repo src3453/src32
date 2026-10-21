@@ -272,8 +272,14 @@ class Assembler:
         self.strip = strip
         self.sparse = sparse
         self.blocks: list[tuple[int, bytes]] = []
+        # R/W/X mask of each sparse block, set by .PERM (0 when never set).
+        self.block_perms: list[int] = []
+        # (stack_top, stack_size) from .PROTECTED; selects a PROTECTED .wax.
+        self.protection: tuple[int, int] | None = None
         self._block_base = 0
         self._block_start = 0
+        self._perm = 0
+        self._block_perm = 0
         # Branch instructions recorded during pass1 for far-jump analysis.
         self.branch_records: list[dict] = []
         # Monotonic counter for generated trampoline labels.
@@ -483,13 +489,13 @@ class Assembler:
         if new_pc < self.pc:
             raise ValueError(f"line {lineno}: .ORG overlaps existing output")
         if self.sparse:
-            if new_pc > self.pc and len(self.output) > self._block_start:
-                self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
-                self._block_start = len(self.output)
+            if new_pc > self.pc:
+                self._close_block()
             if self._block_start == len(self.output):
                 if not self.blocks:
                     self.image_base = new_pc
                 self._block_base = new_pc
+                self._block_perm = self._perm
             self.pc = new_pc
             return
         if self.strip and not self.output:
@@ -498,6 +504,43 @@ class Assembler:
             while len(self.output) < new_pc - self.image_base:
                 self.output.append(0)
         self.pc = new_pc
+
+    def _close_block(self) -> None:
+        if len(self.output) > self._block_start:
+            self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
+            self.block_perms.append(self._block_perm)
+            self._block_start = len(self.output)
+
+    def set_perm(self, text: str, lineno: int) -> None:
+        """.PERM: bytes emitted from here on belong to a new block with this R/W/X mask."""
+        mask = 0
+        for letter in text.lower():
+            bit = {"r": 1, "w": 2, "x": 4}.get(letter)
+            if bit is None or mask & bit:
+                raise ValueError(f"line {lineno}: .PERM expects letters from 'rwx'")
+            mask |= bit
+        self._perm = mask
+        if self.sparse:
+            self._close_block()
+            if self._block_start == len(self.output):
+                if not self.blocks:
+                    self.image_base = self.pc
+                self._block_base = self.pc
+                self._block_perm = mask
+
+    def set_protection(self, tokens: list[str], lineno: int) -> None:
+        if len(tokens) != 3:
+            raise ValueError(f"line {lineno}: .PROTECTED expects a stack top and a stack size")
+        if self.protection is not None:
+            raise ValueError(f"line {lineno}: .PROTECTED may only appear once")
+        self.protection = (
+            check_u32(self.parse_imm_or_label(tokens[1], lineno), lineno, "stack top"),
+            check_u32(self.parse_imm_or_label(tokens[2], lineno), lineno, "stack size"),
+        )
+
+    def protected_blocks(self) -> list[tuple[int, bytes, int]]:
+        """Blocks with their .PERM masks, for packing a PROTECTED .wax."""
+        return [(address, data, perm) for (address, data), perm in zip(self.blocks, self.block_perms)]
 
     def _split_label(self, line: str) -> tuple[str | None, str]:
         if ":" not in line:
@@ -535,6 +578,8 @@ class Assembler:
                 if len(tokens) != 2:
                     raise ValueError(f"line {entry.lineno}: .ORG expects 1 operand")
                 self.pc = parse_number(tokens[1])
+                continue
+            if op in {".PERM", ".PROTECTED"}:
                 continue
             if op == ".BYTE":
                 self.pc += 1
@@ -677,8 +722,12 @@ class Assembler:
         self.pc = 0
         self.output = bytearray()
         self.blocks = []
+        self.block_perms = []
+        self.protection = None
         self._block_base = 0
         self._block_start = 0
+        self._perm = 0
+        self._block_perm = 0
         self.image_base = 0
 
         for entry in self.lines:
@@ -699,6 +748,14 @@ class Assembler:
 
             if op == ".ORG":
                 self.set_pc(parse_number(tokens[1]), entry.lineno)
+                continue
+            if op == ".PERM":
+                if len(tokens) != 2:
+                    raise ValueError(f"line {entry.lineno}: .PERM expects 1 operand")
+                self.set_perm(tokens[1], entry.lineno)
+                continue
+            if op == ".PROTECTED":
+                self.set_protection(tokens, entry.lineno)
                 continue
             if op == ".BYTE":
                 self.emit8(self.parse_imm_or_label(tokens[1], entry.lineno))
@@ -920,9 +977,8 @@ class Assembler:
         else:
             raise ValueError("far-branch trampoline iteration did not converge")
         self.pass2()
-        if self.sparse and len(self.output) > self._block_start:
-            self.blocks.append((self._block_base, bytes(self.output[self._block_start:])))
-            self._block_start = len(self.output)
+        if self.sparse:
+            self._close_block()
         return bytes(self.output)
 
 
@@ -951,6 +1007,8 @@ def main() -> None:
         base_dir=os.path.dirname(os.path.abspath(args.input)),
     )
     output_bytes = binary
+    if assembler.protection is not None and not wax_output:
+        parser.error(".PROTECTED requires an output path with the .wax extension")
     if wax_output:
         base = assembler.image_base
         entry_address = base
@@ -965,7 +1023,14 @@ def main() -> None:
             sys.path.insert(0, wax_dir)
         from wax import pack as pack_wax
 
-        output_bytes = pack_wax(base, entry_offset, assembler.blocks)
+        if assembler.protection is not None:
+            try:
+                output_bytes = pack_wax(base, entry_offset, assembler.protected_blocks(),
+                                        protection=assembler.protection)
+            except ValueError as exc:
+                parser.error(f"cannot pack PROTECTED WAX: {exc}")
+        else:
+            output_bytes = pack_wax(base, entry_offset, assembler.blocks)
 
     with open(out, "wb") as f:
         f.write(output_bytes)
