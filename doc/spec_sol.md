@@ -264,6 +264,7 @@ TODO: 番号を変更する
 | `!var_base address` | グローバル変数の割当ベースアドレスを指定する（1回のみ。既定値は0x00100000）。 |
 | `!rodata_base address` | 読み取り専用データの割当ベースアドレスを指定する（1回のみ。既定値は0x00020000）。 |
 | `!namespace name -` | 名前空間ブロックを開始する。ブロック内の関数・定数・変数は名前空間 `name` に属する。名前空間ブロックは入れ子にでき、内側の名前空間の完全名は `outer.inner` のように `.` で連結される。ブロックは `!end` で終了する。 |
+| `!abi_compat "name" [major]` | プログラムが前提とする ABI をコンパイラに指示する。`"bare"`（既定）と `"Foundation"` を定義する。仕様は [Foundation §13](spec_Foundation.md)（仕様確定・未実装）。 |
 
 これらの値はコンパイル時の配置に使われる。solcの`--stack-top`、`--var-base`、`--read-only-data-base`オプションで同じ値を指定した場合は、コマンドラインオプションがソース内のディレクティブより優先される。指定したアドレスは`0..0xFFFFFFFF`の範囲とし、ディレクティブは対応するスタック・変数・読み取り専用データを使う前に記述する。
 
@@ -282,6 +283,9 @@ fn read_base () : BASE ret ;         # outer.BASE（10）
 !end
 outer.inner.read_base outer.inner.read_outer outer.read_base
 ```
+
+## `!abi_compat`
+`!abi_compat "Foundation"`（または `!abi_compat "Foundation" 1`）を書いたプログラムは、Foundation OS の U モードプロセスとしてコンパイルされる。言語の意味と関数の呼び出し規約は変わらず、起動コード・終了処理・配置・出力形式・`irqN` 関数と `!asm` 内の特権命令の扱いだけが変わる。ディレクティブの置き場所、ファイル間で宣言が食い違った場合の規則、コード生成の差分は [Foundation カーネル ABI 仕様 §13](spec_Foundation.md) を参照。**Status: 仕様確定・未実装**（現在の solc はこのディレクティブを受け付けない）。
 
 ## `!asm`
 `!asm`ディレクティブは、以降の行をアセンブリコードとして扱うことを指定する。`!end`ディレクティブが現れるまで、すべての行はアセンブリコードとして解釈される。
