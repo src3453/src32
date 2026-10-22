@@ -89,6 +89,8 @@ int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len,
 
 #define zero_range kmem_zero
 
+static void maybe_free(struct fnd_proc *proc);
+
 /* §9.4: threads DEAD, handles closed (PEER_GONE, CLIENT_GONE, services),
  * owned ranges zeroed, slot released, waiters woken. The record stays
  * readable (state EXITED) until its PROCESS handles are closed and the
@@ -112,11 +114,21 @@ void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
             zero_range(proc->regions[i].start, proc->regions[i].end);
     }
     ipc_proc_exited(proc);
+    maybe_free(proc);
+}
+
+/* A spawned process's record goes when it has exited and its last
+ * PROCESS handle is closed (§9.4). Records of kernel-started modules, which
+ * have no handles, stay until their slot is reused. */
+static void maybe_free(struct fnd_proc *proc) {
+    if (proc->state == FND_PROC_EXITED && proc->refs == 0 && proc->parent != 0)
+        proc->state = FND_PROC_FREE;
 }
 
 void proc_release(struct fnd_proc *proc) {
     if (proc->refs)
         --proc->refs;
+    maybe_free(proc);
 }
 
 struct fnd_proc *fnd_proc_get(uint32_t pid) {
