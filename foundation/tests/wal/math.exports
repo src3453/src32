@@ -1,0 +1,5 @@
+# test.math 1.2
+math_apply fn(u32,u32)->u32
+math_base_calls fn()->u32
+math_origin fn()->u32
+math_total fn()->u32

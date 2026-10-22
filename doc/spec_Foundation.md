@@ -521,7 +521,8 @@ FNDBOOT のヘッダ（64 bytes）：
 - ABI ヘッダ `foundation/include/foundation/{abi.h,errors.h,ipc.h}` に、本書の番号と構造体を定義します。
 - ラッパーは `cpt32_syscall(n, 0, a1, a2, a3, a4)` で書きます。
 - ユーザープログラムは `tools/llvm-src32` の `--protected` で、スロットの origin とスタックを指定してビルドします。
-- 起動コードの終端にある `SYSCALL 0` は Foundation では `sys_info` にあたり、終了処理になりません。Foundation 向けの起動コードは `proc_exit` を呼ばなければなりません。ツールチェーンの対応（例：driver の `--os foundation`）は、実装時に定めます。
+- 起動コードの終端にある `SYSCALL 0` は Foundation では `sys_info` にあたり、終了処理になりません。Foundation 向けの起動コードは `proc_exit` を呼ばなければなりません。`tools/llvm-src32` の `--wax3`（`--os foundation`、既定）が作る WAX v3 の起動コードは、`main` の戻り値で `proc_exit` を呼びます。`--protected`（WAX v2）の起動コードは今も `SYSCALL 0` なので、v2 のプログラムは自分で `proc_exit` を呼んで終わる必要があります。
+- 共有ライブラリは `--wal` で WAL として作り、使う側は `--import-wal` で WAL を指定して WAX v3 にします（[WAX v3 §6](spec_WAX_v3.md) の call ABI 1）。
 
 ## 13. sol 互換 ABI：`!abi_compat "Foundation"`
 

@@ -22,12 +22,13 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 | `kernel/proc.c` | プロセス、スロット、保護領域、ポインタ検証、終了処理 |
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
-| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。コンソールは暫定実装 |
+| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。コンソールは暫定実装。`lib/fnd/fnd.exports` は WAL「fnd」1.0 として出すときの export 一覧 |
 | `shell/` | シェル（[シェル仕様](../doc/spec_Foundation_shell.md)）の、いまのカーネルで動く部分 |
 | `boot/` | シェルを起動する起動イメージと、そのビルドスクリプト |
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
 | `tests/wax/` | WAX ローダのテスト（ホスト単体テストと testbench） |
+| `tests/wal/` | C から作った WAL と WAX v3 を、カーネルで実行するテスト |
 | `tests/shell/` | シェルのテスト（testbench にキー入力を送り、PCG の画面を比べる） |
 
 ## WAX ローダ
@@ -51,6 +52,7 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 - **まだできないこと**：fs サービスがないので、ファイルへのリダイレクト（`2>&1` は使える）、ワイルドカード、`cd path`、`ls`、`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` は `FND_E_UNSUPPORTED`、外部コマンドとパスでの指定は `command not found`（`FND_E_NOT_FOUND`）になります。スクリプト、`-c`、`/etc/profile.fsh` もありません。`proc_spawn` がないので外部プログラムを起動できず、`thread_create` と `CON_BREAK_WAIT` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **暫定の部分**：console サービス（フェーズ 2 の IPC が必要）の代わりに、`lib/fnd/con_pcg.c` をシェルにリンクしています。これが PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で直接扱い、出力は [API 仕様 §8.1](../doc/spec_Foundation_API.md)、キーは §8.3 のキーコードに従います。キー入力は `irq_bind` がないので、FIFO を 4 tick ごとに見ます。`fnd_init` は起動ブロックを読めない（`proc_startup` が未実装）ので argc = 0 とし、STDIN、STDOUT、STDERR、CONSOLE の役割をすべてこのコンソール（ハンドル 1）にします。シェル仕様ではシェルは `caps = 0` で MMIO を持ちませんが、これを入れ替えるまでは、起動イメージが VDP の窓、PCG のテキスト面と属性面（VRAM `0x10000000–0x10002FFF`）、PeC の入力窓を付与します。
 - **起動イメージ**：`boot/main.c` はカーネルとシェルの画像（`boot/build.py` が生成する `shell_image.h`）をリンクしたものです。シェルが終了すると、次の 100 tick 境界で起動し直します（init の代わり）。
+- **libfnd の WAL**：`boot/build.py --fnd-wal` は、libfnd を WAL「fnd」1.0（`fnd.wal`、export は `lib/fnd/fnd.exports`）にし、シェルをそれを import する WAX v3 にします。カーネルはシェルを起動するときに `fnd.wal` をライブラリ一覧として渡します。既定は今のところ静的リンクの WAX v2 です。シェルのテストは両方で実行します（`FndWalShellTests`）。
 - `uname`、`free`、`ps` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` と `boot_drive` は 0 です（`proc_spawn` と stage1 がまだない）。
 
 ```sh
@@ -120,7 +122,7 @@ src32_testbench /absolute/path/foundation_phase1_test.wax 42 --cpu pipeline --fr
 python -m unittest discover -s foundation/tests/wax -v
 ```
 
-`tests/wax/main.c` は testbench 上の実行テストです。v3 を生成するコンパイラはまだないので、`tests/wax/build.py` が `*.asm` を `tools/asm` でアセンブルして v3 の WAX/WAL にし、`v2app.c` を `--protected` でビルドして、全部を `images.h` に書き出します。
+`tests/wax/main.c` は testbench 上の実行テストです。ローダの境界条件を細かく作るため、`tests/wax/build.py` が `*.asm` を `tools/asm` でアセンブルして v3 の WAX/WAL にし、`v2app.c` を `--protected` でビルドして、全部を `images.h` に書き出します。C から v3 を作る場合のテストは次の節です。
 
 - `app`/`app2`（スロット5と6）：`test.math` と `test.base` を記述子経由で呼びます。モジュール間呼び出しでの R30 の保存と復元、コールバック、64-bit 引数の順序、2 つのスロットに置いた繰り返し import、オブジェクトの import、SYSCALL 後のレジスタを確認し、成功すると 42 で終了します。WAL はプロセスごとに別の基底に置かれ、呼び出し回数のカウンタも別々です。
 - `poke_write`/`poke_exec`：RX への書き込みと RW の実行が、それぞれ `0x80050002` と `0x80050004` で fault になること。
@@ -138,6 +140,21 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 ```
 
 `tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader` が、`-O0`/`-O1`/`-O2` × Scalar/Cached/CachedRelaxed/Pipeline で実行します。記述子の origin をずらす、UGP を 0 にする、領域に全権限を与える、といった改変版ではこのテストが失敗することを確認しています。
+
+### C から作る WAL のテスト
+
+`tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
+
+```sh
+python foundation/tests/wal/build.py target/foundation-wal
+python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
+  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/wax.c \
+  -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
+  --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wal/test.wax
+src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120
+```
+
+`tools/llvm-src32/test_toolchain.py` の `test_foundation_wal_from_c` が、画像を `-O0`/`-O1`/`-O2` で作り、Scalar と Pipeline で実行します。
 
 ## 注意と未決事項
 

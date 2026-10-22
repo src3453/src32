@@ -5,7 +5,9 @@
  * image is linked into the kernel image (shell_image.h from build.py), and
  * the shell drives the console itself (foundation/lib/fnd/con_pcg.c), so it
  * gets MMIO grants for the PCG and the PeC input. When the shell exits, the
- * kernel starts it again, as init would. */
+ * kernel starts it again, as init would. With build.py --fnd-wal the shell
+ * is a WAX v3 that imports libfnd as the WAL fnd, passed here as its
+ * library list (doc/spec_Foundation.md §9.5). */
 #include <foundation/kernel.h>
 
 #include "con_pcg.h"
@@ -23,8 +25,15 @@ static const struct fnd_grant console_grants[] = {
 
 static int32_t shell_pid;
 
+#ifdef FOUNDATION_BOOT_FND_WAL
+static const struct fnd_image libs[] = {{img_fnd, img_fnd_size}};
+#define LIBS libs, 1u
+#else
+#define LIBS 0, 0u
+#endif
+
 static int32_t spawn_shell(void) {
-    return fnd_proc_spawn_wax("shell", FND_PRIO_APP, img_shell, img_shell_size, 0, 0, console_grants,
+    return fnd_proc_spawn_wax("shell", FND_PRIO_APP, img_shell, img_shell_size, LIBS, console_grants,
                               GRANTS);
 }
 
