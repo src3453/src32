@@ -25,6 +25,9 @@ typedef struct fs_dev {
     fnd_status (*write)(void *ctx, uint32_t lba, uint32_t count, const void *buf);
 } fs_dev;
 
+/* Sector buffers: word copies need both ends 4-byte aligned. */
+#define FS_ALIGNED __attribute__((aligned(4)))
+
 /* Platform: the service (main.c) or the host test provides these. */
 void *fs_alloc(uint32_t size); /* zeroed, 8-byte aligned; 0 if out of memory */
 void fs_free(void *p);

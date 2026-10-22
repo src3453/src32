@@ -25,7 +25,7 @@ typedef struct {
 
 static fs_obj objs[FS_OBJECTS];
 static uint32_t next_badge;
-static uint8_t reply_buf[FS_IPC_MAX];
+static uint8_t reply_buf[FS_IPC_MAX] FS_ALIGNED;
 static vfs_walk walk_a, walk_b;
 
 void fs_server_init(void) {

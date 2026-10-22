@@ -13,38 +13,77 @@
 
 /* ---- sectors ---------------------------------------------------------- */
 
-static fs2_cache_line *cache_find(fs2_vol *v, uint32_t lba) {
-    for (uint32_t i = 0; i < FS2_CACHE_SECTORS; ++i)
-        if (v->cache[i].valid && v->cache[i].lba == lba)
-            return &v->cache[i];
-    return 0;
+/* Direct-mapped, so a lookup is one compare and a read-ahead run never
+ * evicts itself. Metadata (below data_start) and data blocks map to
+ * separate lines, so reading a file does not keep evicting its inode. */
+static fs2_cache_line *cache_line(fs2_vol *v, uint32_t lba) {
+    if (lba < v->data_start)
+        return &v->cache[lba % FS2_CACHE_META];
+    return &v->cache[FS2_CACHE_META + lba % (FS2_CACHE_SECTORS - FS2_CACHE_META)];
 }
 
-static fs2_cache_line *cache_victim(fs2_vol *v) {
-    fs2_cache_line *best = &v->cache[0];
-    for (uint32_t i = 0; i < FS2_CACHE_SECTORS; ++i) {
-        if (!v->cache[i].valid)
-            return &v->cache[i];
-        if (v->cache[i].age < best->age)
-            best = &v->cache[i];
+static fs2_cache_line *cache_find(fs2_vol *v, uint32_t lba) {
+    fs2_cache_line *c = cache_line(v, lba);
+    return c->valid && c->lba == lba ? c : 0;
+}
+
+/* Copies with words when both ends share their alignment. The toolchain's
+ * memcpy goes byte by byte, and sector and payload copies are most of the
+ * CPU time of fs. no_builtin keeps clang from turning the loops back into
+ * memcpy. */
+#ifdef __clang__
+__attribute__((no_builtin("memcpy")))
+#endif
+static void copy(void *dst, const void *src, uint32_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    const uint8_t *s = (const uint8_t *)src;
+    if (!(((uintptr_t)d ^ (uintptr_t)s) & 3u)) {
+        for (; n && ((uintptr_t)d & 3u); --n)
+            *d++ = *s++;
+        uint32_t *dw = (uint32_t *)(void *)d;
+        const uint32_t *sw = (const uint32_t *)(const void *)s;
+        for (; n >= 4; n -= 4)
+            *dw++ = *sw++;
+        d = (uint8_t *)dw;
+        s = (const uint8_t *)sw;
     }
-    return best;
+    while (n--)
+        *d++ = *s++;
+}
+
+/* The cached sector lba, valid until the next sec_* call. A miss reads up
+ * to FS2_READ_AHEAD sectors from lba, stopping at the end of the device or
+ * at a sector already cached (the cache is write-through, so a cached
+ * sector equals the media). */
+static fnd_status sec_get(fs2_vol *v, uint32_t lba, const uint8_t **data) {
+    fs2_cache_line *c = cache_find(v, lba);
+    if (!c) {
+        if (lba >= v->dev->sectors)
+            return FND_E_IO;
+        uint32_t n = 1;
+        while (n < FS2_READ_AHEAD && lba + n < v->dev->sectors && !cache_find(v, lba + n))
+            ++n;
+        fnd_status st = v->dev->read(v->dev->ctx, lba, n, v->ahead);
+        if (st != FND_OK)
+            return st;
+        for (uint32_t i = 0; i < n; ++i) {
+            fs2_cache_line *line = cache_line(v, lba + i);
+            copy(line->data, v->ahead + i * FS2_BLOCK, FS2_BLOCK);
+            line->lba = lba + i;
+            line->valid = 1;
+        }
+        c = cache_line(v, lba);
+    }
+    *data = c->data;
+    return FND_OK;
 }
 
 static fnd_status sec_read(fs2_vol *v, uint32_t lba, uint8_t *buf) {
-    fs2_cache_line *c = cache_find(v, lba);
-    if (!c) {
-        c = cache_victim(v);
-        c->valid = 0;
-        fnd_status st = v->dev->read(v->dev->ctx, lba, 1, c->data);
-        if (st != FND_OK)
-            return st;
-        c->lba = lba;
-        c->valid = 1;
-    }
-    c->age = ++v->clock;
-    memcpy(buf, c->data, FS2_BLOCK);
-    return FND_OK;
+    const uint8_t *data;
+    fnd_status st = sec_get(v, lba, &data);
+    if (st == FND_OK)
+        copy(buf, data, FS2_BLOCK);
+    return st;
 }
 
 static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
@@ -60,18 +99,17 @@ static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
         return st;
     }
     if (!c)
-        c = cache_victim(v);
-    memcpy(c->data, buf, FS2_BLOCK);
+        c = cache_line(v, lba);
+    copy(c->data, buf, FS2_BLOCK);
     c->lba = lba;
     c->valid = 1;
-    c->age = ++v->clock;
     return FND_OK;
 }
 
 /* Sets DIRTY on the media before the first change of a read-write mount
  * (§9.1). Done lazily so that a volume only read since boot stays clean. */
 static fnd_status begin_change(fs2_vol *v) {
-    uint8_t sb[FS2_BLOCK];
+    uint8_t sb[FS2_BLOCK] FS_ALIGNED;
     if (!v->writable)
         return FND_E_READ_ONLY;
     if (v->failed)
@@ -174,10 +212,10 @@ static uint32_t inode_lba(fs2_vol *v, uint32_t ino) { return v->inode_start + (i
 static uint32_t inode_off(uint32_t ino) { return ((ino - 1) % 4) * FS2_INODE_BYTES; }
 
 fnd_status fs2_inode_read(fs2_vol *v, uint32_t ino, fs2_inode *out) {
-    uint8_t buf[FS2_BLOCK];
+    const uint8_t *buf;
     if (ino == 0 || ino > v->inode_count)
         return FND_E_NOT_FOUND;
-    fnd_status st = sec_read(v, inode_lba(v, ino), buf);
+    fnd_status st = sec_get(v, inode_lba(v, ino), &buf);
     if (st != FND_OK)
         return st;
     inode_decode(buf + inode_off(ino), out);
@@ -185,7 +223,7 @@ fnd_status fs2_inode_read(fs2_vol *v, uint32_t ino, fs2_inode *out) {
 }
 
 static fnd_status inode_write(fs2_vol *v, uint32_t ino, const fs2_inode *n) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     fnd_status st = sec_read(v, inode_lba(v, ino), buf);
     if (st != FND_OK)
         return st;
@@ -219,7 +257,7 @@ static uint32_t next_of(const uint8_t *block) { return fs_be32(block); }
 /* Finds block `index` (< count) of the inode's chain. */
 static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint32_t index, uint32_t *lba) {
     uint32_t at = 0, b = n->first;
-    uint8_t buf[FS2_BLOCK];
+    const uint8_t *buf;
     for (uint32_t i = 0; i < FS2_HINTS; ++i) {
         fs2_hint *h = &v->hints[i];
         if (h->ino == ino && h->index <= index && h->index >= at) {
@@ -228,7 +266,7 @@ static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint3
         }
     }
     while (at < index) {
-        fnd_status st = sec_read(v, b, buf);
+        fnd_status st = sec_get(v, b, &buf);
         if (st != FND_OK)
             return st;
         b = next_of(buf);
@@ -245,7 +283,7 @@ static uint32_t blocks_for(uint64_t size) { return (uint32_t)((size + FS2_PAYLOA
 
 fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t len, uint32_t *got) {
     fs2_inode n;
-    uint8_t buf[FS2_BLOCK];
+    const uint8_t *buf;
     fnd_status st = fs2_inode_read(v, ino, &n);
     if (st != FND_OK)
         return st;
@@ -257,13 +295,13 @@ fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t 
     uint32_t index = (uint32_t)(off / FS2_PAYLOAD), in = (uint32_t)(off % FS2_PAYLOAD), lba, done = 0;
     st = chain_seek(v, ino, &n, index, &lba);
     while (st == FND_OK) {
-        st = sec_read(v, lba, buf);
+        st = sec_get(v, lba, &buf);
         if (st != FND_OK)
             break;
         uint32_t take = FS2_PAYLOAD - in;
         if (take > len - done)
             take = len - done;
-        memcpy((uint8_t *)out + done, buf + 4 + in, take);
+        copy((uint8_t *)out + done, buf + 4 + in, take);
         done += take;
         in = 0;
         if (done == len)
@@ -284,7 +322,7 @@ fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t 
  * (or first_block) is linked to them; the caller then writes the inode. */
 static fnd_status chain_extend(fs2_vol *v, uint32_t ino, fs2_inode *n, uint32_t extra, uint64_t src_off,
                                const uint8_t *src, uint32_t src_len) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     uint32_t head = 0, prev = 0, cur, index = n->count;
     fnd_status st;
     if (extra > v->free_blocks)
@@ -334,7 +372,7 @@ static fnd_status chain_extend(fs2_vol *v, uint32_t ino, fs2_inode *n, uint32_t 
 }
 
 static fnd_status chain_free_from(fs2_vol *v, uint32_t b, uint32_t count) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     while (count--) {
         fnd_status st = sec_read(v, b, buf);
         if (st == FND_OK)
@@ -349,7 +387,7 @@ static fnd_status chain_free_from(fs2_vol *v, uint32_t b, uint32_t count) {
 /* Writes into blocks that already exist. */
 static fnd_status write_existing(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint64_t off,
                                  const uint8_t *src, uint32_t len) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     uint64_t limit = (uint64_t)n->count * FS2_PAYLOAD;
     if (off >= limit || len == 0)
         return FND_OK;
@@ -424,7 +462,7 @@ fnd_status fs2_write(fs2_vol *v, uint32_t ino, uint64_t off, const void *buf, ui
 }
 
 static fnd_status file_truncate(fs2_vol *v, uint32_t ino, fs2_inode *n, uint64_t size, fs_time now) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     fnd_status st = begin_change(v);
     if (st != FND_OK)
         return st;
@@ -584,7 +622,7 @@ fnd_status fs2_dir_empty(fs2_vol *v, uint32_t dir) {
  * bytes; the caller has already called begin_change. */
 static fnd_status dirent_write(fs2_vol *v, uint32_t dir, uint32_t slot, uint32_t ino, const uint8_t *name,
                                uint32_t len, uint32_t chars, fs_time now) {
-    static uint8_t e[FS2_DIRENT];
+    static uint8_t e[FS2_DIRENT] FS_ALIGNED;
     fs2_inode n;
     fnd_status st = fs2_inode_read(v, dir, &n);
     if (st != FND_OK)
@@ -809,7 +847,7 @@ static int layout(uint32_t total, uint32_t boot_blocks, uint32_t inodes, uint32_
 
 fnd_status fs2_format(fs_dev *dev, uint32_t total, uint32_t boot_blocks, uint32_t inodes, uint32_t root_mode,
                       fs_time now) {
-    uint8_t buf[FS2_BLOCK];
+    uint8_t buf[FS2_BLOCK] FS_ALIGNED;
     uint32_t bms, bmb, ins, inb, ds;
     if (inodes < 1 || inodes > 0xFFFFFFFEu || total > dev->sectors ||
         !layout(total, boot_blocks, inodes, &bms, &bmb, &ins, &inb, &ds))
@@ -907,13 +945,13 @@ static fnd_status check_inode_fields(fs2_vol *v, const uint8_t *p, uint32_t ino)
  * reuses a block, only uses blocks marked used, and the last payload is
  * zero past the end of the file. */
 static fnd_status check_chain(fs2_vol *v, check_state *cs, const fs2_inode *n) {
-    uint8_t buf[FS2_BLOCK];
+    const uint8_t *buf;
     uint32_t b = n->first;
     for (uint32_t i = 0; i < n->count; ++i) {
         if (b < v->data_start || b >= v->total_blocks || bit_get(cs->seen, b) || !bit_get(v->bitmap, b))
             return FND_E_FORMAT;
         bit_set(cs->seen, b, 1);
-        fnd_status st = sec_read(v, b, buf);
+        fnd_status st = sec_get(v, b, &buf);
         if (st != FND_OK)
             return st;
         uint32_t next = next_of(buf);
@@ -929,7 +967,7 @@ static fnd_status check_chain(fs2_vol *v, check_state *cs, const fs2_inode *n) {
 
 /* §10 step 6, and the reference half of step 5. */
 static fnd_status check_dir(fs2_vol *v, check_state *cs, uint32_t dir, const fs2_inode *n) {
-    static uint8_t e[FS2_DIRENT];
+    static uint8_t e[FS2_DIRENT] FS_ALIGNED;
     uint32_t slots = dir_slots(n), used = 0;
     /* Two words per used entry: the hash and the slot. */
     if (2 * slots > cs->hash_cap) {
@@ -985,7 +1023,7 @@ static fnd_status check_dir(fs2_vol *v, check_state *cs, uint32_t dir, const fs2
 }
 
 static fnd_status check_volume(fs2_vol *v, check_state *cs) {
-    uint8_t buf[FS2_BLOCK];
+    const uint8_t *buf;
     fnd_status st;
     /* Step 3: metadata bits set, padding bits past total_blocks clear. */
     for (uint32_t b = 0; b < v->data_start; ++b)
@@ -996,7 +1034,7 @@ static fnd_status check_volume(fs2_vol *v, check_state *cs) {
             return FND_E_FORMAT;
     /* Step 4: every inode slot, and the padding after the last one. */
     for (uint32_t blk = 0; blk < v->inode_blocks; ++blk) {
-        st = sec_read(v, v->inode_start + blk, buf);
+        st = sec_get(v, v->inode_start + blk, &buf);
         if (st != FND_OK)
             return st;
         for (uint32_t k = 0; k < 4; ++k) {
@@ -1060,7 +1098,7 @@ static fnd_status check_volume(fs2_vol *v, check_state *cs) {
 }
 
 static fnd_status read_superblock(fs2_vol *v) {
-    uint8_t sb[FS2_BLOCK];
+    uint8_t sb[FS2_BLOCK] FS_ALIGNED;
     fnd_status st = sec_read(v, 0, sb);
     if (st != FND_OK)
         return st;
@@ -1084,6 +1122,8 @@ static fnd_status read_superblock(fs2_vol *v) {
     v->inode_blocks = fs_be32(sb + 0x24);
     v->inode_count = fs_be32(sb + 0x28);
     v->data_start = fs_be32(sb + 0x2C);
+    for (uint32_t i = 0; i < FS2_CACHE_SECTORS; ++i)
+        v->cache[i].valid = 0; /* cache_line() depends on data_start */
     time_get(sb + 0x38, &v->created);
     uint32_t bms, bmb, ins, inb, ds;
     if (fs_be32(sb + 0x0C) != 2 || fs_be32(sb + 0x30) != FS2_ROOT || v->inode_count < 1 ||
@@ -1138,7 +1178,7 @@ fnd_status fs2_mount(fs2_vol *v, fs_dev *dev, uint32_t writable) {
 fnd_status fs2_unmount(fs2_vol *v) {
     fnd_status st = FND_OK;
     if (v->dirty && !v->failed) {
-        uint8_t sb[FS2_BLOCK];
+        uint8_t sb[FS2_BLOCK] FS_ALIGNED;
         st = sec_read(v, 1, sb);
         if (st == FND_OK) {
             fs_put16(sb + 6, fs_be16(sb + 6) & ~FS2_SB_DIRTY);

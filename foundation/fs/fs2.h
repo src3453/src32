@@ -28,7 +28,11 @@
 
 #define FS2_SB_DIRTY 1u
 
-#define FS2_CACHE_SECTORS 8u
+#define FS2_CACHE_SECTORS 32u
+#define FS2_CACHE_META 8u
+/* Sectors read per cache miss: every IDC command costs the drive's access
+ * latency (spec_IDC.md, 10 ms on an HDD), and chains are mostly contiguous. */
+#define FS2_READ_AHEAD 8u
 #define FS2_HINTS 8u
 
 typedef struct {
@@ -40,7 +44,6 @@ typedef struct {
 typedef struct {
     uint32_t lba;
     uint32_t valid;
-    uint32_t age;
     uint8_t data[FS2_BLOCK];
 } fs2_cache_line;
 
@@ -67,6 +70,7 @@ typedef struct {
     uint32_t clock;
     fs2_cache_line cache[FS2_CACHE_SECTORS];
     fs2_hint hints[FS2_HINTS];
+    uint8_t ahead[FS2_READ_AHEAD * FS2_BLOCK];
 } fs2_vol;
 
 typedef struct {

@@ -1,8 +1,10 @@
 """Foundation shell on src32_testbench (doc/spec_Foundation_shell.md).
 
-Builds the boot image with foundation/boot/build.py, types keys through the
-testbench's PeC input (--type) and compares the PCG text screen (--dump-pcg).
-The kernel stops the machine at STOP_TICKS with R1 = 42.
+Builds the boot image with foundation/boot/build.py, loads foundation.wax
+with a fresh copy of foundation.img in IDC slot 0 (the boot drive, where fs
+finds /bin), types keys through the testbench's PeC input (--type) and
+compares the PCG text screen (--dump-pcg). The kernel stops the machine at
+STOP_TICKS with R1 = 42.
 
     python -m unittest discover -s foundation/tests/shell -v
 
@@ -52,6 +54,7 @@ class ShellTests(unittest.TestCase):
         if result.returncode != 0:
             raise RuntimeError(result.stdout + result.stderr)
         cls.image = cls.work / 'foundation.wax'
+        cls.disk = (cls.work / 'foundation.img').read_bytes()
 
     @classmethod
     def tearDownClass(cls):
@@ -60,11 +63,17 @@ class ShellTests(unittest.TestCase):
     def screen(self, *batches, step=STEP_FRAMES):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows."""
+        run = Path(tempfile.mkdtemp(dir=self.work))
+        (run / 'disk.img').write_bytes(self.disk)
+        (run / 'config.yaml').write_text(
+            'memory:\n  ram_mib: 16\n'
+            'disk:\n  - slot: 0\n    type: "hdd"\n    image: "disk.img"\n    read_only: false\n',
+            encoding='utf-8')
         command = [str(self.harness), str(self.image), '42', '--cpu', 'pipeline',
                    '--frames', str(FRAMES), '--dump-pcg']
         for i, text in enumerate(batches):
             command += ['--type', f'{FIRST_FRAME + step * i}={text}']
-        result = subprocess.run(command, cwd=self.work, capture_output=True, text=True,
+        result = subprocess.run(command, cwd=run, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.splitlines()

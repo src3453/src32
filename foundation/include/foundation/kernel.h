@@ -96,6 +96,17 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
  * and no roles. */
 int32_t fnd_proc_spawn_module(const char *name, uint32_t priority, uint32_t caps, const void *image,
                               uint32_t size, const struct fnd_grant *grants, uint32_t grant_count);
+/* FNDBOOT bundled modules (§11). fnd_boot_check validates the header and
+ * the module table of the image stage1 staged (or one linked into the
+ * kernel image) and returns the module count or FND_E_FORMAT. Call
+ * fnd_boot_spawn only after a successful check: it spawns module index with
+ * its priority, caps and grants and returns what fnd_proc_spawn_module
+ * returns. The image must stay in memory while the modules may be spawned. */
+int32_t fnd_boot_check(const void *fndboot);
+int32_t fnd_boot_spawn(const void *fndboot, uint32_t index);
+/* The boot drive that stage1 passes in R1, reported by sys_info (§9.4). */
+void fnd_set_boot_drive(uint32_t drive);
+
 /* NULL for an unknown pid. Exited processes keep their record. */
 struct fnd_proc *fnd_proc_get(uint32_t pid);
 

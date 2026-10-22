@@ -1,20 +1,43 @@
-/* init (doc/spec_Foundation_API.md §12): opens the console, starts the
- * shell with the console as STDIN, STDOUT, STDERR and CONSOLE and a new fs
- * session as FS, and starts it again whenever it exits.
- *
- * Provisional: the shell image is linked into init (shell_image.h from
- * boot/build.py) until the fs on the boot disk holds /bin/shell.wax; then
- * init uses fnd_proc_exec on that path instead. */
+/* init (doc/spec_Foundation_API.md §12): opens the console, starts
+ * /bin/shell.wax from the boot disk with the console as STDIN, STDOUT,
+ * STDERR and CONSOLE and a new fs session as FS, and starts it again
+ * whenever it exits (or retries while it cannot be started). */
 #include <foundation/fnd.h>
 #include <foundation/sys.h>
 
 #include "fnd_internal.h"
-#include "shell_image.h"
+
 
 #define RETRY_TICKS 10u
 #define RESPAWN_TICKS 100u
 
 static const char *const shell_argv[] = {"/bin/shell.wax"};
+
+/* fnd_proc_exec (§11.6) with con as the CONSOLE role, which init itself
+ * does not have. */
+static fnd_status exec_shell(const fnd_exec_t *ex, fnd_handle con, fnd_handle *proc) {
+    fnd_handle file;
+    fnd_status status = fnd_file_open(shell_argv[0], FND_OPEN_EXEC, 0, &file);
+    if (status != FND_OK)
+        return status;
+    fnd_stat_t st;
+    status = fnd_stream_stat(file, &st);
+    uint8_t *image = 0;
+    uint32_t got = 0;
+    if (status == FND_OK && (st.size_hi || st.size_lo > FND_EXEC_IMAGE_MAX))
+        status = FND_E_LIMIT;
+    if (status == FND_OK && !(image = fnd_mem_alloc(st.size_lo ? st.size_lo : 1u)))
+        status = FND_E_NO_MEMORY;
+    if (status == FND_OK)
+        status = fnd_read(file, image, st.size_lo, &got);
+    fnd_close(file);
+    if (status == FND_OK && got != st.size_lo)
+        status = FND_E_IO;
+    if (status == FND_OK)
+        status = fnd__spawn_image(image, got, shell_argv[0], ex, con, proc);
+    fnd_mem_free(image);
+    return status;
+}
 
 /* Waits for a service that the kernel starts before init. */
 static fnd_handle lookup(const char *name) {
@@ -41,7 +64,7 @@ int main(void) {
     for (;;) {
         fnd_handle shell;
         int32_t code;
-        if (fnd__spawn_image(img_shell, img_shell_size, shell_argv[0], &ex, con, &shell) == FND_OK)
+        if (exec_shell(&ex, con, &shell) == FND_OK)
             fnd_proc_wait(shell, &code);
         fnd_sys_sleep(RESPAWN_TICKS);
     }
