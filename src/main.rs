@@ -38,7 +38,7 @@ use winit::application::ApplicationHandler;
 use winit::dpi::{LogicalSize, PhysicalPosition, PhysicalSize};
 use winit::event::{DeviceEvent, ElementState, Event, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
-use winit::keyboard::{Key, KeyCode, NamedKey, PhysicalKey};
+use winit::keyboard::{KeyCode, PhysicalKey};
 use winit::window::{CursorGrabMode, Window, WindowAttributes};
 
 mod audio;
@@ -2418,9 +2418,6 @@ impl ApplicationHandler for GuiApp {
                 is_synthetic,
                 ..
             } => {
-                if !is_synthetic && matches!(&event.logical_key, Key::Named(NamedKey::Escape)) {
-                    event_loop.exit();
-                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     if is_synthetic {
                         // Focus key snapshot, not a physical transition; see
