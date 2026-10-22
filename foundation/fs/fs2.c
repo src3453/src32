@@ -85,9 +85,27 @@ void fs_zero(void *dst, uint32_t n) {
  * sector equals the media). */
 static fnd_status sec_get(fs2_vol *v, uint32_t lba, const uint8_t **data) {
     fs2_cache_line *c = cache_find(v, lba);
+    if (!c && v->scan) {
+        /* A long scan reads the media through the read-ahead buffer only, so
+         * it does not push the lines other requests rely on out of the
+         * 24-line data cache. */
+        if (lba - v->scan_lba >= v->scan_n) {
+            if (lba >= v->dev->sectors)
+                return FND_E_IO;
+            uint32_t n = v->dev->sectors - lba < FS2_READ_AHEAD ? v->dev->sectors - lba : FS2_READ_AHEAD;
+            v->scan_n = 0;
+            fnd_status st = v->dev->read(v->dev->ctx, lba, n, v->ahead);
+            if (st != FND_OK)
+                return st;
+            v->scan_lba = lba, v->scan_n = n;
+        }
+        *data = v->ahead + (lba - v->scan_lba) * FS2_BLOCK;
+        return FND_OK;
+    }
     if (!c) {
         if (lba >= v->dev->sectors)
             return FND_E_IO;
+        v->scan_n = 0; /* the miss below reuses v->ahead */
         uint32_t n = 1;
         while (n < FS2_READ_AHEAD && lba + n < v->dev->sectors && !cache_find(v, lba + n))
             ++n;
@@ -118,6 +136,7 @@ static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
     if (v->failed)
         return FND_E_IO;
     fs2_cache_line *c = cache_find(v, lba);
+    v->scan_n = 0;
     fnd_status st = v->dev->write(v->dev->ctx, lba, 1, buf);
     if (st != FND_OK) {
         /* §9.1: keep DIRTY and stop new updates after an I/O failure. */
@@ -136,7 +155,15 @@ static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
 
 /* Sets DIRTY on the media before the first change of a read-write mount
  * (§9.1). Done lazily so that a volume only read since boot stays clean. */
+static void dir_index_drop(fs2_vol *v) {
+    for (uint32_t i = 0; i < FS2_DIRIDX; ++i) {
+        fs_free(v->dir_index[i].key);
+        v->dir_index[i].key = 0;
+    }
+}
+
 static fnd_status begin_change(fs2_vol *v) {
+    dir_index_drop(v);
     uint8_t sb[FS2_BLOCK] FS_ALIGNED;
     if (!v->writable)
         return FND_E_READ_ONLY;
@@ -309,19 +336,26 @@ static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint3
 
 static uint32_t blocks_for(uint64_t size) { return (uint32_t)((size + FS2_PAYLOAD - 1) / FS2_PAYLOAD); }
 
-fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t len, uint32_t *got) {
-    fs2_inode n;
+/* fs2_read with the inode already decoded (the caller read it for ino). */
+static fnd_status read_with(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint64_t off, void *out, uint32_t len,
+                            uint32_t *got) {
     const uint8_t *buf;
-    fnd_status st = fs2_inode_read(v, ino, &n);
-    if (st != FND_OK)
-        return st;
+    fnd_status st;
     *got = 0;
-    if (off >= n.size || len == 0)
+    if (off >= n->size || len == 0)
         return FND_OK;
-    if ((uint64_t)len > n.size - off)
-        len = (uint32_t)(n.size - off);
-    uint32_t index = (uint32_t)(off / FS2_PAYLOAD), in = (uint32_t)(off % FS2_PAYLOAD), lba, done = 0;
-    st = chain_seek(v, ino, &n, index, &lba);
+    if ((uint64_t)len > n->size - off)
+        len = (uint32_t)(n->size - off);
+    /* Files stay far below 4 GiB, so the 32-bit division is the usual case;
+     * the 64-bit one is a software loop on this CPU. */
+    uint32_t index, in, lba, done = 0;
+    if ((off >> 32) == 0) {
+        uint32_t o = (uint32_t)off;
+        index = o / FS2_PAYLOAD, in = o % FS2_PAYLOAD;
+    } else {
+        index = (uint32_t)(off / FS2_PAYLOAD), in = (uint32_t)(off % FS2_PAYLOAD);
+    }
+    st = chain_seek(v, ino, n, index, &lba);
     while (st == FND_OK) {
         st = sec_get(v, lba, &buf);
         if (st != FND_OK)
@@ -342,6 +376,14 @@ fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t 
     if (st == FND_OK)
         *got = done;
     return st;
+}
+
+fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t len, uint32_t *got) {
+    fs2_inode n;
+    fnd_status st = fs2_inode_read(v, ino, &n);
+    if (st != FND_OK)
+        return st;
+    return read_with(v, ino, &n, off, out, len, got);
 }
 
 /* Appends `extra` new blocks to the chain. Their payload is zero except for
@@ -559,11 +601,23 @@ static fnd_status raw_read(fs2_vol *v, uint32_t ino, uint64_t off, uint8_t *buf,
     return st;
 }
 
-/* Entries are read in two parts: the 8-byte head, then only the name. */
-static fnd_status dirent_read(fs2_vol *v, uint32_t dir, uint32_t slot, fs2_dirent *d) {
-    uint8_t head[8];
+static fnd_status raw_read_with(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint64_t off, uint8_t *buf,
+                                uint32_t len) {
+    uint32_t got;
+    fnd_status st = read_with(v, ino, n, off, buf, len, &got);
+    if (st == FND_OK && got != len)
+        st = FND_E_IO;
+    return st;
+}
+
+/* The directory inode n is already decoded. Entries are read as the 8-byte
+ * head plus the first 32 name bytes (nearly every name), then the rest of a
+ * longer name. */
+#define DIRENT_FIRST 32u
+static fnd_status dirent_read(fs2_vol *v, uint32_t dir, const fs2_inode *n, uint32_t slot, fs2_dirent *d) {
+    uint8_t head[8 + DIRENT_FIRST];
     uint64_t off = (uint64_t)slot * FS2_DIRENT;
-    fnd_status st = raw_read(v, dir, off, head, 8);
+    fnd_status st = raw_read_with(v, dir, n, off, head, sizeof head);
     if (st != FND_OK)
         return st;
     d->ino = fs_be32(head);
@@ -573,7 +627,11 @@ static fnd_status dirent_read(fs2_vol *v, uint32_t dir, uint32_t slot, fs2_diren
         return FND_OK;
     if (d->name_bytes == 0 || d->name_bytes > FS2_NAME_MAX_BYTES)
         return FND_E_IO;
-    return raw_read(v, dir, off + 8, d->name, d->name_bytes);
+    uint32_t first = d->name_bytes < DIRENT_FIRST ? d->name_bytes : DIRENT_FIRST;
+    fs_copy(d->name, head + 8, first);
+    if (d->name_bytes == first)
+        return FND_OK;
+    return raw_read_with(v, dir, n, off + 8 + first, d->name + first, d->name_bytes - first);
 }
 
 static uint32_t dir_slots(const fs2_inode *n) { return (uint32_t)(n->size / FS2_DIRENT); }
@@ -586,7 +644,7 @@ fnd_status fs2_dir_next(fs2_vol *v, uint32_t dir, uint32_t *slot, fs2_dirent *ou
     if (n.type != FS2_TYPE_DIR)
         return FND_E_NOT_DIR;
     for (uint32_t s = *slot; s < dir_slots(&n); ++s) {
-        st = dirent_read(v, dir, s, out);
+        st = dirent_read(v, dir, &n, s, out);
         if (st != FND_OK)
             return st;
         if (out->ino) {
@@ -596,6 +654,52 @@ fnd_status fs2_dir_next(fs2_vol *v, uint32_t dir, uint32_t *slot, fs2_dirent *ou
     }
     *slot = dir_slots(&n);
     return FND_END;
+}
+
+/* Builds (or returns) the index of `dir`; 0 with *st set on an error. */
+static fs2_dir_index *dir_index_get(fs2_vol *v, uint32_t dir, const fs2_inode *n, fnd_status *st) {
+    fs2_dir_index *x = 0, *victim = &v->dir_index[0];
+    *st = FND_OK;
+    for (uint32_t i = 0; i < FS2_DIRIDX && !x; ++i) {
+        fs2_dir_index *c = &v->dir_index[i];
+        if (c->key && c->dir == dir)
+            x = c;
+        else if (!c->key || (victim->key && c->age < victim->age))
+            victim = c;
+    }
+    if (!x) {
+        fs2_dirent d;
+        uint32_t slots = dir_slots(n);
+        fs_free(victim->key);
+        victim->key = (uint32_t *)fs_alloc((2 * slots + 2) * 4u);
+        if (!victim->key) {
+            *st = FND_E_NO_MEMORY;
+            return 0;
+        }
+        x = victim;
+        x->dir = dir, x->count = 0, x->free_slot = slots;
+        v->scan = 1, v->scan_n = 0;
+        for (uint32_t s = 0; s < slots; ++s) {
+            *st = dirent_read(v, dir, n, s, &d);
+            if (*st != FND_OK) {
+                v->scan = 0;
+                fs_free(x->key);
+                x->key = 0;
+                return 0;
+            }
+            if (!d.ino) {
+                if (x->free_slot == slots)
+                    x->free_slot = s;
+            } else {
+                x->key[2 * x->count] = fnd_name_key_hash(d.name, d.name_bytes);
+                x->key[2 * x->count + 1] = s;
+                ++x->count;
+            }
+        }
+        v->scan = 0;
+    }
+    x->age = ++v->clock;
+    return x;
 }
 
 /* Finds `name` (by folded key) in `dir`. FND_E_NOT_FOUND if absent; *slot
@@ -608,22 +712,22 @@ static fnd_status dir_find(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32
         return st;
     if (n.type != FS2_TYPE_DIR)
         return FND_E_NOT_DIR;
-    uint32_t free_slot = 0xFFFFFFFFu, slots = dir_slots(&n);
-    for (uint32_t s = 0; s < slots; ++s) {
-        st = dirent_read(v, dir, s, d);
+    fs2_dir_index *x = dir_index_get(v, dir, &n, &st);
+    if (!x)
+        return st;
+    uint32_t h = fnd_name_key_hash(name, len);
+    for (uint32_t k = 0; k < x->count; ++k) {
+        if (x->key[2 * k] != h)
+            continue;
+        st = dirent_read(v, dir, &n, x->key[2 * k + 1], d);
         if (st != FND_OK)
             return st;
-        if (!d->ino) {
-            if (free_slot == 0xFFFFFFFFu)
-                free_slot = s;
-            continue;
-        }
-        if (fnd_name_key_equal(d->name, d->name_bytes, name, len)) {
-            *slot = s;
+        if (d->ino && fnd_name_key_equal(d->name, d->name_bytes, name, len)) {
+            *slot = x->key[2 * k + 1];
             return FND_OK;
         }
     }
-    *slot = free_slot != 0xFFFFFFFFu ? free_slot : slots;
+    *slot = x->free_slot;
     return FND_E_NOT_FOUND;
 }
 
@@ -1037,7 +1141,7 @@ static fnd_status check_dir(fs2_vol *v, check_state *cs, uint32_t dir, const fs2
             if (cs->hashes[2 * k] != h)
                 continue;
             fs2_dirent other;
-            st = dirent_read(v, dir, cs->hashes[2 * k + 1], &other);
+            st = dirent_read(v, dir, n, cs->hashes[2 * k + 1], &other);
             if (st != FND_OK)
                 return st;
             if (fnd_name_key_equal(other.name, other.name_bytes, e + 8, nb))
@@ -1161,6 +1265,7 @@ static fnd_status read_superblock(fs2_vol *v) {
     v->data_start = fs_be32(sb + 0x2C);
     for (uint32_t i = 0; i < FS2_CACHE_SECTORS; ++i)
         v->cache[i].valid = 0; /* cache_line() depends on data_start */
+    dir_index_drop(v);
     time_get(sb + 0x38, &v->created);
     uint32_t bms, bmb, ins, inb, ds;
     if (fs_be32(sb + 0x0C) != 2 || fs_be32(sb + 0x30) != FS2_ROOT || v->inode_count < 1 ||

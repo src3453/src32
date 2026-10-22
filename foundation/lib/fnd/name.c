@@ -42,6 +42,10 @@ fnd_status fnd_utf8_next(const uint8_t *s, uint32_t len, uint32_t *pos, uint32_t
 }
 
 uint32_t fnd_casefold(uint32_t cp, uint32_t out[3]) {
+    if (cp < 0x80u) { /* only A-Z fold in ASCII; skip the table search */
+        out[0] = cp >= 'A' && cp <= 'Z' ? cp + 0x20u : cp;
+        return 1;
+    }
     uint32_t lo = 0, hi = FND_CASEFOLD_COUNT;
     while (lo < hi) {
         uint32_t mid = (lo + hi) / 2;
@@ -69,6 +73,11 @@ uint32_t fnd_casefold(uint32_t cp, uint32_t out[3]) {
 
 int fnd_fold_next(fnd_fold_iter *it, uint32_t *cp) {
     if (it->i == it->n) {
+        if (it->pos < it->len && it->s[it->pos] < 0x80u) { /* ASCII fast path */
+            uint32_t c = it->s[it->pos++];
+            *cp = c >= 'A' && c <= 'Z' ? c + 0x20u : c;
+            return 1;
+        }
         uint32_t c;
         if (fnd_utf8_next(it->s, it->len, &it->pos, &c) != FND_OK)
             return 0;

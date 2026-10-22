@@ -12,6 +12,7 @@ static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((ali
 #define STAGING 0x00100000u
 #define STAGING_END 0x00400000u /* the kernel heap (§5.1) */
 static struct fnd_proc *active; /* process whose regions are programmed */
+static uint32_t active_regions; /* regions with nonzero FLAGS on the CPU */
 static uint32_t next_pid = 1;
 static uint32_t boot_drive;
 
@@ -62,19 +63,24 @@ static void region_write(uint32_t index, uint32_t field, uint32_t value) {
     region_writers[field][index](value);
 }
 
-/* §5.3: disable all eight, then write START/END, then FLAGS. A switch between
- * threads of the same process leaves the regions alone. */
+/* §5.3: program each region, then disable the ones the previous process had
+ * beyond them. Region checks apply only in U mode (spec_CPU_priv.md), so the
+ * old and new settings are never seen half-written, and the 8 + 4n MTSR
+ * writes of disabling everything first (about a third of a context switch)
+ * become 3n + (old - n). A switch between threads of the same process
+ * leaves the regions alone. */
 void proc_activate(struct fnd_proc *proc) {
     if (proc == active)
         return;
-    for (uint32_t i = 0; i < FND_REGIONS; ++i)
-        region_write(i, 2, 0);
-    for (uint32_t i = 0; i < proc->region_count; ++i) {
+    uint32_t n = proc->region_count;
+    for (uint32_t i = 0; i < n; ++i) {
         region_write(i, 0, proc->regions[i].start);
         region_write(i, 1, proc->regions[i].end);
-    }
-    for (uint32_t i = 0; i < proc->region_count; ++i)
         region_write(i, 2, proc->regions[i].flags);
+    }
+    for (uint32_t i = n; i < active_regions; ++i)
+        region_write(i, 2, 0);
+    active_regions = n;
     active = proc;
 }
 
@@ -123,8 +129,9 @@ void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
     proc->state = FND_PROC_EXITED;
     handle_close_all(proc);
     if (active == proc) {
-        for (uint32_t i = 0; i < FND_REGIONS; ++i)
+        for (uint32_t i = 0; i < active_regions; ++i)
             region_write(i, 2, 0);
+        active_regions = 0;
         active = 0;
     }
     for (uint32_t i = 0; i < proc->region_count; ++i) {

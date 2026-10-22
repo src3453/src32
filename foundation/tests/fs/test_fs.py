@@ -455,6 +455,31 @@ class DirectoryTests(FsTestBase):
         self.assertEqual(sorted(n for n, _, _ in fs.list("/z")), ["g"])
         self.assertEqual(fs.remount(), 0)
 
+    def test_directory_index_follows_changes(self):
+        # Lookups use a per-directory hash index that is dropped on every
+        # change; more directories than index slots forces rebuilds, and a
+        # freed slot must be the one a later create reuses.
+        fs = self.fs
+        fs.boot_disk()
+        for d in "abcdefg":
+            fs.ok(SESSION, FS_MKDIR, 0, DEFAULT, data=f"/{d}")
+            fs.put(f"/{d}/one", d.encode())
+            fs.put(f"/{d}/Two", d.encode() * 2)
+        for _ in range(2):
+            for d in "abcdefg":
+                self.assertEqual(fs.get(f"/{d}/ONE"), d.encode())
+                self.assertEqual(fs.get(f"/{d}/two"), d.encode() * 2)
+        self.assertError("NOT_FOUND", fs.call(SESSION, FS_OPEN, READ, 0, data="/a/three"))
+        fs.ok(SESSION, FS_UNLINK, data="/a/one")
+        self.assertError("NOT_FOUND", fs.call(SESSION, FS_OPEN, READ, 0, data="/a/one"))
+        fs.put("/a/three", b"3")
+        self.assertEqual(fs.get("/a/THREE"), b"3")
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/a")), ["Two", "three"])
+        fs.ok(SESSION, FS_RENAME, len("/a/three"), data="/a/three/b/moved")
+        self.assertEqual(fs.get("/b/MOVED"), b"3")
+        self.assertError("NOT_FOUND", fs.call(SESSION, FS_OPEN, READ, 0, data="/a/three"))
+        self.assertEqual(fs.remount(), 0)
+
     def test_tmp_is_a_separate_ram_volume(self):
         fs = self.fs
         fs.boot_disk()
