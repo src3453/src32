@@ -7,7 +7,8 @@ The programs, by slot (doc/spec_Foundation.md §5.2):
 
     slot 0  init       starts /bin/shell.wax (services/init)
     slot 1  console    the console service (services/console)
-    slot 3  fs         provisional read-only fs with /bin and /lib (services/bootfs)
+    slot 2  disk       the disk service, blk_io for fs (services/disk)
+    slot 3  fs         the fs service (fs/)
     slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
@@ -17,18 +18,18 @@ reads it from /lib when it starts them (§9.5). init and the services are
 FNDBOOT modules (§11), PROTECTED WAX v2 with libfnd linked in, since the
 kernel starts them before there is an fs.
 
-Until the fs service reads the boot disk, the files are linked into the
-provisional fs (OUT/bootfs_files.h).
+The four modules (slots 0 to 3) go into FNDBOOT (§11); /bin and /lib are
+files on the boot disk, which fs serves as "/".
 
 Outputs:
-  root/           the files: bin/*.wax, lib/fnd.1.wal
+  root/           /bin/*.wax (the shell and the commands) and /lib/fnd.1.wal
   foundation.wax  kernel + module-only FNDBOOT linked in (fndboot_image.h); the host
-                  loads it directly (doc/spec_Foundation.md §11 without stage1)
+                  loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
   fndboot.bin     FNDBOOT: kernel.bin and the module table (§11)
   stage1.bin      boot sector (foundation/boot/stage1.a)
   foundation.img  bootable FS2 volume (doc/spec_FS2.md): stage1 in block 0, FNDBOOT
-                  in the reserved boot area, the files in root/, plus the files under --root
+                  in the reserved boot area, root/, plus the files under --root
 
 --stop-ticks makes the kernel stop with R1 = 42 at that tick (tests).
 """
@@ -51,12 +52,15 @@ import fs2  # noqa: E402
 # (origin, stack top) of the user slots used here.
 SLOT0 = (0x00400000, 0x00480000)
 SLOT1 = (0x00480000, 0x00500000)
+SLOT2 = (0x00500000, 0x00580000)
 SLOT3 = (0x00580000, 0x00600000)
 SLOT4 = (0x00600000, 0x00800000)
 SLOT5 = (0x00800000, 0x00C00000)
 STACK = 0x4000
+FS_STACK = 0x8000
 FND_PRIO_SERVICE = 1
-FND_CAP_SVC = 8
+FND_CAP_DISK = 0x4  # include/foundation/ipc.h
+FND_CAP_SVC = 0x8
 KERNEL_LOAD = 0x00010000
 KERNEL_STACK_TOP = 0x00100000
 # Disk defaults: 8 MiB, with the reserved boot area sized for the largest
@@ -64,7 +68,7 @@ KERNEL_STACK_TOP = 0x00100000
 DISK_BLOCKS = 16384
 BOOT_BLOCKS = fndboot.MAX_SIZE // fs2.BLOCK
 DISK_INODES = 256
-MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8)
+MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["clear", "echo", "free", "ps", "pwd", "top", "uname"]
 
@@ -74,7 +78,9 @@ INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "inclu
 # that start no others leave out proc.c.
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerror.c")]
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "wax.c", "fndboot.c")]
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "blk.c", "wax.c",
+                                                     "fndboot.c")]
+FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 ASSEMBLER = ROOT / "tools/asm/asm.py"
 
 
@@ -87,14 +93,14 @@ def driver(sources, output, args, *extra):
     return output
 
 
-def layout(slot):
+def layout(slot, stack=STACK):
     origin, stack_top = slot
-    return ["--origin", hex(origin), "--stack-top", hex(stack_top), "--user-stack-size", hex(STACK)]
+    return ["--origin", hex(origin), "--stack-top", hex(stack_top), "--user-stack-size", hex(stack)]
 
 
-def static(sources, output, args, slot, *extra):
+def static(sources, output, args, slot, *extra, stack=STACK):
     """A PROTECTED WAX v2 with libfnd linked in."""
-    return driver([*sources, *LIBFND], output, args, "--protected", *layout(slot), *extra)
+    return driver([*sources, *LIBFND], output, args, "--protected", *layout(slot, stack), *extra)
 
 
 def program(sources, output, args, slot, image_id, fnd):
@@ -157,36 +163,34 @@ def main(argv=None):
 
     fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--image-id", "fnd",
                  "--abi-version", "1.0", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
-    files = [("/lib/fnd.1.wal", "lib_fnd", fnd)]
-    shell = program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
-    files.append(("/bin/shell.wax", "bin_shell", shell))
+    program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:
-        image = program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
-                        args, SLOT5, f"foundation.{name}", fnd)
-        files.append((f"/bin/{name}.wax", f"bin_{name}", image))
-    parts = [embed(f"file_{ident}", image.read_bytes()) for _, ident, image in files]
-    table = ",\n".join(f'    {{"{path}", img_file_{ident}, img_file_{ident}_size}}' for path, ident, _ in files)
-    parts.append("struct bootfs_file {\n    const char *path;\n    const void *data;\n    uint32_t size;\n};\n"
-                 f"#define BOOTFS_FILES {len(files)}u\n"
-                 f"static const struct bootfs_file bootfs_files[BOOTFS_FILES] = {{\n{table}\n}};\n")
-    header(out / "bootfs_files.h", parts)
+        program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
+                args, SLOT5, f"foundation.{name}", fnd)
 
-    service = dict(priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC)
+    # §11: spawned in this order, init last.
     modules = [
-        dict(name="console", grants=console_grants(), **service,
+        dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
              image=static([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
-                          args, SLOT1, "-I", str(services / "console")).read_bytes()),
-        dict(name="fs", **service,
-             image=static([services / "bootfs/main.c"], out / "fs.wax", args, SLOT3, "-I", str(out)).read_bytes()),
-        dict(name="init", priority=FND_PRIO_SERVICE,
-             image=static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0).read_bytes()),
+                        args, SLOT1, "-I", str(services / "console"))),
+        dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
+             image=static([services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
+        dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             image=static([*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
+                        "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
+        dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
+             image=static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
     ]
-    kernel_args = ["-I", str(out), "--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
+    for module in modules:
+        module["image"] = module["image"].read_bytes()
+
+    kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
         kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
-
-    header(out / "fndboot_image.h", [embed("fndboot", fndboot.pack(b"", modules))])
-    image = driver([HERE / "main.c", *KERNEL], out / "foundation.wax", args,
+    header = ["/* Generated by foundation/boot/build.py. */", "#include <stdint.h>",
+              embed("fndboot", fndboot.pack(b"", modules))]
+    (out / "fndboot_image.h").write_text("\n".join(header), encoding="utf-8")
+    image = driver([HERE / "main.c", *KERNEL], out / "foundation.wax", args, "-I", str(out),
                    "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
     print(f"Wrote {image}")
 
@@ -195,14 +199,14 @@ def main(argv=None):
     (out / "fndboot.bin").write_bytes(boot)
     stage1 = out / "stage1.bin"
     subprocess.run([sys.executable, str(ASSEMBLER), "-o", str(stage1), str(HERE / "stage1.a")], check=True)
-    disk_files = {path: (image.read_bytes(), MODE_EXEC) for path, _, image in files}
-    if args.root:
-        for host in sorted(p for p in args.root.rglob("*") if p.is_file()):
-            path = "/" + host.relative_to(args.root).as_posix()
-            disk_files[path] = (host.read_bytes(), MODE_EXEC if path.startswith("/bin/") else None)
+    files = {}
+    for tree in (root, args.root):
+        for host in sorted(p for p in tree.rglob("*") if p.is_file()) if tree else ():
+            path = "/" + host.relative_to(tree).as_posix()
+            files[path] = (host.read_bytes(), MODE_EXEC if path.startswith(("/bin/", "/lib/")) else None)
     disk = out / "foundation.img"
     temporary = disk.with_name(disk.name + ".tmp")
-    temporary.write_bytes(disk_image(stage1.read_bytes(), boot, disk_files, args.disk_blocks))
+    temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))
     os.replace(temporary, disk)
     print(f"Wrote {disk}")
     return 0

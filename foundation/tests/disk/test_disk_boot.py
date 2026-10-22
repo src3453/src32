@@ -2,7 +2,7 @@
 
 Builds foundation.img with foundation/boot/build.py and boots it through the
 BIOS (doc/spec_BIOS.md): IDC boot sector -> stage1 -> FNDBOOT -> kernel ->
-the console, fs and init modules -> /bin/shell.wax. The testbench program is a 4-byte zero word, so the BIOS
+the console, disk, fs and init modules -> /bin/shell.wax from the disk. The testbench program is a 4-byte zero word, so the BIOS
 skips the RAM boot (bios/README.md). The kernel stops the machine at
 STOP_TICKS with R1 = 42; stage1 HALTs with R1 = its failed step.
 
@@ -26,11 +26,12 @@ sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fndboot  # noqa: E402
 import fs2  # noqa: E402
 
-STOP_TICKS = 4000
+STOP_TICKS = 6000
 # The kernel starts after the 120-frame POST hold and the HDD read (~frame
-# 125) and stops STOP_TICKS later (240 frames at 60 Hz).
-FRAMES = 420
-TYPE_FRAME = 250   # the shell has printed its banner by then
+# 125) and stops STOP_TICKS later (360 frames at 60 Hz). fs checks the volume
+# before init can load /bin/shell.wax, so the banner appears ~115 frames later.
+FRAMES = 560
+TYPE_FRAME = 320   # the shell has printed its banner by then
 FAIL_FRAMES = 200  # stage1 halts right after the POST hold
 BANNER = ['Foundation OS (kernel ABI 1.0)', 'Foundation shell 1.0']
 
@@ -76,7 +77,7 @@ class DiskBootTests(unittest.TestCase):
         bios = json.dumps(str(ROOT / 'assets/bios.rom'))
         (run / 'config.yaml').write_text(
             f'memory:\n  ram_mib: 16\nbios:\n  image: {bios}\n'
-            f'disk:\n  - slot: {slot}\n    type: "{kind}"\n    image: "disk.img"\n    read_only: true\n',
+            f'disk:\n  - slot: {slot}\n    type: "{kind}"\n    image: "disk.img"\n    read_only: false\n',
             encoding='utf-8')
         command = [str(self.harness), 'zero.bin', str(expected), '--cpu', 'pipeline',
                    '--frames', str(frames), '--dump-pcg', *extra]
@@ -106,11 +107,11 @@ class DiskBootTests(unittest.TestCase):
         self.assertEqual((header['magic'], header['version'], header['size']), (fndboot.MAGIC, 1, len(boot)))
         self.assertEqual((header['kernel_load'], header['kernel_entry']), (0x10000, 0x10000))
         self.assertEqual(boot[header['kernel_off']:][:header['kernel_size']], kernel)
-        self.assertEqual([m['name'] for m in modules], ['console', 'fs', 'init'])  # init last (§11)
+        self.assertEqual([m['name'] for m in modules], ['console', 'disk', 'fs', 'init'])  # init last (§11)
         for module in modules:
             image = (self.build / f"{module['name']}.wax").read_bytes()
             self.assertEqual(boot[module['offset']:][:module['size']], image)
-        self.assertEqual([m['caps'] for m in modules], [8, 8, 0])  # SVC for the services
+        self.assertEqual([m['caps'] for m in modules], [8, 12, 8, 0])  # SVC for the services, DISK for disk
         self.assertEqual(len(modules[0]['grants']), 3)  # the console's MMIO windows
         for path in ('/bin/shell.wax', '/bin/echo.wax', '/lib/fnd.1.wal'):
             inode = volume.resolve(path)
