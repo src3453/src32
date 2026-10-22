@@ -1141,6 +1141,12 @@
 - Validation: host fs 27 tests, shell 16 tests (Cached with representative Pipeline cases), and BIOS/disk boot 7 tests passed. Guest images were rebuilt in target/kan38/quick with --stop-ticks 6000; shell/disk tests reused these artifacts and fresh per-case disk copies. Shell 116.945 s and disk 56.502 s are single runs with other checks overlapping, not isolated performance benchmarks.
 - Matched first prompt: 99 -> 61 frames on Pipeline, direct WAX, read-only 8 MiB HDD, 16 MiB RAM/4 MiB VRAM, no BIOS/input, same release testbench and guest -O1. Binary-searched for banner + prompt. This is guest frame latency (about 38% less), not host wall time. Complete conditions are in doc/kan36_performance.md.
 
+## Foundation /bin/ls, KAN-40 (2026-10-22)
+- "ls: command not found" was simply a missing /bin/ls.wax (KAN-17). "bad format" for `/bin/ls` is by design: a command word with a slash gets no extension (shell spec 7.1 step 1), and only `.wax` runs. Use `/bin/ls.wax`.
+- foundation/bin/ls.c lists via fnd_call(FS_DIR_OPEN / DIR_NEXT) directly (written before libfnd 1.1 added fnd_dir_*; it could move to them). Entries come unordered, so ls sorts. fnd_name_fold is still not in the fnd exports, so the sort key folds ASCII only.
+- ls -l prints the wall-clock mtime, so tests must not compare its text exactly; test_shell checks only the shape and the totals line.
+- Local build needs clang and llvmlite of the same LLVM major: llvmlite 0.45.1 (LLVM 20) with apt clang-20 and `--clang clang-20`.
+
 ## sol/libfnd after the real fs service, KAN-33 (2026-10-22)
 - KAN-15 is complete: bootfs is gone. sol integration runs must attach a fresh FS2 HDD image in IDC slot 0; an empty config no longer boots /bin/shell.wax. examples/foundation-sol/build.py now writes run/config.yaml with that disk and the PCG font, and copies the clean foundation.img to run/disk.img. The sample uses real root FS2, not /tmp or a simulated service.
 - Added C fnd_dir_open/next/rewind, dir_make/remove, file_delete and sync in lib/fnd/start.c and exposed them through sol/foundation/libfnd.sol. fnd_dir_next caches a complete 4096-byte reply per handle (1..63), validates record bounds/name lengths/count before writing any output, and returns one NUL-terminated entry. END/errors leave the entry untouched. Rewind resets both the remote cursor and cached EOF/data; fnd_close releases the cache, including partially consumed batches. First-call errors free the temporary cache. Do not bypass fnd_close with raw handle_close or mix raw dir_read and cached next without rewind.
