@@ -9,6 +9,8 @@ STOP_TICKS with R1 = 42.
     python -m unittest discover -s foundation/tests/shell -v
 
 CLANG and SRC32_TESTBENCH override executable discovery.
+Functional checks use cached; restart scheduling and one CPU-accounting
+snapshot use pipeline. FOUNDATION_TEST_CPU overrides the engine for all checks.
 """
 import os
 from pathlib import Path
@@ -64,7 +66,7 @@ class ShellTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached'):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows. config is the text of a
         config.yaml for this run only."""
@@ -74,7 +76,7 @@ class ShellTests(unittest.TestCase):
             (config or 'memory:\n  ram_mib: 16\n  vram_mib: 4\n') +
             'disk:\n  - slot: 0\n    type: "hdd"\n    image: "disk.img"\n    read_only: false\n',
             encoding='utf-8')
-        command = [str(self.harness), str(self.image), '42', '--cpu', 'pipeline',
+        command = [str(self.harness), str(self.image), '42', '--cpu', os.environ.get('FOUNDATION_TEST_CPU', cpu),
                    '--frames', str(FRAMES), '--dump-pcg']
         for i, text in enumerate(batches):
             frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
@@ -289,9 +291,11 @@ class ShellTests(unittest.TestCase):
     def test_exit_restarts_shell(self):
         # EXIT ends the shell; init starts it again. ps shows the services,
         # init, the new shell and ps itself; exited processes are gone.
-        rows = self.screen('exit 3\\n', 'ps\\n', step=20)
+        rows = self.screen('exit 3\\n', 'ps\\n', step=20, cpu='pipeline')
         self.assertEqual(rows[:7], BANNER + ['/> exit 3'] + BANNER + ['/> ps', '  PID PARENT STATE PRIO     MEM NAME'])
-        # MEM depends on the build.
+        # MEM depends on the build. After spawn, fnd__exec frees its images
+        # before the shell calls wait. A time-slice expiry in that cleanup
+        # lets ps snapshot the ready shell (RUN) before it blocks in wait.
         patterns = [r'    1      0 BLOCK    1 +[1-9][0-9]*K console',
                     r'    2      0 BLOCK    1 +[1-9][0-9]*K disk',
                     r'    3      0 BLOCK    1 +[1-9][0-9]*K fs',
@@ -304,7 +308,7 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(rows[13], '/>')
 
     def test_top_snapshot_and_return_to_shell(self):
-        rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 300])
+        rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 300], cpu='pipeline')
         self.assertEqual(rows[:4], BANNER + ['/> top -n 1', 'top - CPU (q/Ctrl+C to quit)'])
         self.assertRegex(rows[4], r'^user +\d+\.\d%  kernel~ +\d+\.\d%  idle +\d+\.\d%$')
         self.assertEqual(rows[5:7], ['Mem: 16384K total, 4096K free',

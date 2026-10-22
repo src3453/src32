@@ -98,12 +98,17 @@ def find_clang(explicit: str | None) -> str:
 
 
 def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=False, depfile=None) -> None:
+    # The bundled string loops are hot in every guest, including -O0 guests.
+    # Keep the optional external Newlib profile's compilation policy separate.
+    optimization = "-O0" if runtime else args.optimization
+    if runtime and source == ROOT / "runtime" / "string.c":
+        optimization = "-O2"
     cxx = source.suffix.lower() in CXX_SUFFIXES
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-pic", "-fno-pie",
                "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
                "-std=c++17" if cxx else "-std=c11",
-               "-O0" if runtime else args.optimization, "-S", "-emit-llvm"]
+               optimization, "-S", "-emit-llvm"]
     newlib = getattr(args, "newlib", None)
     for include in newlib.headers() if newlib else [ROOT / "runtime" / "include"]:
         command.extend(["-isystem", str(include)])

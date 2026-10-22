@@ -163,6 +163,11 @@ C++ の起動関数は `extern "C" int main()` とし、C SDK ヘッダーも `e
 | ランタイム | memcpy、memmove、memset、memcmp、strlen。未解決のものだけ同梱実装をリンク。ユーザー実装を優先 |
 | LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、符号なし飽和減算 `llvm.usub.sat`（i1–i32/i64）、`llvm.umul.with.overflow.i32`、32-bit三方向比較 scmp/ucmp、expect/assume、lifetime/debug 等の対応部分 |
 
+同梱 string ランタイムはゲストの `-O0`/`-O1`/`-O2` 指定によらず `-O2` で生成します。
+`memcpy` は両端の 4 byte 境界が一致するとき、`memset` は先頭を整列させてから、範囲内の 32-bit ワードを処理します。
+先頭・末尾の端数と境界が一致しないコピーは byte 単位です。任意の C オブジェクトを扱えるようワード型に `may_alias` を指定し、範囲外のワードアクセスは行いません。
+`memmove` は重なりに応じた byte 単位の順方向／逆方向コピーを維持します。ユーザー定義関数の優先と、外部 Newlib ソースのコンパイル方針は従来どおりです。
+
 Clang の `mips-unknown-none` / o32 は **big-endian 32-bit C の IR 生成用**。MIPS 命令は生成しません。
 LLVM の `ccc` / `fastcc` と元ターゲット ABI ヒント `inreg` は、直接・間接呼出側と定義側を一貫して SRC32 のスタック渡しへ変換します。Clang が `-O1` / `-O2` で内部関数へ付ける `fastcc` も利用できます。`tail` は通常呼出として扱い、末尾呼出最適化は保証しません。
 ホスト用 x86 の `.ll/.bc` を単に SRC32 として読み替えることは禁止し、互換性のない data layout はエラーにします。

@@ -101,6 +101,10 @@ python foundation/run.py --disk --arg --debug-gui --start-paused --cpu pipeline
 python -m unittest discover -s foundation/tests/shell -v
 ```
 
+通常の機能検証は Cached CPU で実行します。再起動後の `ps` と CPU 使用率の snapshot は Pipeline を使い、スケジュールとサイクルに依存する経路も毎回検証します。
+全件を Pipeline で調べる場合は `FOUNDATION_TEST_CPU=pipeline` を設定してください（PowerShell: `$env:FOUNDATION_TEST_CPU='pipeline'`）。各ケースは起動から実行し、ディスクを毎回コピーするため、書き込みや DIRTY 状態はほかのケースに漏れません。
+再起動テストの shell 状態は RUN/BLOCK の両方が正当です。子の生成後、`fnd__exec` がイメージを解放している間に time slice が切れると、子の `ps` は親が `wait` でブロックする前に実行されます。新しい PID と親子関係、終了した shell の回収は状態とは別に検証しています（KAN-37）。
+
 ## ディスク起動
 
 `python foundation/boot/build.py OUT` は `foundation.wax` のほかに、BIOS から起動できる FS2 ディスク `OUT/foundation.img` も作ります。起動の流れは [仕様 §11](../doc/spec_Foundation.md)、[FS2 §3](../doc/spec_FS2.md)、[BIOS §3](../doc/spec_BIOS.md) のとおりです。
@@ -227,7 +231,7 @@ src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline 
 - **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
 - **マウント**：§10 の検査で全チェーンを辿るので、ここが起動時間の大半です。disk サービスは 128 sector まで先読みし、fs は 8 sector の先読みと 32 ラインのキャッシュ（メタデータ 8、データ 24）、ワード単位のコピーで IDC のコマンド回数（1 回 10 ms）を減らしています。
 - **DIRTY**：最初の書き込みで DIRTY を立てます。シャットダウン時にはアンマウントしないので、書き込んだ後は fsck が要ります（ホスト側の `tools/fs2` は `allow_dirty` で読めます）。
-- **起動時間**：ディスク起動はバナーまで約 115 frame で、RAM から起動した場合（約 15 frame）より遅くなります。短縮は保留しています。
+- **起動時間**：Pipeline の直接 WAX 起動＋IDC 上の FS2 では初回プロンプトまで約 100 frame です。共通 string ランタイムの最適化による短縮は小さく、マウント時の全チェーン検査と IDC 転送は引き続き必要です。[KAN-36 の計測](../doc/kan36_performance.md)を参照してください。
 
 ## 注意と未決事項
 

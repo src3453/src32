@@ -1,13 +1,27 @@
 #include <stdint.h>
 #include <string.h>
 
+/* Word accesses require alignment and must alias arbitrary C objects. */
+typedef uint32_t alias_word __attribute__((__may_alias__));
+
 /* The driver omits each definition already provided by the user's modules. */
 #ifndef SRC32_HAVE_memcpy
 void *memcpy(void *restrict destination, const void *restrict source, size_t count) {
     unsigned char *out = destination;
     const unsigned char *in = source;
-    for (size_t i = 0; i < count; ++i)
-        out[i] = in[i];
+    if ((((uintptr_t)out ^ (uintptr_t)in) & 3u) == 0) {
+        while (count && ((uintptr_t)out & 3u)) {
+            *out++ = *in++;
+            --count;
+        }
+        while (count >= 4) {
+            *(alias_word *)(void *)out = *(const alias_word *)(const void *)in;
+            out += 4;
+            in += 4;
+            count -= 4;
+        }
+    }
+    while (count--) *out++ = *in++;
     return destination;
 }
 #endif
@@ -33,8 +47,18 @@ void *memmove(void *destination, const void *source, size_t count) {
 #ifndef SRC32_HAVE_memset
 void *memset(void *destination, int value, size_t count) {
     unsigned char *out = destination;
-    for (size_t i = 0; i < count; ++i)
-        out[i] = (unsigned char)value;
+    unsigned char byte = (unsigned char)value;
+    while (count && ((uintptr_t)out & 3u)) {
+        *out++ = byte;
+        --count;
+    }
+    uint32_t word = (uint32_t)byte * 0x01010101u;
+    while (count >= 4) {
+        *(alias_word *)(void *)out = word;
+        out += 4;
+        count -= 4;
+    }
+    while (count--) *out++ = byte;
     return destination;
 }
 #endif

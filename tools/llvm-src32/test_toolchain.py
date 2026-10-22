@@ -76,6 +76,50 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_string_runtime_boundaries(self):
+        # Calls stay external (-ffreestanding): exercise the linked runtime,
+        # with all source/destination alignments and sentinel bytes at both ends.
+        source = self.work / 'memory.c'
+        source.write_text(r'''
+#include <string.h>
+#include <stdint.h>
+static unsigned char a[80] __attribute__((aligned(4)));
+static unsigned char b[80] __attribute__((aligned(4)));
+static const unsigned lengths[] = {0,1,3,4,5,7,8,15,16,31,32,33,63};
+int main(void) {
+    for (unsigned s=0; s<4; ++s) for (unsigned d=0; d<4; ++d)
+    for (unsigned k=0; k<sizeof lengths/sizeof lengths[0]; ++k) {
+        unsigned n=lengths[k];
+        for (unsigned i=0; i<80; ++i) { a[i]=(unsigned char)(i*37); b[i]=0xCC; }
+        if (memcpy(b+4+d,a+4+s,n) != b+4+d) return 1;
+        for (unsigned i=0; i<80; ++i)
+            if (b[i] != (i>=4+d && i<4+d+n ? a[i-d+s] : 0xCC)) return 2;
+        if (memset(b+4+d,0x1234AB,n) != b+4+d) return 3;
+        for (unsigned i=0; i<80; ++i)
+            if (b[i] != (i>=4+d && i<4+d+n ? 0xAB : 0xCC)) return 4;
+    }
+    for (unsigned delta=0; delta<8; ++delta) for (unsigned back=0; back<2; ++back) {
+        for (unsigned i=0; i<80; ++i) a[i]=b[i]=(unsigned char)(i*37);
+        unsigned s=back ? 4 : 4+delta, d=back ? 4+delta : 4;
+        if (memmove(b+d,b+s,63) != b+d) return 5;
+        for (unsigned i=0; i<80; ++i)
+            if (b[i] != (i>=d && i<d+63 ? a[i-d+s] : a[i])) return 6;
+    }
+    if (memcmp("ab", "ac", 2)>=0 || memcmp("ac", "ab", 2)<=0 ||
+        memcmp("a", "a", 2) || memcmp("a", "b", 0) || strlen("hello")!=5) return 7;
+    return 42;
+}
+''', encoding='utf-8')
+        for opt in ('-O0', '-O1', '-O2'):
+            image = self.work / (opt[1:] + '.wax')
+            self.driver(source, opt, '-o', image)
+            for cpu in ('scalar', 'pipeline'):
+                with self.subTest(optimization=opt, cpu=cpu):
+                    result = subprocess.run(
+                        [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '120'],
+                        cwd=self.work, capture_output=True, text=True, timeout=120)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
     def test_backslash_bytes_in_constants(self):
         # LLVM prints a 0x5C byte inside c"..." as \\ (every other escape is
         # \XX); byte arrays and string literals that hold one must compile.
