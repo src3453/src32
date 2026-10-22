@@ -219,7 +219,7 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 | op | 名前 | 要求 | 応答 |
 |---|---|---|---|
 | `0x1000` | `CON_SET_MODE` | `a0` = モード | — |
-| `0x1001` | `CON_READ_KEY` | — | `a0` = キーコード、`a1` = 文字（Unicode scalar。なければ 0）、`a2` = 修飾キー |
+| `0x1001` | `CON_READ_KEY` | `a0` = フラグ（1 = `NOWAIT`） | `a0` = キーコード、`a1` = 文字（Unicode scalar。なければ 0）、`a2` = 修飾キー。`NOWAIT` で渡せるキーがなければ（先に待っている要求がある場合を含む）待たずに `FND_END` |
 | `0x1002` | `CON_BREAK_WAIT` | — | —（Ctrl+C が押されたら応答する） |
 | `0x1003` | `CON_CLEAR` | — | — |
 | `0x1004` | `CON_GET_SIZE` | — | `a0` = 桁数、`a1` = 行数 |
@@ -389,6 +389,7 @@ fnd_status fnd_cwd_get(char *buf, uint32_t cap, uint32_t *len);
 fnd_status fnd_con_write(const char *text);                 /* STDOUT へ書く */
 fnd_status fnd_con_read_line(char *buf, uint32_t cap, uint32_t *len);
 fnd_status fnd_con_getkey(fnd_key_t *key);                  /* CONSOLE の CON_READ_KEY */
+fnd_status fnd_con_pollkey(fnd_key_t *key);                 /* 非 blocking、入力なしは FND_END */
 fnd_status fnd_con_set_mode(uint32_t mode);
 fnd_status fnd_con_clear(void);
 fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows);
@@ -400,6 +401,7 @@ fnd_status fnd_con_break_wait(void);
 
 - `fnd_con_read_line` は STDIN から LF まで（LF は含めず NUL で終端）を読みます。STDIN がコンソールでもファイルでも同じです。`cap` を超える行は、`cap - 1` bytes で切り、残りを次の呼び出しに回して `FND_E_LIMIT` を返します。EOF で何も読めなければ `FND_END` を返します。LF のない最後の行は、その行を返し、次の呼び出しが `FND_END` になります。
 - `fnd_con_write` は STDOUT、`fnd_con_getkey` 以下は CONSOLE の役割のハンドルを使います。
+- `fnd_con_pollkey` は入力があれば `FND_OK` とキーを返し、なければ待たずに `FND_END` を返します。キー順序と修飾キー処理は `fnd_con_getkey` と共通です。CONSOLE に `CON_READ_KEY` を `a0` = `FND_CON_NOWAIT`（1）で送ります（§8.3）。
 
 ### 11.6 プロセス
 

@@ -37,6 +37,15 @@ void task_probe(volatile uint32_t *box) {
     /* Length 0 only: src32_testbench has no UART, so writing a byte would
      * be a bus error in the kernel. */
     box[PROBE_WRITTEN] = (uint32_t)fnd_sys_debug_write(message, 0u) + 1u;
+    uint32_t cpu[5];
+    cpu[4] = 0x12345678u;
+    box[PROBE_CPU_SIZE] = (uint32_t)fnd_sys_info(2u, 0, 0);
+    box[PROBE_CPU_BAD_POINTER] = (uint32_t)fnd_sys_info(2u, (void *)0x100u, 16u);
+    box[PROBE_CPU_ALIGNMENT] = (uint32_t)fnd_sys_info(2u, (void *)((uintptr_t)cpu + 1u), 16u);
+    box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(3u, cpu, sizeof cpu);
+    int32_t needed = fnd_sys_info(2u, cpu, 16u);
+    box[PROBE_CPU_PREFIX] = needed == 48 && cpu[4] == 0x12345678u && cpu[0] > 0 && cpu[1] > 0;
+    box[PROBE_CPU_CLOCK] = cpu[3];
     box[PROBE_MIN_SLEEP] = 0xFFFFFFFFu;
     box[PROBE_MAX_SLEEP] = 0;
     while (box[PROBE_ROUNDS] < PROBE_SLEEPS) {

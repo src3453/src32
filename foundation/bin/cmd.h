@@ -4,8 +4,8 @@
 #include <foundation/sys.h>
 
 /* Output helpers shared by the standard commands in /bin
- * (doc/spec_Foundation_shell.md §10.2, §11.1). Linked into each command
- * until libfnd is a WAL. */
+ * (doc/spec_Foundation_shell.md §10.2, §11.1). Linked into each command;
+ * they are not part of libfnd. */
 
 uint32_t cmd_len(const char *s);
 void cmd_out(const char *s);

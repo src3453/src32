@@ -87,6 +87,7 @@
 #define FND_CON_RAW 1u
 #define FND_CON_SET_MODE 0x1000u
 #define FND_CON_READ_KEY 0x1001u
+#define FND_CON_NOWAIT 1u /* CON_READ_KEY a0: FND_END instead of waiting */
 #define FND_CON_BREAK_WAIT 0x1002u
 #define FND_CON_CLEAR 0x1003u
 #define FND_CON_GET_SIZE 0x1004u
@@ -128,6 +129,9 @@
 /* Kernel ABI §9 sys_info. */
 #define FND_INFO_SYSTEM 0u
 #define FND_INFO_PROCESSES 1u
+#define FND_INFO_CPU 2u
+#define FND_CPUINFO_HEADER_BYTES 16u
+#define FND_CPUINFO_RECORD_BYTES 8u
 #define FND_SYSINFO_BYTES 32u
 #define FND_PROCINFO_BYTES 48u
 

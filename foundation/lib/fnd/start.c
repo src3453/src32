@@ -223,6 +223,18 @@ fnd_status fnd_con_getkey(fnd_key_t *key) {
     return FND_OK;
 }
 
+fnd_status fnd_con_pollkey(fnd_key_t *key) {
+    uint32_t args[4] = {FND_CON_NOWAIT, 0, 0, 0};
+    fnd_msg rep;
+    fnd_status status = fnd_call(fnd_console(), FND_CON_READ_KEY, args, 0, 0, 0, 0, &rep);
+    if (status != FND_OK)
+        return status;
+    key->code = rep.a0;
+    key->ch = rep.a1;
+    key->mods = rep.a2;
+    return FND_OK;
+}
+
 fnd_status fnd_con_set_mode(uint32_t mode) {
     uint32_t args[4] = {mode, 0, 0, 0};
     fnd_status status = fnd_call(fnd_console(), FND_CON_SET_MODE, args, 0, 0, 0, 0, 0);

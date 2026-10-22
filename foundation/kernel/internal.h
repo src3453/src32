@@ -45,6 +45,9 @@ void sched_block(struct fnd_thread *thread, uint32_t reason, uint32_t timeout);
 extern struct fnd_thread fnd_threads[FND_MAX_THREADS];
 int sched_proc_runnable(const struct fnd_proc *proc);
 cpt32_ctx_frame *sched_next(void);
+void sched_cpu_enter(void);
+void sched_cpu_leave(void);
+void sched_cpu_snapshot(uint32_t info[4]);
 
 /* proc.c */
 void proc_activate(struct fnd_proc *proc);

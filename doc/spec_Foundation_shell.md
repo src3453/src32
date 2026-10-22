@@ -318,6 +318,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |
 | `free` | `free` | RAM 容量と空き容量を KiB で表示する（`sys_info` sel 0） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |
+| `top` | `top [-n count]` | 1 秒ごとの差分から user / kernel（概算）/ idle の CPU 使用率、メモリ容量、CPU 使用率順のプロセス一覧を表示する（`sys_info` sel 0, 1, 2）。引数なしでは画面を更新し、q または Ctrl+C で終了（キーは `fnd_con_pollkey` で待たずに読む）。`-n` は正の整数で、指定回数を通常出力して終了する |
 
 - ワイルドカードはシェルが展開してから渡します（§5.2）。標準コマンドは自分では展開しません。
 - `pwd` は子の起動ブロックの cwd を表示するので、シェルの cwd と同じ値になります（§7.3）。

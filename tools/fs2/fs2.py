@@ -749,6 +749,11 @@ def _dispatch(args):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
+    p = sub.add_parser("serve", help="export an image over 9P2000 (localhost by default)")
+    p.add_argument("image")
+    p.add_argument("--host", default="127.0.0.1")
+    p.add_argument("--port", type=int, default=5640)
+    p.add_argument("--read-only", action="store_true")
     p = sub.add_parser("format", help="create or re-format an image (§9 format)")
     p.add_argument("image")
     p.add_argument("--blocks", type=int, help="volume size in 512-byte blocks (default: the image size)")
@@ -798,6 +803,9 @@ def main(argv=None):
     p.add_argument("--stage1", help="also write this boot code (510 bytes, or 512 ending in 55 AA) to block 0")
     args = parser.parse_args(argv)
     try:
+        if args.command == "serve":
+            from ninep import serve
+            return serve(args.image, args.host, args.port, args.read_only)
         return _dispatch(args)
     except (Fs2Error, OSError) as error:
         print(f"fs2: {error}", file=sys.stderr)

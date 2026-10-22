@@ -1,5 +1,5 @@
 /* Foundation kernel entry: spawns the FNDBOOT modules (doc/spec_Foundation.md
- * §11) in table order, init last. build.py packs:
+ * §11) in table order, init last. build.py packs
  *
  *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
  *   disk     slot 2, SERVICE, DISK | SVC (blk_io for fs)
@@ -11,8 +11,9 @@
  * loads directly; build.py then links a module-only FNDBOOT into the image
  * (fndboot_image.h), R1/R2 are ignored and the boot drive is 0.
  *
- * Provisional: the staging area is not released after the modules are
- * spawned; nothing allocates that memory yet. */
+ * The modules are PROTECTED WAX v2 with libfnd linked in, so they get no
+ * WAL list. Once they are spawned the staged FNDBOOT is no longer needed:
+ * proc_spawn reuses the area for the images it stages (§9.2). */
 #include <foundation/kernel.h>
 
 #ifdef FOUNDATION_BOOT_EMBEDDED
@@ -25,19 +26,20 @@ static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_T
 #endif
 
 int main(uint32_t drive, uint32_t fndboot) {
+    const void *boot_image;
 #ifdef FOUNDATION_BOOT_EMBEDDED
     (void)drive;
     (void)fndboot;
-    const void *boot_image = img_fndboot;
+    boot_image = img_fndboot;
 #else
     fnd_set_boot_drive(drive);
-    const void *boot_image = (const void *)(uintptr_t)fndboot;
+    boot_image = (const void *)(uintptr_t)fndboot;
 #endif
     int32_t count = fnd_boot_check(boot_image);
     if (count < 0)
         return count;
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-        int32_t pid = fnd_boot_spawn(boot_image, i);
+        int32_t pid = fnd_boot_spawn(boot_image, i, 0, 0);
         if (pid < 0)
             return pid;
     }

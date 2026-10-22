@@ -47,6 +47,7 @@ struct fnd_proc {
     uint32_t refs;    /* PROCESS handles: the record stays until they close */
     int32_t exit_code;
     uint32_t fault_epc; /* EPC of the fault that ended it, else 0 */
+    uint32_t cpu_cycles; /* elapsed user-context cycles, modulo 2^32 */
     uint32_t region_count;
     struct fnd_region regions[FND_REGIONS];
     uint32_t heap_start, heap_end, heap_limit, heap_region; /* mem_grow (§5.3) */
@@ -95,15 +96,18 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
  * with the capabilities caps. The startup block is argv = [name], cwd = "/"
  * and no roles. */
 int32_t fnd_proc_spawn_module(const char *name, uint32_t priority, uint32_t caps, const void *image,
-                              uint32_t size, const struct fnd_grant *grants, uint32_t grant_count);
+                              uint32_t size, const struct fnd_image *libs, uint32_t lib_count,
+                              const struct fnd_grant *grants, uint32_t grant_count);
 /* FNDBOOT bundled modules (§11). fnd_boot_check validates the header and
  * the module table of the image stage1 staged (or one linked into the
  * kernel image) and returns the module count or FND_E_FORMAT. Call
  * fnd_boot_spawn only after a successful check: it spawns module index with
- * its priority, caps and grants and returns what fnd_proc_spawn_module
- * returns. The image must stay in memory while the modules may be spawned. */
+ * its priority, caps and grants, with libs as its WAL list (§9.5), and returns
+ * what fnd_proc_spawn_module returns. The image must stay in memory while the
+ * modules may be spawned. */
 int32_t fnd_boot_check(const void *fndboot);
-int32_t fnd_boot_spawn(const void *fndboot, uint32_t index);
+int32_t fnd_boot_spawn(const void *fndboot, uint32_t index, const struct fnd_image *libs,
+                       uint32_t lib_count);
 /* The boot drive that stage1 passes in R1, reported by sys_info (§9.4). */
 void fnd_set_boot_drive(uint32_t drive);
 

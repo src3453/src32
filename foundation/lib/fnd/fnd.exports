@@ -8,6 +8,7 @@ fnd_call fn(u32,u32,ptr,ptr,u32,ptr,u32,ptr)->i32
 fnd_close fn(u32)->i32
 fnd_con_clear fn()->i32
 fnd_con_getkey fn(ptr)->i32
+fnd_con_pollkey fn(ptr)->i32
 fnd_con_set_mode fn(u32)->i32
 fnd_con_size fn(ptr,ptr)->i32
 fnd_con_write fn(ptr)->i32
