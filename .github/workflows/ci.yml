@@ -32,7 +32,7 @@ jobs:
           shared-key: ci
       - name: Build src32_testbench
         run: cargo build --bin src32_testbench
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: src32_testbench
           path: target/debug/src32_testbench
@@ -224,7 +224,7 @@ jobs:
       - name: Package vscode-src32-asm-syntax
         working-directory: tools/vscode-src32-asm-syntax
         run: npx --yes @vscode/vsce@3 package --no-dependencies
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vscode-extensions
           path: tools/*/*.vsix
