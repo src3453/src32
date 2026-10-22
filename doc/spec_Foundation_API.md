@@ -422,8 +422,9 @@ fnd_status fnd_proc_kill(fnd_handle proc);
 1. `path` を `EXEC` で開き（X 権限の検査）、全体を `fnd_mem_alloc` の領域に読み込んで閉じる。大きさの上限は `FND_EXEC_IMAGE_MAX`（1 MiB）で、超えれば `FND_E_LIMIT`。
 2. `FS_SESSION_NEW` で子のための fs セッションを作る。
 3. 起動ブロックを作る。cwd は `ex->cwd`、なければ `fnd_cwd_get` の値。役割表は 1 `STDIN`、2 `STDOUT`、3 `STDERR`、4 `FS`、5 `CONSOLE` で、`handles` にこの順に並べる（CONSOLE の役割がなければ 5 は省く）。
-4. `proc_spawn` を `priority = APP`、`caps = 0`、MMIO の付与なし、`name` = パスの最後の成分から `.wax` を除いた先頭 15 bytes で呼ぶ。
-5. 成否にかかわらず、イメージの領域と、手順 2 のセッションのハンドルを解放する（子には dup されている）。
+4. イメージが依存を持つ WAX v3 なら、依存する WAL を集める（[Foundation §9.5](spec_Foundation.md)）。依存表の各 `(library_id, abi_major)` について `/lib/<library_id>.<abi_major>.wal` を `EXEC` で開いて読み込み、その WAL の依存表も同じようにたどる。同じ ID と major は 1 回だけ読む。ファイルがなければ `FND_E_DEPENDENCY`、合計が WAX を含めて 8 個を超えれば `FND_E_LIMIT` で、起動しない。WAL の中身の検証と minor の確認はカーネルが行う。
+5. `proc_spawn` を `priority = APP`、`caps = 0`、MMIO の付与なし、`name` = パスの最後の成分から `.wax` を除いた先頭 15 bytes、`libs` = 手順 4 の一覧（なければ 0）で呼ぶ。
+6. 成否にかかわらず、イメージと WAL の領域と、手順 2 のセッションのハンドルを解放する（子には dup されている）。
 
 - 起動ブロックが 4096 bytes を超える場合は `FND_E_LIMIT` で、起動しません。
 - `fnd_proc_wait` は `wait(proc, FND_FOREVER, code)` を呼び、PROCESS ハンドルを閉じます。
@@ -499,6 +500,6 @@ init は、各サービスの起動後にシェルなどのアプリを起動す
 | `DEV_OPEN` の呼び出し元の確認 | v1 では確認できない（§9）。カーネル ABI でサービスにケーパビリティ付きの CHANNEL を渡す方法を決めてから閉じる |
 | 時刻の取得 | FS2 §7 の「一貫した時計のスナップショット」が未定義。libfnd の `fnd_time_now` はそれを待つ |
 | 大きいイメージの起動 | `FND_EXEC_IMAGE_MAX` は 1 MiB。親のスロットより大きい子は、fs がカーネルへ直接渡す方式（将来）まで起動できない |
-| WAL の一覧 | [Foundation §9.5](spec_Foundation.md) の未決事項。`fnd_proc_exec` は v3 の依存を持つ WAX を起動できない |
+| WAL の一覧 | **決定（2026-10-22）**：`/lib/<image_id>.<abi_major>.wal` に置き、`fnd_proc_exec` が依存をたどって読み、`proc_spawn` の `libs` で渡す（§11.6、[Foundation §9.2・§9.5](spec_Foundation.md)） |
 | sol のライブラリ | libfnd の実装後に、`sol/foundation/` へ同じ操作のラッパーを加える |
 | 64-bit 整数 | `tools/llvm-src32` での `int64_t` の対応を実装時に確認する。使えなければ、libfnd の 64-bit 引数を上位・下位の組に置き換える |
