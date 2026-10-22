@@ -1090,3 +1090,4 @@
 
 ## Foundation launcher arguments (2026-10-22)
 - `foundation/run.py --arg ...` forwards all remaining argv tokens after the image path to the emulator using `argparse.REMAINDER`; put launcher options such as `--disk`, `--clang` and `--build-only` before it. Tokens are preserved without shell splitting or shell execution, including values containing spaces. `--build-only` still skips emulator launch even when extra arguments are supplied.
+- Repository workflow: in remote environments, commit changes on a working branch, push that branch and open a PR targeting `main`; AGENTS.md explicitly authorizes the branch creation and push required for this workflow.
