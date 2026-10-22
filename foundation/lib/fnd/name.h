@@ -15,6 +15,16 @@ fnd_status fnd_utf8_next(const uint8_t *s, uint32_t len, uint32_t *pos, uint32_t
 /* Unicode 16.0.0 CaseFolding status C and F. Returns 1..3 scalars. */
 uint32_t fnd_casefold(uint32_t cp, uint32_t out[3]);
 
+/* Folded scalars of a valid UTF-8 string, one at a time. */
+typedef struct {
+    const uint8_t *s;
+    uint32_t len, pos;
+    uint32_t buf[3];
+    uint32_t n, i;
+} fnd_fold_iter;
+void fnd_fold_init(fnd_fold_iter *it, const uint8_t *s, uint32_t len);
+int fnd_fold_next(fnd_fold_iter *it, uint32_t *cp); /* 0 at the end */
+
 /* Compares the folded keys of two valid UTF-8 strings. 1 = same name. */
 int fnd_name_key_equal(const uint8_t *a, uint32_t alen, const uint8_t *b, uint32_t blen);
 /* A hash of the folded key; equal keys have equal hashes. */

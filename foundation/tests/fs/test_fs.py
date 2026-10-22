@@ -173,7 +173,8 @@ class FsTestBase(unittest.TestCase):
             raise unittest.SkipTest("no host C compiler (set CC)")
         cls.temp = tempfile.TemporaryDirectory(prefix="fs-host-")
         library = Path(cls.temp.name) / ("fshost" + (".dll" if os.name == "nt" else ".so"))
-        sources = [HERE / "host.c", *sorted((FOUNDATION / "fs").glob("*.c")), FOUNDATION / "lib/fnd/name.c"]
+        sources = [HERE / "host.c", *sorted((FOUNDATION / "fs").glob("*.c")), FOUNDATION / "lib/fnd/name.c",
+                   FOUNDATION / "lib/fnd/name_api.c"]
         sources = [s for s in sources if s.name != "main.c"]
         extra = os.environ.get("FS_TEST_CFLAGS", "").split()
         subprocess.run([cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", *extra,

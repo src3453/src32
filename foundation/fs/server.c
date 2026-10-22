@@ -155,6 +155,14 @@ static fnd_status writable_dir(vfs_node dir) {
     return m->vol->writable ? FND_OK : FND_E_READ_ONLY;
 }
 
+/* §6.4: the permission READ and WRITE need. A table, because the bit
+ * reversal the compiler makes of the obvious expression is not supported
+ * by tools/llvm-src32. */
+static uint32_t rw_need(uint32_t flags) {
+    static const uint8_t need[4] = {0, VFS_R, VFS_W, VFS_R | VFS_W};
+    return need[flags & (FND_OPEN_READ | FND_OPEN_WRITE)];
+}
+
 static fnd_status permit_node(const vfs_cred *c, vfs_node n, uint32_t need, vfs_info *info) {
     fnd_status st = vfs_get_info(n, info);
     return st != FND_OK ? st : vfs_permit(c, info, need);
@@ -453,7 +461,7 @@ static void dir_op(fs_obj *o, const fs_req *q, uint32_t len, uint32_t cap, fs_re
 static fnd_status open_device(fs_obj *s, const vfs_info *info, uint32_t flags, fs_rep *r) {
     if (flags & ~(FND_OPEN_READ | FND_OPEN_WRITE | FND_OPEN_CREATE))
         return FND_E_ACCESS;
-    uint32_t need = (flags & FND_OPEN_READ ? VFS_R : 0) | (flags & FND_OPEN_WRITE ? VFS_W : 0);
+    uint32_t need = rw_need(flags);
     fnd_status st = vfs_permit(&s->cred, info, need);
     if (st != FND_OK)
         return st;
@@ -524,8 +532,7 @@ static fnd_status op_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint3
             return FND_E_NOT_DIR;
         if (info.dev)
             return open_device(s, &info, flags, r);
-        uint32_t need = (flags & FND_OPEN_READ ? VFS_R : 0) | (flags & FND_OPEN_WRITE ? VFS_W : 0) |
-                        (flags & FND_OPEN_EXEC ? VFS_R | VFS_X : 0);
+        uint32_t need = rw_need(flags) | (flags & FND_OPEN_EXEC ? VFS_R | VFS_X : 0);
         if ((st = vfs_permit(&s->cred, &info, need)) != FND_OK)
             return st;
         if ((flags & FND_OPEN_WRITE) && info.read_only)
