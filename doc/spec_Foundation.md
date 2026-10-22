@@ -1,6 +1,6 @@
 # Foundation カーネル ABI 仕様 v1
 
-Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。§13 の sol 対応（solc の `!abi_compat`、`sol/foundation/fnd.sol`）も実装済み。それ以外（カーネル本体、IPC、システムコール）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
+Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。§13 の sol 対応（solc の `!abi_compat`、`sol/foundation/fnd.sol`）も実装済み。§9.5 の WAX ローダ（PROTECTED WAX v2 と WAX/WAL v3）はカーネル内に実装済みで、S モードの `fnd_proc_spawn_wax` から使える（`proc_spawn` システムコールはハンドルの実装を待つ）。それ以外（カーネル本体、IPC、システムコール）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -391,6 +391,28 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 6. `wait` している側を起こす。
 
 終了したプロセスの記録は、`sys_info` で読めるように、PROCESS ハンドルが閉じられるまで残します。
+
+### 9.5 WAX の読み込み
+
+`proc_spawn` と §11 の同梱モジュールの起動は、どちらも次の規則で WAX を読み込みます。[WAX v3 §4.1・§7](spec_WAX_v3.md) が OS に委ねている選択と配置の方針も、ここで定めます。
+
+- **受け付ける形式**：PROTECTED の WAX v2 と、type が WAX の v3。v3 では、すべての画像（WAX と WAL）が `call_abi = 1`、`os_id = foundation`、`os_major = 1`、`os_min_minor` ≤ カーネルの minor（現在 0）でなければなりません。検証と束縛は WAX v3 §2〜§7 に従います。
+- **スロット**：`base_addr` を含むスロット（§5.2）に、WAX の予約範囲（最も低いブロックから最も高いブロックの末尾まで、穴を含む）、スタック、読み込む全 WAL が収まらなければなりません。収まらなければ `FND_E_FORMAT` です。
+- **提供者の選択**：候補は、カーネルに渡されたライブラリ一覧のうち、検証に通る WAL で `image_id` と `abi_major` が要求と一致するものです。その中で `abi_minor` が最大のものを選び、同じなら一覧で先にあるものを選びます。選んだ WAL の `abi_minor` が、同じ ID へのすべての要求の `min_minor` の最大値に満たなければ失敗します。
+- **WAL の配置**：依存の帰りがけ順（依存される WAL が先）に、スロット先頭からの first fit で置きます。各 WAL の基底 B は、その WAL のブロック整列の最大値に揃えた、WAX の予約範囲・スタック・配置済みの WAL と重ならない最も低いアドレスです。
+- **上限**：1 回の起動で画像は 8 個（WAX と WAL 7 個）まで、1 画像あたりブロックは 32 個、依存は 8 件までです。超えると `FND_E_LIMIT` です。
+- **エラー**：WAX v3 §7 の論理分類を次のように対応させます。
+
+| 分類 | 結果 |
+|---|---|
+| FORMAT | `FND_E_FORMAT` |
+| UNSUPPORTED、ABI_MISMATCH | `FND_E_UNSUPPORTED` |
+| DEPENDENCY_MISSING、DEPENDENCY_CONFLICT、DEPENDENCY_CYCLE、SYMBOL_MISSING、SYMBOL_MISMATCH | `FND_E_DEPENDENCY` |
+| REGION_LIMIT | `FND_E_REGION_LIMIT` |
+| RESOURCE_LIMIT | `FND_E_LIMIT` |
+| スロットが使用中 | `FND_E_ADDRESS_CONFLICT` |
+
+未決の点：インストール済みライブラリの一覧をどこから得るか（例：`/lib`、FNDBOOT のモジュール表）と、`proc_spawn` でそれをどう指定するかは、まだ定めていません。現在は、カーネル内で起動する側が一覧を渡します。
 
 ## 10. スケジューリング、IRQ、デバイス
 

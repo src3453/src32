@@ -5,7 +5,7 @@
 #include <cpt32/cpu.h>
 #include <foundation/abi.h>
 
-/* Supervisor-side interface of the phase 1 kernel, for the image that links
+/* Supervisor-side interface of the kernel, for the image that links
  * it (boot code, demo, tests). User programs use <foundation/abi.h>. */
 
 #define FND_MAX_PROCS 7u    /* one per user slot */
@@ -40,8 +40,7 @@ struct fnd_proc {
     char name[16];
 };
 
-/* Phase 1 has no WAX loader: a process runs user code linked into the
- * kernel image. [code_start, code_end) is granted R/X, and the top ram_size
+/* A process that runs user code linked into the kernel image. [code_start, code_end) is granted R/X, and the top ram_size
  * bytes of the slot ([fnd_slot_end(slot) - ram_size, fnd_slot_end(slot)),
  * zeroed) R/W for stack and data. The thread starts at entry in U mode with
  * USP = slot end - 8, where the argument word arg is stored (C stack ABI:
@@ -50,6 +49,22 @@ struct fnd_proc {
 int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priority,
                                 uint32_t ram_size, uint32_t code_start, uint32_t code_end,
                                 uint32_t entry, uint32_t arg);
+/* A WAX/WAL image in kernel memory. */
+struct fnd_image {
+    const void *data;
+    uint32_t size;
+};
+#define FND_MAX_LIBRARIES 16u
+
+/* Loads a PROTECTED WAX into the user slot that contains its base_addr and
+ * starts it as §9.2 describes: v2, or v3 with the WAL graph it needs, chosen
+ * from libs (doc/spec_WAX_v3.md §4.1, §7). The image and the libraries must
+ * stay unchanged during the call; the kernel does not copy them first.
+ * Atomic: on failure nothing is allocated or written. Returns the pid (>= 1)
+ * or FND_E_FORMAT, FND_E_UNSUPPORTED, FND_E_DEPENDENCY, FND_E_REGION_LIMIT,
+ * FND_E_ADDRESS_CONFLICT (slot in use), FND_E_LIMIT or FND_E_BAD_ARG. */
+int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
+                           const struct fnd_image *libs, uint32_t lib_count);
 /* NULL for an unknown pid. Exited processes keep their record. */
 struct fnd_proc *fnd_proc_get(uint32_t pid);
 

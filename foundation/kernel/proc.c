@@ -1,7 +1,8 @@
 /* Processes, user slots and protection regions (doc/spec_Foundation.md §5,
- * §9.4). Phase 1 creates processes from code linked into the kernel image;
- * the WAX loader (proc_spawn) comes in phase 3. */
+ * §9.2, §9.4). Processes come from code linked into the kernel image
+ * (phase 1) or from a PROTECTED WAX loaded by wax.c. */
 #include "internal.h"
+#include "wax.h"
 
 static struct fnd_proc procs[FND_MAX_PROCS];
 static struct fnd_proc *active; /* process whose regions are programmed */
@@ -116,6 +117,53 @@ struct fnd_proc *fnd_proc_get(uint32_t pid) {
     return 0;
 }
 
+/* A free process record for slot, or NULL with *error set. */
+static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
+    struct fnd_proc *proc = 0;
+    for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
+        if (procs[i].state == FND_PROC_LIVE && procs[i].slot == slot) {
+            *error = FND_E_ADDRESS_CONFLICT;
+            return 0;
+        }
+        if (!proc && procs[i].state == FND_PROC_FREE)
+            proc = &procs[i];
+    }
+    for (uint32_t i = 0; !proc && i < FND_MAX_PROCS; ++i) {
+        if (procs[i].state == FND_PROC_EXITED)
+            proc = &procs[i]; /* reuse the oldest kind of record: no handles yet */
+    }
+    *error = FND_E_LIMIT;
+    return proc;
+}
+
+/* Fills in a claimed record whose regions are set and readies its thread:
+ * U mode at entry with IE = 1, R1..R27 and R31 zero (§9.2). */
+static int32_t start_proc(struct fnd_proc *proc, struct fnd_thread *thread, const char *name,
+                          uint32_t slot, uint32_t priority, uint32_t entry, uint32_t usp, uint32_t ugp) {
+    proc->pid = next_pid++;
+    proc->slot = slot;
+    proc->priority = priority;
+    proc->threads = 1;
+    proc->exit_code = 0;
+    proc->fault_epc = 0;
+    unsigned n = 0;
+    for (; name && name[n] && n < sizeof proc->name - 1u; ++n)
+        proc->name[n] = name[n];
+    for (; n < sizeof proc->name; ++n)
+        proc->name[n] = 0;
+    proc->state = FND_PROC_LIVE;
+    for (unsigned i = 0; i < 32u; ++i)
+        thread->frame.r[i] = 0;
+    thread->frame.r[28] = usp;
+    thread->frame.r[30] = ugp;
+    thread->frame.epc = entry;
+    thread->frame.status = CPT32_STATUS_PU | CPT32_STATUS_PIE;
+    thread->priority = priority;
+    thread->proc = proc;
+    sched_make_ready(thread);
+    return (int32_t)proc->pid;
+}
+
 int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priority,
                                 uint32_t ram_size, uint32_t code_start, uint32_t code_end,
                                 uint32_t entry, uint32_t arg) {
@@ -128,52 +176,86 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
     uint32_t end = slot_bounds[slot + 1u], ram = end - ram_size;
     if (code_start < end && slot_bounds[slot] < code_end)
         return FND_E_ADDRESS_CONFLICT; /* code must not lie in the writable slot */
-    struct fnd_proc *proc = 0;
-    for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
-        if (procs[i].state == FND_PROC_LIVE && procs[i].slot == slot)
-            return FND_E_ADDRESS_CONFLICT;
-        if (!proc && procs[i].state == FND_PROC_FREE)
-            proc = &procs[i];
-    }
-    for (uint32_t i = 0; !proc && i < FND_MAX_PROCS; ++i) {
-        if (procs[i].state == FND_PROC_EXITED)
-            proc = &procs[i]; /* reuse the oldest kind of record: no handles yet */
-    }
+    int32_t error;
+    struct fnd_proc *proc = claim_record(slot, &error);
     if (!proc)
-        return FND_E_LIMIT;
+        return error;
     struct fnd_thread *thread = sched_alloc_thread();
     if (!thread)
         return FND_E_LIMIT;
 
     zero_range(ram, end);
-    proc->pid = next_pid++;
-    proc->slot = slot;
-    proc->priority = priority;
-    proc->threads = 1;
-    proc->exit_code = 0;
-    proc->fault_epc = 0;
     /* Region 0: stack and data at the top of the slot (RW). Region 1: the
      * code (RX). */
     proc->regions[0] = (struct fnd_region){ram, end, CPT32_PERM_R | CPT32_PERM_W, 1};
     proc->regions[1] = (struct fnd_region){code_start, code_end, CPT32_PERM_R | CPT32_PERM_X, 0};
     proc->region_count = 2;
-    unsigned n = 0;
-    for (; name && name[n] && n < sizeof proc->name - 1u; ++n)
-        proc->name[n] = name[n];
-    for (; n < sizeof proc->name; ++n)
-        proc->name[n] = 0;
-    proc->state = FND_PROC_LIVE;
-
     uint32_t sp = end - 8u;
     *(volatile uint32_t *)(uintptr_t)sp = arg;
-    for (unsigned i = 0; i < 32u; ++i)
-        thread->frame.r[i] = 0;
-    thread->frame.r[28] = sp;   /* USP */
-    thread->frame.r[30] = slot_bounds[slot]; /* UGP = base_addr */
-    thread->frame.epc = entry;
-    thread->frame.status = CPT32_STATUS_PU | CPT32_STATUS_PIE;
-    thread->priority = priority;
-    thread->proc = proc;
-    sched_make_ready(thread);
-    return (int32_t)proc->pid;
+    return start_proc(proc, thread, name, slot, priority, entry, sp, slot_bounds[slot]);
+}
+
+/* Loader categories to kernel codes (doc/spec_Foundation.md §9.2). */
+static int32_t wax_status(enum wax_error error) {
+    switch (error) {
+    case WAX_OK:
+        return FND_OK;
+    case WAX_E_UNSUPPORTED:
+    case WAX_E_ABI_MISMATCH:
+        return FND_E_UNSUPPORTED;
+    case WAX_E_DEPENDENCY_MISSING:
+    case WAX_E_DEPENDENCY_CONFLICT:
+    case WAX_E_DEPENDENCY_CYCLE:
+    case WAX_E_SYMBOL_MISSING:
+    case WAX_E_SYMBOL_MISMATCH:
+        return FND_E_DEPENDENCY;
+    case WAX_E_REGION_LIMIT:
+        return FND_E_REGION_LIMIT;
+    case WAX_E_RESOURCE_LIMIT:
+        return FND_E_LIMIT;
+    default:
+        return FND_E_FORMAT;
+    }
+}
+
+/* One launch at a time: the kernel runs with interrupts off. */
+static struct wax_launch launch;
+
+int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
+                           const struct fnd_image *libs, uint32_t lib_count) {
+    struct wax_library table[FND_MAX_LIBRARIES];
+    uint32_t base, slot = 0;
+    if (priority > FND_PRIO_APP || lib_count > FND_MAX_LIBRARIES || (lib_count && !libs))
+        return FND_E_BAD_ARG;
+    enum wax_error error = wax_base_addr(image, size, &base);
+    if (error != WAX_OK)
+        return wax_status(error);
+    while (slot < FND_SLOTS && !(slot_bounds[slot] <= base && base < slot_bounds[slot + 1u]))
+        ++slot;
+    if (slot == FND_SLOTS)
+        return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
+    int32_t status;
+    struct fnd_proc *proc = claim_record(slot, &status);
+    if (!proc)
+        return status;
+    for (uint32_t i = 0; i < lib_count; ++i) {
+        table[i].data = libs[i].data;
+        table[i].size = libs[i].size;
+    }
+    struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR, slot_bounds[slot],
+                                slot_bounds[slot + 1u]};
+    if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
+        return wax_status(error);
+    struct fnd_thread *thread = sched_alloc_thread();
+    if (!thread)
+        return FND_E_LIMIT;
+
+    /* Nothing has changed until here, so every failure above leaves no trace. */
+    wax_load(&launch, 0);
+    for (uint32_t i = 0; i < launch.region_count; ++i) {
+        proc->regions[i] = (struct fnd_region){launch.region[i].start, launch.region[i].end,
+                                               launch.region[i].flags, 1};
+    }
+    proc->region_count = launch.region_count;
+    return start_proc(proc, thread, name, slot, priority, launch.entry, launch.stack_top, base);
 }

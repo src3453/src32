@@ -11,7 +11,7 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 - **プロセスと保護**（§5）: 7つのユーザースロットを使います。別プロセスへ切り替えるときは、§5.3 の順（全 FLAGS=0 → START/END → FLAGS）で8領域を書き換えます。終了時は全スレッドを DEAD にし、付与した RAM をゼロにします。ユーザーポインタは §5.4 の手順で検証します。
 - **システムコール**（§7, §9）: `yield`、`sleep`（`FND_FOREVER` を含む）、`thread_exit`、`proc_exit`、`time_get`、`debug_write` を実装しています。ABI で定義済みでも未実装のものは `FND_E_UNSUPPORTED`、未定義の番号と context byte が 0 でない呼び出しは `FND_E_BAD_CALL` を返します。
 
-WAX ローダ（`proc_spawn`）はフェーズ3なので、まだありません。フェーズ1では `fnd_proc_create_builtin()` を使い、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。このとき `[code_start, code_end)` が R/X、スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
+`fnd_proc_create_builtin()` は、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。WAX から作る方法は次の節を参照してください。このとき `[code_start, code_end)` が R/X、スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
 
 | ファイル | 内容 |
 |---|---|
@@ -21,8 +21,22 @@ WAX ローダ（`proc_spawn`）はフェーズ3なので、まだありません
 | `kernel/sched.c` | スレッド、優先度キュー、tick、sleep、idle |
 | `kernel/proc.c` | プロセス、スロット、保護領域、ポインタ検証、終了処理 |
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
+| `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
+| `tests/wax/` | WAX ローダのテスト（ホスト単体テストと testbench） |
+
+## WAX ローダ
+
+`fnd_proc_spawn_wax(name, priority, image, size, libs, lib_count)` は、カーネルメモリ上の WAX を、その `base_addr` を含むユーザースロットに読み込んで起動します（[仕様 §9.2・§9.5](../doc/spec_Foundation.md)）。
+
+- 形式は PROTECTED の [WAX v2](../doc/spec_WAX.md) と [WAX/WAL v3](../doc/spec_WAX_v3.md) です。v3 では、依存する WAL を `libs` から選び（同じ ID と major の中で最大の minor）、スロット内に first fit で置き、import スロットに記述子（アドレスと origin）を書きます。
+- 保護領域は region 0 がスタック、その後が全画像のブロックをアドレス順に並べたものです。隣接していて権限が同じブロックだけをまとめ、8 を超えると `FND_E_REGION_LIMIT` です。
+- 起動は原子的です。検証、依存解決、配置、領域とシンボルの確認がすべて通るまで、メモリにもプロセス表にも書きません。
+- 入口の状態は §9.2 のとおりです（`USP = user_stack_top`、`UGP = base_addr`、他のレジスタは 0、`IE = 1`、スタックはゼロクリア）。終了時は、付与した範囲をすべてゼロにします。
+- `wax.c` はカーネルの状態にもデバイスにも触れない C11 なので、ホストの C コンパイラでもビルドできます。
+
+`proc_spawn` システムコールは、ハンドル（`PROCESS`）が実装されるフェーズ2以降に、この関数の上に作ります。そのときは §9.2 のとおり、イメージを先に staging へ複製してから検証します（現在の関数は、渡されたイメージが呼び出し中に変わらないことを前提にしています）。ライブラリ一覧をどこから得るかは未決です（§9.5）。
 
 ## ビルドと実行
 
@@ -30,7 +44,7 @@ WAX ローダ（`proc_spawn`）はフェーズ3なので、まだありません
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -67,9 +81,37 @@ src32_testbench /absolute/path/foundation_phase1_test.wax 42 --cpu pipeline --fr
 
 `tools/llvm-src32/test_toolchain.py` の `test_foundation_phase1_kernel` が、`-O0`/`-O1`/`-O2` × Scalar/Cached/CachedRelaxed/Pipeline で実行します。スライスによる切り替えや保護領域の切り替えを無効にした改変版では、このテストが失敗することも確認しています。
 
+### WAX ローダのテスト
+
+`tests/wax/test_wax_loader.py` は、`wax.c` をホストの C コンパイラ（`CC`）で共有ライブラリにして、[WAX v3 §8](../doc/spec_WAX_v3.md) の受理・拒否ケースを確認します。v3 の画像は `tools/wax/wax3.py` で組み立てます。
+
+```sh
+python -m unittest discover -s foundation/tests/wax -v
+```
+
+`tests/wax/main.c` は testbench 上の実行テストです。v3 を生成するコンパイラはまだないので、`tests/wax/build.py` が `*.asm` を `tools/asm` でアセンブルして v3 の WAX/WAL にし、`v2app.c` を `--protected` でビルドして、全部を `images.h` に書き出します。
+
+- `app`/`app2`（スロット5と6）：`test.math` と `test.base` を記述子経由で呼びます。モジュール間呼び出しでの R30 の保存と復元、コールバック、64-bit 引数の順序、2 つのスロットに置いた繰り返し import、オブジェクトの import、SYSCALL 後のレジスタを確認し、成功すると 42 で終了します。WAL はプロセスごとに別の基底に置かれ、呼び出し回数のカウンタも別々です。
+- `poke_write`/`poke_exec`：RX への書き込みと RW の実行が、それぞれ `0x80050002` と `0x80050004` で fault になること。
+- `v2app`：C で書いた PROTECTED WAX v2。
+- 失敗する起動（依存がない、minor が古い、PROTECTED でない、壊れた画像、不正な優先度）が何も変えないこと。終了後に領域がゼロになり、同じスロットへ 2 回再起動できること。
+- `spin` は CPU を使い続けます。`src32_testbench` は idle スレッドの `HALT` をプログラムの終了とみなすためです。
+
+```sh
+python foundation/tests/wax/build.py target/foundation-wax
+python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
+  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/wax.c \
+  -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
+  --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wax/test.wax
+src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
+```
+
+`tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader` が、`-O0`/`-O1`/`-O2` × Scalar/Cached/CachedRelaxed/Pipeline で実行します。記述子の origin をずらす、UGP を 0 にする、領域に全権限を与える、といった改変版ではこのテストが失敗することを確認しています。
+
 ## 注意と未決事項
 
 - `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が出力したりすると、カーネル内でバスエラーになります。エミュレーター本体では UART に出力されます。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
-- 1プロセス1スレッドです。`thread_create`、IPC、ハンドル、`proc_spawn`、`irq_bind` などはフェーズ2以降で実装します。
+- 1プロセス1スレッドです。`thread_create`、IPC、ハンドル、`proc_spawn` システムコール、`mem_grow`、`irq_bind` などはフェーズ2以降で実装します。
+- WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。

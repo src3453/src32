@@ -266,7 +266,7 @@ libfnd とサービスのプロトコルは [API 仕様](spec_Foundation_API.md)
 | 4 ディスク | `blk_io`（転送先の検証）、disk サービス、DSFS 読み取りマウント | FDD 読み込み中も他スレッドが進む。不正バッファでは `E_ACCESS` になり RAM は変化しない |
 | 5 FS2 | 仕様、ホストツール、ゲストの読み取り → 書き込み | ホストの fsck とゲストの結果が一致する。書込中断後はDIRTYでmountを拒否し、fsckの検査・修復可能範囲を確認する |
 | 6 シェル | libfnd、shell、外部コマンド、stage1 からのディスク起動 | ディスクから起動して `DIR`、`TYPE`、アプリ起動を確認する |
-| 7 拡張 | WAX v3／WAL（libfnd の WAL 化）、再配置可能な WAX、`/tmp`、拡張カードのドライバ | WAX v3 §8 の全ケース |
+| 7 拡張 | WAX v3／WAL（libfnd の WAL 化）、再配置可能な WAX、`/tmp`、拡張カードのドライバ | WAX v3 §8 の全ケース（ローダは実装済み: `foundation/kernel/wax.c`、`tests/wax`。v2 PROTECTED も同じ経路で読み込む。v3 を生成するツールチェーンと libfnd の WAL 化は未着手） |
 
 各フェーズでは、テストに通った focused check と、実行していない確認を分けて報告します。
 
