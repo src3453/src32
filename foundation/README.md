@@ -145,7 +145,7 @@ python -m unittest discover -s foundation/tests/disk -v
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -201,7 +201,7 @@ python -m unittest discover -s foundation/tests/wax -v
 ```sh
 python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
   --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
@@ -216,7 +216,7 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 ```sh
 python foundation/tests/wal/build.py target/foundation-wal
 python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
   --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wal/test.wax
 src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120

@@ -33,17 +33,16 @@ static uint32_t queued, running;
 static int32_t idc_result(void) {
     if (!(FND_REG32(IDC_STATUS) & IDC_BIT_ERROR) && !(FND_REG32(IDC_DMA_CH0_STATUS) & IDC_DMA_BIT_ERROR))
         return FND_OK;
-    switch (FND_REG32(IDC_ERROR_CODE)) {
-    case 2:
+    /* An if chain: a switch becomes a lookup table with a poison hole for
+     * code 3, which the llvm-src32 data emitter cannot encode. */
+    uint32_t code = FND_REG32(IDC_ERROR_CODE);
+    if (code == 2)
         return FND_E_NO_MEDIA;
-    case 4:
+    if (code == 4)
         return FND_E_READ_ONLY;
-    case 5:
-    case 6:
+    if (code == 5 || code == 6)
         return FND_E_IO;
-    default:
-        return (FND_REG32(IDC_DMA_CH0_STATUS) & IDC_DMA_BIT_ERROR) ? FND_E_IO : FND_E_BAD_ARG;
-    }
+    return (FND_REG32(IDC_DMA_CH0_STATUS) & IDC_DMA_BIT_ERROR) ? FND_E_IO : FND_E_BAD_ARG;
 }
 
 static void idc_clear(void) {
