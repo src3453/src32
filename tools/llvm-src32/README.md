@@ -83,7 +83,7 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 |---|---|---|
 | `cpt32_syscall(number, context, a1, a2, a3, a4)` | a1〜a4 を R1〜R4 に置き `SYSCALL number, context`、R1 を返す | number・context は0〜255の整数定数。U/Sどちらでも使用可。`CPT32_SYSCALL0..4` マクロあり |
 | `cpt32_mfsr(sr)` / `cpt32_mtsr(sr, value)` | `MFSR` / `MTSR` | sr は `CPT32_SR_*` の定数。Sモードのみ |
-| `cpt32_cpu_features()` | `CPUID` | `CPU_FEATURES`（R2）を返す。`CPT32_FEATURE_P`、`CPT32_FEATURE_V` で調べる。パイプライン CPU が `CPUID` の R1/R2 を interlock しないため、後ろに NOP を 3 つ置く。Extension V の SR（`CPT32_SR_VCTL`、`PTBR`、`VFAULT`、`TLBFLUSH`、`TLBINV`）も `cpt32_mfsr`/`cpt32_mtsr` で使える |
+| `cpt32_cpu_features()` | `CPUID` | `CPU_FEATURES`（R2）を返す。`CPT32_FEATURE_P`、`CPT32_FEATURE_V` で調べる。`CPUID` の R1/R2 はパイプライン CPU が後続命令へ forward するので NOP は不要。Extension V の SR（`CPT32_SR_VCTL`、`PTBR`、`VFAULT`、`TLBFLUSH`、`TLBINV`）も `cpt32_mfsr`/`cpt32_mtsr` で使える |
 | `cpt32_run_user(entry, user_stack_top)` | カーネルの SP/FP/再開PC/STATUS を保存し、`USP`・`EPC`・`STATUS.PU` を設定して `IRET` | Sモードのみ。ユーザーのIEはカーネルと同じ。保護領域は事前に設定。再入不可 |
 | `cpt32_return_to_kernel(code)` | 保存したカーネル状態へ `IRET` し、`cpt32_run_user` が code を返す | SYSCALLハンドラーから呼ぶ。戻らない |
 | `cpt32_halt()` | `HALT` | Sモードのみ |
