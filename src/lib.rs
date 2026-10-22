@@ -7,6 +7,7 @@ pub mod cpu;
 pub mod cpu_pipeline;
 pub mod cpu_privilege;
 pub mod cpu_select;
+pub mod memory_config;
 pub mod music;
 pub mod sys;
 pub mod wav;

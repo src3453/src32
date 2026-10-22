@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 
 use cpt32::bus::Bus;
-use cpt32::bus::connect_devices_with_vdp;
+use cpt32::bus::connect_devices_with_memory;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CYCLES_PER_FRAME, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
@@ -207,7 +207,10 @@ fn main() {
     let mut bus = Bus::new();
     let input_sender = connect_pec_input(&mut bus);
     connect_rng(&mut bus);
-    let vdp = connect_devices_with_vdp(&mut bus);
+    let (ram_size, vram_size) =
+        cpt32::memory_config::memory_sizes_from_config(Path::new("config.yaml"))
+            .expect("Invalid memory configuration");
+    let vdp = connect_devices_with_memory(&mut bus, ram_size, vram_size);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");

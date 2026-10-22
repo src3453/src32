@@ -16,6 +16,7 @@
 | `colors.h` | `colors_tocolor` | 元ソースどおり`b + (g << 2) + (r << 4)`。RGB332への仕様変更ではない |
 | `irqc.h` | `irqc_*` | 割り込み登録、マスク、ack、IRQ番号、VSyncカウンタ・待機 |
 | `cpu.h` | `cpt32_halt`、`cpt32_syscall`、`cpt32_mfsr`/`cpt32_mtsr`、`cpt32_run_user`、`cpt32_return_to_kernel`、`cpt32_jump`、`syscall_dispatch` | `HALT`と拡張P（SYSCALL、システムレジスタ、ユーザーモード実行）のLLVM/SRC32専用intrinsic。詳細は[ツールチェーンREADME](../../tools/llvm-src32/README.md)の「Extension P」 |
+| `bmc.h` | `bmc_main_ram_bytes`、`bmc_vram_bytes`、`bmc_pcmram_bytes` | BMCが報告するMain RAM・VRAM・PCMRAMの実装容量（byte）。0は未報告 |
 | `idc.h` | `idc_*` | IDC/DMAC ch0の同期sector I/O。戻り値0=成功、1=DMA失敗、2=IDC失敗 |
 | `dsfs.h` | `dsfs_*` | 単一mount状態、ディレクトリ・bitmap、ファイル読書き・削除、timestamp |
 | `wax.h` | `wax_*` | WAX v2検証、予約RAMへのstaging、コード・stackを置換できるロード |

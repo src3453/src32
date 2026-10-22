@@ -10,7 +10,7 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-use crate::devices::bmc::{Bmc, connect_bmc};
+use crate::devices::bmc::{Bmc, MEMORY_WINDOW_BASES, connect_bmc};
 use crate::devices::dmac::dmac::{Dmac, connect_dmac};
 use crate::devices::expansion::{
     EXPANSION_BASE, EXPANSION_SLOT_COUNT, EXPANSION_SLOT_SIZE, ExpansionCard,
@@ -149,6 +149,9 @@ pub struct Bus {
     effectful_accesses: u64,
     /// Test hook: when false, every device is treated as timing-sensitive.
     honor_timing_insensitive: bool,
+    /// Bytes mapped at each `MEMORY_WINDOW_BASES` window (0 = unmapped),
+    /// shared with the BMC's MAIN_RAM_SIZE/VRAM_SIZE/PCMRAM_SIZE registers.
+    memory_sizes: Rc<Cell<[u32; 3]>>,
 }
 
 impl Bus {
@@ -173,7 +176,12 @@ impl Bus {
             access_device: Cell::new(0),
             effectful_accesses: 0,
             honor_timing_insensitive: true,
+            memory_sizes: Rc::new(Cell::new([0; 3])),
         }
+    }
+
+    pub(crate) fn memory_sizes(&self) -> Rc<Cell<[u32; 3]>> {
+        Rc::clone(&self.memory_sizes)
     }
 
     pub(crate) fn cycle_clock(&self) -> Rc<Cell<u64>> {
@@ -791,6 +799,12 @@ impl Bus {
             }
         }
 
+        if let Some(window) = MEMORY_WINDOW_BASES.iter().position(|&base| base == addr) {
+            let mut sizes = self.memory_sizes.get();
+            sizes[window] = size;
+            self.memory_sizes.set(sizes);
+        }
+
         self.devices.push(DeviceMap {
             region: BusRegion {
                 start: addr,
@@ -1123,10 +1137,23 @@ pub fn connect_devices(bus: &mut Bus) {
 }
 
 pub fn connect_devices_with_vdp(bus: &mut Bus) -> Rc<RefCell<Vdp>> {
-    crate::devices::ram::connect_ram(bus);
+    connect_devices_with_memory(
+        bus,
+        crate::devices::ram::DEFAULT_RAM_SIZE,
+        crate::devices::vdp::vdp::DEFAULT_VDP_VRAM_SIZE,
+    )
+}
+
+/// `connect_devices_with_vdp` with configured Main RAM and VRAM sizes.
+pub fn connect_devices_with_memory(
+    bus: &mut Bus,
+    ram_size: usize,
+    vram_size: u32,
+) -> Rc<RefCell<Vdp>> {
+    crate::devices::ram::connect_ram_with_size(bus, ram_size);
     connect_bmc_dmac(bus);
     let _sgu = crate::devices::sgu::sgu::connect_sgu(bus);
-    crate::devices::vdp::vdp::connect_vdp(bus)
+    crate::devices::vdp::vdp::connect_vdp_with_vram_size(bus, vram_size)
 }
 
 pub fn connect_bmc_dmac(bus: &mut Bus) {

@@ -64,13 +64,14 @@ class ShellTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def screen(self, *batches, step=STEP_FRAMES, at_frames=None):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None):
         """Types each batch STEP frames after the previous one; returns the
-        screen rows without the trailing blank rows."""
+        screen rows without the trailing blank rows. config is the text of a
+        config.yaml for this run only."""
         run = Path(tempfile.mkdtemp(dir=self.work))
         (run / 'disk.img').write_bytes(self.disk)
         (run / 'config.yaml').write_text(
-            'memory:\n  ram_mib: 16\n'
+            (config or 'memory:\n  ram_mib: 16\n  vram_mib: 4\n') +
             'disk:\n  - slot: 0\n    type: "hdd"\n    image: "disk.img"\n    read_only: false\n',
             encoding='utf-8')
         command = [str(self.harness), str(self.image), '42', '--cpu', 'pipeline',
@@ -101,6 +102,22 @@ class ShellTests(unittest.TestCase):
             '/> free',
             '   16384 KiB total',
             '    4096 KiB free',
+            '    4096 KiB VRAM',
+            '    1024 KiB PCMRAM',
+            '/>',
+        ])
+
+    def test_free_reports_installed_memory(self):
+        # The kernel takes the sizes from the BMC (spec_BMC_DMAC.md §1.5).
+        # 12 MiB holds slots 0-5, and the disk service now uses slot 2, so
+        # nothing is left.
+        self.assertEqual(self.screen('free\\n', config='memory:\n  ram_mib: 12\n  vram_mib: 8\n'),
+                         BANNER + [
+            '/> free',
+            '   12288 KiB total',
+            '       0 KiB free',
+            '    8192 KiB VRAM',
+            '    1024 KiB PCMRAM',
             '/>',
         ])
 
