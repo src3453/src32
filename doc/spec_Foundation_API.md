@@ -17,7 +17,7 @@ Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確
 
 - FS2 の媒体上の構造と、各操作の意味（権限、BUSY、DIRTY など）は FS2 仕様に従います。本書は、それをどの IPC で呼ぶかと、エラーの数値を定めます。
 - disk サービスと fs の間のプロトコル、init の起動設定の形式。
-- sol 向けのライブラリ（`sol/foundation/` への追加）は、libfnd の実装後に定めます。
+- sol 向けには [`sol/foundation/libfnd.sol`](../sol/foundation/libfnd.sol) から現在の C 実装を呼べます。[値・構造体・リンク方法と未対応操作](../sol/foundation/README.md) は別記します。仕様のみの API も含めて全操作が実装済みという意味ではありません。
 
 ## 2. 共通規約
 
@@ -503,5 +503,5 @@ init は、各サービスの起動後にシェルなどのアプリを起動す
 | 時刻の取得 | FS2 §7 の「一貫した時計のスナップショット」が未定義。libfnd の `fnd_time_now` はそれを待つ |
 | 大きいイメージの起動 | `FND_EXEC_IMAGE_MAX` は 1 MiB。親のスロットより大きい子は、fs がカーネルへ直接渡す方式（将来）まで起動できない |
 | WAL の一覧 | **決定（2026-10-22）**：`/lib/<image_id>.<abi_major>.wal` に置き、`fnd_proc_exec` が依存をたどって読み、`proc_spawn` の `libs` で渡す（§11.6、[Foundation §9.2・§9.5](spec_Foundation.md)） |
-| sol のライブラリ | libfnd の実装後に、`sol/foundation/` へ同じ操作のラッパーを加える |
+| sol のライブラリ | `sol/foundation/libfnd.sol` と `tools/solc/build_foundation.py` で実装済みの C 操作を利用可能。1件ずつの `fnd_dir_next` とフル fs での書き込み・列挙成功の検証は未完 |
 | 64-bit 整数 | `tools/llvm-src32` での `int64_t` の対応を実装時に確認する。使えなければ、libfnd の 64-bit 引数を上位・下位の組に置き換える |

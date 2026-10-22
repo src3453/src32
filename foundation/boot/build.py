@@ -123,6 +123,12 @@ def header(path, parts):
                                *parts]), encoding="utf-8")
 
 
+def c_string(text):
+    """A C string containing the exact UTF-8 bytes, including unusual filenames."""
+    return '"' + ''.join(chr(b) if 32 <= b < 127 and b not in (34, 92)
+                         else f"\\{b:03o}" for b in text.encode("utf-8")) + '"'
+
+
 def disk_image(stage1, boot, files, blocks):
     """An FS2 volume: stage1 in block 0, FNDBOOT in the reserved area, files = {path: (bytes, mode)}."""
     img = fs2.format_image(blocks, BOOT_BLOCKS, DISK_INODES)
@@ -164,8 +170,18 @@ def main(argv=None):
         image = program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
                         args, SLOT5, f"foundation.{name}", fnd)
         files.append((f"/bin/{name}.wax", f"bin_{name}", image))
+    # The provisional fs reads this table, not the disk. Install --root in
+    # both places so external guests can run in either boot mode.
+    extra_modes = {}
+    if args.root:
+        installed = {path: (path, ident, image) for path, ident, image in files}
+        for i, host in enumerate(sorted(p for p in args.root.rglob("*") if p.is_file())):
+            path = "/" + host.relative_to(args.root).as_posix()
+            installed[path] = (path, f"extra_{i}", host)
+            extra_modes[path] = MODE_EXEC if path.startswith("/bin/") else None
+        files = list(installed.values())
     parts = [embed(f"file_{ident}", image.read_bytes()) for _, ident, image in files]
-    table = ",\n".join(f'    {{"{path}", img_file_{ident}, img_file_{ident}_size}}' for path, ident, _ in files)
+    table = ",\n".join(f'    {{{c_string(path)}, img_file_{ident}, img_file_{ident}_size}}' for path, ident, _ in files)
     parts.append("struct bootfs_file {\n    const char *path;\n    const void *data;\n    uint32_t size;\n};\n"
                  f"#define BOOTFS_FILES {len(files)}u\n"
                  f"static const struct bootfs_file bootfs_files[BOOTFS_FILES] = {{\n{table}\n}};\n")
@@ -195,11 +211,7 @@ def main(argv=None):
     (out / "fndboot.bin").write_bytes(boot)
     stage1 = out / "stage1.bin"
     subprocess.run([sys.executable, str(ASSEMBLER), "-o", str(stage1), str(HERE / "stage1.a")], check=True)
-    disk_files = {path: (image.read_bytes(), MODE_EXEC) for path, _, image in files}
-    if args.root:
-        for host in sorted(p for p in args.root.rglob("*") if p.is_file()):
-            path = "/" + host.relative_to(args.root).as_posix()
-            disk_files[path] = (host.read_bytes(), MODE_EXEC if path.startswith("/bin/") else None)
+    disk_files = {path: (image.read_bytes(), extra_modes.get(path, MODE_EXEC)) for path, _, image in files}
     disk = out / "foundation.img"
     temporary = disk.with_name(disk.name + ".tmp")
     temporary.write_bytes(disk_image(stage1.read_bytes(), boot, disk_files, args.disk_blocks))

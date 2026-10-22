@@ -120,7 +120,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        suite: [toolchain, shell, disk]
+        suite: [toolchain, shell, disk, sol-libfnd]
     needs: rust
     # Rust 統合テストとは独立し、testbench のビルド成功後に実行する。
     runs-on: ubuntu-24.04
@@ -132,7 +132,7 @@ jobs:
           cache: pip
           cache-dependency-path: tools/llvm-src32/requirements.txt
       - name: Install Python packages
-        run: pip install -r tools/llvm-src32/requirements.txt
+        run: pip install -r tools/llvm-src32/requirements.txt pytest
       - name: Install Clang matching llvmlite
         run: |
           set -e
@@ -161,6 +161,9 @@ jobs:
       - name: Foundation disk boot (testbench, BIOS -> stage1 -> FNDBOOT)
         if: matrix.suite == 'disk'
         run: python -m unittest discover -s foundation/tests/disk -v
+      - name: sol guests using libfnd (testbench, real services)
+        if: matrix.suite == 'sol-libfnd'
+        run: python -m pytest tools/solc/test_sol_libfnd.py -q
 
   # sol コンパイラ / VM / LSP、WAX ツール、Foundation WAX ローダのホストテスト。
   # sol の Foundation 実行テストは testbench を使う。

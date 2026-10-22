@@ -2,6 +2,10 @@
 
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 
+sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../examples/foundation-sol/README.md) にあります。
+`boot/build.py --root DIR` は追加ファイルをディスクと暫定 bootfs の両方に組み込みます。
+暫定 bootfs のイメージ・スタックは slot 3 の512 KiB内に収める必要があり、追加ファイルが多すぎる場合はビルドエラーになります。
+
 ## フェーズ1: 最小カーネル
 
 [`kernel_trap` トラップスタブ](../tools/llvm-src32/README.md)（フェーズ0）の上に、次のものを実装しています。

@@ -591,6 +591,7 @@ sol の言語の意味と、関数の呼び出し規約・フレーム（R26 の
 
 - このライブラリは `!abi_compat "Foundation"` を宣言しています。§4 のエラー定数（`FND_E_*`）、§8〜§10 の構造体オフセット（`FND_MSG_OP` など）、§9 の全システムコールのラッパーを提供します。名前は C 側と同じく `fnd_` で始めます（例：`fnd_ipc_call`、`fnd_sleep`、`fnd_proc_exit`）。
 - 各ラッパーは、§7 の「R1 以外のレジスタは保存される」という規則に依存しています。引数はフレームから R1〜R4 に読み込み、`SYSCALL n` を実行し、R1 をローカルに保存して `ret` で返します。
+- 高水準の C libfnd を使う場合は `sol/foundation/libfnd.sol` と `tools/solc/build_foundation.py` を使います。syscall ラッパーと異なり、C 呼び出し用の stack ABI へ変換し、status と出力引数をそのまま返します。[ライブラリの契約](../sol/foundation/README.md) と [親子 sol のサンプル](../examples/foundation-sol/README.md) を参照してください。
 
 ```
 fn fnd_sleep (ticks) :

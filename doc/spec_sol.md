@@ -292,6 +292,7 @@ outer.inner.read_base outer.inner.read_outer outer.read_base
 - 既定の配置は origin `0x00800000`（スロット 5）、rodata はコード直後、変数は rodata 直後（いずれも 4-byte 境界）、スタック頂上 `0x00C00000`、容量 256 KiB。`--org`／`--read-only-data-base`／`--var-base`／`--stack-top` とソース内の `!rodata_base`／`!var_base`／`!stack_top`／`!force_stack_size` は既定より優先する。origin を含むスロットに、コード・rodata・変数・スタックが重ならずにこの順で収まらなければコンパイルエラーになる。
 - `!var` の初期値は従来どおり起動時のコードが書き込む。RW ブロックはその領域をゼロで確保するだけである。
 - システムコールのラッパーは [`sol/foundation/fnd.sol`](../sol/foundation/fnd.sol)（`fnd_` で始まる名前、名前空間なし）。
+- C libfnd の stream/file/cwd/console/process 操作は [`sol/foundation/libfnd.sol`](../sol/foundation/libfnd.sol) を include し、`tools/solc/build_foundation.py` でリンクする。C と同じ引数順、出力引数、負の status を使う。構造体の配置、64-bit 値とミリ秒、対応範囲は [ライブラリの契約](../sol/foundation/README.md) を参照。静的 WAX v2 と、`--import-wal` で fnd を使う WAX v3 を生成できる。[実行例](../examples/foundation-sol/README.md) は実サービスの未実装結果も区別する。
 
 ## `!asm`
 `!asm`ディレクティブは、以降の行をアセンブリコードとして扱うことを指定する。`!end`ディレクティブが現れるまで、すべての行はアセンブリコードとして解釈される。

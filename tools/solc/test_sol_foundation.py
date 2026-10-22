@@ -8,6 +8,7 @@ proc_exit convention, not kernel behavior.
 """
 
 import os
+import re
 import subprocess
 import sys
 from pathlib import Path
@@ -133,7 +134,7 @@ def test_include_rules_name_the_requesting_file(tmp_path):
     main = tmp_path / "main.sol"
     for header in ("", '!abi_compat "bare"\n'):
         source = f'{header}!include "lib.sol"\nf drop\n'
-        with pytest.raises(SolVMError, match=f"{lib}.*requires \"Foundation\" 1") as caught:
+        with pytest.raises(SolVMError, match=f"{re.escape(str(lib))}.*requires \"Foundation\" 1") as caught:
             compile_program(source, source_path=str(main))
         assert str(main) in str(caught.value)
     # The main program may declare the ABI after its includes; undeclared libraries fit either ABI.
