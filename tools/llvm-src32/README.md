@@ -2,7 +2,7 @@
 
 `csc` と独立した、C / C++ / LLVM IR → SRC32 ASM → WAX コンパイラ。
 `tools/csc` は非推奨 (deprecated) です。今後更新しません。C guest の新規開発にはこの LLVM/SRC32 ツールチェーンを使用してください。
-CPT32 の RAM 上で起動し、引数なしの `int main(void)` を呼び、戻り値を R1 に残して HALT します。
+CPT32 の RAM 上で起動し、引数なしの `int main(void)` を呼び、戻り値を R1 に残して HALT します。入口は `uint32_t` 引数を 2 つまで受け取れます（例：`int main(uint32_t r1, uint32_t r2)`）。その場合、起動時点の R1 と R2 がそのまま引数になります（ローダからの引き渡し用。Foundation の stage1 → カーネルで使用）。
 
 `<cpt32/cpu.h>` の `cpt32_halt()` はSRC32の`HALT`命令を出力するintrinsicです。引数・戻り値はなく、有効なIRQが受理されると呼出し直後から再開します。この関数名は予約済みで、ユーザー定義しないでください。inline assembly全般が使えるわけではなく、引き続き拒否されます。
 拡張P（特権レベルとSYSCALL）用のintrinsicとSYSCALLハンドラーは下の「Extension P」を参照してください。

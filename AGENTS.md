@@ -4,6 +4,8 @@
 
 ブランチをいちいち新しく切るとマージが大変なので、作業中の変更は `main` に直接コミットして構いません。作業終了後に、必要に応じて `git rebase -i` でコミットを整理してください。
 
+リモート環境で作業する場合は、変更を作業用ブランチにコミットしてリモートへ Push し、`main` を対象とする PR を作成してください。この場合、PR 作成に必要なブランチの作成と Push は個別の指示なしで実行します。
+
 **作業終了後は、MEMORY.mdに、その作業で身につけた知識や注意点を追記してください。将来の開発者が同じ間違いをしないように、契約やテストの意図を明示することが目的です。作業終了後は、明示しない限り、コミットを実行してください。リモートへのPushは、明示しない限り行わないでください。**
 
 ## 主要な場所
@@ -47,6 +49,9 @@
 - PCG scroll: `cargo test --test vdp_pcg_scroll`
 - Foundation WAX ローダ（ホスト）: `python3 -m unittest discover -s foundation/tests/wax`。testbench での実行は `tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader`
 - Foundation シェル（testbench、PCG 画面の比較）: `python3 -m unittest discover -s foundation/tests/shell`（`src32_testbench` と Clang が必要）
+- Foundation CPU 統計（ホスト、カウンタ wrap と user/kernel/idle の帰属）: `python3 -m unittest discover -s foundation/tests/cpu`（ホスト C コンパイラが必要）
+- Foundation ディスク起動（BIOS → stage1 → FNDBOOT、testbench）: `python3 -m unittest discover -s foundation/tests/disk`（`src32_testbench` と Clang が必要）
+- FS2 ホストツール: `python3 -m unittest discover -s tools/fs2`
 - WASM SDK package builder: `python3 -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v`
 - WASM starter／example: `cargo build --manifest-path templates/wasm-expansion-card/Cargo.toml --release --target wasm32-unknown-unknown` と同じ形式で example の manifest も build。
 - sol ゲストの実行確認は、必要に応じて `tools/solc/solc.py compile` → `tools/asm/asm.py` → `src32_testbench` またはエミュレータの順に行います。

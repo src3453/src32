@@ -12,12 +12,15 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # ゲスト命令の大量実行を最適化する。debug assertions / overflow checks は既定のまま。
+  CARGO_PROFILE_DEV_OPT_LEVEL: "2"
+  CARGO_PROFILE_TEST_OPT_LEVEL: "2"
   PYTHON_VERSION: "3.12"
 
 jobs:
-  # エミュレータ本体と src32_testbench。testbench は後続ジョブで使うので artifact にする。
+  # testbench を先に配布し、Rust 統合テストと Python の各テスト群を並列に開始する。
   rust:
-    name: Rust (testbench build + integration tests)
+    name: Rust testbench build
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -25,9 +28,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v6
         with:
-          python-version: ${{ env.PYTHON_VERSION }}
+          shared-key: ci
       - name: Build src32_testbench
         run: cargo build --bin src32_testbench
       - uses: actions/upload-artifact@v4
@@ -35,6 +37,22 @@ jobs:
           name: src32_testbench
           path: target/debug/src32_testbench
           retention-days: 7
+
+  rust-tests:
+    name: Rust integration tests
+    needs: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
       - name: Build sol guest images used by integration tests
         run: |
           set -e
@@ -67,6 +85,7 @@ jobs:
   # 結果はこのジョブのログ (Known-failing tests ステップ) で確認できる。
   known-failures:
     name: Rust known failures (non-blocking)
+    needs: rust
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -74,6 +93,8 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: ci
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
@@ -95,10 +116,13 @@ jobs:
   # Clang は llvmlite が組み込んでいる LLVM と同じメジャーバージョンを使う
   # (ずれると -O1/-O2 で "icmp constexprs" エラーになる)。
   toolchain:
-    name: LLVM toolchain + Foundation tests
+    name: LLVM toolchain + Foundation tests (${{ matrix.suite }})
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [toolchain, shell, disk]
     needs: rust
-    # 統合テストが落ちても testbench artifact があれば実行する。
-    if: ${{ !cancelled() }}
+    # Rust 統合テストとは独立し、testbench のビルド成功後に実行する。
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -126,19 +150,24 @@ jobs:
           chmod +x target/debug/src32_testbench
           echo "SRC32_TESTBENCH=$PWD/target/debug/src32_testbench" >> "$GITHUB_ENV"
       - name: Toolchain tests
+        if: matrix.suite == 'toolchain'
         run: |
           "$CLANG" --version
+          python -m unittest discover -s foundation/tests/cpu -v
           python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
       - name: Foundation shell (testbench, PCG screen)
+        if: matrix.suite == 'shell'
         run: python -m unittest discover -s foundation/tests/shell -v
+      - name: Foundation disk boot (testbench, BIOS -> stage1 -> FNDBOOT)
+        if: matrix.suite == 'disk'
+        run: python -m unittest discover -s foundation/tests/disk -v
 
   # sol コンパイラ / VM / LSP、WAX ツール、Foundation WAX ローダのホストテスト。
   # sol の Foundation 実行テストは testbench を使う。
   solc:
     name: sol compiler + WAX tests
     needs: rust
-    # 統合テストが落ちても testbench artifact があれば実行する。
-    if: ${{ !cancelled() }}
+    # Rust 統合テストとは独立し、testbench のビルド成功後に実行する。
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -158,6 +187,8 @@ jobs:
         run: python -m pytest tools/solc tools/wax -q
       - name: Foundation WAX loader (host)
         run: python -m unittest discover -s foundation/tests/wax -v
+      - name: FS2 host tool
+        run: python -m unittest discover -s tools/fs2 -v
 
   wasm-sdk:
     name: WASM expansion card SDK

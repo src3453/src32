@@ -12,6 +12,9 @@ static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((ali
 #define STAGING_END 0x00400000u /* the kernel heap (§5.1) */
 static struct fnd_proc *active; /* process whose regions are programmed */
 static uint32_t next_pid = 1;
+static uint32_t boot_drive;
+
+void fnd_set_boot_drive(uint32_t drive) { boot_drive = drive; }
 
 static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
     0x00400000u, 0x00480000u, 0x00500000u, 0x00580000u,
@@ -172,6 +175,7 @@ static int32_t start_proc(struct fnd_proc *proc, struct fnd_thread *thread, cons
         proc->handles[i] = (struct fnd_handle_entry){FND_OBJ_NONE, 0};
     proc->exit_code = 0;
     proc->fault_epc = 0;
+    proc->cpu_cycles = 0;
     unsigned n = 0;
     for (; name && name[n] && n < sizeof proc->name - 1u; ++n)
         proc->name[n] = name[n];
@@ -403,12 +407,13 @@ static uint32_t module_startup(const char *name, uint32_t *block) {
 }
 
 int32_t fnd_proc_spawn_module(const char *name, uint32_t priority, uint32_t caps, const void *image,
-                              uint32_t size, const struct fnd_grant *grants, uint32_t grant_count) {
+                              uint32_t size, const struct fnd_image *libs, uint32_t lib_count,
+                              const struct fnd_grant *grants, uint32_t grant_count) {
     uint32_t block[16];
     uint32_t len = module_startup(name, block);
     if (caps & ~FND_CAP_ALL)
         return FND_E_BAD_ARG;
-    return spawn_image(name, priority, caps, 0, image, size, 0, 0, grants, grant_count, block, len);
+    return spawn_image(name, priority, caps, 0, image, size, libs, lib_count, grants, grant_count, block, len);
 }
 
 int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
@@ -544,8 +549,8 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
     return (int32_t)old;
 }
 
-/* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list. Copies up to
- * cap bytes to buf and returns the size of the whole answer. */
+/* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list, sel 2 CPU
+ * accounting. Copies up to cap bytes and returns the whole answer's size. */
 #define SYSINFO_BYTES 32u
 #define PROCINFO_BYTES 48u
 #define RAM_BYTES 0x01000000u /* §5.1: v1 assumes the default 16 MiB */
@@ -579,6 +584,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         size = SYSINFO_BYTES;
     else if (sel == 1)
         size = records * PROCINFO_BYTES;
+    else if (sel == 2)
+        size = 16u + records * 8u;
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -587,10 +594,25 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         return FND_E_BAD_ARG;
     if (!proc_user_range_ok(caller, buf, cap, CPT32_PERM_W))
         return FND_E_ACCESS;
+    if (sel == 2) {
+        uint32_t info[4];
+        sched_cpu_snapshot(info);
+        for (uint32_t w = 0; w < 4u; ++w)
+            put_word(buf, cap, 4u * w, info[w]);
+        uint32_t offset = 16u;
+        for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
+            if (procs[i].state == FND_PROC_FREE)
+                continue;
+            put_word(buf, cap, offset, procs[i].pid);
+            put_word(buf, cap, offset + 4u, procs[i].cpu_cycles);
+            offset += 8u;
+        }
+        return (int32_t)size;
+    }
     if (sel == 0) {
         uint32_t user = slot_bounds[FND_SLOTS] - slot_bounds[0];
         uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, RAM_BYTES, user - used, live,
-                            0 /* boot_drive: no stage1 yet */, 0};
+                            boot_drive, 0};
         for (uint32_t w = 0; w < 8u; ++w)
             put_word(buf, cap, 4u * w, info[w]);
         return (int32_t)size;

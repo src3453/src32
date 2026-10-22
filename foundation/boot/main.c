@@ -1,37 +1,47 @@
-/* Foundation boot image: the kernel starts the bundled modules in the order
- * of doc/spec_Foundation.md §11, init last:
+/* Foundation kernel entry: spawns the FNDBOOT modules (doc/spec_Foundation.md
+ * §11) in table order, init last. build.py packs
  *
  *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
- *   fs       slot 3, SERVICE, SVC (provisional read-only fs with /bin)
- *   init     slot 0, SERVICE, starts the shell and restarts it
+ *   fs       slot 3, SERVICE, SVC (provisional read-only fs with /bin, /lib)
+ *   init     slot 0, SERVICE, starts /bin/shell.wax and restarts it
  *
- * Provisional until FNDBOOT exists: the module images are linked into the
- * kernel image (modules_image.h from build.py). */
+ * Disk boot: stage1 enters with R1 = boot drive and R2 = the FNDBOOT image
+ * staged at 0x00200000. FOUNDATION_BOOT_EMBEDDED builds a WAX that the host
+ * loads directly; build.py then links a module-only FNDBOOT into the image
+ * (fndboot_image.h) and R1/R2 are ignored.
+ *
+ * The modules are PROTECTED WAX v2 with libfnd linked in, so they get no
+ * WAL list. Once they are spawned the staged FNDBOOT is no longer needed:
+ * proc_spawn reuses the area for the images it stages (§9.2). */
 #include <foundation/kernel.h>
 
-#include "con_pcg.h"
-#include "modules_image.h"
-
-#define RW (CPT32_PERM_R | CPT32_PERM_W)
-
-static const struct fnd_grant console_grants[] = {
-    {CON_PCG_VDP_START, CON_PCG_VDP_END, RW},
-    {CON_PCG_TEXT_START, CON_PCG_TEXT_END, RW},
-    {CON_PCG_INPUT_START, CON_PCG_INPUT_END, RW},
-};
-#define GRANTS (sizeof console_grants / sizeof console_grants[0])
+#ifdef FOUNDATION_BOOT_EMBEDDED
+#include "fndboot_image.h"
+#endif
 
 #ifdef FOUNDATION_BOOT_STOP_TICKS
-/* tests/shell: stop the machine so src32_testbench can read the screen */
+/* tests: stop the machine so src32_testbench can read the screen */
 static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_TICKS ? 42u : 0u; }
 #endif
 
-int main(void) {
-    if (fnd_proc_spawn_module("console", FND_PRIO_SERVICE, FND_CAP_SVC, img_console, img_console_size,
-                              console_grants, GRANTS) < 0 ||
-        fnd_proc_spawn_module("fs", FND_PRIO_SERVICE, FND_CAP_SVC, img_fs, img_fs_size, 0, 0) < 0 ||
-        fnd_proc_spawn_module("init", FND_PRIO_SERVICE, 0, img_init, img_init_size, 0, 0) < 0)
-        return 1;
+int main(uint32_t drive, uint32_t fndboot) {
+    const void *boot_image;
+#ifdef FOUNDATION_BOOT_EMBEDDED
+    (void)drive;
+    (void)fndboot;
+    boot_image = img_fndboot;
+#else
+    fnd_set_boot_drive(drive);
+    boot_image = (const void *)(uintptr_t)fndboot;
+#endif
+    int32_t count = fnd_boot_check(boot_image);
+    if (count < 0)
+        return count;
+    for (uint32_t i = 0; i < (uint32_t)count; ++i) {
+        int32_t pid = fnd_boot_spawn(boot_image, i, 0, 0);
+        if (pid < 0)
+            return pid;
+    }
 #ifdef FOUNDATION_BOOT_STOP_TICKS
     fnd_set_tick_hook(on_tick);
 #endif

@@ -185,6 +185,7 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
 }
 
 cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame) {
+    sched_cpu_enter();
     uint32_t cause = frame->r[0];
     if (!CPT32_CAUSE_IS_EXCEPTION(cause)) {
         handle_irqs();
@@ -198,7 +199,9 @@ cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame) {
     }
     if (stop_code)
         return halt_machine(stop_code);
-    return sched_next();
+    cpt32_ctx_frame *next = sched_next();
+    sched_cpu_leave();
+    return next;
 }
 
 void kernel_panic(uint32_t cause, uint32_t epc) {
@@ -214,5 +217,7 @@ void kernel_panic(uint32_t cause, uint32_t epc) {
 
 void fnd_kernel_run(void) {
     sched_timer_start();
-    cpt32_ctx_resume(sched_next());
+    cpt32_ctx_frame *next = sched_next();
+    sched_cpu_leave();
+    cpt32_ctx_resume(next);
 }

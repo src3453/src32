@@ -23,6 +23,7 @@ CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`�
 | AND / Unicode条件 | `dpi` は Apache-2.0 AND MIT、`unicode-ident` は (MIT OR Apache-2.0) AND Unicode-3.0。片方だけで済ませない。全文を保持。 |
 | Dear ImGui / stb | `imgui-sys` の同梱 Dear ImGui LICENSE と `imstb_*.h` 内の個別ライセンスも収録。Rust wrapper の表示だけでは足りない。 |
 | VS Code sol 拡張 | package-lock の production 依存8パッケージ（Language Client / Protocol / Types / JSON-RPC / semver 等）を収録。拡張フォルダーにも LICENSE と通知全文を配置。開発ツールを配布する場合は別途その依存も対象になる。 |
+| Unicode CaseFolding 16.0.0 | `tools/fs2/CaseFolding-16.0.0-CF.txt` は Unicode, Inc. のデータ（C と F の行だけを抜き出したもの）。Unicode License V3 の著作権・許諾表示をファイル先頭に保持。FS2 の名前照合（spec_FS2.md §6）に使う。 |
 | Berkeley SoftFloat 3e | BSD-3-Clause。既存の COPYING、ソースのヘッダー、UPSTREAM.md を保持。ゲストバイナリだけを配る場合も通知全文を同梱する。 |
 | UNSCII-8 | 上流の PD / CC0 宣言を保存。CGA.F08 を削除し、UNSCII.F08 に置換。CP437 の256スロット、1文字8 byte、合計2048 byte。図柄は変わるが、文字コード・VRAM・MMIOの契約は変更しない。上流にない4文字（0x0F、0x7F、0xA9、0xF9）は `?` で代替。 |
 | GNU Unifont | MIT 対象外。OFL-1.1 の選択肢を利用。公式18.0.01アーカイブの標準BDFから著作権表示を保存し、同梱HEXとの一致を確認。リリースのOFL全文も同梱。変換したROMもOFL-1.1を維持。 |

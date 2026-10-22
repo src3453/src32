@@ -31,18 +31,20 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
 | `kernel/ipc.c`, `include/foundation/ipc.h` | ハンドル、IPC、サービス名、`wait`、`proc_kill`（§6〜§9） |
+| `kernel/fndboot.c` | FNDBOOT のモジュール表の検査と、同梱モジュールの起動（§11） |
 | `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.0（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports` |
 | `services/console/` | console サービス（API 仕様 §8、PCG と PeC キーボード） |
 | `services/bootfs/` | 暫定の読み取り専用 fs サービス（`/bin` と `/lib`、API 仕様 §5・§6） |
 | `services/init/` | init（API 仕様 §12）。`/bin/shell.wax` を起動し、終了したら起動し直す |
 | `shell/` | シェル（[シェル仕様](../doc/spec_Foundation_shell.md)）。ディスパッチャで、組み込みは `cd`、`set`、`exit`、`help` |
-| `bin/` | 標準コマンド（シェル仕様 §10.3）のうち fs のいらないもの：`clear`、`echo`、`free`、`ps`、`pwd`、`uname` |
-| `boot/` | 起動イメージと、そのビルドスクリプト |
+| `bin/` | 標準コマンド（シェル仕様 §10.3）のうち fs のいらないもの：`clear`、`echo`、`free`、`ps`、`pwd`、`top`、`uname` |
+| `boot/` | カーネルの入口（`main.c`）、stage1（`stage1.a`）、FNDBOOT の packer（`fndboot.py`）、起動イメージとディスクイメージのビルドスクリプト（`build.py`） |
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
 | `tests/wax/` | WAX ローダのテスト（ホスト単体テストと testbench） |
 | `tests/wal/` | C から作った WAL と WAX v3 を、カーネルで実行するテスト |
 | `tests/shell/` | シェルのテスト（testbench にキー入力を送り、PCG の画面を比べる） |
+| `tests/disk/` | ディスク起動のテスト（BIOS → stage1 → FNDBOOT → シェル、stage1 とカーネルの拒否ケース） |
 
 ## WAX ローダ
 
@@ -65,14 +67,23 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
 - **まだできないこと**：暫定 fs は読み取り専用なので、ファイルへの書き込みのリダイレクトは `read-only`（`FND_E_READ_ONLY`）、ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`ls`、`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` は fs サービスの完成後に `/bin` へ加えます。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **暫定の部分**：`services/bootfs` は、ビルド時に埋め込んだ `/bin` と `/lib` だけを持つ読み取り専用の fs です（`boot/build.py` が `bootfs_files.h` を作る）。ディスク上の FS2 を読む fs サービスができたら置き換えます。同じファイルは `OUT/root` にも書き出すので、ディスクイメージの元にできます。
-- **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 4 tick ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
-- `uname`、`free`、`ps` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`boot_drive` は 0 です（stage1 がまだない）。
+- **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT（`fndboot_image.h`）をリンクします（次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
+- **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 4 tick ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
+- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh
 python foundation/run.py
 ```
 
+`/bin/top` は CPU 使用率（user / kernel 概算 / idle）、メモリ容量と CPU 使用率順のプロセス一覧を 1 秒ごとに更新します。`q` または Ctrl+C で戻ります。`top -n 1` は 1 回分を表示して終了します。kernel の値は C ハンドラの計測で、context save/restore を含む厳密な OS オーバーヘッドではありません。
+
 リポジトリルートで実行してください。スクリプトを絶対パスで指定すれば、別の作業ディレクトリからも使えます。Python と llvmlite、Clang、Rust/Cargo が必要です（[ツールチェーンの準備](../tools/llvm-src32/README.md#必要なツール)）。`--clang PATH` で Clang を指定でき、`--build-only` はビルドと設定生成だけを行います。
+
+`--arg` 以降の引数は、そのままエミュレーターへ渡します。`run.py` のオプションは `--arg` より前に指定してください。空白を含む値は通常のシェル引数と同様に引用符で囲みます。
+
+```sh
+python foundation/run.py --disk --arg --debug-gui --start-paused --cpu pipeline
+```
 
 このコマンドはシェルとカーネルを `target/foundation-boot/foundation.wax` にビルドし、release エミュレーターをビルドして起動します。作業用一時ファイルも同ディレクトリ内に置きます。`target/foundation-boot/run/config.yaml` に 16 MiB RAM と付属の `assets/UNSCII.F08` フォントを設定し、そのディレクトリをエミュレーターの作業ディレクトリにします。普段使うルートの `config.yaml` は変更しません。
 
@@ -82,6 +93,40 @@ python foundation/run.py
 
 ```sh
 python -m unittest discover -s foundation/tests/shell -v
+```
+
+## ディスク起動
+
+`python foundation/boot/build.py OUT` は `foundation.wax` のほかに、BIOS から起動できる FS2 ディスク `OUT/foundation.img` も作ります。起動の流れは [仕様 §11](../doc/spec_Foundation.md)、[FS2 §3](../doc/spec_FS2.md)、[BIOS §3](../doc/spec_BIOS.md) のとおりです。
+
+1. BIOS が IDC dd0〜dd3 のうち署名のある最初の drive の LBA 0（`boot/stage1.a`、512 bytes）を `0x0` に読み、R1 = drive で分岐します。
+2. stage1 は superblock（LBA 1）を検査し（magic、version、flags = 0 なので DIRTY = 0、`total_blocks` ≤ 容量、`boot_start` = 2、`bitmap_start` = 2 + `boot_blocks` ≤ `data_start` ≤ `total_blocks`、0 < `boot_size` ≤ 2 MiB、予約領域に収まること）、予約ブート領域から FNDBOOT を `0x00200000` に読みます。FNDBOOT のヘッダを検査してカーネルを `0x00010000` へコピーし、R1 = drive、R2 = `0x00200000` で `kernel_entry` へ分岐します。失敗すると R1 = 1（IDENTIFY か superblock の読み込み）、2（superblock）、3（FNDBOOT）で HALT します。画面には何も出ません（510 bytes に収めるため）。
+3. カーネル（`main(drive, fndboot)`）は `boot_drive` を記録し（`sys_info`）、`fnd_boot_check` でモジュール表全体を検査してから、表の順に `fnd_boot_spawn` します。表が不正なら main が `FND_E_FORMAT` を返し、カーネルはその値を R1 に入れて HALT します。
+
+ディスクの中身は次のとおりです。既定は 8 MiB（16384 blocks、inode 256）で、予約ブート領域は stage1 が受け付ける最大の 2 MiB（4096 blocks）です。FNDBOOT が大きくなっても再 format は要りません。
+
+| 場所 | 中身 |
+|---|---|
+| block 0 | `stage1.bin`（署名 `55 AA` 付き） |
+| 予約ブート領域 | `fndboot.bin`：ヘッダ、モジュール表（console、fs、init。優先度 SERVICE、console には MMIO 付与）、`kernel.bin`（`0x10000` の raw image）、各モジュールのイメージ |
+| `/bin/*.wax`、`/lib/fnd.1.wal` | シェル、標準コマンド、libfnd（mode `0x003D`）。`OUT/root` と同じもの。fs サービスがディスクを読めるようになるまでは、暫定 fs が同じファイルをイメージから返します |
+| `--root DIR` | ホストの `DIR` の中身をそのままルートへ置きます（例：`DIR/bin/*.wax`、`DIR/etc/startup`）。`/bin` の下は mode `0x003D` です |
+
+```sh
+python foundation/run.py --disk
+```
+
+で、BIOS（`assets/bios.rom`）と dd0 の HDD（読み取り専用）を設定してエミュレーターを起動します。プログラムには先頭 word が 0 の 4 bytes を渡すので、BIOS は RAM 起動を飛ばしてディスクから起動します。POST の表示を 120 frame 保持した後、HDD なら一瞬で、FDD（`type: "fdd"`）なら 6 秒ほどで（62,500 B/s）シェルが出ます。ディスクの中身は `tools/fs2/fs2.py`（[README](../tools/fs2/README.md)）で見たり変えたりできます。
+
+```sh
+python tools/fs2/fs2.py ls target/foundation-boot/foundation.img /bin
+python tools/fs2/fs2.py check target/foundation-boot/foundation.img
+```
+
+`tests/disk/test_disk_boot.py` は `--stop-ticks 4000` でビルドしたディスクを、BIOS と `src32_testbench` で起動します。dd0 を空にして dd1 から起動し（stage1 が R1 の drive を使うことの確認）、`uname` を打って画面を比べます。superblock の DIRTY と配置、FNDBOOT の magic と size、モジュール表の予約欄を壊したディスクでは、それぞれ決まった R1 で止まることも確かめます。
+
+```sh
+python -m unittest discover -s foundation/tests/disk -v
 ```
 
 ## ビルドと実行

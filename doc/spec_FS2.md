@@ -1,9 +1,9 @@
 # FS2 (File System 2) 仕様 v1
 
-Revision 1.0、2026-10-22。Status: **仕様策定・未実装**。
+Revision 1.0、2026-10-22。Status: **ホストツール実装済み（§12 の 1、`tools/fs2/`）・ゲスト側は未実装**。
 Foundation の標準ディスクファイルシステムを FS2 と命名する。従来の実装案にあった仮称 FDFS は本書で置き換える。
 本書はディスク上の byte 列、操作の意味、仮想ファイルシステム (VFS) との境界を定める。
-ホストツール、ゲストドライバ、Foundation の VFS はまだ実装されていない。
+ホストツールは `tools/fs2/fs2.py`（§12 の 1）。ゲストドライバと Foundation の VFS はまだ実装されていない。
 
 「〜しなければならない」「〜してはならない」は規範的な要求である。
 
@@ -370,3 +370,23 @@ inode_start=3、inode_blocks=64、data_start=67。rootを除き255 inodeを作�
 空きinodeがあってもこの5 blocksがなければ初回create+writeは完成しない。
 
 v1の対象外：ジャーナル、操作全体の電源断atomic性、ACL/GID、リンク、スパース、圧縮、暗号化、拡張属性、atime、オンライン容量変更。
+
+### 12.1 ホストの9P公開
+
+`tools/fs2/fs2.py serve` はrawイメージをTCPの9P2000として公開する。
+既定は `127.0.0.1:5640`、認証なし、UID 0。`--read-only` で更新を拒否する。
+9P2000.u / 9P2000.Lは提供しない。ホスト向けのオフライン操作用であり、
+ゲストや他のホストツールとの同時更新には対応しない。
+
+version/attach/flush/walk/open/create/read/write/clunk/remove/stat/wstatを提供する。
+msizeは256〜1048576 bytes、walkは16成分まで。ファイルサイズは媒体容量で制限する。
+ディレクトリreadは完全な9P statレコード単位とし、途中のoffsetは拒否する。
+wstatは同一親内の改名、owner/other権限、数値UID、サイズ、mtimeを設定できる。
+GIDは0固定、group表示はotherを複製し、groupのchmod指定は保存しない。
+atime設定と特殊mode、ORCLOSE/OEXCL/OEXECは未対応。削除済みfidはstaleとして拒否し、
+inode番号再利用時は世代を変える。removeは失敗時にもそのfidをclunkする。
+
+複数接続の要求は直列化する。更新要求ごとにコピーへ適用し、§10検証を通してから
+既存ホストツールと同じ一時ファイル置換で保存する。操作失敗時はコピーを破棄する。
+成功応答前に保存するが、電源断時の永続性や複数要求全体のatomic性は保証しない。
+手順と制限の詳細は `tools/fs2/README.md` を参照。

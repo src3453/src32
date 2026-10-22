@@ -4,8 +4,9 @@
  * It registers as "console" and "dev.con". A channel from svc_lookup only
  * takes DEV_OPEN, which makes a console stream: a channel of the service's
  * port whose badge names a stream object. Reads and CON_READ_KEY wait in one
- * FIFO (§8.3) and are answered when keys arrive; there is no irq_bind yet,
- * so the keyboard is polled whenever ipc_recv times out. */
+ * FIFO (§8.3) and are answered when keys arrive; CON_READ_KEY with
+ * FND_CON_NOWAIT answers at once. There is no irq_bind yet, so the keyboard
+ * is polled whenever ipc_recv times out. */
 #include <foundation/fnd.h>
 #include <foundation/sys.h>
 
@@ -265,7 +266,20 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
             return (*result = queue(r, FND_ST_READ, m->a0 < r->reply_cap ? m->a0 : r->reply_cap)) == FND_OK;
         return 0;
     case FND_CON_READ_KEY:
-        return (*result = queue(r, FND_CON_READ_KEY, 0)) == FND_OK;
+        if (!(m->a0 & FND_CON_NOWAIT))
+            return (*result = queue(r, FND_CON_READ_KEY, 0)) == FND_OK;
+        /* A queued key now, if no earlier request waits for it; else END. */
+        poll_keys();
+        if (pending_count || !key_count) {
+            *result = FND_END;
+        } else {
+            a[0] = keys[key_head].code;
+            a[1] = keys[key_head].ch;
+            a[2] = keys[key_head].mods;
+            key_head = (key_head + 1u) % KEYS;
+            --key_count;
+        }
+        return 0;
     case FND_ST_WRITE:
         if (!(s->flags & FND_OPEN_WRITE)) {
             *result = FND_E_ACCESS;
