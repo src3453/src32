@@ -493,7 +493,7 @@ int main(void) {
         # checks are in foundation/tests/wal/app.c; the kernel stops with 42.
         foundation = ROOT / 'foundation'
         kernel = [foundation / 'tests/wal/main.c',
-                  *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'wax.c'))]
+                  *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
         for opt in ('-O0', '-O1', '-O2'):
             with self.subTest(optimization=opt):
                 images = self.work / ('wal' + opt[1:])
