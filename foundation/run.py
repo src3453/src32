@@ -15,6 +15,8 @@ def main():
     parser.add_argument("--clang", help="Clang executable passed to the SRC32 compiler")
     parser.add_argument("--disk", action="store_true",
                         help="boot foundation.img through the BIOS from IDC dd0 instead of loading the WAX")
+    parser.add_argument("--arg", nargs=argparse.REMAINDER, default=[], metavar="ARG",
+                        help="pass all remaining arguments to the emulator (place this option last)")
     args = parser.parse_args()
 
     output = ROOT / "target/foundation-boot"
@@ -52,7 +54,7 @@ def main():
     print(f"Foundation image: {image}", flush=True)
     if not args.build_only:
         executable = "cpt32.exe" if os.name == "nt" else "cpt32"
-        return subprocess.run([str(ROOT / "target/release" / executable), str(image)],
+        return subprocess.run([str(ROOT / "target/release" / executable), str(image), *args.arg],
                               cwd=runtime, env=environment).returncode
     return 0
 
