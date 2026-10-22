@@ -38,7 +38,7 @@ imgui-wgpu = "0.28.0"
 wasmtime = { version = "30.0.2", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
 zip = { version = "2.4.2", default-features = false, features = ["deflate-miniz"] }
 directories = "6.0.0"
-sha2 = "0.10.9"
+sha2 = "0.11.1"
 crc32c = "0.6.8"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
