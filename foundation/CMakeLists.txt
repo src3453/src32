@@ -5,7 +5,7 @@ add_subdirectory("${CMAKE_CURRENT_LIST_DIR}/../sdk/cpt32" cpt32)
 # Kernel layout of doc/spec_Foundation.md §5.1: image at 0x10000, kernel
 # stack top 0x100000 (the trap stub runs kernel_trap from --stack-top).
 src32_add_library(foundation_kernel
-    SOURCES kernel/sched.c kernel/proc.c kernel/trap.c
+    SOURCES kernel/sched.c kernel/proc.c kernel/trap.c kernel/wax.c
     INCLUDE_DIRECTORIES include "${CMAKE_CURRENT_LIST_DIR}/../sdk/cpt32/include")
 
 # user_code_begin and user_code_end, the first and last functions of each

@@ -4,12 +4,15 @@ translation_of: ../spec_WAX_v3.md
 ---
 # WAX/WAL v3 — CPU 保護とライブラリシンボル
 
-Revision 3.0、2026-10-21。状態: **仕様策定済み・未実装**。
+Revision 3.0、2026-10-21。状態: **仕様策定済み・Foundation カーネルが読み込み可能**。
 v3 のバイナリ形式と基本 OS ローダー契約を定義します。
 「必須」「禁止」は規範要件です。[英語版](../spec_WAX_v3.md)。
 
 [v2 仕様](spec_WAX.md)と既存 parser、assembler、C toolchain、DOS loader の
-動作は維持します。現在のコマンドは v3 を生成・ロードしません。
+動作は維持します。v3 を読み込むのは Foundation カーネル（`foundation/kernel/wax.c`、
+選択と配置の方針は [Foundation §9.5](../spec_Foundation.md)）です。v3 を生成する
+コンパイラやリンカはまだありません。`tools/wax/wax3.py` は用意済みの block と
+シンボル表から v3 ファイルを組み立てるもので、ローダーのテストが使います。
 magic は共通ですが version=3 であり、v2 reader は拒否します。
 v2 の version だけを書き換えても変換にはなりません。
 
@@ -311,4 +314,8 @@ write 呼出時は PC=`0x120020`、R30=`0x120000`、復帰後は R30=`0x100000` 
   拒否 image が S mode に fallback しないことを検証する。
 - v2 reader は v3 を拒否。将来両版を扱う loader でも v2 に v3 symbol/ABI を暗黙付与しない。
 
-以上は今後の実装テストの要件であり、現在実行済みのテストではありません。
+これらのケースは Foundation のローダーテストで確認しています。形式・依存グラフ・
+シンボル・領域・配置はホスト上（`foundation/tests/wax/test_wax_loader.py`）で、
+実行、R30 の扱い、コールバック、64-bit の順序、SYSCALL、保護違反、2 つの基底での
+個別インスタンス、終了時の後始末は src32_testbench 上（`foundation/tests/wax/main.c`）で
+確認します。

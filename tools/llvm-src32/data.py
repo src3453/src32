@@ -73,6 +73,11 @@ def _quoted_bytes(text: str) -> bytes:
     pos = 1
     while pos < len(text) - 1:
         if text[pos] == "\\":
+            if text[pos + 1:pos + 2] == "\\":
+                # LLVM prints a backslash byte as \\, every other escape as \XX.
+                result.append(0x5C)
+                pos += 2
+                continue
             escape = text[pos + 1:pos + 3]
             if len(escape) != 2 or not re.fullmatch(r"[0-9a-fA-F]{2}", escape):
                 raise CompileError(f"invalid LLVM byte escape: {text}")

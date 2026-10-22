@@ -1,13 +1,17 @@
 # WAX/WAL v3 — protected executables and library symbols
 
-Revision 3.0, 2026-10-21. Status: **specified; not implemented**. This document
+Revision 3.0, 2026-10-21. Status: **specified; loaded by the Foundation kernel**. This document
 defines the v3 wire format and the baseline OS loader contract. MUST, MUST NOT
 and MAY are normative. [Japanese translation](ja/spec_WAX_v3.md).
 
 The existing [v2 specification](spec_WAX.md), parsers, assembler output, C
-toolchain and DOS loader retain their current behavior. No existing command
-generates or loads v3 yet. v3 uses the same magic with `version = 3`; v2 readers
-must reject it. Changing the version field of a v2 file is not conversion.
+toolchain and DOS loader retain their current behavior. The Foundation kernel
+loads v3 (`foundation/kernel/wax.c`; its selection and placement policy is in
+[Foundation §9.5](spec_Foundation.md)). No compiler or linker generates v3
+yet: `tools/wax/wax3.py` lays out a v3 file from prepared blocks and symbol
+tables, which the loader tests use. v3 uses the same magic with `version = 3`;
+v2 readers must reject it. Changing the version field of a v2 file is not
+conversion.
 
 ## 1. Scope and identities
 
@@ -329,4 +333,8 @@ Required implementation acceptance/rejection cases:
 - Existing v2 readers reject v3. A future version-dispatching loader may support
   both, but v2 files do not acquire v3 symbols or ABI semantics implicitly.
 
-These are requirements for future implementation tests, not tests already run.
+The Foundation loader tests cover these cases: format, graph, symbol, region
+and placement cases on the host (`foundation/tests/wax/test_wax_loader.py`),
+and execution, R30 handling, callbacks, 64-bit ordering, SYSCALL, protection
+faults, private instances at two bases and cleanup on src32_testbench
+(`foundation/tests/wax/main.c`).

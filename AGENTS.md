@@ -45,6 +45,7 @@
 - sol compiler／LSP: `python3 -m pytest tools/solc/test_sol_compiler.py tools/solc/test_sol_language_server.py tools/solc/test_sol_foundation.py`（Foundation の実行テストは `src32_testbench` がないと skip）
 - sol VS Code 拡張（`tools/vscode-sol-syntax/` で実行）: `npm run compile`、`npx vsce package --no-dependencies`
 - PCG scroll: `cargo test --test vdp_pcg_scroll`
+- Foundation WAX ローダ（ホスト）: `python3 -m unittest discover -s foundation/tests/wax`。testbench での実行は `tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader`
 - WASM SDK package builder: `python3 -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v`
 - WASM starter／example: `cargo build --manifest-path templates/wasm-expansion-card/Cargo.toml --release --target wasm32-unknown-unknown` と同じ形式で example の manifest も build。
 - sol ゲストの実行確認は、必要に応じて `tools/solc/solc.py compile` → `tools/asm/asm.py` → `src32_testbench` またはエミュレータの順に行います。

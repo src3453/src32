@@ -239,6 +239,8 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 
 ## 7. API ライブラリ libfnd とシェル
 
+libfnd とサービスのプロトコルは [API 仕様](spec_Foundation_API.md)、シェルは [シェル仕様](spec_Foundation_shell.md) で定めました。以下と異なる場合は仕様が優先します。
+
 - 名前は `fnd_` で始めます。戻り値は `fnd_status`（0 または負のエラー）で、結果は出力引数で返します。
   - ファイル：`fnd_file_open(path, mode, &h)`、`fnd_file_read`、`fnd_file_write`、`fnd_file_seek`、`fnd_file_close`、`fnd_file_delete`、`fnd_file_rename`。
   - ディレクトリ：DOS の FindFirst/FindNext 風の `fnd_dir_open`／`fnd_dir_next`／`fnd_dir_close`、`fnd_dir_make`、`fnd_dir_remove`。
@@ -247,7 +249,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
   - コンソール：`fnd_con_write`、`fnd_con_read_line`、`fnd_con_getkey`。
   - 標準ハンドル：`fnd_std_in()`、`fnd_std_out()`（起動情報から取得する）。
 - エラーコード（初期案）：`E_OK=0`、`E_NOT_FOUND`、`E_EXISTS`、`E_NOT_DIR`、`E_IS_DIR`、`E_NOT_EMPTY`、`E_BAD_PATH`、`E_BAD_HANDLE`、`E_ACCESS`、`E_NO_MEDIA`、`E_IO`、`E_NO_SPACE`、`E_NO_MEMORY`、`E_LIMIT`、`E_PEER_GONE`、`E_FORMAT`、`E_UNSUPPORTED`。
-- シェル `/bin/shell.wax`：
+- シェル `/bin/shell.wax`（仕様は [spec_Foundation_shell.md](spec_Foundation_shell.md)。以下と異なる場合は仕様が優先。`KILL` は v1 では除外）：
   - 内部コマンド：`DIR`、`CD`、`TYPE`、`COPY`、`DEL`、`REN`、`MD`/`MKDIR`、`RD`/`RMDIR`、`CLS`、`ECHO`、`VER`、`MEM`、`PS`、`KILL`、`HELP`、`EXIT`。
   - コマンド名は大文字小文字を区別しません。内部コマンドでなければ、`/bin/<name>.wax` を探して起動します。
   - `/` はパス区切りなので、オプションには `-x` を使います（DOS の `/x` は使わない）。
@@ -264,7 +266,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 | 4 ディスク | `blk_io`（転送先の検証）、disk サービス、DSFS 読み取りマウント | FDD 読み込み中も他スレッドが進む。不正バッファでは `E_ACCESS` になり RAM は変化しない |
 | 5 FS2 | 仕様、ホストツール、ゲストの読み取り → 書き込み | ホストの fsck とゲストの結果が一致する。書込中断後はDIRTYでmountを拒否し、fsckの検査・修復可能範囲を確認する |
 | 6 シェル | libfnd、shell、外部コマンド、stage1 からのディスク起動 | ディスクから起動して `DIR`、`TYPE`、アプリ起動を確認する |
-| 7 拡張 | WAX v3／WAL（libfnd の WAL 化）、再配置可能な WAX、`/tmp`、拡張カードのドライバ | WAX v3 §8 の全ケース |
+| 7 拡張 | WAX v3／WAL（libfnd の WAL 化）、再配置可能な WAX、`/tmp`、拡張カードのドライバ | WAX v3 §8 の全ケース（ローダは実装済み: `foundation/kernel/wax.c`、`tests/wax`。v2 PROTECTED も同じ経路で読み込む。v3 を生成するツールチェーンと libfnd の WAL 化は未着手） |
 
 各フェーズでは、テストに通った focused check と、実行していない確認を分けて報告します。
 
