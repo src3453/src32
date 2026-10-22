@@ -44,6 +44,11 @@ fnd_status fnd_con_getkey(fnd_key_t *key);
 fnd_status fnd_con_clear(void);
 fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows);
 
+/* §11.7 (lib/fnd/name.c) */
+fnd_status fnd_name_fold(const char *name, char *out, uint32_t cap, uint32_t *len);
+int fnd_name_equal(const char *a, const char *b);
+int fnd_name_match(const char *pattern, const char *name);
+
 /* §11.9 */
 const char *fnd_strerror(fnd_status code);
 
