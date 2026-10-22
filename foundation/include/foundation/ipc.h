@@ -50,9 +50,20 @@ typedef struct fnd_spawn {
     uint32_t caps;
     uint32_t grants, grant_count; /* 12-byte {start, end, perm} entries */
     uint32_t name;                /* NUL-terminated, at most 15 bytes */
-    uint32_t reserved;
+    uint32_t libs;                /* fnd_spawn_libs, or 0 (§9.5) */
 } fnd_spawn;
 
+/* The WALs a v3 WAX and its WALs import (§9.2, §9.5). */
+typedef struct fnd_spawn_lib {
+    uint32_t image, image_len;
+} fnd_spawn_lib;
+typedef struct fnd_spawn_libs {
+    uint32_t count; /* at most FND_SPAWN_MAX_LIBS */
+    uint32_t reserved;
+    /* followed by count fnd_spawn_lib */
+} fnd_spawn_libs;
+
+#define FND_SPAWN_MAX_LIBS 16u
 #define FND_SPAWN_MAX_HANDLES 16u
 #define FND_STARTUP_MAX 4096u
 /* Largest image proc_spawn copies to its staging area. */

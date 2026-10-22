@@ -28,10 +28,17 @@ static uint8_t *tmp_image;
 
 /* ---- platform (fs.h, server.h) ---------------------------------------- */
 
-void *fs_alloc(uint32_t size) {
-    void *p = fnd_mem_alloc(size ? size : 1u);
-    if (p)
-        memset(p, 0, size);
+/* The toolchain's memset goes byte by byte; fnd_mem_alloc gives 8-byte
+ * aligned blocks. no_builtin keeps clang from turning this into memset. */
+__attribute__((no_builtin("memset"))) void *fs_alloc(uint32_t size) {
+    uint32_t *p = (uint32_t *)fnd_mem_alloc(size ? size : 1u);
+    if (!p)
+        return 0;
+    uint32_t *w = p, n = (size + 3u) / 4u;
+    for (; n >= 8; n -= 8, w += 8)
+        w[0] = w[1] = w[2] = w[3] = w[4] = w[5] = w[6] = w[7] = 0;
+    while (n--)
+        *w++ = 0;
     return p;
 }
 

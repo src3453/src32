@@ -50,8 +50,10 @@ static int32_t build_startup(uint32_t *block, const fnd_exec_t *ex, const char *
 }
 
 
-fnd_status fnd__spawn_image(const void *image, uint32_t size, const char *path, const fnd_exec_t *ex,
-                            fnd_handle console, fnd_handle *proc) {
+
+/* §11.6 steps 2, 3, 5 and 6 for an image in memory. */
+static fnd_status spawn(const void *image, uint32_t size, const char *path, const fnd_exec_t *ex,
+                       fnd_handle console, const fnd_spawn_libs *libs, fnd_handle *proc) {
     char name[16];
     const char *base = path;
     for (const char *p = path; *p; ++p) {
@@ -99,7 +101,7 @@ fnd_status fnd__spawn_image(const void *image, uint32_t size, const char *path, 
         if (len >= 0) {
             fnd_spawn sp = {(uint32_t)(uintptr_t)image, size, (uint32_t)(uintptr_t)startup, (uint32_t)len,
                             (uint32_t)(uintptr_t)handles, count, FND_PRIO_APP, 0, 0, 0,
-                            (uint32_t)(uintptr_t)name, 0};
+                            (uint32_t)(uintptr_t)name, (uint32_t)(uintptr_t)libs};
             status = fnd_sys_proc_spawn(&sp);
             if (status > 0) {
                 *proc = (fnd_handle)status;
@@ -114,28 +116,154 @@ fnd_status fnd__spawn_image(const void *image, uint32_t size, const char *path, 
     return status;
 }
 
-fnd_status fnd_proc_exec(const char *path, const fnd_exec_t *ex, fnd_handle *proc) {
+/* Reads the whole file at path into the heap (§11.6 step 1). */
+static fnd_status read_image(const char *path, uint8_t **image, uint32_t *size) {
     fnd_handle file;
     fnd_status status = fnd_file_open(path, FND_OPEN_EXEC, 0, &file);
     if (status != FND_OK)
         return status;
     fnd_stat_t st;
     status = fnd_stream_stat(file, &st);
-    uint8_t *image = 0;
     uint32_t got = 0;
+    *image = 0;
     if (status == FND_OK && (st.size_hi || st.size_lo > FND_EXEC_IMAGE_MAX))
         status = FND_E_LIMIT;
-    if (status == FND_OK && !(image = fnd_mem_alloc(st.size_lo ? st.size_lo : 1u)))
+    if (status == FND_OK && !(*image = fnd_mem_alloc(st.size_lo ? st.size_lo : 1u)))
         status = FND_E_NO_MEMORY;
     if (status == FND_OK)
-        status = fnd_read(file, image, st.size_lo, &got);
+        status = fnd_read(file, *image, st.size_lo, &got);
     fnd_close(file);
     if (status == FND_OK && got != st.size_lo)
         status = FND_E_IO;
+    if (status != FND_OK) {
+        fnd_mem_free(*image);
+        *image = 0;
+        return status;
+    }
+    *size = got;
+    return FND_OK;
+}
+
+/* ---- WALs (§11.6 step 4, doc/spec_Foundation.md §9.5) ---- */
+
+#define EXEC_MAX_IMAGES 8u /* the WAX and its WALs */
+#define WAX3_HEADER 160u
+
+struct deps {
+    fnd_spawn_libs head; /* lib[] follows it: the list proc_spawn reads */
+    fnd_spawn_lib lib[EXEC_MAX_IMAGES - 1u];
+    const char *id[EXEC_MAX_IMAGES - 1u];
+    uint32_t major[EXEC_MAX_IMAGES - 1u];
+};
+
+static uint32_t rd32(const uint8_t *p) {
+    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
+}
+
+static int same_id(const char *a, const char *b) {
+    while (*a && *a == *b)
+        ++a, ++b;
+    return *a == *b;
+}
+
+/* The NUL-terminated string at off in the string table, or NULL. */
+static const char *wax_string(const uint8_t *d, uint32_t size, uint32_t off) {
+    uint32_t strings = rd32(d + 88), string_size = rd32(d + 92);
+    if (strings > size || string_size > size - strings || off >= string_size)
+        return 0;
+    for (uint32_t i = off; i < string_size; ++i) {
+        if (!d[strings + i])
+            return (const char *)d + strings + off;
+    }
+    return 0;
+}
+
+/* "/lib/<id>.<major>.wal" into path (at least 150 bytes); id is at most
+ * 127 bytes (WAX v3 §2). */
+static void lib_path(char *path, const char *id, uint32_t major) {
+    uint32_t n = 0;
+    for (const char *p = "/lib/"; *p; ++p)
+        path[n++] = *p;
+    while (*id)
+        path[n++] = *id++;
+    path[n++] = '.';
+    char digits[10];
+    uint32_t nd = 0;
+    do
+        digits[nd++] = (char)('0' + major % 10u);
+    while (major /= 10u);
+    while (nd)
+        path[n++] = digits[--nd];
+    for (const char *p = ".wal"; *p; ++p)
+        path[n++] = *p;
+    path[n] = 0;
+}
+
+/* Reads /lib/<id>.<major>.wal for each dependency of the image d that is
+ * not in deps yet, and then their dependencies. Only the tables are
+ * followed here: the kernel validates the images and the minor versions. */
+static fnd_status add_deps(struct deps *deps, const uint8_t *d, uint32_t size) {
+    if (size < WAX3_HEADER || d[0] != 'W' || d[1] != 'A' || d[2] != 'X' || d[3] != 0 || d[4] != 0 ||
+        d[5] != 3)
+        return FND_OK; /* v2 or not a WAX: no WALs, and the kernel decides */
+    uint32_t table = rd32(d + 52), count = rd32(d + 56);
+    if (table > size || count > (size - table) / 16u)
+        return FND_E_FORMAT;
+    for (uint32_t i = 0; i < count; ++i) {
+        const char *id = wax_string(d, size, rd32(d + table + 16u * i));
+        uint32_t major = rd32(d + table + 16u * i + 4u);
+        if (!id || !*id || str_len(id) > 127u || major == 0)
+            return FND_E_FORMAT;
+        uint32_t k = 0;
+        while (k < deps->head.count && !(same_id(deps->id[k], id) && deps->major[k] == major))
+            ++k;
+        if (k < deps->head.count)
+            continue;
+        if (deps->head.count == EXEC_MAX_IMAGES - 1u)
+            return FND_E_LIMIT;
+        char path[160];
+        lib_path(path, id, major);
+        uint8_t *image;
+        uint32_t image_size;
+        fnd_status status = read_image(path, &image, &image_size);
+        if (status == FND_E_NOT_FOUND)
+            return FND_E_DEPENDENCY;
+        if (status != FND_OK)
+            return status;
+        k = deps->head.count++;
+        deps->lib[k] = (fnd_spawn_lib){(uint32_t)(uintptr_t)image, image_size};
+        deps->id[k] = id;
+        deps->major[k] = major;
+        if ((status = add_deps(deps, image, image_size)) != FND_OK)
+            return status;
+    }
+    return FND_OK;
+}
+
+fnd_status fnd__exec(const char *path, const fnd_exec_t *ex, fnd_handle console, fnd_handle *proc) {
+    uint8_t *image;
+    uint32_t size;
+    fnd_status status = read_image(path, &image, &size);
+    if (status != FND_OK)
+        return status;
+    struct deps *deps = fnd_mem_alloc(sizeof *deps);
+    if (!deps) {
+        fnd_mem_free(image);
+        return FND_E_NO_MEMORY;
+    }
+    deps->head = (fnd_spawn_libs){0, 0};
+    status = add_deps(deps, image, size);
     if (status == FND_OK)
-        status = fnd__spawn_image(image, got, path, ex, fnd_console(), proc);
+        status = spawn(image, size, path, ex, console, deps->head.count ? &deps->head : 0, proc);
+    for (uint32_t i = 0; i < deps->head.count; ++i)
+        fnd_mem_free((void *)(uintptr_t)deps->lib[i].image);
+    fnd_mem_free(deps);
     fnd_mem_free(image);
     return status;
+}
+
+fnd_status fnd_proc_exec(const char *path, const fnd_exec_t *ex, fnd_handle *proc) {
+    return fnd__exec(path, ex, fnd_console(), proc);
 }
 
 fnd_status fnd_proc_wait(fnd_handle proc, int32_t *code) {

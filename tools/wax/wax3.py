@@ -139,3 +139,48 @@ def build(kind="wax", *, image_id, blocks, abi_major=1, abi_minor=0, entry_offse
     out[layout["strings"]:layout["strings"] + len(strings.table)] = strings.table
     out[layout["debug"]:layout["debug"] + len(debug)] = debug
     return Image(out, layout)
+
+
+@dataclass
+class Library:
+    """What a linker needs from a WAL: its identity and exports."""
+    image_id: str
+    abi_major: int
+    abi_minor: int
+    call_abi: int
+    os_id: str
+    os_major: int
+    exports: list
+
+
+def read_library(data):
+    """Reads a WAL's identity and export table. Checks only what reading
+    needs; the loader still validates the whole file (spec §2-§4)."""
+    data = bytes(data)
+    if len(data) < HEADER_SIZE or data[:4] != MAGIC:
+        raise ValueError("not a WAX/WAL file")
+    version, file_type = struct.unpack_from(">HH", data, 4)
+    if version != VERSION or file_type != TYPE_WAL:
+        raise ValueError("not a WAX v3 library (WAL)")
+    words = struct.unpack_from(">40I", data, 0)
+    call_abi = words[5]
+    export_offset, export_count, export_size = words[16], words[17], words[18]
+    string_offset, string_size = words[22], words[23]
+    if export_size != 24 or string_offset + string_size > len(data) \
+            or export_offset + export_count * 24 > len(data):
+        raise ValueError("malformed WAL tables")
+    strings = data[string_offset:string_offset + string_size]
+
+    def text(offset):
+        if offset == 0:
+            return None
+        end = strings.find(b"\0", offset)
+        if offset >= len(strings) or end < 0:
+            raise ValueError("bad string offset in WAL")
+        return strings[offset:end].decode("ascii")
+
+    exports = []
+    for i in range(export_count):
+        name, kind, offset, size, signature, _ = struct.unpack_from(">6I", data, export_offset + 24 * i)
+        exports.append(Export(text(name), kind, offset, size, text(signature)))
+    return Library(text(words[24]), words[25], words[26], call_abi, text(words[27]), words[28], exports)

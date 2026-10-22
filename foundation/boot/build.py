@@ -13,18 +13,24 @@ Every user program is a PROTECTED WAX v2 built with tools/llvm-src32
     slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
-The four modules (slots 0 to 3) go into FNDBOOT (§11); the shell and the
-commands are files on the boot disk, which fs serves as "/".
+libfnd is the WAL "fnd" 1.0 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
+and the shell and the commands are WAX v3 that import it; fnd_proc_exec
+reads it from /lib when it starts them (§9.5). init and the services are
+PROTECTED WAX v2 with libfnd linked in, since the kernel starts them before
+there is an fs.
+
+The four modules (slots 0 to 3) go into FNDBOOT (§11); /bin and /lib are
+files on the boot disk, which fs serves as "/".
 
 Outputs:
-  root/bin/*.wax  the shell and the commands
+  root/           /bin/*.wax (the shell and the commands) and /lib/fnd.1.wal
   foundation.wax  kernel + module-only FNDBOOT linked in (fndboot_image.h); the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
   fndboot.bin     FNDBOOT: kernel.bin and the module table (§11)
   stage1.bin      boot sector (foundation/boot/stage1.a)
   foundation.img  bootable FS2 volume (doc/spec_FS2.md): stage1 in block 0, FNDBOOT
-                  in the reserved boot area, root/ (/bin), plus the files under --root
+                  in the reserved boot area, root/, plus the files under --root
 
 --stop-ticks makes the kernel stop with R1 = 42 at that tick (tests).
 """
@@ -63,14 +69,14 @@ KERNEL_STACK_TOP = 0x00100000
 DISK_BLOCKS = 16384
 BOOT_BLOCKS = fndboot.MAX_SIZE // fs2.BLOCK
 DISK_INODES = 256
-MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8)
+MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["clear", "echo", "free", "ps", "pwd", "uname"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
-# The toolchain links every function it is given, so programs that start no
-# others leave out proc.c.
+# The toolchain links every function it is given, so the static programs
+# that start no others leave out proc.c.
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerror.c")]
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "blk.c", "wax.c",
@@ -88,10 +94,19 @@ def driver(sources, output, args, *extra):
     return output
 
 
-def user(sources, output, args, slot, *extra, stack=STACK):
+def layout(slot, stack=STACK):
     origin, stack_top = slot
-    return driver([*sources, *LIBFND], output, args, "--protected", "--origin", hex(origin),
-                  "--stack-top", hex(stack_top), "--user-stack-size", hex(stack), *extra)
+    return ["--origin", hex(origin), "--stack-top", hex(stack_top), "--user-stack-size", hex(stack)]
+
+
+def static(sources, output, args, slot, *extra, stack=STACK):
+    """A PROTECTED WAX v2 with libfnd linked in."""
+    return driver([*sources, *LIBFND], output, args, "--protected", *layout(slot, stack), *extra)
+
+
+def program(sources, output, args, slot, image_id, fnd):
+    """A WAX v3 that imports the WAL fnd."""
+    return driver(sources, output, args, "--wax3", "--image-id", image_id, "--import-wal", fnd, *layout(slot))
 
 
 def embed(name, data):
@@ -138,26 +153,29 @@ def main(argv=None):
     args = parser.parse_args(argv)
     out = args.out
     root = out / "root"
-    bin_dir = root / "bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    (root / "bin").mkdir(parents=True, exist_ok=True)
+    (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
 
+    fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--image-id", "fnd",
+                 "--abi-version", "1.0", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+    program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:
-        user([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], bin_dir / f"{name}.wax", args, SLOT5)
-    user([FOUNDATION / "shell/shell.c", LIBFND_PROC], bin_dir / "shell.wax", args, SLOT4)
+        program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
+                args, SLOT5, f"foundation.{name}", fnd)
 
     # §11: spawned in this order, init last.
     modules = [
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
-             image=user([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
+             image=static([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
                         args, SLOT1, "-I", str(services / "console"))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
-             image=user([services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
+             image=static([services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
         dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
-             image=user([*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
+             image=static([*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
                         "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
-             image=user([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
+             image=static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
     ]
     for module in modules:
         module["image"] = module["image"].read_bytes()
@@ -181,7 +199,7 @@ def main(argv=None):
     for tree in (root, args.root):
         for host in sorted(p for p in tree.rglob("*") if p.is_file()) if tree else ():
             path = "/" + host.relative_to(tree).as_posix()
-            files[path] = (host.read_bytes(), MODE_EXEC if path.startswith("/bin/") else None)
+            files[path] = (host.read_bytes(), MODE_EXEC if path.startswith(("/bin/", "/lib/")) else None)
     disk = out / "foundation.img"
     temporary = disk.with_name(disk.name + ".tmp")
     temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))

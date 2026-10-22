@@ -14,6 +14,9 @@ import tempfile
 ROOT = Path(__file__).resolve().parent
 RUNTIME_NAMES = ("memcpy", "memmove", "memset", "memcmp", "strlen")
 CXX_SUFFIXES = (".cpp", ".cc", ".cxx")
+# OS ABIs a WAX v3 can declare (doc/spec_WAX_v3.md §1): syscall ABI version
+# and the SYSCALL number the startup code exits with (spec_Foundation.md §12).
+V3_OSES = {"foundation": {"version": (1, 0), "exit": 0x11}}
 SOURCE_SUFFIXES = (".c", *CXX_SUFFIXES)
 
 
@@ -54,7 +57,21 @@ def parser() -> argparse.ArgumentParser:
                    help="emit an Extension P user-mode program as a PROTECTED .wax "
                         "(code R/X, data R/W, user stack below --stack-top)")
     p.add_argument("--user-stack-size", type=address, default=0x4000,
-                   help="user stack bytes below --stack-top with --protected (default 0x4000)")
+                   help="user stack bytes below --stack-top with --protected or --wax3 (default 0x4000)")
+    v3 = p.add_argument_group("WAX v3 (doc/spec_WAX_v3.md, call ABI 1)")
+    kind = v3.add_mutually_exclusive_group()
+    kind.add_argument("--wax3", action="store_true",
+                      help="emit a protected WAX v3 executable at --origin (.wax)")
+    kind.add_argument("--wal", action="store_true",
+                      help="emit a position-independent WAX v3 library (.wal) exporting --exports")
+    v3.add_argument("--image-id", help="image or library ID (default: the output file name)")
+    v3.add_argument("--abi-version", default="1.0", metavar="MAJOR.MINOR",
+                    help="library ABI version, or the executable's contract version (default 1.0)")
+    v3.add_argument("--exports", type=Path, metavar="FILE", help="exports of --wal, one per line")
+    v3.add_argument("--import-wal", type=Path, action="append", default=[], metavar="WAL",
+                    help="bind undefined symbols to this library's exports (repeatable)")
+    v3.add_argument("--os", choices=sorted(V3_OSES), default="foundation",
+                    help="OS syscall ABI of the image (default foundation)")
     p.add_argument("--save-temps", type=Path, metavar="DIR")
     p.add_argument("--depfile", type=Path, metavar="PATH", help="write Make-style dependencies after successful compilation")
     p.add_argument("--clang", help="Clang executable path; otherwise use CLANG or PATH")
@@ -188,16 +205,40 @@ def run(args) -> Path:
         raise DriverError("--user-stack-size must be a nonzero multiple of 8 that fits below --stack-top")
     if not args.newlib_source and args.newlib_heap_size != 65536:
         raise DriverError("--newlib-heap-size requires --newlib-source")
-    output = args.output or args.inputs[0].with_suffix(".ll" if args.emit_llvm else ".a" if args.S else ".wax")
+    v3 = args.wax3 or args.wal
+    if v3:
+        if args.protected or args.data_origin is not None:
+            raise DriverError("--wax3 and --wal are protected images; drop --protected/--data-origin")
+        if args.wal and (args.exports is None or args.origin):
+            raise DriverError("--wal needs --exports and is position independent (no --origin)")
+        if args.wax3 and args.exports is not None:
+            raise DriverError("--exports applies to --wal only")
+        if args.wax3 and (not args.user_stack_size or args.user_stack_size % 8
+                          or args.user_stack_size > args.stack_top):
+            raise DriverError("--user-stack-size must be a nonzero multiple of 8 that fits below --stack-top")
+        from v3 import version
+        try:
+            args.abi = version(args.abi_version)
+        except ValueError as exc:
+            raise DriverError(f"--abi-version: {exc}") from None
+    elif args.import_wal or args.exports or args.image_id:
+        raise DriverError("--import-wal, --exports and --image-id need --wax3 or --wal")
+    suffix = ".wal" if args.wal else ".wax"
+    output = args.output or args.inputs[0].with_suffix(".ll" if args.emit_llvm else ".a" if args.S else suffix)
+    if v3 and not (args.emit_llvm or args.S) and output.suffix.lower() != suffix:
+        raise DriverError(f"{'--wal' if args.wal else '--wax3'} writes a {suffix} file")
     if args.protected and not (args.emit_llvm or args.S) and output.suffix.lower() != ".wax":
         raise DriverError("--protected needs .wax output: raw .bin cannot carry permissions")
-    if not (args.emit_llvm or args.S) and output.suffix.lower() not in (".wax", ".bin"):
+    if not (args.emit_llvm or args.S or v3) and output.suffix.lower() not in (".wax", ".bin"):
         raise DriverError("binary output must have a .wax or .bin extension; use -S for assembly")
     if output.resolve() in {source.resolve() for source in args.inputs}:
         raise DriverError("output must not overwrite an input file")
     if not output.parent.is_dir():
         raise DriverError(f"output directory does not exist: {output.parent}")
     dependencies = {source.resolve() for source in args.inputs}
+    dependencies.update(path.resolve() for path in args.import_wal)
+    if args.exports:
+        dependencies.add(args.exports.resolve())
     if args.depfile:
         if args.depfile.resolve() in dependencies | {output.resolve()}:
             raise DriverError("--depfile must not overwrite an input or output")
@@ -311,8 +352,30 @@ def run(args) -> Path:
             return output
         from backend import compile_module
         layout_info = {}
-        assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
-                                  protected=args.protected, info=layout_info, data_origin=args.data_origin)
+        if v3:
+            import v3 as v3_module
+            wax3 = load_python(ROOT.parent / "wax" / "wax3.py", "_llvm_src32_wax3")
+            layout = Layout(linked)
+            image_id = v3_module.check_id(args.image_id or output.stem.lower(), "image ID")
+            specs = v3_module.read_exports(args.exports) if args.wal else []
+            libraries = []
+            for path in args.import_wal:
+                try:
+                    library = wax3.read_library(path.read_bytes())
+                except (OSError, ValueError) as exc:
+                    raise DriverError(f"--import-wal {path}: {exc}") from exc
+                if library.call_abi != 1 or library.os_id != args.os \
+                        or library.os_major != V3_OSES[args.os]["version"][0]:
+                    raise DriverError(f"--import-wal {path}: different call ABI or OS ABI")
+                libraries.append(library)
+            imports = v3_module.resolve_imports(linked, layout, libraries, wax3)
+            assembly = compile_module(linked, origin=0 if args.wal else args.origin, stack_top=args.stack_top,
+                                      entry=None if args.wal else args.entry, protected=True,
+                                      info=layout_info, pic=args.wal, imports=imports.kinds,
+                                      exit_syscall=V3_OSES[args.os]["exit"])
+        else:
+            assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
+                                      protected=args.protected, info=layout_info, data_origin=args.data_origin)
         if args.save_temps:
             (work / "output.a").write_text(assembly, encoding="utf-8")
         if args.S:
@@ -320,9 +383,17 @@ def run(args) -> Path:
         else:
             assembler_module = load_python(ROOT.parent / "asm" / "asm.py", "_llvm_src32_assembler")
             wax = output.suffix.lower() == ".wax"
-            assembler = assembler_module.Assembler(strip=True, sparse=wax)
+            assembler = assembler_module.Assembler(strip=True, sparse=wax or v3)
             binary = assembler.assemble(assembly, source="<llvm-src32>", base_dir=str(ROOT))
-            if wax:
+            if v3:
+                blocks = protected_blocks(assembler.blocks, layout_info["data_start"])
+                options = dict(kind="wal", exports=v3_module.exports_table(specs, linked, layout, layout_info, wax3)) \
+                    if args.wal else dict(kind="wax", origin=args.origin, stack_top=args.stack_top,
+                                          stack_size=args.user_stack_size)
+                binary = v3_module.pack(wax3, image_id=image_id, abi=args.abi, blocks=blocks, info=layout_info,
+                                        imports=imports, os_id=args.os, os_version=V3_OSES[args.os]["version"],
+                                        **options)
+            elif wax:
                 wax_module = load_python(ROOT.parent / "wax" / "wax.py", "_llvm_src32_wax")
                 blocks = assembler.blocks
                 protection = None

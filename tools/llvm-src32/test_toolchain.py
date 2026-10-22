@@ -486,6 +486,119 @@ int main(void) {
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn('PASS:', result.stdout)
 
+    def test_foundation_wal_from_c(self):
+        # WAX v3 from C (--wal, --wax3, --import-wal; doc/spec_WAX_v3.md
+        # §6): test.app in slots 5 and 6 calls test.math, which calls
+        # test.base, each process with private instances at other bases. The
+        # checks are in foundation/tests/wal/app.c; the kernel stops with 42.
+        foundation = ROOT / 'foundation'
+        kernel = [foundation / 'tests/wal/main.c',
+                  *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'wax.c'))]
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                images = self.work / ('wal' + opt[1:])
+                result = subprocess.run(
+                    [sys.executable, str(foundation / 'tests/wal/build.py'), str(images), '--clang', self.clang,
+                     opt], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
+                self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                image = images / 'kernel.wax'
+                self.driver(*kernel, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
+                            '-I', images, '--origin', '0x10000', '--stack-top', '0x100000', '-O1',
+                            '-o', image)
+                for cpu in ('scalar', 'pipeline'):
+                    with self.subTest(cpu=cpu):
+                        result = subprocess.run(
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '120'],
+                            cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                            errors='replace', timeout=120)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn('PASS:', result.stdout)
+
+    def test_wal_layout_and_tables(self):
+        sys.path.insert(0, str(ROOT / 'tools/wax'))
+        try:
+            import wax3
+        finally:
+            sys.path.pop(0)
+        (self.work / 'lib.c').write_text(
+            'unsigned lib_value = 7;\n'
+            'unsigned lib_get(void) { return lib_value; }\n'
+            'long long lib_neg(long long x) { return -x; }\n'
+            'static unsigned hidden(void) { return 1; }\n'
+            'unsigned lib_one(void) { return hidden(); }\n', encoding='utf-8')
+        (self.work / 'lib.exports').write_text(
+            '# comment\nlib_one fn()->u32\nlib_get fn()->u32  # trailing\n\n'
+            'lib_neg fn(i64)->i64\nlib_value object\n', encoding='utf-8')
+        self.driver('lib.c', '--wal', '--image-id', 'test.lib', '--abi-version', '2.3',
+                    '--exports', 'lib.exports', '-o', 'lib.wal')
+        library = wax3.read_library((self.work / 'lib.wal').read_bytes())
+        self.assertEqual((library.image_id, library.abi_major, library.abi_minor, library.call_abi,
+                          library.os_id, library.os_major), ('test.lib', 2, 3, 1, 'foundation', 1))
+        # Sorted by name; functions have a nonzero extent, the object its size.
+        self.assertEqual([(e.name, e.kind, e.signature) for e in library.exports], [
+            ('lib_get', wax3.FUNCTION, 'fn()->u32'), ('lib_neg', wax3.FUNCTION, 'fn(i64)->i64'),
+            ('lib_one', wax3.FUNCTION, 'fn()->u32'), ('lib_value', wax3.OBJECT, None)])
+        self.assertTrue(all(e.size > 0 and e.size % 4 == 0 for e in library.exports[:3]))
+        self.assertEqual(library.exports[3].size, 4)
+        data = (self.work / 'lib.wal').read_bytes()
+        words = [int.from_bytes(data[i:i + 4], 'big') for i in range(0, 160, 4)]
+        self.assertEqual(data[4:8], b'\x00\x03\x00\x02')
+        self.assertEqual(words[6:10], [0, 0, 0, 0])  # WAL: no base, entry or stack
+        self.assertEqual(words[11], 2)  # code RX, data RW
+        blocks = [[int.from_bytes(data[words[10] + 24 * b + 4 * i:][:4], 'big') for i in range(6)]
+                  for b in range(2)]
+        self.assertEqual((blocks[0][0], blocks[0][4], blocks[1][4]), (0, 5, 3))
+        (self.work / 'app.c').write_text(
+            'unsigned lib_get(void); extern unsigned lib_value;\n'
+            'int main(void) { return (int)(lib_get() + lib_value); }\n', encoding='utf-8')
+        self.driver('app.c', '--wax3', '--import-wal', 'lib.wal', '--origin', '0x800000',
+                    '--stack-top', '0xC00000', '-o', 'app.wax')
+        data = (self.work / 'app.wax').read_bytes()
+        words = [int.from_bytes(data[i:i + 4], 'big') for i in range(0, 160, 4)]
+        self.assertEqual(data[4:8], b'\x00\x03\x00\x01')
+        self.assertEqual((words[6], words[7], words[8], words[9]), (0x800000, 0, 0xC00000, 0x4000))
+        dependency = [int.from_bytes(data[words[13] + 4 * i:][:4], 'big') for i in range(4)]
+        self.assertEqual((words[14], dependency[1], dependency[2]), (1, 2, 3))  # test.lib 2, min 3
+        imports = [[int.from_bytes(data[words[19] + 24 * n + 4 * i:][:4], 'big') for i in range(6)]
+                   for n in range(words[20])]
+        self.assertEqual([(i[2], i[4]) for i in imports], [(wax3.FUNCTION, 0), (wax3.OBJECT, 4)])
+        self.assertEqual(imports[1][3] - imports[0][3], 8)  # slots in address order
+        # Startup exits with Foundation's proc_exit (spec_Foundation.md §12).
+        self.driver('app.c', '--wax3', '--import-wal', 'lib.wal', '--origin', '0x800000',
+                    '--stack-top', '0xC00000', '-S', '-o', 'app.a')
+        self.assertIn('SYSCALL 17', (self.work / 'app.a').read_text(encoding='utf-8'))
+
+    def test_wal_diagnostics(self):
+        (self.work / 'ok.exports').write_text('lib_f fn(u32)->u32\n', encoding='utf-8')
+
+        def wal(source, exports='ok.exports', *extra):
+            (self.work / 'lib.c').write_text(source, encoding='utf-8')
+            return self.driver('lib.c', '--wal', '--exports', exports, '-o', 'lib.wal', *extra,
+                               success=False).stderr
+        # No load-time relocation: a pointer in static data cannot work.
+        self.assertIn('cannot hold addresses',
+                      wal('static int x; int *p = &x;\nunsigned lib_f(unsigned a) { return a + (unsigned)*p; }\n'))
+        self.assertIn('does not match fn(u32)->u32', wal('unsigned lib_f(unsigned *a) { return *a; }\n'))
+        self.assertIn('does not match', wal('unsigned lib_f(unsigned char a) { return a; }\n'))
+        self.assertIn('is not defined', wal('unsigned lib_g(unsigned a) { return a; }\n'))
+        (self.work / 'bad.exports').write_text('lib_f fn(u32)->u33\n', encoding='utf-8')
+        self.assertIn('invalid signature', wal('unsigned lib_f(unsigned a) { return a; }\n', 'bad.exports'))
+        self.assertIn('image ID', wal('unsigned lib_f(unsigned a) { return a; }\n', 'ok.exports',
+                                      '--image-id', 'Bad-Name'))
+        (self.work / 'lib.c').write_text('unsigned lib_f(unsigned a) { return a + 1; }\n', encoding='utf-8')
+        self.driver('lib.c', '--wal', '--exports', 'ok.exports', '-o', 'lib.wal')
+
+        def app(source):
+            (self.work / 'app.c').write_text(source, encoding='utf-8')
+            return self.driver('app.c', '--wax3', '--import-wal', 'lib.wal', '--origin', '0x800000',
+                               '--stack-top', '0xC00000', '-o', 'app.wax', success=False).stderr
+        self.assertIn('module descriptor', app(
+            'unsigned lib_f(unsigned);\nunsigned (*volatile f)(unsigned);\n'
+            'int main(void) { f = lib_f; return (int)f(1); }\n'))
+        self.assertIn('does not match', app('int lib_f(int *);\nint main(void) { return lib_f(0); }\n'))
+        self.assertIn('need --wax3 or --wal', self.driver('app.c', '--import-wal', 'lib.wal', '-o', 'x.wax',
+                                                         success=False).stderr)
+
     def test_kernel_trap_panics_before_first_resume(self):
         # The trap depth starts at 1, so a SYSCALL before cpt32_ctx_resume
         # reaches kernel_panic with its CAUSE and EPC instead of kernel_trap.

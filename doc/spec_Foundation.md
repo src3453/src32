@@ -144,7 +144,7 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 
 1. region 0：スタック（RW）
 2. 次の region から：WAX のブロック。隣接していて権限が同じブロックだけをまとめる（[WAX v3 §5](spec_WAX_v3.md) と同じ規則）
-3. ヒープ（RW）：最も高いアドレスのブロック末尾から始まる
+3. ヒープ（RW）：最も高いアドレスのブロック末尾を 8 byte 境界に切り上げた位置から始まる（`mem_grow` の delta と同じ単位。間の byte は 0）
    - そのブロックが RW なら、同じ region を伸ばす
    - そうでなければ region を 1 つ予約する。予約できない場合、`mem_grow` は `FND_E_REGION_LIMIT` を返す
 4. MMIO の付与（§10.3）
@@ -350,7 +350,18 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 | 28 | `caps` | §9.1 |
 | 32 | `grants` / 36 `grant_count` | MMIO の付与（§10.3）。1 件 12 bytes で `start`、`end`、`perm`。`MMIO` が必要 |
 | 40 | `name` | 15 bytes 以下の名前（`/os/proc` 用） |
-| 44 | — | 予約。0 にする |
+| 44 | `libs` | WAL の一覧（§9.5）へのポインタ。0 なら一覧なし |
+
+`libs` が指す一覧（`fnd_spawn_libs`、8 + 8 × `count` bytes）：
+
+| Off | 名前 | 意味 |
+|---:|---|---|
+| 0 | `count` | 件数。16 以下 |
+| 4 | — | 予約。0 にする |
+| 8 + 8i | `image` / 12 + 8i `image_len` | i 番目の WAL のメモリ上のイメージ |
+
+- カーネルは `image` と同じく、一覧と各 WAL を staging へ複製してから検証します。複製した後に呼び出し側がメモリを変えても、起動には影響しません。
+- `count` が 16 を超える、または予約欄が 0 でなければ `FND_E_BAD_ARG` です。v2 の WAX と依存のない v3 には、`libs` は使われません（あっても無視します）。
 
 - 起動は原子的に行わなければなりません（[WAX v3 §7](spec_WAX_v3.md) と同じ）。どこかで失敗した場合、何も確保されていない状態に戻します。
 - PROTECTED のない WAX は `FND_E_FORMAT` で拒否します。S モードで実行してはなりません。
@@ -412,7 +423,11 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 | RESOURCE_LIMIT | `FND_E_LIMIT` |
 | スロットが使用中 | `FND_E_ADDRESS_CONFLICT` |
 
-未決の点：インストール済みライブラリの一覧をどこから得るか（例：`/lib`、FNDBOOT のモジュール表）と、`proc_spawn` でそれをどう指定するかは、まだ定めていません。現在は、カーネル内で起動する側が一覧を渡します。
+**ライブラリの置き場と渡し方（2026-10-22 決定）**：
+
+- インストール済みの WAL は `/lib/<image_id>.<abi_major>.wal` に置きます（例：libfnd は `/lib/fnd.1.wal`）。同じ ID と major の WAL は 1 つだけで、minor を上げるときはファイルを置き換えます。ファイル名は探す場所を決めるだけで、選んだ WAL の `image_id`、`abi_major`、`abi_minor` が要求を満たすかは、カーネルがイメージの中身で確かめます（WAX v3 §4.1）。
+- カーネルは fs を読みません。起動する側が、WAX の依存表から必要な WAL を（WAL の依存もたどって）`/lib` から読み、`proc_spawn` の `libs`（§9.2）で渡します。libfnd では `fnd_proc_exec` がこれを行います（[API 仕様 §11.6](spec_Foundation_API.md)）。
+- カーネル内で起動する場合（§11 の同梱モジュールやテスト）は、S モードの `fnd_proc_spawn_wax` に同じ形の一覧を渡します。
 
 ## 10. スケジューリング、IRQ、デバイス
 
@@ -525,7 +540,8 @@ stage1 は、`kernel_load` = `0x00010000`、`kernel_size` ≤ `0xE0000`（§5.1 
 - ABI ヘッダ `foundation/include/foundation/{abi.h,errors.h,ipc.h}` に、本書の番号と構造体を定義します。
 - ラッパーは `cpt32_syscall(n, 0, a1, a2, a3, a4)` で書きます。
 - ユーザープログラムは `tools/llvm-src32` の `--protected` で、スロットの origin とスタックを指定してビルドします。
-- 起動コードの終端にある `SYSCALL 0` は Foundation では `sys_info` にあたり、終了処理になりません。Foundation 向けの起動コードは `proc_exit` を呼ばなければなりません。ツールチェーンの対応（例：driver の `--os foundation`）は、実装時に定めます。
+- 起動コードの終端にある `SYSCALL 0` は Foundation では `sys_info` にあたり、終了処理になりません。Foundation 向けの起動コードは `proc_exit` を呼ばなければなりません。`tools/llvm-src32` の `--wax3`（`--os foundation`、既定）が作る WAX v3 の起動コードは、`main` の戻り値で `proc_exit` を呼びます。`--protected`（WAX v2）の起動コードは今も `SYSCALL 0` なので、v2 のプログラムは自分で `proc_exit` を呼んで終わる必要があります。
+- 共有ライブラリは `--wal` で WAL として作り、使う側は `--import-wal` で WAL を指定して WAX v3 にします（[WAX v3 §6](spec_WAX_v3.md) の call ABI 1）。
 
 ## 13. sol 互換 ABI：`!abi_compat "Foundation"`
 

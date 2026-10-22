@@ -42,6 +42,11 @@ static void copy(void *dst, const void *src, uint32_t n) {
             *d++ = *s++;
         uint32_t *dw = (uint32_t *)(void *)d;
         const uint32_t *sw = (const uint32_t *)(const void *)s;
+        /* Unrolled: the backend spends more on the loop than on a word. */
+        for (; n >= 32; n -= 32, dw += 8, sw += 8) {
+            dw[0] = sw[0], dw[1] = sw[1], dw[2] = sw[2], dw[3] = sw[3];
+            dw[4] = sw[4], dw[5] = sw[5], dw[6] = sw[6], dw[7] = sw[7];
+        }
         for (; n >= 4; n -= 4)
             *dw++ = *sw++;
         d = (uint8_t *)dw;

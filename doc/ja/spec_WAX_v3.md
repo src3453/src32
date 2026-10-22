@@ -10,9 +10,10 @@ v3 のバイナリ形式と基本 OS ローダー契約を定義します。
 
 [v2 仕様](spec_WAX.md)と既存 parser、assembler、C toolchain、DOS loader の
 動作は維持します。v3 を読み込むのは Foundation カーネル（`foundation/kernel/wax.c`、
-選択と配置の方針は [Foundation §9.5](../spec_Foundation.md)）です。v3 を生成する
-コンパイラやリンカはまだありません。`tools/wax/wax3.py` は用意済みの block と
-シンボル表から v3 ファイルを組み立てるもので、ローダーのテストが使います。
+選択と配置の方針は [Foundation §9.5](../spec_Foundation.md)）です。`tools/llvm-src32`
+は C から call ABI 1 の v3 WAX と WAL を作ります（`--wax3`、`--wal`、`--import-wal`。
+同ツールの README を参照）。`tools/wax/wax3.py` は用意済みの block とシンボル表から
+v3 ファイルを組み立てるもので、コンパイラとローダーのテストが使います。
 magic は共通ですが version=3 であり、v2 reader は拒否します。
 v2 の version だけを書き換えても変換にはなりません。
 
