@@ -20,12 +20,12 @@ jobs:
     name: Rust (testbench build + integration tests)
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install system packages
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build src32_testbench
@@ -69,12 +69,12 @@ jobs:
     runs-on: ubuntu-24.04
     continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
       - name: Install system packages
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Build sol guest images
@@ -98,8 +98,8 @@ jobs:
     needs: rust
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
           cache: pip
@@ -133,8 +133,8 @@ jobs:
     needs: rust
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install pytest
@@ -153,9 +153,35 @@ jobs:
     name: WASM expansion card SDK
     runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - name: Package builder tests
         run: python -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v
+
+  # VS Code 拡張 (sol / SRC32 アセンブリ) の .vsix を作って artifact に残す。
+  vscode-extensions:
+    name: VS Code extensions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/vscode-sol-syntax/package-lock.json
+      - name: Package vscode-sol-syntax
+        working-directory: tools/vscode-sol-syntax
+        run: |
+          npm ci
+          npm run compile
+          npx vsce package --no-dependencies
+      - name: Package vscode-src32-asm-syntax
+        working-directory: tools/vscode-src32-asm-syntax
+        run: npx --yes @vscode/vsce@3 package --no-dependencies
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extensions
+          path: tools/*/*.vsix
+          retention-days: 7
