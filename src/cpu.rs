@@ -4,7 +4,9 @@
 // Features: SRC32-ALMSIP
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::cpu_privilege::{Access, EXT_P, Exception, SystemState, format_sr, format_syscall};
+use crate::cpu_privilege::{
+    Access, EXT_P, EXT_V, Exception, SystemState, format_sr, format_syscall,
+};
 use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
@@ -127,7 +129,7 @@ const EXT_L: u32 = 0x04; // Extension L (Load/Store): adds byte/halfword load/st
 const EXT_M: u32 = 0x08; // Extension M (Mul/Div): adds multiplication and division instructions
 const EXT_S: u32 = 0x10; // Extension S (Short Mode)
 const EXT_I: u32 = 0x20; // Extension I (Interrupts)
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P; // CPUID features bitfield
+const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P | EXT_V; // CPUID features bitfield
 const CPU_ID: u32 = 0x5352_4332; // "SRC2" style tag
 pub const IRQ_VECTOR_BASE: u32 = 0xFFFF_0100;
 
@@ -924,6 +926,9 @@ impl Cpu {
     /// instruction, or the next one for SYSCALL. A vector word still holding
     /// its own address halts the CPU at that vector.
     fn enter_exception(&mut self, exception: Exception, epc: u32) {
+        if let Exception::PageFault { addr, .. } = exception {
+            self.sys.vm.vfault = addr;
+        }
         self.sys
             .enter_trap(&mut self.reg, epc, exception.cause(), self.instr_mode);
         self.instr_mode = InstructionMode::Normal;
@@ -940,11 +945,13 @@ impl Cpu {
     /// User-mode protection check; a denied access enters the protection
     /// fault before the bus is touched.
     fn access_allowed(&mut self, addr: u32, len: u32, access: Access, instruction_pc: u32) -> bool {
-        if self.sys.allows(addr, len, access) {
-            return true;
+        match self.sys.check_access(&mut self.bus, addr, len, access) {
+            Ok(()) => true,
+            Err(exception) => {
+                self.enter_exception(exception, instruction_pc);
+                false
+            }
         }
-        self.enter_exception(Exception::ProtectionFault(access), instruction_pc);
-        false
     }
 
     /// Fetch protection for the instruction at PC.
@@ -1097,13 +1104,15 @@ impl Cpu {
     }
 
     fn fetch_u32(&mut self) -> u32 {
-        self.bus.read_u32_be(self.pc)
+        self.sys.read_data(&mut self.bus, self.pc, 4)
+    }
+
+    fn fetch_u32_at(&mut self, addr: u32) -> u32 {
+        self.sys.read_data(&mut self.bus, addr, 4)
     }
 
     fn fetch_u16_at(&mut self, addr: u32) -> u16 {
-        let hi = self.bus.read_u8(addr) as u16;
-        let lo = self.bus.read_u8(addr.wrapping_add(1)) as u16;
-        (hi << 8) | lo
+        self.sys.read_data(&mut self.bus, addr, 2) as u16
     }
 
     fn instruction_cache_index(pc: u32, cache_len: usize) -> usize {
@@ -1117,6 +1126,10 @@ impl Cpu {
             InstructionMode::Normal => INSN_SIZE,
             InstructionMode::Short => SHORT_INSN_SIZE,
         };
+        if self.sys.translating() {
+            // The cache is keyed by virtual address; translated fetches skip it.
+            return self.read_and_decode_instruction(pc, mode);
+        }
         let start_generation = self.bus.instruction_cache_generation(pc);
         let end_generation = self
             .bus
@@ -1156,7 +1169,7 @@ impl Cpu {
     ) -> PendingInstruction {
         match mode {
             InstructionMode::Normal => {
-                PendingInstruction::Normal(Self::decode(self.bus.read_u32_be(pc)))
+                PendingInstruction::Normal(Self::decode(self.fetch_u32_at(pc)))
             }
             InstructionMode::Short => {
                 PendingInstruction::Short(Self::decode_short(self.fetch_u16_at(pc)))
@@ -1507,13 +1520,13 @@ impl Cpu {
             Instruction::Nop => {}
             Instruction::Ld { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
-                let value = self.bus.read_u32_be(addr);
+                let value = self.sys.read_data(&mut self.bus, addr, 4);
                 let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::St { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.read_reg(rd as usize);
-                self.bus.write_u32_be(addr, value);
+                self.sys.write_data(&mut self.bus, addr, 4, value);
             }
             Instruction::Syscall { imm } => {
                 self.enter_exception(Exception::Syscall(imm), next_pc);
@@ -1714,27 +1727,24 @@ impl Cpu {
             }
             Instruction::Ldb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
-                let value = self.bus.read_u8(addr) as u32;
+                let value = self.sys.read_data(&mut self.bus, addr, 1);
                 let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Ldh { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
-                let b0 = self.bus.read_u8(addr) as u32;
-                let b1 = self.bus.read_u8(addr.wrapping_add(1)) as u32;
-                let value = (b0 << 8) | b1;
+                let value = self.sys.read_data(&mut self.bus, addr, 2);
                 let _ = self.set_gpr(rd as usize, value);
             }
             Instruction::Stb { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.read_reg(rd as usize) as u8;
-                self.bus.write_u8(addr, value);
+                self.sys
+                    .write_data(&mut self.bus, addr, 1, u32::from(value));
             }
             Instruction::Sth { rd, base, offset } => {
                 let addr = Self::add_signed(self.read_reg(base as usize), offset);
                 let value = self.read_reg(rd as usize);
-                self.bus.write_u8(addr, (value >> 8) as u8);
-                self.bus
-                    .write_u8(addr.wrapping_add(1), (value & 0xFF) as u8);
+                self.sys.write_data(&mut self.bus, addr, 2, value & 0xFFFF);
             }
             Instruction::Unknown(raw) => {
                 tracing::error!(
@@ -1779,13 +1789,13 @@ impl Cpu {
             }
             ShortInstruction::Ld { rd, rs1 } => {
                 let addr = self.read_short_reg(rs1);
-                let value = self.bus.read_u32_be(addr);
+                let value = self.sys.read_data(&mut self.bus, addr, 4);
                 self.write_short_reg(rd, value);
             }
             ShortInstruction::St { rd, rs1 } => {
                 let addr = self.read_short_reg(rd);
                 let value = self.read_short_reg(rs1);
-                self.bus.write_u32_be(addr, value);
+                self.sys.write_data(&mut self.bus, addr, 4, value);
             }
             ShortInstruction::Bz { rd, offset } => {
                 if self.read_short_reg(rd) == 0 {

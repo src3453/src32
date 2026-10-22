@@ -85,7 +85,8 @@ class DecodedInsn:
 
 
 # Extension P system register names (see asm.SYSTEM_REGS).
-SYSTEM_REG_NAMES = {0x00: "STATUS", 0x01: "EPC", 0x02: "CAUSE", 0x08: "USP", 0x09: "UFP", 0x0A: "UGP"} | {
+SYSTEM_REG_NAMES = {0x00: "STATUS", 0x01: "EPC", 0x02: "CAUSE", 0x08: "USP", 0x09: "UFP", 0x0A: "UGP",
+    0x40: "VCTL", 0x41: "PTBR", 0x42: "VFAULT", 0x43: "TLBFLUSH", 0x44: "TLBINV"} | {
     0x10 + 4 * n + index: f"RGN{n}_{field}"
     for n in range(8)
     for index, field in enumerate(("START", "END", "FLAGS"))

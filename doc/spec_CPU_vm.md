@@ -1,7 +1,8 @@
 # SRC32 Extension V — Virtual Memory (draft)
 
-Revision 0.1 (2026-10-22). Status: **draft, not implemented**. No CPU kind decodes
-these registers yet and `CPU_FEATURES` does not report bit 9.
+Revision 0.1 (2026-10-22). Status: **implemented in the emulator** (Scalar, Cached,
+Cached-relaxed, Pipelined; JIT runs U mode through the Cached interpreter) and
+reported by `CPU_FEATURES` bit 9. Tests: `tests/cpu_vm.rs`.
 
 Extension V depends on Extension P (`doc/spec_CPU_priv.md`). Design goal:
 **the smallest MMU that lets Foundation give every process its own address
@@ -38,7 +39,7 @@ With `VCTL.EN = 0` the CPU behaves exactly as Extension P alone.
 ## 3. Page table
 
 Level-1 table: 1024 PTEs at `PTBR`. Level-2 table: 1024 PTEs, 4 KiB aligned.
-PTEs are little-endian 32-bit words.
+PTEs are 32-bit words stored big-endian, like every other data word (`LD`/`ST`).
 
 ```
 VA[31:22] = L1 index    VA[21:12] = L2 index    VA[11:0] = offset

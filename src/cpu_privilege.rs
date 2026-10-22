@@ -3,11 +3,14 @@
 //! Every CPU kind keeps its trap state in one `SystemState` so trap entry,
 //! IRET, system registers and user-mode protection behave identically.
 
+use crate::bus::Bus;
 use crate::cpu::InstructionMode;
 use crate::devices::cpu::{BUS_ERROR_VECTOR, ILLEGAL_INSTRUCTION_VECTOR, SYSCALL_VECTOR};
 
 /// CPUID feature bit for Extension P.
 pub const EXT_P: u32 = 0x100;
+/// CPUID feature bit for Extension V (doc/spec_CPU_vm.md).
+pub const EXT_V: u32 = 0x200;
 
 pub const STATUS_IE: u32 = 1 << 0;
 pub const STATUS_PIE: u32 = 1 << 1;
@@ -25,11 +28,119 @@ pub const SR_UGP: u16 = 0x0A;
 pub const SR_REGION_BASE: u16 = 0x10;
 pub const REGION_COUNT: usize = 8;
 
+/// Extension V system registers.
+pub const SR_VCTL: u16 = 0x40;
+pub const SR_PTBR: u16 = 0x41;
+pub const SR_VFAULT: u16 = 0x42;
+pub const SR_TLBFLUSH: u16 = 0x43;
+pub const SR_TLBINV: u16 = 0x44;
+pub const VCTL_EN: u32 = 1;
+
 /// Set in CAUSE for every exception; IRQs leave it clear (CAUSE = 0..15).
 pub const CAUSE_EXCEPTION: u32 = 0x8000_0000;
 
 /// User code can never touch vectors, IRQC or CPU state at or above this.
 pub const CPU_RESERVED_BASE: u32 = 0xFFFF_0000;
+
+const PAGE_SHIFT: u32 = 12;
+const PAGE_SIZE: u32 = 1 << PAGE_SHIFT;
+const TLB_ENTRIES: usize = 16;
+
+const PTE_V: u32 = 1 << 0;
+const PTE_R: u32 = 1 << 1;
+const PTE_W: u32 = 1 << 2;
+const PTE_X: u32 = 1 << 3;
+const PTE_U: u32 = 1 << 4;
+const PTE_RESERVED: u32 = 0xC0;
+const PTE_RWX: u32 = PTE_R | PTE_W | PTE_X;
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+struct TlbEntry {
+    valid: bool,
+    vpn: u32,
+    ppn: u32,
+    /// `R`, `W`, `X` and `U` bits of the leaf PTE.
+    flags: u32,
+}
+
+/// Extension V state (doc/spec_CPU_vm.md): control registers and the TLB.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Vm {
+    pub enabled: bool,
+    pub ptbr: u32,
+    pub vfault: u32,
+    tlb: [TlbEntry; TLB_ENTRIES],
+    next_victim: usize,
+}
+
+impl Default for Vm {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            ptbr: 0,
+            vfault: 0,
+            tlb: [TlbEntry::default(); TLB_ENTRIES],
+            next_victim: 0,
+        }
+    }
+}
+
+impl Vm {
+    pub fn flush(&mut self) {
+        self.tlb = [TlbEntry::default(); TLB_ENTRIES];
+        self.next_victim = 0;
+    }
+
+    fn invalidate(&mut self, va: u32) {
+        let vpn = va >> PAGE_SHIFT;
+        for entry in self.tlb.iter_mut().filter(|entry| entry.vpn == vpn) {
+            entry.valid = false;
+        }
+    }
+
+    fn lookup(&self, vpn: u32) -> Option<TlbEntry> {
+        self.tlb
+            .iter()
+            .copied()
+            .find(|entry| entry.valid && entry.vpn == vpn)
+    }
+
+    fn fill(&mut self, entry: TlbEntry) {
+        self.tlb[self.next_victim] = entry;
+        self.next_victim = (self.next_victim + 1) % TLB_ENTRIES;
+    }
+
+    /// Hardware table walk. `Ok(None)` is a missing translation; `Err(())` a
+    /// bus error while reading a PTE.
+    fn walk(
+        &self,
+        va: u32,
+        read_word: &mut impl FnMut(u32) -> Option<u32>,
+    ) -> Result<Option<TlbEntry>, ()> {
+        let l1 = read_word((self.ptbr & !(PAGE_SIZE - 1)).wrapping_add((va >> 22) * 4)).ok_or(())?;
+        if l1 & PTE_V == 0 || l1 & PTE_RESERVED != 0 || l1 & PTE_RWX != 0 {
+            return Ok(None);
+        }
+        let l2_base = l1 & !(PAGE_SIZE - 1);
+        let l2 = read_word(l2_base.wrapping_add(((va >> PAGE_SHIFT) & 0x3FF) * 4)).ok_or(())?;
+        let leaf_ok = l2 & PTE_V != 0
+            && l2 & PTE_RESERVED == 0
+            && l2 & PTE_RWX != 0
+            && (l2 & PTE_W == 0 || l2 & PTE_R != 0);
+        Ok(leaf_ok.then_some(TlbEntry {
+            valid: true,
+            vpn: va >> PAGE_SHIFT,
+            ppn: l2 >> PAGE_SHIFT,
+            flags: l2 & (PTE_RWX | PTE_U),
+        }))
+    }
+}
+
+/// Reads one big-endian word from physical memory for the table walk.
+fn read_pte(bus: &mut Bus, addr: u32) -> Option<u32> {
+    let value = bus.read_u32_be(addr);
+    (!bus.take_bus_error()).then_some(value)
+}
 
 /// First banked register; R28 (SP), R29 (FP) and R30 (GP) are banked.
 const BANK_FIRST: usize = 28;
@@ -51,6 +162,14 @@ pub enum Exception {
     Syscall(u16),
     PrivilegedInstruction,
     ProtectionFault(Access),
+    /// Extension V page fault in U mode. `protection` separates a present
+    /// leaf that denies the access from a missing translation; `addr` goes
+    /// to `VFAULT`.
+    PageFault {
+        access: Access,
+        protection: bool,
+        addr: u32,
+    },
 }
 
 impl Exception {
@@ -61,6 +180,9 @@ impl Exception {
             Exception::Syscall(imm) => (3, u32::from(imm)),
             Exception::PrivilegedInstruction => (4, 0),
             Exception::ProtectionFault(access) => (5, access as u32),
+            Exception::PageFault {
+                access, protection, ..
+            } => (6, access as u32 | if protection { 8 } else { 0 }),
         };
         CAUSE_EXCEPTION | (code << 16) | detail
     }
@@ -71,7 +193,9 @@ impl Exception {
             Exception::IllegalInstruction | Exception::PrivilegedInstruction => {
                 ILLEGAL_INSTRUCTION_VECTOR
             }
-            Exception::BusError | Exception::ProtectionFault(_) => BUS_ERROR_VECTOR,
+            Exception::BusError | Exception::ProtectionFault(_) | Exception::PageFault { .. } => {
+                BUS_ERROR_VECTOR
+            }
             Exception::Syscall(_) => SYSCALL_VECTOR,
         }
     }
@@ -107,6 +231,7 @@ pub struct SystemState {
     /// R28..R30 of the mode that is not current.
     other_bank: [u32; BANK_SIZE],
     regions: [Region; REGION_COUNT],
+    pub vm: Vm,
 }
 
 impl Default for SystemState {
@@ -121,6 +246,7 @@ impl Default for SystemState {
             cause: 0,
             other_bank: [0; BANK_SIZE],
             regions: [Region::default(); REGION_COUNT],
+            vm: Vm::default(),
         }
     }
 }
@@ -209,6 +335,10 @@ impl SystemState {
                     self.other_bank[index]
                 })
             }
+            SR_VCTL => Some(u32::from(self.vm.enabled)),
+            SR_PTBR => Some(self.vm.ptbr),
+            SR_VFAULT => Some(self.vm.vfault),
+            SR_TLBFLUSH | SR_TLBINV => Some(0),
             _ => {
                 let (region, field) = Self::region_field(sr)?;
                 let region = self.regions[region];
@@ -231,6 +361,14 @@ impl SystemState {
                     self.other_bank[index] = value;
                 }
             }
+            SR_VCTL => self.vm.enabled = value & VCTL_EN != 0,
+            SR_PTBR => {
+                self.vm.ptbr = value & !(PAGE_SIZE - 1);
+                self.vm.flush();
+            }
+            SR_VFAULT => self.vm.vfault = value,
+            SR_TLBFLUSH => self.vm.flush(),
+            SR_TLBINV => self.vm.invalidate(value),
             _ => {
                 let Some((region, field)) = Self::region_field(sr) else {
                     return false;
@@ -250,6 +388,113 @@ impl SystemState {
         let offset = usize::from(sr.checked_sub(SR_REGION_BASE)?);
         let (region, field) = (offset / 4, offset % 4);
         (region < REGION_COUNT && field < 3).then_some((region, field))
+    }
+
+    /// Whether U-mode accesses are translated (Extension V).
+    pub fn translating(&self) -> bool {
+        self.user && self.vm.enabled
+    }
+
+    /// Whether the current mode may perform this access. With Extension V
+    /// translation active this walks the page table instead of consulting the
+    /// regions. A denied access yields the exception to raise; nothing has
+    /// been read or written yet.
+    pub fn check_access(
+        &mut self,
+        bus: &mut Bus,
+        addr: u32,
+        len: u32,
+        access: Access,
+    ) -> Result<(), Exception> {
+        if !self.translating() {
+            return if self.allows(addr, len, access) {
+                Ok(())
+            } else {
+                Err(Exception::ProtectionFault(access))
+            };
+        }
+        let last = addr.wrapping_add(len - 1);
+        let mut page = addr >> PAGE_SHIFT;
+        loop {
+            let fault_addr = if page == addr >> PAGE_SHIFT {
+                addr
+            } else {
+                page << PAGE_SHIFT
+            };
+            let fault = |protection| Exception::PageFault {
+                access,
+                protection,
+                addr: fault_addr,
+            };
+            if page << PAGE_SHIFT >= CPU_RESERVED_BASE {
+                return Err(fault(true));
+            }
+            let entry = match self.vm.lookup(page) {
+                Some(entry) => entry,
+                None => match self.vm.walk(fault_addr, &mut |pa| read_pte(bus, pa)) {
+                    Err(()) => return Err(Exception::BusError),
+                    Ok(None) => return Err(fault(false)),
+                    Ok(Some(entry)) => {
+                        self.vm.fill(entry);
+                        entry
+                    }
+                },
+            };
+            if entry.flags & PTE_U == 0
+                || entry.flags & Self::pte_bit(access) == 0
+                || entry.ppn << PAGE_SHIFT >= CPU_RESERVED_BASE
+            {
+                return Err(fault(true));
+            }
+            if page == last >> PAGE_SHIFT || page.wrapping_add(1) == 0 {
+                return Ok(());
+            }
+            page += 1;
+        }
+    }
+
+    fn pte_bit(access: Access) -> u32 {
+        match access {
+            Access::Read => PTE_R,
+            Access::Write => PTE_W,
+            Access::Fetch => PTE_X,
+        }
+    }
+
+    /// Physical address of a byte that `check_access` just validated.
+    fn physical(&self, va: u32) -> u32 {
+        if !self.translating() {
+            return va;
+        }
+        let ppn = self
+            .vm
+            .lookup(va >> PAGE_SHIFT)
+            .map_or(0, |entry| entry.ppn);
+        (ppn << PAGE_SHIFT) | (va & (PAGE_SIZE - 1))
+    }
+
+    /// Big-endian load of 1, 2 or 4 bytes after a successful `check_access`.
+    pub fn read_data(&self, bus: &mut Bus, va: u32, size: u32) -> u32 {
+        if size == 4 && (!self.translating() || va & (PAGE_SIZE - 1) <= PAGE_SIZE - 4) {
+            return bus.read_u32_be(self.physical(va));
+        }
+        (0..size).fold(0, |acc, index| {
+            let byte = self.physical(va.wrapping_add(index));
+            (acc << 8) | u32::from(bus.read_u8(byte))
+        })
+    }
+
+    /// Big-endian store of 1, 2 or 4 bytes after a successful `check_access`.
+    pub fn write_data(&self, bus: &mut Bus, va: u32, size: u32, value: u32) {
+        if size == 4 && (!self.translating() || va & (PAGE_SIZE - 1) <= PAGE_SIZE - 4) {
+            bus.write_u32_be(self.physical(va), value);
+            return;
+        }
+        for index in 0..size {
+            let shift = 8 * (size - 1 - index);
+            let byte = self.physical(va.wrapping_add(index));
+            bus.write_u8(byte, (value >> shift) as u8);
+        }
     }
 
     /// Whether the current mode may perform this access. S mode is never
@@ -276,6 +521,11 @@ pub fn sr_name(sr: u16) -> Option<String> {
         SR_USP => Some("USP"),
         SR_UFP => Some("UFP"),
         SR_UGP => Some("UGP"),
+        SR_VCTL => Some("VCTL"),
+        SR_PTBR => Some("PTBR"),
+        SR_VFAULT => Some("VFAULT"),
+        SR_TLBFLUSH => Some("TLBFLUSH"),
+        SR_TLBINV => Some("TLBINV"),
         _ => None,
     };
     if let Some(name) = fixed {
