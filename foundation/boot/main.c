@@ -1,17 +1,17 @@
-/* Foundation boot image: the kernel starts the shell (/bin/shell.wax,
- * doc/spec_Foundation_shell.md) in slot 4 at APP priority.
+/* Foundation boot image: the kernel starts the bundled modules in the order
+ * of doc/spec_Foundation.md §11, init last:
  *
- * Provisional until init, the console service and FNDBOOT exist: the shell
- * image is linked into the kernel image (shell_image.h from build.py), and
- * the shell drives the console itself (foundation/lib/fnd/con_pcg.c), so it
- * gets MMIO grants for the PCG and the PeC input. When the shell exits, the
- * kernel starts it again, as init would. */
+ *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
+ *   fs       slot 3, SERVICE, SVC (provisional read-only fs with /bin)
+ *   init     slot 0, SERVICE, starts the shell and restarts it
+ *
+ * Provisional until FNDBOOT exists: the module images are linked into the
+ * kernel image (modules_image.h from build.py). */
 #include <foundation/kernel.h>
 
 #include "con_pcg.h"
-#include "shell_image.h"
+#include "modules_image.h"
 
-#define RESPAWN_TICKS 100u
 #define RW (CPT32_PERM_R | CPT32_PERM_W)
 
 static const struct fnd_grant console_grants[] = {
@@ -21,31 +21,19 @@ static const struct fnd_grant console_grants[] = {
 };
 #define GRANTS (sizeof console_grants / sizeof console_grants[0])
 
-static int32_t shell_pid;
-
-static int32_t spawn_shell(void) {
-    return fnd_proc_spawn_wax("shell", FND_PRIO_APP, img_shell, img_shell_size, 0, 0, console_grants,
-                              GRANTS);
-}
-
-static uint32_t on_tick(uint32_t ticks) {
-    if (ticks % RESPAWN_TICKS == 0) {
-        struct fnd_proc *proc = fnd_proc_get((uint32_t)shell_pid);
-        if (!proc || proc->state != FND_PROC_LIVE)
-            shell_pid = spawn_shell();
-    }
 #ifdef FOUNDATION_BOOT_STOP_TICKS
-    /* tests/shell: stop the machine so src32_testbench can read the screen */
-    if (ticks == FOUNDATION_BOOT_STOP_TICKS)
-        return 42u;
+/* tests/shell: stop the machine so src32_testbench can read the screen */
+static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_TICKS ? 42u : 0u; }
 #endif
-    return 0;
-}
 
 int main(void) {
-    shell_pid = spawn_shell();
-    if (shell_pid < 0)
+    if (fnd_proc_spawn_module("console", FND_PRIO_SERVICE, FND_CAP_SVC, img_console, img_console_size,
+                              console_grants, GRANTS) < 0 ||
+        fnd_proc_spawn_module("fs", FND_PRIO_SERVICE, FND_CAP_SVC, img_fs, img_fs_size, 0, 0) < 0 ||
+        fnd_proc_spawn_module("init", FND_PRIO_SERVICE, 0, img_init, img_init_size, 0, 0) < 0)
         return 1;
+#ifdef FOUNDATION_BOOT_STOP_TICKS
     fnd_set_tick_hook(on_tick);
+#endif
     fnd_kernel_run();
 }

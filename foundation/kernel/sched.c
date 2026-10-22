@@ -16,7 +16,8 @@
 #define PRIORITIES 3u            /* queued priorities; IDLE is not queued */
 
 struct fnd_thread *fnd_current;
-static struct fnd_thread threads[FND_MAX_THREADS];
+struct fnd_thread fnd_threads[FND_MAX_THREADS];
+#define threads fnd_threads
 static struct fnd_thread idle;
 static uint32_t idle_stack[64] __attribute__((aligned(8)));
 static struct fnd_thread *queue_head[PRIORITIES], *queue_tail[PRIORITIES];
@@ -92,7 +93,7 @@ static struct fnd_thread *dequeue(void) {
 }
 
 /* The single place that unblocks a thread: result is its syscall's R1. */
-static void wake(struct fnd_thread *thread, int32_t result) {
+void sched_wake(struct fnd_thread *thread, int32_t result) {
     thread->frame.r[1] = (uint32_t)result;
     thread->reason = B_NONE;
     thread->timed = 0;
@@ -139,7 +140,7 @@ void sched_tick(void) {
     for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
         struct fnd_thread *thread = &threads[i];
         if (thread->state == T_BLOCKED && thread->timed && (int32_t)(ticks - thread->wake_tick) >= 0)
-            wake(thread, FND_OK);
+            ipc_timed_out(thread); /* OK for sleep, TIMEOUT otherwise (§7.1) */
     }
     if (fnd_current != &idle && fnd_current->state == T_RUNNING) {
         if (fnd_current->slice)
@@ -154,17 +155,21 @@ void sched_yield(void) {
     need_resched = 1;
 }
 
+/* Blocks thread (the current one) for reason; timeout in ticks (§7.1). */
+void sched_block(struct fnd_thread *thread, uint32_t reason, uint32_t timeout) {
+    thread->state = T_BLOCKED;
+    thread->reason = reason;
+    thread->timed = timeout != FND_FOREVER;
+    thread->wake_tick = ticks + timeout;
+    thread->frame.r[1] = FND_OK;
+}
+
 void sched_sleep(uint32_t count) {
     if (count == 0) {
         sched_yield();
         return;
     }
-    struct fnd_thread *thread = fnd_current;
-    thread->state = T_BLOCKED;
-    thread->reason = B_SLEEP;
-    thread->timed = count != FND_FOREVER;
-    thread->wake_tick = ticks + count;
-    thread->frame.r[1] = FND_OK;
+    sched_block(fnd_current, B_SLEEP, count);
 }
 
 void sched_kill_proc(struct fnd_proc *proc) {

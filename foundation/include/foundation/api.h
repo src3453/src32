@@ -82,6 +82,21 @@
 #define FND_VOL_READ_ONLY 1u
 #define FND_VOL_NO_SLOT 0xFFFFFFFFu
 
+/* §8.2, §8.3 console. */
+#define FND_CON_LINE 0u
+#define FND_CON_RAW 1u
+#define FND_CON_SET_MODE 0x1000u
+#define FND_CON_READ_KEY 0x1001u
+#define FND_CON_BREAK_WAIT 0x1002u
+#define FND_CON_CLEAR 0x1003u
+#define FND_CON_GET_SIZE 0x1004u
+#define FND_CON_SET_CURSOR 0x1005u
+#define FND_CON_GET_CURSOR 0x1006u
+#define FND_CON_SET_COLOR 0x1007u
+
+/* §11.6 */
+#define FND_EXEC_IMAGE_MAX 0x100000u
+
 /* §11.1: the end of a listing or of the input. */
 #define FND_END 1
 

@@ -49,6 +49,7 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 
 - **できること**：字句と構文（§3、§4。引用、`;`、`&&`、`||`、コメント、予約記号のエラー、構文エラーの行は何も実行しない）、変数（§5.1。`set`、`$NAME`、`${NAME}`、`$?`、`$0`、`$#`、`$1`〜`$9`、既定の `PATH`）、行編集（§9.2。←→、Home、End、Backspace、Delete、16 行の履歴、Ctrl+C）、エラーメッセージ（§11.1）、組み込みコマンド `clear`、`echo`、`set`、`uname`、`free`、`ps`、`help`、`exit`、`pwd`、引数なしの `cd`（コマンド名は UNIX 風で、大文字小文字を区別しない）。起動時に OS とシェルの版（`uname` と同じ 2 行）を表示し、プロンプトは `/> ` です。
 - **まだできないこと**：fs サービスがないので、ファイルへのリダイレクト（`2>&1` は使える）、ワイルドカード、`cd path`、`ls`、`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` は `FND_E_UNSUPPORTED`、外部コマンドとパスでの指定は `command not found`（`FND_E_NOT_FOUND`）になります。スクリプト、`-c`、`/etc/profile.fsh` もありません。`proc_spawn` がないので外部プログラムを起動できず、`thread_create` と `CON_BREAK_WAIT` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
+- **仕様との差**：シェル仕様 0.2 では、シェルはディスパッチャだけを受け持ち、`cd`、`set`、`exit`、`help` 以外は `/bin` の標準コマンドです（仕様 §10）。今の実装は `proc_spawn` と console サービスがないので、`clear`、`echo`、`uname`、`free`、`ps`、`pwd` をまだシェルの中に持っています。外部コマンドを起動できるようになった時点で `/bin` へ移します。
 - **暫定の部分**：console サービス（フェーズ 2 の IPC が必要）の代わりに、`lib/fnd/con_pcg.c` をシェルにリンクしています。これが PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で直接扱い、出力は [API 仕様 §8.1](../doc/spec_Foundation_API.md)、キーは §8.3 のキーコードに従います。キー入力は `irq_bind` がないので、FIFO を 4 tick ごとに見ます。`fnd_init` は起動ブロックを読めない（`proc_startup` が未実装）ので argc = 0 とし、STDIN、STDOUT、STDERR、CONSOLE の役割をすべてこのコンソール（ハンドル 1）にします。シェル仕様ではシェルは `caps = 0` で MMIO を持ちませんが、これを入れ替えるまでは、起動イメージが VDP の窓、PCG のテキスト面と属性面（VRAM `0x10000000–0x10002FFF`）、PeC の入力窓を付与します。
 - **起動イメージ**：`boot/main.c` はカーネルとシェルの画像（`boot/build.py` が生成する `shell_image.h`）をリンクしたものです。シェルが終了すると、次の 100 tick 境界で起動し直します（init の代わり）。
 - `uname`、`free`、`ps` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` と `boot_drive` は 0 です（`proc_spawn` と stage1 がまだない）。
@@ -75,7 +76,7 @@ python -m unittest discover -s foundation/tests/shell -v
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -131,7 +132,7 @@ python -m unittest discover -s foundation/tests/wax -v
 ```sh
 python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
   --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
