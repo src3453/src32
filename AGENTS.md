@@ -42,7 +42,7 @@
 
 変更した経路に合う focused check を実行し、可能なら生成物や実行時の挙動も確認します。
 
-- sol compiler／LSP: `python3 -m pytest tools/solc/test_sol_compiler.py tools/solc/test_sol_language_server.py`
+- sol compiler／LSP: `python3 -m pytest tools/solc/test_sol_compiler.py tools/solc/test_sol_language_server.py tools/solc/test_sol_foundation.py`（Foundation の実行テストは `src32_testbench` がないと skip）
 - sol VS Code 拡張（`tools/vscode-sol-syntax/` で実行）: `npm run compile`、`npx vsce package --no-dependencies`
 - PCG scroll: `cargo test --test vdp_pcg_scroll`
 - WASM SDK package builder: `python3 -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v`

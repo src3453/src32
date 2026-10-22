@@ -6,14 +6,15 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from sol_vm import tokenize, compile_program, SolVMError, parse_number, RawAssemblyToken, LABEL_RE, QUALIFIED_RE, _decode_string_literal, split_qualified_name, namespace_chain
+from sol_vm import tokenize, compile_program, SolVMError, SUPPORTED_ABIS, parse_number, RawAssemblyToken, LABEL_RE, QUALIFIED_RE, _decode_string_literal, split_qualified_name, namespace_chain
 from sol_compiler import check_static_stack_safety, SolCompileError
 
 TOKEN_TYPES = ["comment", "string", "number", "operator", "directive", "control", "function", "parameter", "local", "variable", "constant", "assignment", "identifier", "namespace"]
 TOKEN_MODIFIERS = []
 OPS = {"add","sub","mul","div","mod","neg","and","or","xor","shl","shr","eq","neq","lt","gt","le","ge","sgn","not","dup","drop","swap","over","rot","nip","tuck","ld","st","ldb","ldh","stb","sth","stacksize","halt","ret","retn"}
 CONTROL = {"fn","if","while","else","end","local"}
-DIRECTIVES = {"!include","!define","!undef","!const","!var","!end","!namespace","!required_stack_size","!force_stack_size","!asm","!data","!db","!keepfn","!stack_top","!var_base","!rodata_base"}
+DIRECTIVES = {"!include","!define","!undef","!const","!var","!end","!namespace","!required_stack_size","!force_stack_size","!asm","!data","!db","!keepfn","!stack_top","!var_base","!rodata_base","!abi_compat"}
+ABI_DETAILS = {"bare": "CPT32 bare-metal ABI (default)", "Foundation": "Foundation OS U-mode process (PROTECTED WAX)"}
 
 # Document symbol kinds (LSP SymbolKind).
 KIND_NAMESPACE = 3
@@ -604,12 +605,29 @@ class Server:
             check_static_stack_safety(program)
         except (SolVMError, SolCompileError) as e:
             msg=str(e); loc=None
-            m=re.match(r".*:(\d+):(\d+):\s*(.*)$", msg)
-            if m:
+            m=re.match(r"(.*):(\d+):(\d+):\s*(.*)$", msg)
+            # An error located in an included file (e.g. an !abi_compat
+            # mismatch) keeps its path in the message at the file start.
+            if m and m.group(1) in ("<source>", self.path(uri)):
                 from sol_vm import SourceLocation
-                loc=SourceLocation(self.path(uri),int(m.group(1)),int(m.group(2))); msg=m.group(3)
+                loc=SourceLocation(self.path(uri),int(m.group(2)),int(m.group(3))); msg=m.group(4)
             diagnostics.append(self.diag(msg,1,loc))
         return diagnostics
+    def completions(self, prefix, line=0):
+        """Directive names at a line start, and ABI names after `!abi_compat`."""
+        def item(label, kind, start, detail=None):
+            edit={"range":{"start":{"line":line,"character":start},"end":{"line":line,"character":len(prefix)}},"newText":label}
+            result={"label":label,"kind":kind,"textEdit":edit}
+            if detail: result["detail"]=detail
+            return result
+        m=re.match(r'^(\s*!abi_compat\s+)("?[A-Za-z]*)$', prefix)
+        if m:
+            typed=m.group(2).lstrip('"')
+            return [item(f'"{name}"',12,len(m.group(1)),ABI_DETAILS[name]) for name in SUPPORTED_ABIS if name.startswith(typed)]
+        m=re.match(r'^(\s*)(![A-Za-z_]*)$', prefix)
+        if m:
+            return [item(d,14,len(m.group(1))) for d in sorted(DIRECTIVES) if d.startswith(m.group(2))]
+        return []
     def tokens(self, text, uri):
         out=[]
         try: toks=tokenize(text,self.path(uri))
@@ -750,7 +768,12 @@ class Server:
                 if root:
                     roots.append(root if "://" in root else Path(root).resolve().as_uri())
             self.roots=roots
-            return {"id":ident,"result":{"capabilities":{"textDocumentSync":{"openClose":True,"change":1},"semanticTokensProvider":{"legend":{"tokenTypes":TOKEN_TYPES,"tokenModifiers":TOKEN_MODIFIERS},"full":True},"documentSymbolProvider":True,"definitionProvider":True,"declarationProvider":True,"referencesProvider":True,"hoverProvider":True,"documentHighlightProvider":True,"workspaceSymbolProvider":True,"diagnosticProvider":{"interFileDependencies":False,"workspaceDiagnostics":False,"identifier":"sol"}}}}
+            return {"id":ident,"result":{"capabilities":{"textDocumentSync":{"openClose":True,"change":1},"semanticTokensProvider":{"legend":{"tokenTypes":TOKEN_TYPES,"tokenModifiers":TOKEN_MODIFIERS},"full":True},"documentSymbolProvider":True,"definitionProvider":True,"declarationProvider":True,"referencesProvider":True,"hoverProvider":True,"documentHighlightProvider":True,"workspaceSymbolProvider":True,"completionProvider":{"triggerCharacters":["!","\""]},"diagnosticProvider":{"interFileDependencies":False,"workspaceDiagnostics":False,"identifier":"sol"}}}}
+        if method=="textDocument/completion":
+            uri=p["textDocument"]["uri"]; pos=p["position"]
+            lines=self.docs.get(uri,"").split("\n")
+            line=lines[pos["line"]] if pos["line"] < len(lines) else ""
+            return {"id":ident,"result":self.completions(line[:pos["character"]], pos["line"])}
         if method=="textDocument/diagnostic":
             uri=p["textDocument"]["uri"]
             return {"id":ident,"result":{"kind":"full","items":self.analyze(uri,self.docs.get(uri,""))}}

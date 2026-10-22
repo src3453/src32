@@ -1,6 +1,6 @@
 # Foundation カーネル ABI 仕様 v1
 
-Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。それ以外（カーネル本体、IPC、システムコール、sol 対応）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
+Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。§13 の sol 対応（solc の `!abi_compat`、`sol/foundation/fnd.sol`）も実装済み。それ以外（カーネル本体、IPC、システムコール）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -537,7 +537,8 @@ sol の言語の意味と、関数の呼び出し規約・フレーム（R26 の
 | 出力 | 従来の WAX または raw | PROTECTED WAX。ブロックの権限はコードが RX、rodata が R、変数が RW。ヒープはスタックの下端を越えない |
 
 - 明示した `--org`、`!rodata_base`、`!var_base`、`!stack_top` は既定より優先します。ただし配置がスロットに収まらない場合は、コンパイル時にエラーにします。
-- solc から `tools/asm/asm.py` へ権限とスタックを渡す具体的なアセンブラ指令は、実装時に asm の仕様として定めます。
+- solc は権限とスタックを `tools/asm/asm.py` の指令で渡します。`.PROTECTED stack_top, stack_size` で PROTECTED WAX を選び、`.PERM rx`／`.PERM r`／`.PERM rw` で以降のブロックの権限を指定します（[CPU 仕様 §7.1](spec_CPU.md)）。
+- 省略可能な major は、ディレクティブと同じ行に書かなければなりません。次の行の数値はトップレベルのコードです。
 
 ### 13.3 標準ライブラリ `sol/foundation/fnd.sol`
 
@@ -550,7 +551,7 @@ fn fnd_sleep (ticks) :
 !asm
     LD R1, [R26 + 12]      ; ticks（ローカル 1 個の後の arg0）
     SYSCALL 0x0C
-    ST [R26 + 8], R1       ; r
+    ST R1, [R26 + 8]       ; r
 !end
     r ret
 ;

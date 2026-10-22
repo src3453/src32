@@ -3,13 +3,13 @@
 from __future__ import annotations
 
 import ast
-from dataclasses import dataclass
 import logging
 import math
 import os
 import re
 import struct
-from typing import NamedTuple
+from dataclasses import dataclass, field
+from typing import NamedTuple, Optional
 
 LABEL_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 # One or more `namespace.` qualifiers in front of a function, variable or constant name.
@@ -26,6 +26,21 @@ UINT32_MAX = 2**32 - 1
 
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
+
+# `!abi_compat` names and the majors each one supports (doc/spec_Foundation.md section 13).
+ABI_BARE = "bare"
+ABI_FOUNDATION = "Foundation"
+SUPPORTED_ABIS = {ABI_BARE: (1,), ABI_FOUNDATION: (1,)}
+FOUNDATION_STACK_TOP = 0x00C00000
+FOUNDATION_STACK_SIZE_BYTES = 0x00040000
+# Instructions a Foundation U-mode program must not use inside `!asm`.
+FOUNDATION_PRIVILEGED_ASM = frozenset({"HALT", "IRET", "MFSR", "MTSR"})
+# Directive argument counts used to tell directive operands from top-level code.
+_DIRECTIVE_OPERANDS = {
+    "!const": 2, "!define": 2, "!undef": 1, "!keepfn": 1, "!var": 1,
+    "!stack_top": 1, "!var_base": 1, "!rodata_base": 1,
+    "!required_stack_size": 1, "!force_stack_size": 1,
+}
 
 logger = logging.getLogger(__name__)
 
@@ -165,8 +180,18 @@ class Program:
     labels: dict[str, int]
     functions: dict[str, int]
     read_only_data: list[tuple[int, bytes]]
+    irq_handlers: dict[int, str] = field(default_factory=dict)
     effective_stack_size_bytes: int = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
+    stack_top: int = 0x000FFFFC
+    var_base: int = 0x00100000
+    read_only_data_base: int = STRING_POOL_BASE
+    # End (exclusive) of the global variables allocated from var_base.
+    var_end: int = 0x00100000
+    abi: str = ABI_BARE
+    abi_major: int = 1
+    # Layout settings given by a source directive or an explicit API/CLI value.
+    explicit_layout: frozenset[str] = frozenset()
 
 def to_i32(value: int) -> int:
     value &= UINT32_MAX
@@ -361,7 +386,30 @@ def parse_number(token: str) -> int:
 STRING_POOL_BASE = 0x00020000
 STACK_SIZE_BYTES = 0x00100000
 
-def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base: int = STRING_POOL_BASE, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
+def _check_foundation_asm(tok: RawAssemblyToken) -> None:
+    """Reject privileged instructions at the start of `!asm` lines (a misuse check, not a guarantee)."""
+    for offset, raw_line in enumerate(tok.text.splitlines(), start=1):
+        line = raw_line.split(";", 1)[0].strip()
+        while True:
+            match = re.match(r"[A-Za-z_][A-Za-z0-9_]*:\s*", line)
+            if not match:
+                break
+            line = line[match.end():]
+        mnemonic = line.split(None, 1)[0].upper() if line else ""
+        if mnemonic in FOUNDATION_PRIVILEGED_ASM:
+            location = SourceLocation(tok.location.path, tok.location.line + offset, 1)
+            raise SolVMError(format_error(
+                f'privileged instruction {mnemonic} is not allowed in !asm with !abi_compat "{ABI_FOUNDATION}"', location))
+
+
+def compile_program(source: str, var_base: int | None = None, read_only_data_base: int | None = None, stack_top: int | None = None, source_path: str | None = None, included_paths: set | None = None, remove_unused_functions: bool = True) -> Program:
+    var_base_overridden = var_base is not None
+    rodata_base_overridden = read_only_data_base is not None
+    stack_top_overridden = stack_top is not None
+    var_base = 0x00100000 if var_base is None else var_base
+    read_only_data_base = STRING_POOL_BASE if read_only_data_base is None else read_only_data_base
+    stack_top = 0x000FFFFC if stack_top is None else stack_top
+    directive_seen: set[str] = set()
     included_paths = set() if included_paths is None else set(included_paths)
     base_dir = os.path.dirname(os.path.abspath(source_path)) if source_path else None
 
@@ -384,7 +432,10 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     if not LABEL_RE.fullmatch(alias):
                         raise SolVMError(f"invalid include namespace: {alias}")
                     consumed = 4
-                include_path = os.path.abspath(os.path.join(current_base, fname)) if current_base else os.path.abspath(fname)
+                if current_base:
+                    include_path = os.path.abspath(os.path.join(current_base, fname))
+                else:
+                    include_path = os.path.abspath(fname)
                 if include_path in seen:
                     raise SolVMError(f"circular include detected: {include_path}")
                 if not os.path.exists(include_path):
@@ -403,6 +454,23 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             out.append(tok)
             i += 1
         return out
+
+    tokens = expand_includes(tokenize(source, source_path), base_dir, included_paths)
+    SOLC_DEBUG = os.getenv("SOLC_DEBUG") == "1"
+    if SOLC_DEBUG:
+        print("DEBUG: tokens after include expansion ->", tokens)
+
+    instructions: list[Instruction] = []
+    labels: dict[str, int] = {}
+    read_only_data: list[tuple[int, bytes]] = []
+
+    constants: dict[tuple[str | None, str], int] = {}
+    variables: dict[tuple[str | None, str], int] = {}
+    macros: dict[str, list[str]] = {}
+    next_var_addr = var_base
+    functions: dict[str, dict] = {}
+    irq_handlers: dict[int, str] = {}
+    kept_functions: set[str] = set()
     function_symbols: dict[tuple[str | None, str], str] = {}
 
     def internal_function_name(namespace: str | None, name: str) -> str:
@@ -434,24 +502,24 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                 return found
         return None
 
-    tokens = expand_includes(tokenize(source, source_path), base_dir, included_paths)
-    SOLC_DEBUG = os.getenv("SOLC_DEBUG") == "1"
-    if SOLC_DEBUG:
-        print("DEBUG: tokens after include expansion ->", tokens)
-
-    instructions: list[Instruction] = []
-    labels: dict[str, int] = {}
-    read_only_data: list[tuple[int, bytes]] = []
-
-    constants: dict[tuple[str | None, str], int] = {}
-    variables: dict[tuple[str | None, str], int] = {}
-    macros: dict[str, list[str]] = {}
-    next_var_addr = var_base
-    functions: dict[str, dict] = {}
-    kept_functions: set[str] = set()
     effective_stack_size_bytes = STACK_SIZE_BYTES
     required_stack_size_bytes: int | None = None
     forced_stack_size_seen = False
+
+    def compiler_address(directive: str, token: str) -> int:
+        if not NUMBER_RE.match(token):
+            raise SolVMError(f"{directive} requires a numeric address")
+        if token.lower().startswith("0x"):
+            value = int(token.rstrip("uU"), 16)
+        elif token.lower().startswith("0b"):
+            value = int(token.rstrip("uU"), 2)
+        elif token.endswith(("u", "U")):
+            value = int(token[:-1], 10)
+        else:
+            value = int(token, 10)
+        if value < 0 or value > UINT32_MAX:
+            raise SolVMError(f"{directive} address must be in range 0..0xFFFFFFFF")
+        return value
 
     string_literals: dict[tuple[str, str], int] = {}
     next_string_addr = read_only_data_base
@@ -555,7 +623,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         return False
 
     def compile_word_stream(words: list[str], *, current_func: str | None = None, locals_list: list[tuple[str, int | None]] | None = None, args_list: list[str] | None = None, namespace: str | None = None, start_index: int = 0, stop_tokens: set[str] | None = None) -> int:
-        nonlocal next_string_addr, next_var_addr, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
+        nonlocal next_string_addr, next_var_addr, stack_top, var_base, read_only_data_base, effective_stack_size_bytes, required_stack_size_bytes, forced_stack_size_seen
         terminal_ops = {"ret", "retn", "halt"}
         i = start_index
         while i < len(words):
@@ -648,6 +716,30 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     if function_name is None:
                         raise error(f"unknown function for !keepfn: {name}")
                     kept_functions.add(function_name)
+                    i += 2
+                    continue
+                setting_names = {
+                    "!stack_top": "stack_top",
+                    "!var_base": "var_base",
+                    "!rodata_base": "rodata_base",
+                }
+                if tok in setting_names:
+                    if i + 1 >= len(words):
+                        raise SolVMError(f"{tok} requires an address")
+                    setting = setting_names[tok]
+                    if setting in directive_seen:
+                        raise SolVMError(f"{tok} may only be specified once")
+                    directive_seen.add(setting)
+                    value = compiler_address(tok, words[i + 1])
+                    # Explicit compiler/API options have precedence over source directives.
+                    if setting == "stack_top" and not stack_top_overridden:
+                        stack_top = value
+                    elif setting == "var_base" and not var_base_overridden:
+                        var_base = value
+                        next_var_addr = value
+                    elif setting == "rodata_base" and not rodata_base_overridden:
+                        read_only_data_base = value
+                        next_string_addr = value
                     i += 2
                     continue
                 if tok == "!const":
@@ -844,10 +936,80 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
     def current_namespace() -> str | None:
         return ".".join(namespace_stack) if namespace_stack else None
 
+    # `!abi_compat` must precede every function, top-level word, `!namespace`,
+    # `!asm`, `!data` and `!db` of its own file. Track which files already
+    # have such content, skipping the operands of the other directives.
+    abi_declarations: list[tuple[str | None, str, int, SourceLocation | None]] = []
+    files_with_content: set[str | None] = set()
+    # Remaining operands of the previous directive; `!var` may take one more number.
+    operands_pending = 0
+    var_value_optional = False
+
+    def note_file_content(tok: object) -> None:
+        nonlocal operands_pending, var_value_optional
+        if isinstance(tok, NamespaceMarker):
+            return
+        location = getattr(tok, "location", None)
+        path = location.path if location else None
+        if isinstance(tok, RawAssemblyToken):
+            files_with_content.add(path)
+            return
+        if operands_pending:
+            operands_pending -= 1
+            return
+        if var_value_optional:
+            var_value_optional = False
+            if NUMBER_RE.match(tok):
+                return
+        if tok in _DIRECTIVE_OPERANDS:
+            operands_pending = _DIRECTIVE_OPERANDS[tok]
+            var_value_optional = tok == "!var"
+            return
+        if tok == "!end":
+            return
+        files_with_content.add(path)
+
     while i < len(tokens):
         tok = tokens[i]
         if isinstance(tok, str) and tok.startswith("\\!"):
             tok = tok[1:]
+        if tok == "!abi_compat":
+            location = getattr(tok, "location", None)
+
+            def abi_error(message: str) -> SolVMError:
+                return SolVMError(format_error(message, location))
+
+            if i + 1 >= len(tokens) or not isinstance(tokens[i + 1], str):
+                raise abi_error('!abi_compat requires an ABI name such as "Foundation"')
+            name_tok = tokens[i + 1]
+            if not (len(name_tok) >= 2 and name_tok.startswith('"') and name_tok.endswith('"')):
+                raise abi_error(f"!abi_compat ABI name must be a string literal: {name_tok}")
+            abi_name = _decode_string_literal(name_tok)
+            consumed = 2
+            abi_major = 1
+            # The optional major must be on the directive's line so that a
+            # number starting the next line stays top-level code.
+            major_tok = tokens[i + 2] if i + 2 < len(tokens) else None
+            if (
+                isinstance(major_tok, SourceToken)
+                and location is not None
+                and major_tok.location[:2] == location[:2]
+            ):
+                if not re.fullmatch(r"[0-9]+|0[xX][0-9a-fA-F]+", major_tok):
+                    raise abi_error(f"invalid major version for !abi_compat: {major_tok}")
+                abi_major = int(major_tok, 0)
+                consumed = 3
+            if abi_name not in SUPPORTED_ABIS:
+                raise abi_error(f'unknown ABI for !abi_compat: "{abi_name}" (expected "{ABI_BARE}" or "{ABI_FOUNDATION}")')
+            if abi_major not in SUPPORTED_ABIS[abi_name]:
+                raise abi_error(f'unsupported major version for !abi_compat "{abi_name}": {abi_major}')
+            path = location.path if location else None
+            if path in files_with_content or operands_pending:
+                raise abi_error("!abi_compat must appear at the top level before any function, code, !namespace, !asm, !data or !db in its file")
+            abi_declarations.append((path, abi_name, abi_major, location))
+            i += consumed
+            continue
+        note_file_content(tok)
         if SOLC_DEBUG and i % 50 == 0:
             print(f"DEBUG first-pass i={i} tok={tok}")
         if isinstance(tok, NamespaceMarker):
@@ -927,7 +1089,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                         raise SolVMError(f"invalid local name: {local_name}")
                     init_value = None
                     consumed = 2
-                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                    if k + 2 < len(body_tokens) and isinstance(body_tokens[k + 2], str) and NUMBER_RE.match(body_tokens[k + 2]):
                         init_value = parse_number(body_tokens[k + 2])
                         consumed = 3
                     local_index = len(locals_list)
@@ -952,7 +1114,24 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
             if symbol in function_symbols or internal_name in functions:
                 raise SolVMError(f"duplicate function: {name}")
             function_symbols[symbol] = internal_name
-            functions[internal_name] = {"args": args, "body": body_tokens, "locals": locals_list, "namespace": active_namespace, "source_name": name}
+            functions[internal_name] = {
+                "args": args,
+                "body": body_tokens,
+                "locals": locals_list,
+                "namespace": active_namespace,
+                "source_name": name,
+                "location": getattr(name, "location", None),
+            }
+            irq_match = re.fullmatch(r"irq(\d+)", name) if active_namespace is None else None
+            if irq_match:
+                irq_number = int(irq_match.group(1))
+                if irq_number > 15:
+                    raise SolVMError(f"IRQ handler number must be 0..15: {name}")
+                if args:
+                    raise SolVMError(f"IRQ handler must not have arguments: {name}")
+                if irq_number in irq_handlers:
+                    raise SolVMError(f"duplicate IRQ handler: {name}")
+                irq_handlers[irq_number] = name
             i = j + 1
             continue
 
@@ -962,6 +1141,37 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         i += 1
     if namespace_stack:
         raise SolVMError(f"unterminated namespace: {'.'.join(namespace_stack)}")
+
+    abi = ABI_BARE
+    abi_major = 1
+    if abi_declarations:
+        first_path, abi, abi_major, _ = abi_declarations[0]
+        for path, name, major, location in abi_declarations[1:]:
+            if (name, major) != (abi, abi_major):
+                raise SolVMError(format_error(
+                    f'!abi_compat mismatch: {path or "<source>"} requires "{name}" {major}, '
+                    f'but {first_path or "<source>"} requires "{abi}" {abi_major}',
+                    location,
+                ))
+        if not any(path == source_path for path, _, _, _ in abi_declarations):
+            path, name, major, location = abi_declarations[0]
+            if name != ABI_BARE:
+                raise SolVMError(format_error(
+                    f'!abi_compat mismatch: {path or "<source>"} requires "{name}" {major}, '
+                    f'but the main program {source_path or "<source>"} uses "{ABI_BARE}" (no !abi_compat)',
+                    location,
+                ))
+    if abi == ABI_FOUNDATION:
+        for irq_number, handler in sorted(irq_handlers.items()):
+            location = functions[internal_function_name(None, handler)]["location"]
+            raise SolVMError(format_error(
+                f'IRQ handler functions are not allowed with !abi_compat "{ABI_FOUNDATION}": {handler}', location))
+        for tok in tokens:
+            if isinstance(tok, RawAssemblyToken):
+                _check_foundation_asm(tok)
+        if not stack_top_overridden:
+            stack_top = FOUNDATION_STACK_TOP
+        effective_stack_size_bytes = FOUNDATION_STACK_SIZE_BYTES
 
     # Only emit functions reachable from the top-level program.  Function
     # bodies are compiled after the main program, so emitting every collected
@@ -993,6 +1203,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         reachable_functions: set[str] = set()
         pending_functions = list(called_functions(cleaned_tokens))
         pending_functions.extend(kept_functions)
+        pending_functions.extend(irq_handlers.values())
         while pending_functions:
             function_name = pending_functions.pop()
             if function_name in reachable_functions:
@@ -1003,7 +1214,16 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     pending_functions.append(called_name)
         unused_functions = set(functions) - reachable_functions
         for function_name in sorted(unused_functions):
-            logger.warning("unused function: %s", functions[function_name]["source_name"])
+            function_data = functions[function_name]
+            location = function_data["location"]
+            if location is None:
+                logger.warning("unused function: %s", function_data["source_name"])
+            else:
+                logger.warning(
+                    "%s: unused function: %s",
+                    location.format(),
+                    function_data["source_name"],
+                )
         functions = {
             name: data for name, data in functions.items() if name in reachable_functions
         }
@@ -1047,6 +1267,18 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
         read_only_data=read_only_data,
         effective_stack_size_bytes=effective_stack_size_bytes,
         required_stack_size_bytes=required_stack_size_bytes,
+        irq_handlers=irq_handlers,
+        stack_top=stack_top,
+        var_base=var_base,
+        read_only_data_base=read_only_data_base,
+        var_end=next_var_addr,
+        abi=abi,
+        abi_major=abi_major,
+        explicit_layout=frozenset(
+            {"stack_top"} if stack_top_overridden else set()
+        ) | frozenset({"var_base"} if var_base_overridden else set())
+        | frozenset({"rodata_base"} if rodata_base_overridden else set())
+        | frozenset(directive_seen),
     )
 
 '''
@@ -1119,7 +1351,7 @@ def compile_program(source: str, var_base: int = 0x00100000, read_only_data_base
                     # optional init value
                     init_value = None
                     consumed = 2
-                    if k + 2 < len(body_tokens) and NUMBER_RE.match(body_tokens[k + 2]):
+                    if k + 2 < len(body_tokens) and isinstance(body_tokens[k + 2], str) and NUMBER_RE.match(body_tokens[k + 2]):
                         init_value = parse_number(body_tokens[k + 2])
                         consumed = 3
                     local_index = len(locals_list)
@@ -1238,12 +1470,14 @@ class SolVM:
             f"pc={self.pc} op={inst.op}{arg_text} stack={stack_snapshot} frames={len(self.call_stack)} r28=0x{self.r28:08X}"
         )
 
-    def load(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> None:
+    def load(self, source: str, source_path: str | None = None, read_only_data_base: int | None = None, remove_unused_functions: bool = True) -> None:
         self.program = compile_program(source, read_only_data_base=read_only_data_base, source_path=source_path, remove_unused_functions=remove_unused_functions)
+        if self.program.abi != ABI_BARE:
+            raise SolVMError(f'the sol VM cannot run programs declaring !abi_compat "{self.program.abi}"; compile them with solc instead')
         self.pc = 0
         self.halted = False
         # reset runtime stack pointer per program (keep same default)
-        self.r28 = 0x000FFFFC
+        self.r28 = self.program.stack_top
         self.call_stack = []
         self.memory = {}
         self.trace = []
@@ -1302,7 +1536,7 @@ class SolVM:
                 raise
         return self.stack
 
-    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int = STRING_POOL_BASE, remove_unused_functions: bool = True) -> list[int]:
+    def run_source(self, source: str, source_path: str | None = None, read_only_data_base: int | None = None, remove_unused_functions: bool = True) -> list[int]:
         self.load(source, source_path=source_path, read_only_data_base=read_only_data_base, remove_unused_functions=remove_unused_functions)
         return self.run()
 

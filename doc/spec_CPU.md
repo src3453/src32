@@ -517,6 +517,8 @@ persist.
   - `.DWORD <value>` (32-bit)
   - `.DB <v1>, <v2>, ...` (numbers or quoted strings)
   - `.STRING "text"`
+  - `.PERM <rwx>`: bytes emitted after it start a new block with these R/W/X permissions (letters from `rwx`, e.g. `rx`). Only a `.PROTECTED` image uses the masks.
+  - `.PROTECTED <stack_top>, <stack_size>`: once per source; makes the `.wax` output a PROTECTED image with this user stack. Every emitted byte must then follow a `.PERM`. A raw (non-`.wax`) output with `.PROTECTED` is an error.
 
 ### 7.2 Number literals
 

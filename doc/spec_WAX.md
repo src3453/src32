@@ -153,6 +153,9 @@ Current status:
   address of bytes already emitted. Gaps are omitted; expanding blocks into a
   zero-filled image at their load addresses matches the raw binary output.
   `.wax` selects WAX automatically; other output suffixes retain raw-binary output.
+  `.PROTECTED stack_top, stack_size` makes the `.wax` PROTECTED; `.PERM rwx` starts
+  a new block with those permissions, also between adjacent addresses (see
+  [CPU §7.1](spec_CPU.md)). `solc` emits them for `!abi_compat "Foundation"`.
 - `src/wax.rs` parses and loads blocks. Main, testbench, monitor, and BIOS
   consumers use those block load addresses.
 - `sol/cpt32/wax.sol` validates WAX v2 executables in guest RAM and loads

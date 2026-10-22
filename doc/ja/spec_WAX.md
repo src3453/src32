@@ -146,6 +146,9 @@ payload block はファイルからコピーするだけで、スタックや ga
   block を出力します。現在の PC と同じ address への `.ORG` は、出力済み byte の開始 address を
   変更しません。gap は省略されますが、block を load address に配置してゼロ埋め展開すると
   raw binary の出力と一致します。`.wax` 拡張子で WAX を選択し、その他は raw binary のままです。
+  `.PROTECTED stack_top, stack_size` で `.wax` を PROTECTED にし、`.PERM rwx` は隣接する address でも
+  その権限の新しい block を開始します（[CPU §7.1](spec_CPU.md)）。`solc` は
+  `!abi_compat "Foundation"` でこれらを出力します。
 - `src/wax.rs` は block を解析・ロードします。main、testbench、monitor、BIOS は各 block の
   load address を使います。
 - `sol/cpt32/wax.sol` は guest RAM 上の WAX v2 実行ファイルを検証し、各 sparse
