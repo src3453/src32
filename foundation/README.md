@@ -3,8 +3,9 @@
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 
 sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../examples/foundation-sol/README.md) にあります。
-`boot/build.py --root DIR` は追加ファイルをディスクと暫定 bootfs の両方に組み込みます。
-暫定 bootfs のイメージ・スタックは slot 3 の512 KiB内に収める必要があり、追加ファイルが多すぎる場合はビルドエラーになります。
+`boot/build.py --root DIR` は追加ファイルをFS2ディスクに組み込みます。
+起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
+追加ファイルをfsの実行イメージへ埋め込む必要はありません。
 
 ## フェーズ1: 最小カーネル
 
@@ -37,7 +38,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `kernel/ipc.c`, `include/foundation/ipc.h` | ハンドル、IPC、サービス名、`wait`、`proc_kill`（§6〜§9） |
 | `kernel/blk.c` | `blk_io`（§10.4）。IDC と DMAC ch0、IDC 割り込み（IRQ2）で要求を 1 つずつ FIFO で処理 |
 | `kernel/fndboot.c` | FNDBOOT のモジュール表の検査と、同梱モジュールの起動（§11） |
-| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.0（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports` |
+| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.1（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/syncを追加 |
 | `services/console/` | console サービス（API 仕様 §8、PCG と PeC キーボード） |
 | `services/disk/` | disk サービス（`blk_io` を fs に IPC で渡す。プロトコルは `disk.h`） |
 | `fs/` | fs サービス（FS2 と DSFS、VFS、API 仕様 §5〜§7 のプロトコル）。次の節 |
@@ -69,7 +70,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 
 起動すると、カーネルが console（スロット 1）、disk（スロット 2）、fs（スロット 3）、init（スロット 0）を起動し、init が `/bin/shell.wax`（スロット 4）を起動します。シェルは [シェル仕様](../doc/spec_Foundation_shell.md) 0.2 のディスパッチャで、`cd`、`set`、`exit`、`help` 以外のコマンドは `PATH`（既定 `/bin`）から `<name>.wax` を探し、`fnd_proc_exec` でスロット 5 に起動して終了を待ちます。
 
-- **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.0（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
+- **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.1（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
 - **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` はまだ `/bin` にありません（`ls` は追加済み）。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。

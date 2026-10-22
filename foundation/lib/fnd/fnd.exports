@@ -1,4 +1,4 @@
-# libfnd as the WAL "fnd" 1.0 (doc/spec_Foundation_API.md §11,
+# libfnd as the WAL "fnd" 1.1 (doc/spec_Foundation_API.md §11,
 # doc/spec_WAX_v3.md §4.2). One export per line: name and call ABI 1
 # signature, as tools/llvm-src32 --exports reads them. Keep in step with
 # <foundation/fnd.h>; changing a signature needs a new major version.
@@ -15,7 +15,13 @@ fnd_con_write fn(ptr)->i32
 fnd_console fn()->u32
 fnd_cwd_get fn(ptr,u32,ptr)->i32
 fnd_cwd_set fn(ptr)->i32
+fnd_dir_make fn(ptr,u32)->i32
+fnd_dir_next fn(u32,ptr)->i32
+fnd_dir_open fn(ptr,ptr)->i32
+fnd_dir_remove fn(ptr)->i32
+fnd_dir_rewind fn(u32)->i32
 fnd_exit fn(i32)->void
+fnd_file_delete fn(ptr)->i32
 fnd_file_open fn(ptr,u32,u32,ptr)->i32
 fnd_fs fn()->u32
 fnd_init fn()->i32
@@ -31,4 +37,5 @@ fnd_std_in fn()->u32
 fnd_std_out fn()->u32
 fnd_stream_stat fn(u32,ptr)->i32
 fnd_strerror fn(i32)->ptr
+fnd_sync fn(u32)->i32
 fnd_write fn(u32,ptr,u32,ptr)->i32

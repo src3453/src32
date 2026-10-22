@@ -12,7 +12,7 @@ The programs, by slot (doc/spec_Foundation.md §5.2):
     slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
-libfnd is the WAL "fnd" 1.0 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
+libfnd is the WAL "fnd" 1.1 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
 and the shell and the commands are WAX v3 that import it; fnd_proc_exec
 reads it from /lib when it starts them (§9.5). init and the services are
 FNDBOOT modules (§11), PROTECTED WAX v2 with libfnd linked in, since the
@@ -164,7 +164,7 @@ def main(argv=None):
     services = FOUNDATION / "services"
 
     fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--image-id", "fnd",
-                 "--abi-version", "1.0", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+                 "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:
         program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
