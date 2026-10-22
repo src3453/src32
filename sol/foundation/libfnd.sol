@@ -41,6 +41,12 @@
 !const FND_STAT_CHANGED_MS 56
 !const FND_DIRENT_HEAD 72
 !const FND_DIRENT_MAX 1096
+# C の fnd_dirent_t。wire record と異なり name_bytes/chars は u32。
+!const FND_DIRENT_SIZE 1100
+!const FND_DIRENT_STAT 0
+!const FND_DIRENT_NAME_BYTES 64
+!const FND_DIRENT_NAME_CHARS 68
+!const FND_DIRENT_NAME 72
 !const FND_EXEC_SIZE 28
 !const FND_EXEC_ARGC 0
 !const FND_EXEC_ARGV 4
@@ -121,8 +127,15 @@ fn fnd_mem_alloc (size) : FND_LIB_ENTRY 25 size 0 0 0 fnd_lib_call ret ;
 fn fnd_mem_free (p) : FND_LIB_ENTRY 26 p 0 0 0 fnd_lib_call drop retn ;
 fn fnd_strerror (status) : FND_LIB_ENTRY 27 status 0 0 0 fnd_lib_call ret ;
 
-# DIR_OPEN は実際の fs に送る。bootfs は未実装なので -13 を返す。
-# DIR_NEXT は生 wire records を返す（高水準 fnd_dir_next は未提供）。
+# 列挙は libfnd が応答をキャッシュし、1件ずつ NUL 終端名を返す。
 fn fnd_dir_open (path out) : FND_LIB_ENTRY 28 path out 0 0 fnd_lib_call ret ;
+# 低水準の wire records。next と同じハンドルで混用せず、切替前に rewind する。
 fn fnd_dir_read (h buf cap got) : FND_LIB_ENTRY 29 h buf cap got fnd_lib_call ret ;
 fn fnd_dir_rewind (h) : FND_LIB_ENTRY 30 h 0 0 0 fnd_lib_call ret ;
+# 終了は FND_END=1。status=0 のときだけ ent を読む。
+fn fnd_dir_next (h ent) : FND_LIB_ENTRY 31 h ent 0 0 fnd_lib_call ret ;
+# 作成したファイルと空ディレクトリを削除する。
+fn fnd_file_delete (path) : FND_LIB_ENTRY 32 path 0 0 0 fnd_lib_call ret ;
+fn fnd_dir_make (path mode) : FND_LIB_ENTRY 33 path mode 0 0 fnd_lib_call ret ;
+fn fnd_dir_remove (path) : FND_LIB_ENTRY 34 path 0 0 0 fnd_lib_call ret ;
+fn fnd_sync (h) : FND_LIB_ENTRY 35 h 0 0 0 fnd_lib_call ret ;

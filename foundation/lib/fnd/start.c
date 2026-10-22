@@ -11,6 +11,14 @@ static uint32_t argc;
 static const char *argv[ARGS_MAX];
 static fnd_handle roles[FND_ROLE_CONSOLE + 1u];
 
+/* CHANNEL は1..63。キャッシュは next の初回に確保し、close で解放する。
+ * raw handle_close はこの状態を解放しないので、列挙には fnd_close を使う。 */
+struct dir_cache {
+    uint32_t used, pos, end;
+    uint8_t data[FND_IPC_MAX_DATA];
+};
+static struct dir_cache *dirs[64];
+
 static uint32_t str_len(const char *s) {
     uint32_t n = 0;
     while (s[n])
@@ -151,7 +159,16 @@ fnd_status fnd_stream_stat(fnd_handle h, fnd_stat_t *st) {
     return FND_OK;
 }
 
-fnd_status fnd_close(fnd_handle h) { return fnd_sys_handle_close(h); }
+fnd_status fnd_close(fnd_handle h) {
+    fnd_status st = fnd_sys_handle_close(h);
+    if (st == FND_OK && h < 64u) {
+        fnd_mem_free(dirs[h]);
+        dirs[h] = 0;
+    }
+    return st;
+}
+
+fnd_status fnd_sync(fnd_handle h) { return fnd_call(h, FND_ST_SYNC, 0, 0, 0, 0, 0, 0); }
 
 /* ---- fs (§11.3, §11.4) ---- */
 
@@ -171,6 +188,89 @@ fnd_status fnd_file_open(const char *path, uint32_t flags, uint32_t mode, fnd_ha
         return status;
     *out = rep.a3;
     return FND_OK;
+}
+
+fnd_status fnd_file_delete(const char *path) { return path_call(FND_FS_UNLINK, path, 0, 0, 0, 0); }
+fnd_status fnd_dir_remove(const char *path) { return path_call(FND_FS_RMDIR, path, 0, 0, 0, 0); }
+fnd_status fnd_dir_make(const char *path, uint32_t mode) {
+    uint32_t args[4] = {0, mode, 0, 0};
+    return path_call(FND_FS_MKDIR, path, args, 0, 0, 0);
+}
+
+fnd_status fnd_dir_open(const char *path, fnd_handle *out) {
+    fnd_msg rep;
+    fnd_status st = path_call(FND_FS_DIR_OPEN, path, 0, 0, 0, &rep);
+    if (st == FND_OK) *out = rep.a3;
+    return st;
+}
+
+static uint32_t dir_u32(const uint8_t *p) {
+    return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static uint32_t dir_u16(const uint8_t *p) { return ((uint32_t)p[0] << 8) | p[1]; }
+
+static fnd_status dir_error(fnd_handle h, struct dir_cache *c, fnd_status st) {
+    /* 初回の失敗ではキャッシュを残さない。再試行用の既存状態は保持する。 */
+    if (dirs[h] != c) fnd_mem_free(c);
+    return st;
+}
+
+fnd_status fnd_dir_next(fnd_handle h, fnd_dirent_t *ent) {
+    if (h == 0 || h >= 64u) return FND_E_BAD_HANDLE;
+    struct dir_cache *c = dirs[h];
+    if (!c) {
+        c = fnd_mem_alloc(sizeof *c);
+        if (!c) return FND_E_NO_MEMORY;
+        c->used = c->pos = c->end = 0;
+    }
+    if (c->end) return FND_END;
+    if (c->pos == c->used) {
+        fnd_msg rep;
+        fnd_status st = fnd_call(h, FND_DIR_NEXT, 0, 0, 0, c->data, sizeof c->data, &rep);
+        if (st != FND_OK) return dir_error(h, c, st);
+        /* 応答全体を検証してから1件でも返す。エラー時は ent を変更しない。 */
+        if (rep.len > sizeof c->data) return dir_error(h, c, FND_E_FORMAT);
+        uint32_t off = 0, count = 0;
+        while (off < rep.len) {
+            const uint8_t *r = c->data + off;
+            if (rep.len - off < FND_DIRENT_HEAD) return dir_error(h, c, FND_E_FORMAT);
+            uint32_t n = dir_u32(r), bytes = dir_u16(r + 68), chars = dir_u16(r + 70);
+            if (bytes == 0 || bytes > 1024u || chars == 0 || chars > bytes ||
+                n != ((FND_DIRENT_HEAD + bytes + 3u) & ~3u) || n > rep.len - off)
+                return dir_error(h, c, FND_E_FORMAT);
+            for (uint32_t i = 0; i < bytes; ++i)
+                if (r[FND_DIRENT_HEAD + i] == 0) return dir_error(h, c, FND_E_FORMAT);
+            off += n;
+            ++count;
+        }
+        if (count != rep.a0) return dir_error(h, c, FND_E_FORMAT);
+        dirs[h] = c;
+        c->pos = 0;
+        c->used = rep.len;
+        if (!count) {
+            c->end = 1;
+            return FND_END;
+        }
+    }
+    const uint8_t *r = c->data + c->pos;
+    /* C の stat は wire と同じ64-byte配置。 */
+    const uint8_t *stat = r + 4;
+    for (uint32_t i = 0; i < sizeof ent->stat; ++i)
+        ((uint8_t *)&ent->stat)[i] = stat[i];
+    ent->name_bytes = dir_u16(r + 68);
+    ent->name_chars = dir_u16(r + 70);
+    for (uint32_t i = 0; i < ent->name_bytes; ++i) ent->name[i] = (char)r[FND_DIRENT_HEAD + i];
+    ent->name[ent->name_bytes] = 0;
+    c->pos += dir_u32(r);
+    return FND_OK;
+}
+
+fnd_status fnd_dir_rewind(fnd_handle h) {
+    fnd_status st = fnd_call(h, FND_DIR_REWIND, 0, 0, 0, 0, 0, 0);
+    if (st == FND_OK && h < 64u && dirs[h])
+        dirs[h]->used = dirs[h]->pos = dirs[h]->end = 0;
+    return st;
 }
 
 fnd_status fnd_path_stat(const char *path, fnd_stat_t *st) {

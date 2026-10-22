@@ -40,11 +40,9 @@ def guest_image(tmp_path_factory):
         pytest.skip(str(exc))
     work = tmp_path_factory.mktemp("sol-libfnd")
     result = subprocess.run([sys.executable, str(ROOT / "examples/foundation-sol/build.py"),
-                             str(work), "--clang", clang, "--stop-ticks", "6000"],
+                             str(work), "--clang", clang, "--stop-ticks", "40000"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
-    # Avoid the repository's BIOS/config. All runs use the same saved guest artifact.
-    (work / "config.yaml").write_text("", encoding="utf-8")
     return harness, work
 
 
@@ -53,16 +51,35 @@ def test_libfnd_sample_in_real_foundation(guest_image, cpu):
     harness, work = guest_image
     # && proves every invocation exited successfully, even after screen scrolling.
     command = "sol-demo && sol-demo && sol-demo && echo repeated-OK\\n"
+    # Each engine gets a fresh persistent disk; the fs service reads IDC slot 0.
+    run = work / cpu
+    run.mkdir()
+    (run / "disk.img").write_bytes((work / "foundation.img").read_bytes())
+    (run / "config.yaml").write_text(
+        'disk:\n  - slot: 0\n    type: "hdd"\n    image: "disk.img"\n    read_only: false\n', encoding="utf-8")
     result = subprocess.run([harness, str(work / "foundation.wax"), "42", "--cpu", cpu,
-                             "--frames", "650", "--dump-pcg", "--type", f"40={command}"],
-                            cwd=work, capture_output=True, text=True, encoding="utf-8", errors="replace",
-                            timeout=180)
+                             "--frames", "4200", "--dump-pcg", "--type", f"40={command}"],
+                            cwd=run, capture_output=True, text=True, encoding="utf-8", errors="replace",
+                            timeout=300)
     assert result.returncode == 0, result.stdout + result.stderr
     screen = result.stdout.split("PCG SCREEN BEGIN\n")[1].split("PCG SCREEN END")[0]
     assert "fault" not in screen, screen
-    assert "read/close: WAX magic OK\nwrite-open: read-only\ndirectory: not supported" in screen, screen
+    assert "read/close: WAX magic OK\nwrite/read/close: 5001 bytes OK" in screen, screen
+    assert "read-only stream: access error OK" in screen, screen
+    assert "directory: 65 entries, UTF-8, rewind, END OK\ncleanup: file and directory removed" in screen, screen
     assert "hello from sol child\nfrom-parent\nchild: exit 17 (wait closed handle)" in screen, screen
     assert "stream write OK\nsample: OK\nrepeated-OK\n/>" in screen, screen
+    sys.path.insert(0, str(ROOT / "tools/fs2"))
+    import fs2
+    disk = bytearray((run / "disk.img").read_bytes())
+    # The machine stopped while mounted: inspect DIRTY media without clearing it.
+    assert fs2.check_image(disk, allow_dirty=True) == []
+    volume = fs2.Volume(disk, allow_dirty=True)
+    # Raw host inspection confirms cleanup and that the fixture was retained.
+    assert volume.read(volume.resolve("/data/sol-fixtures/日本語.txt")) == b"UTF-8 fixture\n"
+    for path in ("/sol-result.bin", "/sol-empty"):
+        with pytest.raises(fs2.Fs2Error, match="NOT_FOUND"):
+            volume.resolve(path)
 
 
 def test_static_libfnd_preserves_sol_frame_in_user_mode(tmp_path):

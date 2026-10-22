@@ -5,6 +5,11 @@
 !var file
 !var child
 !var status
+!var i
+!var seen_lo
+!var seen_hi
+!var seen_unicode
+!var entries
 
 # 失敗を成功として続けず、実際の status の説明を表示して終了する。
 fn check (s) :
@@ -17,9 +22,19 @@ fn check (s) :
     retn
 ;
 
+fn same_text (a b) :
+    while
+        a ldb b ldb neq if 1 ret end
+        a ldb 0 eq if 0 ret end
+        a 1 add >a
+        b 1 add >b
+        0
+    end
+;
+
 # work: out handle +0, byte count +4, child exit code +8, buffer +64。
 fnd_init check
-512 fnd_mem_alloc >work
+16384 fnd_mem_alloc >work
 work 0 eq if FND_E_NO_MEMORY fnd_exit end
 "sol libfnd sample\n" fnd_con_write check
 work work 4 add fnd_con_size check
@@ -55,21 +70,111 @@ work 4 add ld 4 neq if -102 fnd_exit end
 work 64 add ld 0x57415800 neq if -103 fnd_exit end
 "read/close: WAX magic OK\n" fnd_con_write check
 
-# bootfs は読み取り専用。成功したようには表示しない。
-"/bin/echo.wax" FND_OPEN_WRITE FND_MODE_DEFAULT work fnd_file_open >status
-status 0 eq if work ld fnd_close check -104 fnd_exit end
-status FND_E_READ_ONLY neq if status check -112 fnd_exit end
-"write-open: " fnd_con_write check
-status fnd_strerror fnd_con_write check
-"\n" fnd_con_write check
+# FS2 上へ5001 bytesを書き、4096境界をまたいで分割・再読込する。
+0 >i
+while
+    i 251 mod work 2048 add i add stb
+    i 1 add >i
+    i 5001 lt
+end
+"/sol-result.bin" FND_OPEN_READ FND_OPEN_WRITE or FND_OPEN_CREATE or FND_OPEN_EXCL or
+FND_MODE_DEFAULT work fnd_file_open check
+work ld >file
+file work 2048 add 5001 work 4 add fnd_write >status
+status 0 lt if file fnd_close drop status check end
+work 4 add ld 5001 neq if file fnd_close drop -114 fnd_exit end
+file fnd_sync >status
+file fnd_close check
+status check
+"/sol-result.bin" FND_OPEN_READ FND_MODE_DEFAULT work fnd_file_open check
+work ld >file
+1234 work 4 add st
+file "x" 1 work 4 add fnd_write FND_E_ACCESS neq if file fnd_close drop -132 fnd_exit end
+work 4 add ld 0 neq if file fnd_close drop -133 fnd_exit end
+file work 8192 add 5001 work 4 add fnd_read >status
+file fnd_close check
+status check
+work 4 add ld 5001 neq if -115 fnd_exit end
+0 >i
+while
+    work 8192 add i add ldb 255 and i 251 mod neq if -116 fnd_exit end
+    i 1 add >i
+    i 5001 lt
+end
+"write/read/close: 5001 bytes OK\n" fnd_con_write check
+"read-only stream: access error OK\n" fnd_con_write check
 
-# bootfs は列挙未実装。フル fs ができたら dir_read/rewind/close も使える。
-"/bin" work fnd_dir_open >status
-status 0 eq if work ld fnd_close check -105 fnd_exit end
-status FND_E_UNSUPPORTED neq if status check -113 fnd_exit end
-"directory: " fnd_con_write check
-status fnd_strerror fnd_con_write check
-"\n" fnd_con_write check
+# 複数応答に分かれる65件を1件ずつ返す。順序は仮定せず重複・欠落も検査する。
+"/data/sol-fixtures" work fnd_dir_open check
+work ld >file
+# 応答の途中で rewind しても、古いキャッシュの残りを返さない。
+file work 512 add fnd_dir_next FND_OK neq if -134 fnd_exit end
+file fnd_dir_rewind check
+0 >seen_lo
+0 >seen_hi
+0 >seen_unicode
+0 >entries
+0 >status
+while
+    file work 512 add fnd_dir_next >status
+    status FND_OK eq if
+        work 512 add FND_DIRENT_NAME_BYTES add ld 13 eq if
+            work 512 add FND_DIRENT_NAME_CHARS add ld 7 neq if -117 fnd_exit end
+            work 512 add FND_DIRENT_NAME add "日本語.txt" same_text if else -135 fnd_exit end
+            seen_unicode 0 neq if -118 fnd_exit end
+            1 >seen_unicode
+        else
+            work 512 add FND_DIRENT_NAME_BYTES add ld 11 neq if -119 fnd_exit end
+            work 512 add FND_DIRENT_NAME add 5 add ldb 48 sub 10 mul
+            work 512 add FND_DIRENT_NAME add 6 add ldb 48 sub add >i
+            i 0 lt if -120 fnd_exit end
+            i 64 ge if -121 fnd_exit end
+            i 32 lt if
+                seen_lo 1 i shl and 0 neq if -122 fnd_exit end
+                seen_lo 1 i shl or >seen_lo
+            else
+                seen_hi 1 i 32 sub shl and 0 neq if -123 fnd_exit end
+                seen_hi 1 i 32 sub shl or >seen_hi
+            end
+        end
+        entries 1 add >entries
+    end
+    status FND_OK eq
+end
+status FND_END neq if file fnd_close drop status check -124 fnd_exit end
+entries 65 neq if file fnd_close drop -125 fnd_exit end
+seen_lo 0xFFFFFFFF neq if -126 fnd_exit end
+seen_hi 0xFFFFFFFF neq if -127 fnd_exit end
+seen_unicode 1 neq if -128 fnd_exit end
+# END は出力を変えない。rewind はキャッシュとサービスの両方を戻す。
+1234 work 512 add FND_DIRENT_NAME_BYTES add st
+file work 512 add fnd_dir_next FND_END neq if -129 fnd_exit end
+work 512 add FND_DIRENT_NAME_BYTES add ld 1234 neq if -130 fnd_exit end
+file fnd_dir_rewind check
+file work 512 add fnd_dir_next FND_OK neq if -136 fnd_exit end
+file fnd_close check
+# 途中まで読んで閉じても、キャッシュのヒープ領域を再利用できる。
+0 fnd_mem_grow work 12 add st
+0 >i
+while
+    "/data/sol-small" work fnd_dir_open check
+    work ld >file
+    file work 512 add fnd_dir_next FND_OK neq if -137 fnd_exit end
+    file fnd_close check
+    i 1 add >i
+    i 4 lt
+end
+0 fnd_mem_grow work 12 add ld neq if -138 fnd_exit end
+# 空ディレクトリ、close後のハンドル再利用、エラー時の出力保持も検査。
+"/sol-empty" FND_MODE_DEFAULT fnd_dir_make check
+"/sol-empty" work fnd_dir_open check
+work ld >file
+file work 512 add fnd_dir_next FND_END neq if -131 fnd_exit end
+file fnd_close check
+"/sol-empty" fnd_dir_remove check
+"/sol-result.bin" fnd_file_delete check
+"directory: 65 entries, UTF-8, rewind, END OK\n" fnd_con_write check
+"cleanup: file and directory removed\n" fnd_con_write check
 
 # C の fnd_exec_t は実体が必要。cwd/stream の各欄の 0 は継承を意味する。
 0 work 16 add st

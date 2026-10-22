@@ -33,16 +33,7 @@ int32_t sol_fnd_dispatch(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32
     case 25: return (uintptr_t)fnd_mem_alloc(a);
     case 26: fnd_mem_free(PTR(void, a)); return FND_OK;
     case 27: return (uintptr_t)fnd_strerror((int32_t)a);
-    case 28: {
-        const char *path = PTR(const char, a);
-        uint32_t n = 0;
-        while (path[n] && n <= FND_IPC_MAX_DATA) ++n;
-        if (n > FND_IPC_MAX_DATA) return FND_E_NAME_TOO_LONG;
-        fnd_msg rep;
-        fnd_status status = fnd_call(fnd_fs(), FND_FS_DIR_OPEN, 0, path, n, 0, 0, &rep);
-        if (status == FND_OK) *PTR(fnd_handle, b) = rep.a3;
-        return status;
-    }
+    case 28: return fnd_dir_open(PTR(const char, a), PTR(fnd_handle, b));
     case 29: {
         if (c > FND_IPC_MAX_DATA) return FND_E_LIMIT;
         fnd_msg rep;
@@ -50,7 +41,12 @@ int32_t sol_fnd_dispatch(uint32_t op, uint32_t a, uint32_t b, uint32_t c, uint32
         if (status == FND_OK) *PTR(uint32_t, d) = rep.len;
         return status;
     }
-    case 30: return fnd_call(a, FND_DIR_REWIND, 0, 0, 0, 0, 0, 0);
+    case 30: return fnd_dir_rewind(a);
+    case 31: return fnd_dir_next(a, PTR(fnd_dirent_t, b));
+    case 32: return fnd_file_delete(PTR(const char, a));
+    case 33: return fnd_dir_make(PTR(const char, a), b);
+    case 34: return fnd_dir_remove(PTR(const char, a));
+    case 35: return fnd_sync(a);
     default: return FND_E_BAD_ARG;
     }
 }

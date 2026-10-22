@@ -29,6 +29,13 @@ typedef struct {
     uint32_t reserved;
 } fnd_stat_t;
 
+/* §11.4: wire の rec_len を除き、名前を NUL 終端した1件。1100 bytes。 */
+typedef struct {
+    fnd_stat_t stat;
+    uint32_t name_bytes, name_chars;
+    char name[1025];
+} fnd_dirent_t;
+
 /* §11.6 */
 typedef struct {
     uint32_t argc;
@@ -55,9 +62,23 @@ fnd_status fnd_read(fnd_handle h, void *buf, uint32_t len, uint32_t *got);
 fnd_status fnd_write(fnd_handle h, const void *buf, uint32_t len, uint32_t *put);
 fnd_status fnd_stream_stat(fnd_handle h, fnd_stat_t *st);
 fnd_status fnd_close(fnd_handle h);
+/* 保留中の変更をストリームのサービスへ同期する。 */
+fnd_status fnd_sync(fnd_handle h);
 
 /* §11.4 */
 fnd_status fnd_path_stat(const char *path, fnd_stat_t *st);
+/* パスで指定したファイルを削除する。 */
+fnd_status fnd_file_delete(const char *path);
+/* ディレクトリを作る。mode は FND_MODE_DEFAULT を使える。 */
+fnd_status fnd_dir_make(const char *path, uint32_t mode);
+/* 空のディレクトリを削除する。 */
+fnd_status fnd_dir_remove(const char *path);
+/* 列挙用 CHANNEL を開く。fnd_close で解放する。 */
+fnd_status fnd_dir_open(const char *path, fnd_handle *out);
+/* 内部にためた応答から1件返す。終了は FND_END、出力引数は変更しない。 */
+fnd_status fnd_dir_next(fnd_handle d, fnd_dirent_t *ent);
+/* サービスの列挙位置と内部キャッシュを先頭へ戻す。 */
+fnd_status fnd_dir_rewind(fnd_handle d);
 fnd_status fnd_cwd_set(const char *path);
 fnd_status fnd_cwd_get(char *buf, uint32_t cap, uint32_t *len);
 

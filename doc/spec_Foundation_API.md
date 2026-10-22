@@ -1,6 +1,6 @@
 # Foundation API 仕様 v1
 
-Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd のうち起動、標準ストリーム、コンソールの一部、`fnd_strerror` を [`foundation/lib/fnd`](../foundation/README.md#シェル) に実装しています。IPC がまだないので、コンソールはプログラムにリンクする暫定実装です。 本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
+Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd は起動、ストリーム、ファイル・cwd、ディレクトリ列挙、プロセス、コンソールの一部を実装し、fs／consoleサービスをIPCで呼びます。現在の提供範囲は [`foundation/include/foundation/fnd.h`](../foundation/include/foundation/fnd.h) と [sol API](../sol/foundation/README.md) を参照してください。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -10,7 +10,7 @@ Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確
 |---|---|
 | プロトコル | [Foundation §8](spec_Foundation.md) の IPC（`fnd_msg`、`ipc_call`、ハンドル転送）の上に載る、サービスとクライアントの約束 |
 | サービス | fs（`svc_lookup("fs")`）、console（`svc_lookup("console")`）、デバイスサービス |
-| ライブラリ | libfnd（`foundation/lib/fnd`、C11、静的ライブラリ。WAL 化はフェーズ 7） |
+| ライブラリ | libfnd（`foundation/lib/fnd`、C11、WAL `fnd` 1.1 または静的リンク） |
 | ヘッダ | `foundation/include/foundation/{fnd.h,api.h}`。`api.h` は本書の番号と構造体、`fnd.h` は libfnd の関数 |
 
 本書が定めないもの：
@@ -381,6 +381,7 @@ fnd_status fnd_cwd_get(char *buf, uint32_t cap, uint32_t *len);
 ```
 
 - `fnd_dirent_t` は `fnd_stat_t stat`、`name_bytes`、`name_chars`、`char name[1025]`（NUL 終端）を持ちます。`fnd_dir_next` は `DIR_NEXT` の応答を内部にためて、1 件ずつ返します。
+- C ABIでは長さ2欄はu32です。配置はstat=0、name_bytes=64、name_chars=68、name=72、全体1100 bytesです（§10.2のwire recordとは異なります）。`fnd_dir_rewind` は応答キャッシュも破棄し、`fnd_close` は確保したキャッシュを解放します。`FND_END` とエラー時には出力エントリを変更しません。これらはWAL `fnd` 1.1の追加APIです。1.0の既存exportのシグネチャは変わりません。
 - `fnd_cwd_get` の `cap` が足りなければ `FND_E_LIMIT` で、`*len` に必要な byte 数（NUL を含む）を入れます。
 
 ### 11.5 コンソール
@@ -503,5 +504,5 @@ init は、各サービスの起動後にシェルなどのアプリを起動す
 | 時刻の取得 | FS2 §7 の「一貫した時計のスナップショット」が未定義。libfnd の `fnd_time_now` はそれを待つ |
 | 大きいイメージの起動 | `FND_EXEC_IMAGE_MAX` は 1 MiB。親のスロットより大きい子は、fs がカーネルへ直接渡す方式（将来）まで起動できない |
 | WAL の一覧 | **決定（2026-10-22）**：`/lib/<image_id>.<abi_major>.wal` に置き、`fnd_proc_exec` が依存をたどって読み、`proc_spawn` の `libs` で渡す（§11.6、[Foundation §9.2・§9.5](spec_Foundation.md)） |
-| sol のライブラリ | `sol/foundation/libfnd.sol` と `tools/solc/build_foundation.py` で実装済みの C 操作を利用可能。1件ずつの `fnd_dir_next` とフル fs での書き込み・列挙成功の検証は未完 |
+| sol のライブラリ | `sol/foundation/libfnd.sol` と `tools/solc/build_foundation.py` でC操作を利用可能。`examples/foundation-sol` は実FS2で5001 bytesのwrite/read/close、65件の列挙、rewind、ENDと資源解放、子の起動/待機を検証する |
 | 64-bit 整数 | `tools/llvm-src32` での `int64_t` の対応を実装時に確認する。使えなければ、libfnd の 64-bit 引数を上位・下位の組に置き換える |
