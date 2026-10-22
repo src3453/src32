@@ -22,6 +22,7 @@ STOP_TICKS = 3000
 FRAMES = 260
 FIRST_FRAME = 30   # the shell is loaded and waiting for keys by then
 STEP_FRAMES = 6    # between two --type batches
+BANNER = ['Foundation OS (kernel ABI 1.0)', 'Foundation shell 1.0']  # §2.1
 
 
 def find_testbench():
@@ -72,16 +73,16 @@ class ShellTests(unittest.TestCase):
             rows.pop()
         return rows
 
-    def test_builtins_and_versions(self):
-        self.assertEqual(self.screen('echo hello   world\\n', 'VeR\\n', 'echo\\n', 'mem\\n'), [
+    def test_banner_builtins_and_versions(self):
+        # Command names are case-insensitive (§1).
+        self.assertEqual(self.screen('echo hello   world\\n', 'UName\\n', 'echo\\n', 'free\\n'), BANNER + [
             '/> echo hello   world',
             'hello world',
-            '/> VeR',
-            'Foundation shell 1.0',
-            'Kernel ABI 1.0',
+            '/> UName',
+            *BANNER,
             '/> echo',
             '',
-            '/> mem',
+            '/> free',
             '   16384 KiB total',
             '   10240 KiB free',
             '/>',
@@ -92,7 +93,7 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(self.screen(
             'SET "MSG=hello  world"\\n',
             'echo $msg ${MSG}x \'$MSG\' "[$MSG]" \\\\$MSG a"b c"d $ $?\\n',
-            'set msg\\n', 'set\\n', 'set MSG=\\n', 'set msg\\n', 'echo [$NOPE] $0 $# [$1]\\n'), [
+            'set msg\\n', 'set\\n', 'set MSG=\\n', 'set msg\\n', 'echo [$NOPE] $0 $# [$1]\\n'), BANNER + [
             '/> SET "MSG=hello  world"',
             '/> echo $msg ${MSG}x \'$MSG\' "[$MSG]" \\$MSG a"b c"d $ $?',
             'hello  world hello  worldx $MSG [hello  world] $MSG ab cd $ 0',
@@ -103,7 +104,7 @@ class ShellTests(unittest.TestCase):
             'PATH=/bin',
             '/> set MSG=',
             '/> set msg',
-            'SET: msg: not found (-10)',
+            'set: msg: not found (-10)',
             '/> echo [$NOPE] $0 $# [$1]',
             '[] shell 0 []',
             '/>',
@@ -113,7 +114,7 @@ class ShellTests(unittest.TestCase):
         # §4: && and || from the left; a command that does not run keeps $?.
         self.assertEqual(self.screen(
             'foo && echo a || echo b\\n', 'nope; echo $?\\n', 'echo x || nope; echo $?\\n',
-            'exit x; echo $?\\n'), [
+            'exit x; echo $?\\n'), BANNER + [
             '/> foo && echo a || echo b',
             'foo: command not found (-10)',
             'b',
@@ -124,7 +125,7 @@ class ShellTests(unittest.TestCase):
             'x',
             '0',
             '/> exit x; echo $?',
-            'usage: EXIT [code]',
+            'usage: exit [code]',
             '-2',
             '/>',
         ])
@@ -132,7 +133,7 @@ class ShellTests(unittest.TestCase):
     def test_syntax_errors_run_nothing(self):
         self.assertEqual(self.screen(
             'echo "abc\\n', 'echo a; ; echo b\\n', 'echo a | b\\n', 'echo a &\\n', 'echo a &&\\n',
-            '> x\\n', 'echo a\\\\\\n', '  # comment\\n', 'echo a#b 2>&1; echo $?\\n'), [
+            '> x\\n', 'echo a\\\\\\n', '  # comment\\n', 'echo a#b 2>&1; echo $?\\n'), BANNER + [
             '/> echo "abc',
             'shell: unterminated quote: invalid argument (-2)',
             '/> echo a; ; echo b',
@@ -157,17 +158,18 @@ class ShellTests(unittest.TestCase):
     def test_needs_file_system(self):
         # Provisional: no fs service yet (README.md).
         self.assertEqual(self.screen(
-            'echo a > out.txt\\n', 'echo *.txt\\n', 'dir\\n', 'cd\\n', 'cd /bin\\n', '/bin/x.wax\\n'), [
+            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd\\n', 'pwd\\n', 'cd /bin\\n', '/bin/x.wax\\n'), BANNER + [
             '/> echo a > out.txt',
             'echo: out.txt: not supported (-13)',
             '/> echo *.txt',
             'shell: *.txt: not supported (-13)',
-            '/> dir',
-            'DIR: not supported (-13)',
+            '/> ls -l',
+            'ls: not supported (-13)',
             '/> cd',
+            '/> pwd',
             '/',
             '/> cd /bin',
-            'CD: /bin: not supported (-13)',
+            'cd: /bin: not supported (-13)',
             '/> /bin/x.wax',
             '/bin/x.wax: command not found (-10)',
             '/>',
@@ -177,7 +179,7 @@ class ShellTests(unittest.TestCase):
         # §9.2: arrows, Home, End, Backspace, Delete, history and Ctrl+C.
         self.assertEqual(self.screen(
             'echo wrld\\L\\L\\Lo\\n', 'xecho hi\\H\\X\\E!\\n', 'echo abcd\\b\\bef\\n', '\\n',
-            '\\U\\U\\n', '\\U\\U\\U\\D\\n', 'echo nope\\L\\L\\C', 'echo $?\\n'), [
+            '\\U\\U\\n', '\\U\\U\\U\\D\\n', 'echo nope\\L\\L\\C', 'echo $?\\n'), BANNER + [
             '/> echo world',
             'world',
             '/> echo hi!',
@@ -195,8 +197,8 @@ class ShellTests(unittest.TestCase):
             '/>',
         ])
 
-    def test_cls_and_scrolling(self):
-        batches = ['echo first\\n', 'cls\\n'] + [f'echo line{i}\\n' for i in range(20)]
+    def test_clear_and_scrolling(self):
+        batches = ['echo first\\n', 'clear\\n'] + [f'echo line{i}\\n' for i in range(20)]
         rows = self.screen(*batches, step=4)
         # 20 commands of 2 rows and the prompt scroll the cleared screen by 11.
         self.assertEqual(len(rows), 30)
@@ -207,14 +209,14 @@ class ShellTests(unittest.TestCase):
     def test_exit_restarts_shell(self):
         # EXIT ends the shell; the boot image starts it again (as init would).
         rows = self.screen('exit 3\\n', 'ps\\n', step=20)
-        self.assertEqual(rows[:3] + rows[4:], [
+        self.assertEqual(rows[:5] + rows[6:], BANNER + [
             '/> ps',
             '  PID PARENT STATE PRIO     MEM NAME',
             '    1      0 EXIT     2      0K shell',
             '/>',
         ])
         # MEM: the image (its size depends on the build) and the 16 KiB stack.
-        self.assertRegex(rows[3], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
+        self.assertRegex(rows[5], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
 
 
 if __name__ == '__main__':
