@@ -25,7 +25,7 @@ tags:
 - [[doc/spec_WAX|WAX container spec]] / [[doc/ja/spec_WAX|日本語版]] — `.wax` 実行形式 / `.wal` ライブラリ（ゲスト loader: `sol/cpt32/wax.sol`、DOS: `RUN NAME`）
 - [[doc/spec_WAX_v3|WAX/WAL v3]] / [[doc/ja/spec_WAX_v3|日本語版]] — CPU 保護・依存関係・ライブラリシンボル・公開 ABI（仕様策定済み、未実装）
 - [[doc/spec_Foundation|Foundation カーネル ABI]] — マイクロカーネル OS のトラップ・IPC・syscall・sol 互換 ABI（仕様確定、未実装）。[[doc/foundation_os_plan|実装案]]
-- [[doc/spec_Foundation_API|Foundation API 仕様]] — ストリーム・fs セッション・コンソールのプロトコルと libfnd（ドラフト、未実装）
+- [[doc/spec_Foundation_API|Foundation API 仕様]] — ストリーム・fs セッション・コンソールのプロトコルと libfnd（主要判断確定、未実装）
 - [[doc/spec_Foundation_shell|Foundation シェル仕様]] — `/bin/shell.wax` の構文・展開・リダイレクト・組み込みコマンド・スクリプト（主要判断確定、未実装）
 - [[doc/spec_COW|COW sidecar format]] / [[doc/ja/spec_COW|日本語版]] — 書き込み可能 overlay
 - [[doc/spec_DSFS|DSFS 仕様]] — フロッピーディスク用シンプルファイルシステム（ツール: `tools/dsfs/dsfs.py`、ゲストライブラリ: `sol/cpt32/idc.sol`, `sol/cpt32/dsfs.sol`）

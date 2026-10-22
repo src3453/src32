@@ -1,6 +1,6 @@
 # Foundation API 仕様 v1
 
-Revision 0.1、2026-10-22。Status: **ドラフト（設計判断の確認中、未実装）**。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
+Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、未実装）**。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -493,6 +493,8 @@ init は、各サービスの起動後にシェルなどのアプリを起動す
 
 | 論点 | 現在の案 |
 |---|---|
+| ファイルのハンドル | **決定（2026-10-22）**：開いたファイル 1 つ = 1 CHANNEL（§4） |
+| コンソールの入力 | **決定（2026-10-22）**：`LINE` と `RAW` の 2 モード（§8.2） |
 | UID の認証 | v1 は全セッション UID 0。カーネル ABI に資格情報を加えてから、`FS_SESSION_NEW` で UID を下げる操作などを定める |
 | `DEV_OPEN` の呼び出し元の確認 | v1 では確認できない（§9）。カーネル ABI でサービスにケーパビリティ付きの CHANNEL を渡す方法を決めてから閉じる |
 | 時刻の取得 | FS2 §7 の「一貫した時計のスナップショット」が未定義。libfnd の `fnd_time_now` はそれを待つ |
