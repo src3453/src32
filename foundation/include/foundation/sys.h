@@ -36,6 +36,7 @@
 #define fnd_sys_mem_grow(delta) ((int32_t)CPT32_SYSCALL1(FND_SYS_MEM_GROW, (delta)))
 #define fnd_sys_svc_register(name, port)                                              \
     ((int32_t)CPT32_SYSCALL2(FND_SYS_SVC_REGISTER, (uint32_t)(uintptr_t)(name), (port)))
+#define fnd_sys_blk_io(blk) ((int32_t)CPT32_SYSCALL1(FND_SYS_BLK_IO, (uint32_t)(uintptr_t)(blk)))
 #define fnd_sys_svc_lookup(name) ((int32_t)CPT32_SYSCALL1(FND_SYS_SVC_LOOKUP, (uint32_t)(uintptr_t)(name)))
 #define fnd_sys_debug_write(buffer, len)                                              \
     ((int32_t)CPT32_SYSCALL2(FND_SYS_DEBUG_WRITE, (uint32_t)(uintptr_t)(buffer), (len)))

@@ -2,13 +2,14 @@
  * §11) in table order, init last. build.py packs
  *
  *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
- *   fs       slot 3, SERVICE, SVC (provisional read-only fs with /bin, /lib)
+ *   disk     slot 2, SERVICE, DISK | SVC (blk_io for fs)
+ *   fs       slot 3, SERVICE, SVC (FS2 on the boot drive, /dd, /dev, /tmp)
  *   init     slot 0, SERVICE, starts /bin/shell.wax and restarts it
  *
  * Disk boot: stage1 enters with R1 = boot drive and R2 = the FNDBOOT image
  * staged at 0x00200000. FOUNDATION_BOOT_EMBEDDED builds a WAX that the host
  * loads directly; build.py then links a module-only FNDBOOT into the image
- * (fndboot_image.h) and R1/R2 are ignored.
+ * (fndboot_image.h), R1/R2 are ignored and the boot drive is 0.
  *
  * The modules are PROTECTED WAX v2 with libfnd linked in, so they get no
  * WAL list. Once they are spawned the staged FNDBOOT is no longer needed:

@@ -90,5 +90,12 @@ void kmem_zero(uint32_t start, uint32_t end);
 #define FND_IRQC_PENDING 0xFFFF0040u
 #define FND_IRQC_ENABLE 0xFFFF0044u
 #define FND_IRQ_TIMER 4u
+#define FND_IRQ_IDC 2u
+
+/* blk.c: blk_io (§10.4). */
+int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk);
+void blk_irq(void);
+int blk_pending(void);
+void blk_proc_exited(struct fnd_proc *proc);
 
 #endif
