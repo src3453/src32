@@ -35,7 +35,7 @@ static struct session sessions[SESSIONS];
 static struct stream streams[STREAMS];
 static uint32_t next_badge;
 static uint8_t data[FND_IPC_MAX_DATA];
-static uint8_t out[FND_IPC_MAX_DATA];
+static uint8_t out[sizeof(fnd_stat_t)]; /* stat replies */
 static char path[PATH_MAX + 1u];
 
 static uint32_t str_len(const char *s) {
@@ -87,6 +87,8 @@ static int32_t resolve(const struct session *s, const uint8_t *p, uint32_t len) 
         n = str_len(s->cwd);
         for (uint32_t i = 0; i < n; ++i)
             path[i] = s->cwd[i];
+        if (n == 1u)
+            n = 0; /* the cwd is "/" */
     }
     for (uint32_t i = 0; i < len;) {
         while (i < len && p[i] == '/')
@@ -285,11 +287,10 @@ static int stream_op(const fnd_recv *r, struct stream *st, int32_t *result, uint
         uint32_t n = m->a0 < r->reply_cap ? m->a0 : r->reply_cap;
         if (n > size - st->pos)
             n = size - st->pos;
+        /* straight from the image: the kernel copies it by words */
         const uint8_t *file = (const uint8_t *)bootfs_files[st->file].data;
-        for (uint32_t i = 0; i < n; ++i)
-            out[i] = file[st->pos + i];
+        reply(r->token, FND_OK, 0, 0, 0, file + st->pos, n);
         st->pos += n;
-        reply(r->token, FND_OK, 0, 0, 0, out, n);
         return 1;
     }
     case FND_ST_SEEK: {
