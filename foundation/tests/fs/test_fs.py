@@ -607,6 +607,121 @@ class DsfsTests(FsTestBase):
         self.assertEqual(s32(self.lib.host_attach_dsfs(DD0 + 3, bad, 2880, 3) & 0xFFFFFFFF), E["FORMAT"])
 
 
+@unittest.skipIf(fs2tool is None, "tools/fs2/fs2.py is not available")
+class Fs2ToolTests(FsTestBase):
+    """The guest driver and the host tool on the same images (§12 step 2)."""
+
+    FILES = {
+        "/bin/ls.wax": bytes(range(256)) * 9,
+        "/bin/empty": b"",
+        "/home/ユーザー/メモ.txt": "日本語のテキスト".encode() * 70,
+        "/home/Straße/x": b"x",
+        "/etc/profile.fsh": b"echo hi\n",
+        "/edge/508": bytes([7]) * 508,
+        "/edge/509": bytes([9]) * 509,
+    }
+
+    def host_image(self):
+        img = fs2tool.format_image(2880, inode_count=128, created=(1_600_000_000, 5))
+        vol = fs2tool.Volume(img)
+        vol.mkdir("/junk", stamp=(1, 0))
+        for i in range(30):  # fragment the free space
+            vol.put(f"/junk/{i}", bytes(600 * (i % 3)), stamp=(1, 0))
+        for path, data in self.FILES.items():
+            vol.mkdir(path.rsplit("/", 1)[0] or "/", parents=True, stamp=(2, 0))
+            vol.put(path, data, stamp=(3, 999))
+        for i in range(0, 30, 2):
+            vol.remove(f"/junk/{i}", stamp=(4, 0))
+        vol.put("/bin/big", bytes(range(251)) * 40, stamp=(5, 0))
+        self.assertEqual(fs2tool.check_image(img), [])
+        return img
+
+    def attach_bytes(self, img):
+        image = (ctypes.c_uint8 * len(img)).from_buffer(img)
+        self.assertEqual(self.fs.attach(ROOT_MNT, image, alias=DD0), 0)
+        return image
+
+    def test_guest_reads_host_image(self):
+        img = self.host_image()
+        fs = self.fs
+        self.attach_bytes(img)
+        for path, data in self.FILES.items():
+            self.assertEqual(fs.get(path), data, path)
+            self.assertEqual(fs.get(path.upper()), data, path)
+        self.assertEqual(fs.get("/bin/big"), bytes(range(251)) * 40)
+        st = stat_of(fs.ok(SESSION, FS_STAT, data="/edge/509").data)
+        self.assertEqual((st["modified"], st["mode"]), ((3, 999), 0x34))
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/junk")), sorted(str(i) for i in range(1, 30, 2)))
+        self.assertEqual(be(bytes(img), 512 + 6, 2), 0)  # reading leaves it clean
+
+    def test_host_checks_guest_changes(self):
+        img = self.host_image()
+        fs = self.fs
+        self.attach_bytes(img)
+        fs.put("/bin/ls.wax", b"replaced")
+        fs.put("/new file", bytes(range(200)) * 13)
+        fs.ok(SESSION, FS_MKDIR, 0, 0x3F, data="/home/ユーザー/sub")
+        fs.ok(SESSION, FS_RENAME, len("/edge/509"), data="/edge/509/home/ユーザー/sub/moved".encode())
+        fs.ok(SESSION, FS_RENAME, len("/home/straße".encode()), data="/home/straße/home/STRASSE".encode())
+        fs.ok(SESSION, FS_UNLINK, data="/junk/1")
+        h = fs.open("/bin/big", READ | WRITE)
+        fs.ok(h, ST_TRUNCATE, 0, 0, 1000)
+        fs.ok(h, ST_SEEK, 0, 0, 5000)
+        fs.write(h, b"tail")
+        fs.lib.host_gone(h)
+        fs.ok(SESSION, FS_CHMOD, 0x24, data="/etc/profile.fsh")
+        fs.ok(SESSION, FS_CHOWN, 1000, data="/home/ユーザー")
+        self.assertEqual(be(bytes(img), 512 + 6, 2), 1)
+        self.assertEqual(fs2tool.check_image(img, allow_dirty=True), [])
+        self.assertEqual(s32(fs.lib.host_unmount(ROOT_MNT) & 0xFFFFFFFF), 0)
+        self.assertEqual(fs2tool.check_image(img), [])
+        vol = fs2tool.Volume(img)
+        self.assertEqual(vol.read(vol.resolve("/bin/ls.wax")), b"replaced")
+        self.assertEqual(vol.read(vol.resolve("/new file")), bytes(range(200)) * 13)
+        self.assertEqual(vol.read(vol.resolve("/home/ユーザー/sub/moved")), bytes([9]) * 509)
+        self.assertEqual(vol.read(vol.resolve("/bin/big")), (bytes(range(251)) * 40)[:1000] + bytes(4000) + b"tail")
+        self.assertEqual(vol.resolve("/etc/profile.fsh")["mode"], 0x24)
+        self.assertEqual(vol.resolve("/home/ユーザー")["uid"], 1000)
+        names = [n for _, _, n in vol.entries(vol.resolve("/home"))]
+        self.assertIn("STRASSE", names)
+        self.assertNotIn("/junk/1", [n for _, _, n in vol.entries(vol.resolve("/junk"))])
+
+    def test_same_verdict_on_corruption(self):
+        base = bytes(self.host_image())
+        sb = 512
+        inodes = be(base, sb + 0x20) * 512
+        bitmap = be(base, sb + 0x18) * 512
+        mutations = {
+            "magic": (sb, 0x46 ^ 1),
+            "dirty": (sb + 7, 1),
+            "inode type": (inodes + 128 * 3, 9),
+            "root parent": (inodes + 11, 2),
+            "leaked block": (bitmap + 2879 // 8, 0xFF),
+            "ms": (inodes + 128 * 4 + 0x34, 0x10),
+        }
+        for label, (offset, value) in mutations.items():
+            img = bytearray(base)
+            img[offset] = value
+            host = fs2tool.check_image(img)
+            guest = Host(self.lib).attach(ROOT_MNT, (ctypes.c_uint8 * len(img)).from_buffer(img))
+            self.assertTrue(host, label)
+            self.assertLess(guest, 0, label)
+
+    def test_casefold_tables_agree(self):
+        # Every C/F mapping of the shared table: a file named by the source
+        # scalar is found again through its folded form.
+        items = sorted(fs2tool.CASEFOLD.items())
+        img = fs2tool.format_image(16384, inode_count=2 * len(items) + 8)
+        vol = fs2tool.Volume(img)
+        for i, (cp, _) in enumerate(items):
+            vol.mkdir(f"/{i}", stamp=(0, 0))
+            vol.put(f"/{i}/" + chr(cp), b"%d" % cp, stamp=(0, 0))
+        fs = self.fs
+        self.attach_bytes(img)
+        for i, (cp, folded) in enumerate(items):
+            self.assertEqual(fs.get(f"/{i}/" + folded), b"%d" % cp, hex(cp))
+
+
 class NameTests(FsTestBase):
     def test_libfnd_name_functions(self):
         lib = self.lib
