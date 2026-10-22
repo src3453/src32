@@ -389,6 +389,7 @@ fnd_status fnd_cwd_get(char *buf, uint32_t cap, uint32_t *len);
 fnd_status fnd_con_write(const char *text);                 /* STDOUT へ書く */
 fnd_status fnd_con_read_line(char *buf, uint32_t cap, uint32_t *len);
 fnd_status fnd_con_getkey(fnd_key_t *key);                  /* CONSOLE の CON_READ_KEY */
+fnd_status fnd_con_pollkey(fnd_key_t *key);                 /* 非 blocking、入力なしは FND_END */
 fnd_status fnd_con_set_mode(uint32_t mode);
 fnd_status fnd_con_clear(void);
 fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows);
@@ -400,6 +401,7 @@ fnd_status fnd_con_break_wait(void);
 
 - `fnd_con_read_line` は STDIN から LF まで（LF は含めず NUL で終端）を読みます。STDIN がコンソールでもファイルでも同じです。`cap` を超える行は、`cap - 1` bytes で切り、残りを次の呼び出しに回して `FND_E_LIMIT` を返します。EOF で何も読めなければ `FND_END` を返します。LF のない最後の行は、その行を返し、次の呼び出しが `FND_END` になります。
 - `fnd_con_write` は STDOUT、`fnd_con_getkey` 以下は CONSOLE の役割のハンドルを使います。
+- `fnd_con_pollkey` は入力があれば `FND_OK` とキーを返し、なければ待たずに `FND_END` を返します。キー順序と修飾キー処理は `fnd_con_getkey` と共通です。現段階は暫定 MMIO コンソールで実装し、コンソールサービス移行時は待たない入力要求に対応させます。
 
 ### 11.6 プロセス
 

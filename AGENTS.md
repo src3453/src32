@@ -49,6 +49,7 @@
 - PCG scroll: `cargo test --test vdp_pcg_scroll`
 - Foundation WAX ローダ（ホスト）: `python3 -m unittest discover -s foundation/tests/wax`。testbench での実行は `tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader`
 - Foundation シェル（testbench、PCG 画面の比較）: `python3 -m unittest discover -s foundation/tests/shell`（`src32_testbench` と Clang が必要）
+- Foundation CPU 統計（ホスト、カウンタ wrap と user/kernel/idle の帰属）: `python3 -m unittest discover -s foundation/tests/cpu`（ホスト C コンパイラが必要）
 - Foundation ディスク起動（BIOS → stage1 → FNDBOOT、testbench）: `python3 -m unittest discover -s foundation/tests/disk`（`src32_testbench` と Clang が必要）
 - FS2 ホストツール: `python3 -m unittest discover -s tools/fs2`
 - WASM SDK package builder: `python3 -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v`

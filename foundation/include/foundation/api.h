@@ -47,6 +47,9 @@
 /* Kernel ABI §9 sys_info. */
 #define FND_INFO_SYSTEM 0u
 #define FND_INFO_PROCESSES 1u
+#define FND_INFO_CPU 2u
+#define FND_CPUINFO_HEADER_BYTES 16u
+#define FND_CPUINFO_RECORD_BYTES 8u
 #define FND_SYSINFO_BYTES 32u
 #define FND_PROCINFO_BYTES 48u
 

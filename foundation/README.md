@@ -61,6 +61,8 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 python foundation/run.py
 ```
 
+シェルの `top` は CPU 使用率（user / kernel 概算 / idle）、メモリ容量と CPU 使用率順のプロセス一覧を 1 秒ごとに更新します。`q` または Ctrl+C で戻ります。`top -n 1` は 1 回分を表示して終了します。kernel の値は C ハンドラの計測で、context save/restore を含む厳密な OS オーバーヘッドではありません。
+
 リポジトリルートで実行してください。スクリプトを絶対パスで指定すれば、別の作業ディレクトリからも使えます。Python と llvmlite、Clang、Rust/Cargo が必要です（[ツールチェーンの準備](../tools/llvm-src32/README.md#必要なツール)）。`--clang PATH` で Clang を指定でき、`--build-only` はビルドと設定生成だけを行います。
 
 `--arg` 以降の引数は、そのままエミュレーターへ渡します。`run.py` のオプションは `--arg` より前に指定してください。空白を含む値は通常のシェル引数と同様に引用符で囲みます。

@@ -50,6 +50,13 @@ static uint32_t on_tick(uint32_t ticks) {
         check(probe[PROBE_UNSUPPORTED] == (uint32_t)FND_E_UNSUPPORTED);
         check(probe[PROBE_TICK_HZ] == FND_TICK_HZ);
         check(probe[PROBE_WRITTEN] == 1u);
+        check(probe[PROBE_CPU_SIZE] == 48u); /* header + four PID/cycle pairs */
+        check(probe[PROBE_CPU_BAD_POINTER] == (uint32_t)FND_E_ACCESS);
+        check(probe[PROBE_CPU_ALIGNMENT] == (uint32_t)FND_E_BAD_ARG);
+        check(probe[PROBE_CPU_BAD_SELECTOR] == (uint32_t)FND_E_BAD_ARG);
+        check(probe[PROBE_CPU_PREFIX] == 1u);
+        check(probe[PROBE_CPU_CLOCK] == 48000000u);
+        check(fault && fault->cpu_cycles > 0u); /* retained after exit */
         /* The SERVICE task preempted the APP tasks as soon as each sleep ended. */
         check(box(SLOT_PROBE)[PROBE_ROUNDS] == 0u); /* zeroed on exit */
         check(probe[PROBE_MIN_SLEEP] >= SLEEP_TICKS && probe[PROBE_MAX_SLEEP] <= SLEEP_TICKS + 1u);
@@ -62,6 +69,7 @@ static uint32_t on_tick(uint32_t ticks) {
     check(box(SLOT_A)[0] > a_mid && box(SLOT_B)[0] > b_mid);
     struct fnd_proc *a = fnd_proc_get((uint32_t)pid_a), *b = fnd_proc_get((uint32_t)pid_b);
     check(a && a->state == FND_PROC_LIVE && b && b->state == FND_PROC_LIVE);
+    check(a && a->cpu_cycles > 0u && b && b->cpu_cycles > 0u);
     /* 10-tick slices alternate A and B. */
     check(fnd_context_switches() >= END_TICK / FND_SLICE_TICKS);
     return failures == 0u ? 42u : 0x100u + failures;

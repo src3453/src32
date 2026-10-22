@@ -41,6 +41,8 @@ fnd_status fnd_write(fnd_handle h, const void *buf, uint32_t len, uint32_t *put)
 /* §11.5 */
 fnd_status fnd_con_write(const char *text);
 fnd_status fnd_con_getkey(fnd_key_t *key);
+/* Nonblocking: FND_END if no key is available. */
+fnd_status fnd_con_pollkey(fnd_key_t *key);
 fnd_status fnd_con_clear(void);
 fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows);
 

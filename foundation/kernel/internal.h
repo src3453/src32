@@ -30,6 +30,9 @@ void sched_sleep(uint32_t ticks);
 void sched_kill_proc(struct fnd_proc *proc);
 int sched_proc_runnable(const struct fnd_proc *proc);
 cpt32_ctx_frame *sched_next(void);
+void sched_cpu_enter(void);
+void sched_cpu_leave(void);
+void sched_cpu_snapshot(uint32_t info[4]);
 
 /* proc.c */
 void proc_activate(struct fnd_proc *proc);

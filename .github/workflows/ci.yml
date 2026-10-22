@@ -153,6 +153,7 @@ jobs:
         if: matrix.suite == 'toolchain'
         run: |
           "$CLANG" --version
+          python -m unittest discover -s foundation/tests/cpu -v
           python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
       - name: Foundation shell (testbench, PCG screen)
         if: matrix.suite == 'shell'
