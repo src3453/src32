@@ -247,5 +247,19 @@ class ShellTests(unittest.TestCase):
             self.assertRegex(row, '^' + pattern + '$')
         self.assertEqual(rows[12], '/>')
 
+    def test_programs_import_libfnd(self):
+        # The shell and the commands are WAX v3 that import the WAL fnd from
+        # /lib (build.py, Foundation §9.5).
+        root = self.work / 'root'
+        fnd = (root / 'lib/fnd.1.wal').read_bytes()
+        self.assertEqual(fnd[4:8], b'\x00\x03\x00\x02')  # v3 WAL
+        self.assertIn(b'needs fsck', fnd)
+        for name in ('shell', 'echo', 'ps'):
+            image = (root / 'bin' / f'{name}.wax').read_bytes()
+            self.assertEqual(image[4:8], b'\x00\x03\x00\x01', name)  # v3 WAX
+            self.assertIn(b'fnd_write\x00', image)  # an import
+            self.assertNotIn(b'needs fsck', image)  # strerror lives in fnd
+
+
 if __name__ == '__main__':
     unittest.main()

@@ -122,6 +122,27 @@ python tools/llvm-src32/driver.py app.c --protected --origin 0x100000 --stack-to
 - 現在、保護付き WAX を起動できるのは BIOS の WAX loader（未実装）だけです。ホストの直接ロードは拒否します。
 - CMake では `src32_add_executable(... PROTECTED USER_STACK_SIZE 0x4000)`。
 
+### WAX v3 / WAL
+
+[WAX/WAL v3](../../doc/spec_WAX_v3.md) の実行ファイルとライブラリを、[call ABI 1](../../doc/spec_WAX_v3.md#6-public-call-abi-1-src32-module-stack-abi)（引数はスタック、R30 = モジュールの origin）で作ります。読み込むのは Foundation カーネルです（[Foundation §9.5](../../doc/spec_Foundation.md)）。
+
+```sh
+# ライブラリ（WAL）。位置独立で、--origin は指定しない
+python tools/llvm-src32/driver.py lib.c --wal --image-id my.lib --abi-version 1.2 --exports lib.exports -o lib.wal
+# それを使う実行ファイル（WAX v3）。固定アドレス
+python tools/llvm-src32/driver.py app.c --wax3 --import-wal lib.wal --origin 0x800000 --stack-top 0xC00000 -o app.wax
+```
+
+- `--exports FILE` は WAL が公開する記号の一覧です。1 行に 1 つ、関数は名前と [§6](../../doc/spec_WAX_v3.md) の signature（例：`fnd_write fn(u32,ptr,u32,ptr)->i32`）、オブジェクトは `名前 object` と書きます。`#` 以降と空行は無視します。一覧にない関数は外から見えません。
+- signature の型は C の型と対応していなければなりません。`u32`/`i32` は 32-bit 整数、`u64`/`i64` は 64-bit 整数、`ptr` はポインタ、戻り値の `void` です（符号は LLVM IR に残らないので、`u32` と `i32` の区別は一覧の記述に従います）。`char`、`short`、`bool` の引数や戻り値、構造体の値渡し、可変長引数は境界を越えられないのでエラーです。`fnptr`（関数記述子）はまだ対応していません。
+- `--import-wal WAL`（複数可）を指定すると、定義のない関数とグローバル変数のうち、その WAL が export しているものを import にします。使わなかった WAL は依存表に入りません。依存の `min_minor` は指定した WAL の `abi_minor` です。C 側は普通に `extern` で宣言して呼びます。
+- import した関数の呼び出しは、記述子（8 bytes、RW データの末尾に置く）の 2 語を読み、呼び出し側の R30 をフレームに保存して、R30 を提供側の origin にしてから `JALR` し、戻ったら R30 を戻します。import した関数のアドレスを取ることはできません（記述子は値でなければならないため）。import したオブジェクトは、記述子の 1 語目のアドレスで読み書きします。
+- WAL のコードは位置独立です。アドレスはすべて「オフセット + R30」で作り、分岐は相対か R30 から計算します。**WAL の静的データにアドレスを入れることはできません**（v3 にはロード時の再配置がないため。例：`static int *p = &x;`、文字列へのポインタの表、関数ポインタの表）。そうした初期値はエラーになるので、実行時に計算してください。コード中の文字列定数や関数のアドレスは使えます。
+- ブロックはコード（RX）とデータ（RW、静的データと import 記述子）の 2 つです。WAL にはスタックと入口がなく、起動コードも入りません。
+- `--wax3` の起動コードは `main` の戻り値を R1 に置いて Foundation の `proc_exit`（`SYSCALL 0x11`）を呼びます。`--os` は今のところ `foundation`（OS ABI 1.0）だけです。
+- `--image-id` の既定は出力ファイル名（小文字）、`--abi-version` の既定は `1.0` です。WAX では `abi_major` はアプリケーションの契約の版です。
+- 実例：[`foundation/tests/wal`](../../foundation/tests/wal)（WAL から WAL を import する例）、libfnd の WAL 化（`foundation/boot/build.py` がシェルと `/bin` のコマンドをそれを import する WAX v3 にする。export 一覧は `foundation/lib/fnd/fnd.exports`）。
+
 ## C++ 開発サンプル
 
 [`examples/hello-cpp`](../../examples/hello-cpp/README.md) はクラスを使う複数翻訳単位と C SDK の混在プロジェクトです。CMake と CLI の両方でビルドできます。

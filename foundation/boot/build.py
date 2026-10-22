@@ -1,20 +1,23 @@
 """Builds the Foundation boot image into OUT/foundation.wax.
 
-Every user program is a PROTECTED WAX v2 built with tools/llvm-src32
---protected for its slot (doc/spec_Foundation.md §5.2):
+The programs, by slot (doc/spec_Foundation.md §5.2):
 
-    slot 0  init       starts the shell (services/init)
+    slot 0  init       starts /bin/shell.wax (services/init)
     slot 1  console    the console service (services/console)
-    slot 3  fs         provisional read-only fs with /bin (services/bootfs)
+    slot 3  fs         provisional read-only fs with /bin and /lib (services/bootfs)
     slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
-Until FNDBOOT and the fs on the boot disk exist, the images are linked
-into the kernel image: the commands into the provisional fs
-(OUT/bootfs_files.h), the shell into init (OUT/shell_image.h) and the
-three modules into the kernel (OUT/modules_image.h, boot/main.c). The
-commands are also written to OUT/root/bin/<name>.wax, the tree a disk
-image can be made from.
+libfnd is the WAL "fnd" 1.0 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
+and the shell and the commands are WAX v3 that import it; fnd_proc_exec
+reads it from /lib when it starts them (§9.5). init and the services are
+PROTECTED WAX v2 with libfnd linked in, since the kernel starts them before
+there is an fs.
+
+Until FNDBOOT and the fs on the boot disk exist, the files are linked into
+the provisional fs (OUT/bootfs_files.h) and the three modules into the
+kernel image (OUT/modules_image.h, boot/main.c). The files are also written
+to OUT/root, the tree a disk image can be made from.
 
     python foundation/boot/build.py OUT [--clang PATH] [-O0|-O1|-O2] [--stop-ticks N]
 
@@ -42,8 +45,8 @@ COMMANDS = ["clear", "echo", "free", "ps", "pwd", "uname"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
-# The toolchain links every function it is given, so programs that start no
-# others leave out proc.c.
+# The toolchain links every function it is given, so the static programs
+# that start no others leave out proc.c.
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerror.c")]
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "wax.c")]
@@ -58,10 +61,19 @@ def driver(sources, output, args, *extra):
     return output
 
 
-def user(sources, output, args, slot, *extra):
+def layout(slot):
     origin, stack_top = slot
-    return driver([*sources, *LIBFND], output, args, "--protected", "--origin", hex(origin),
-                  "--stack-top", hex(stack_top), "--user-stack-size", hex(STACK), *extra)
+    return ["--origin", hex(origin), "--stack-top", hex(stack_top), "--user-stack-size", hex(STACK)]
+
+
+def static(sources, output, args, slot, *extra):
+    """A PROTECTED WAX v2 with libfnd linked in."""
+    return driver([*sources, *LIBFND], output, args, "--protected", *layout(slot), *extra)
+
+
+def program(sources, output, args, slot, image_id, fnd):
+    """A WAX v3 that imports the WAL fnd."""
+    return driver(sources, output, args, "--wax3", "--image-id", image_id, "--import-wal", fnd, *layout(slot))
 
 
 def embed(name, data):
@@ -88,30 +100,32 @@ def main(argv=None):
     parser.set_defaults(optimization="-O1")
     args = parser.parse_args(argv)
     out = args.out
-    bin_dir = out / "root/bin"
-    bin_dir.mkdir(parents=True, exist_ok=True)
+    root = out / "root"
+    (root / "bin").mkdir(parents=True, exist_ok=True)
+    (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
 
-    files = []
+    fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--image-id", "fnd",
+                 "--abi-version", "1.0", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+    files = [("/lib/fnd.1.wal", "lib_fnd", fnd)]
+    shell = program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
+    files.append(("/bin/shell.wax", "bin_shell", shell))
     for name in COMMANDS:
-        image = user([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], bin_dir / f"{name}.wax",
-                     args, SLOT5)
-        files.append((f"/bin/{name}.wax", name, image.read_bytes()))
-    parts = [embed(f"file_{ident}", data) for _, ident, data in files]
+        image = program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
+                        args, SLOT5, f"foundation.{name}", fnd)
+        files.append((f"/bin/{name}.wax", f"bin_{name}", image))
+    parts = [embed(f"file_{ident}", image.read_bytes()) for _, ident, image in files]
     table = ",\n".join(f'    {{"{path}", img_file_{ident}, img_file_{ident}_size}}' for path, ident, _ in files)
     parts.append("struct bootfs_file {\n    const char *path;\n    const void *data;\n    uint32_t size;\n};\n"
                  f"#define BOOTFS_FILES {len(files)}u\n"
                  f"static const struct bootfs_file bootfs_files[BOOTFS_FILES] = {{\n{table}\n}};\n")
     header(out / "bootfs_files.h", parts)
 
-    shell = user([FOUNDATION / "shell/shell.c", LIBFND_PROC], out / "shell.wax", args, SLOT4)
-    header(out / "shell_image.h", [embed("shell", shell.read_bytes())])
-
     modules = {
-        "init": user([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0, "-I", str(out)),
-        "console": user([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
-                        args, SLOT1, "-I", str(services / "console")),
-        "fs": user([services / "bootfs/main.c"], out / "fs.wax", args, SLOT3, "-I", str(out)),
+        "init": static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0),
+        "console": static([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
+                          args, SLOT1, "-I", str(services / "console")),
+        "fs": static([services / "bootfs/main.c"], out / "fs.wax", args, SLOT3, "-I", str(out)),
     }
     header(out / "modules_image.h", [embed(name, image.read_bytes()) for name, image in modules.items()])
 

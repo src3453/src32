@@ -9,6 +9,7 @@ static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((ali
 /* proc_spawn copies the image here before validating it (§9.2): the kernel
  * heap (§5.1), which FNDBOOT only uses before the first process runs. */
 #define STAGING 0x00100000u
+#define STAGING_END 0x00400000u /* the kernel heap (§5.1) */
 static struct fnd_proc *active; /* process whose regions are programmed */
 static uint32_t next_pid = 1;
 
@@ -317,7 +318,8 @@ static void plan_heap(struct fnd_proc *proc, uint32_t slot) {
         if (i != 0 && r->end == top && r->flags == (CPT32_PERM_R | CPT32_PERM_W))
             proc->heap_region = i; /* grow this one */
     }
-    proc->heap_start = proc->heap_end = top;
+    /* 8-byte aligned, like every mem_grow delta: blocks end anywhere. */
+    proc->heap_start = proc->heap_end = (top + 7u) & ~7u;
     proc->heap_limit = limit;
 }
 
@@ -429,7 +431,7 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
     if (!proc_user_range_ok(caller, addr, sizeof(fnd_spawn), CPT32_PERM_R))
         return FND_E_ACCESS;
     fnd_spawn sp = *(const fnd_spawn *)(uintptr_t)addr;
-    if (sp.reserved || sp.priority > FND_PRIO_APP || (sp.caps & ~FND_CAP_ALL) ||
+    if ((sp.libs & 3u) || sp.priority > FND_PRIO_APP || (sp.caps & ~FND_CAP_ALL) ||
         ((sp.handles | sp.grants) & 3u))
         return FND_E_BAD_ARG;
     if (sp.image_len > FND_SPAWN_IMAGE_MAX || sp.startup_len > FND_STARTUP_MAX ||
@@ -464,9 +466,33 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
         const uint32_t *g = (const uint32_t *)(uintptr_t)(sp.grants + 12u * i);
         grants[i] = (struct fnd_grant){g[0], g[1], g[2]};
     }
+    /* The WALs follow the image in the staging area (§9.2). */
+    struct fnd_image libs[FND_SPAWN_MAX_LIBS];
+    uint32_t lib_count = 0, at = (STAGING + sp.image_len + 3u) & ~3u;
+    if (sp.libs) {
+        if (!proc_user_range_ok(caller, sp.libs, 8u, CPT32_PERM_R))
+            return FND_E_ACCESS;
+        const uint32_t *list = (const uint32_t *)(uintptr_t)sp.libs;
+        lib_count = list[0];
+        if (lib_count > FND_SPAWN_MAX_LIBS || list[1])
+            return FND_E_BAD_ARG;
+        if (!proc_user_range_ok(caller, sp.libs + 8u, 8u * lib_count, CPT32_PERM_R))
+            return FND_E_ACCESS;
+        for (uint32_t i = 0; i < lib_count; ++i) {
+            uint32_t image = list[2u + 2u * i], len = list[3u + 2u * i];
+            if (!proc_user_range_ok(caller, image, len, CPT32_PERM_R))
+                return FND_E_ACCESS;
+            if (len > STAGING_END - at)
+                return FND_E_LIMIT;
+            libs[i] = (struct fnd_image){(const void *)(uintptr_t)at, len};
+            at = (at + len + 3u) & ~3u;
+        }
+        for (uint32_t i = 0; i < lib_count; ++i)
+            kmem_copy((uint32_t)(uintptr_t)libs[i].data, list[2u + 2u * i], libs[i].size);
+    }
     kmem_copy(STAGING, sp.image, sp.image_len);
     int32_t pid = spawn_image(name, sp.priority, sp.caps, caller->pid, (const void *)(uintptr_t)STAGING,
-                              sp.image_len, 0, 0, grants, sp.grant_count,
+                              sp.image_len, libs, lib_count, grants, sp.grant_count,
                               (const void *)(uintptr_t)sp.startup, sp.startup_len);
     if (pid < 0)
         return pid;
@@ -494,7 +520,7 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
     uint32_t old = proc->heap_end;
     if (delta == 0)
         return (int32_t)old;
-    if (!proc->heap_limit || delta > proc->heap_limit - old)
+    if (!proc->heap_limit || old > proc->heap_limit || delta > proc->heap_limit - old)
         return FND_E_NO_MEMORY;
     if (proc->heap_region == FND_REGIONS) {
         if (proc->region_count == FND_REGIONS)
@@ -503,7 +529,12 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
         proc->regions[proc->heap_region] =
             (struct fnd_region){old, old, CPT32_PERM_R | CPT32_PERM_W, 1, 0};
     }
-    zero_range(old, old + delta);
+    /* From the region's end: when it is the image's last block, the bytes
+     * up to the aligned heap_start join it too. */
+    uint32_t from = proc->regions[proc->heap_region].end;
+    for (; from & 3u; ++from)
+        *(volatile uint8_t *)(uintptr_t)from = 0;
+    zero_range(from, old + delta);
     proc->heap_end = old + delta;
     proc->regions[proc->heap_region].end = proc->heap_end;
     if (active == proc) {

@@ -3,6 +3,9 @@
 SSA values live in frame slots.  Only the private stack ABI described here is
 used: caller arguments are successive big-endian words at SP, FP points at the
 saved FP/LR pair, and scalar results are returned in R1 (low), R2 (high).
+This is also the argument and result layout of WAX v3 call ABI 1
+(doc/spec_WAX_v3.md §6), whose module rules (R30 = module origin, PIC,
+import descriptors) the `pic` and `imports` options add.
 """
 from __future__ import annotations
 
@@ -35,6 +38,11 @@ _CTX_CURRENT, _CTX_DEPTH = "cpt32_ctx_current", "cpt32_trap_depth"
 _CTX_EPC, _CTX_STATUS = 128, 132
 _CTX_RESTORE = "__llvm_src32_ctx_restore"
 _STATUS_RESTORED = 0x1A  # PIE | PU | PSM; IE stays 0 until IRET
+# Position-independent code (WAX v3 call ABI 1): R30 holds the module origin.
+_ORIGIN = 30
+# PIC values are resolved at origin 0 and again at this origin; a value that
+# moves by the same amount is an address and gets R30 added at run time.
+_PIC_PROBE = 0x00100000
 
 
 def _round(n, a=4):
@@ -68,12 +76,13 @@ class _Fixup:
 
 
 class _Code:
-    def __init__(self, origin):
+    def __init__(self, origin, pic=False):
         self.lines = [f".ORG 0x{origin:08X}"]
         self.pc = origin
         self.labels = {}
         self.fixups = []
         self.serial = 0
+        self.pic = pic
 
     def emit(self, text):
         self.lines.append("    " + text)
@@ -100,6 +109,9 @@ class _Code:
             self.fixups.append(_Fixup(len(self.lines), reg, value))
             self.emit(f"LDIH R{reg}, 0")
             self.emit(f"LDIL R{reg}, 0")
+            if self.pic:
+                # resolve() makes this ADD R30 when the value is an address.
+                self.emit(f"ADD R{reg}, R{reg}, R0")
 
     def jump(self, label):
         self.imm(12, ("label", label))
@@ -122,29 +134,42 @@ class _Code:
             base, offset = 11, 0
         self.emit(f"{op} R{reg}, [R{base}+{offset}]")
 
-    def resolve(self, image):
-        for fix in self.fixups:
-            kind, expression, *extra = fix.expression
-            if kind == "label":
-                if expression not in self.labels:
-                    raise CompileError(f"unresolved function or block {expression}")
-                value = self.labels[expression]
-            elif kind == "constant":
-                value = image.resolve(expression)
-                if extra:
-                    value >>= extra[0]
-            elif kind == "image":
-                value = getattr(image, expression)
-            elif kind == "bytes":
-                ty, text, offset = expression
-                _, untyped = parse_type(text, image.module)
-                data = image.constant(ty, untyped)
-                value = int.from_bytes(data[offset:offset + 4].ljust(4, b"\0"), "big")
-            else:
-                raise CompileError(f"internal relocation kind {kind}")
-            value &= 0xFFFFFFFF
+    def value(self, fix, image):
+        kind, expression, *extra = fix.expression
+        if kind == "label":
+            if expression not in self.labels:
+                raise CompileError(f"unresolved function or block {expression}")
+            value = self.labels[expression]
+        elif kind == "constant":
+            value = image.resolve(expression)
+            if extra:
+                value >>= extra[0]
+        elif kind == "image":
+            value = getattr(image, expression)
+        elif kind == "bytes":
+            ty, text, offset = expression
+            _, untyped = parse_type(text, image.module)
+            data = image.constant(ty, untyped)
+            value = int.from_bytes(data[offset:offset + 4].ljust(4, b"\0"), "big")
+        else:
+            raise CompileError(f"internal relocation kind {kind}")
+        return value & 0xFFFFFFFF
+
+    def resolve(self, image, moved=None):
+        """Patch every fixup. For PIC, `moved` holds each value resolved with
+        the image at _PIC_PROBE: an unchanged value is absolute, one moved by
+        _PIC_PROBE is image-relative and gets R30 added."""
+        for index, fix in enumerate(self.fixups):
+            value = self.value(fix, image)
             self.lines[fix.line] = f"    LDIH R{fix.register}, 0x{value >> 16:04X}"
             self.lines[fix.line + 1] = f"    LDIL R{fix.register}, 0x{value & 65535:04X}"
+            if not self.pic:
+                continue
+            delta = (moved[index] - value) & 0xFFFFFFFF
+            if delta not in (0, _PIC_PROBE):
+                raise CompileError(f"constant {fix.expression[1]} is not position independent")
+            if delta:
+                self.lines[fix.line + 2] = f"    ADD R{fix.register}, R{fix.register}, R{_ORIGIN}"
 
 
 class _Function:
@@ -177,6 +202,8 @@ class _Function:
         for arg in function.arguments:
             self.check_type(arg.type)
             self.slots[arg] = self.allocate(self.storage(arg.type))
+        # The caller's R30 across calls to imported functions (call ABI 1).
+        self.saved_origin = self.allocate(4) if owner.imports else None
         for block in self.blocks:
             for inst in block.instructions:
                 if str(inst.type) != "void":
@@ -241,6 +268,15 @@ class _Function:
             self.c.mem("LD", reg, 29, self.slots[value] + 4 * word)
             return
         if value.is_function or value.is_global or value.value_kind in (llvm.ValueKind.function, llvm.ValueKind.global_variable):
+            imported = self.owner.imports.get(value.name)
+            if imported == "function":
+                self.fail(f"the address of imported function @{value.name} is a module descriptor, "
+                          "not a code address; call it directly")
+            if imported == "object":
+                # The first descriptor word is the object's address.
+                self.c.imm(reg, ("label", self.owner.slot_label(value.name)))
+                self.c.mem("LD", reg, reg)
+                return
             self.c.imm(reg, ("constant", "@" + self.quote_name(value.name)))
             return
         if not value.is_constant:
@@ -284,6 +320,7 @@ class _Function:
 
     def emit(self):
         c = self.c
+        start = c.pc
         c.label(symbol(self.fn.name))
         c.add_const(28, 28, -8)
         c.mem("ST", 29, 28)
@@ -307,6 +344,7 @@ class _Function:
         c.mem("LD", 29, 28)
         c.add_const(28, 28, 8)
         c.emit("JR R31")
+        self.owner.extents[self.fn.name] = (start, c.pc)
 
     def edge(self, source, target):
         target = self.blocks[self.blocks.index(target)]
@@ -846,7 +884,10 @@ class _Function:
         if name.startswith("llvm."):
             self.intrinsic(inst, name, values)
             return
-        if name:
+        imported = name and self.owner.imports.get(name)
+        if imported == "object":
+            self.fail(f"@{name} is imported as an object, not a function")
+        if name and not imported:
             if name not in self.owner.definitions:
                 self.fail(f"undefined external function @{name}; freestanding modules must provide a definition")
             if self.owner.definitions[name].global_value_type.is_function_vararg:
@@ -885,8 +926,21 @@ class _Function:
                     self.load(value, 1, word)
                     c.mem("ST", 1, 28, offset + word * 4)
             offset += self.storage(value.type)
-        self.load(target, 12)
-        c.emit("JALR R12")
+        if imported:
+            if byvals:
+                self.fail("by-value aggregate arguments cannot cross a module boundary")
+            # Call ABI 1 inter-module call: read both descriptor words, save
+            # our R30, enter with R30 = the provider's origin, restore after.
+            c.imm(11, ("label", self.owner.slot_label(name)))
+            c.mem("LD", 12, 11)
+            c.mem("LD", 13, 11, 4)
+            c.mem("ST", _ORIGIN, 29, self.saved_origin)
+            c.move(_ORIGIN, 13)
+            c.emit("JALR R12")
+            c.mem("LD", _ORIGIN, 29, self.saved_origin)
+        else:
+            self.load(target, 12)
+            c.emit("JALR R12")
         c.add_const(28, 28, total)
         if str(inst.type) != "void":
             if self.storage(inst.type) > 4:
@@ -1268,18 +1322,29 @@ class _Function:
 
 
 class _Module:
-    def __init__(self, module, origin, stack_top, entry, protected=False, data_origin=None):
+    def __init__(self, module, origin, stack_top, entry, protected=False, data_origin=None,
+                 pic=False, imports=None, exit_syscall=0):
         self.module = module
         self.layout = Layout(module)
         self.image = DataImage(module)
-        self.code = _Code(origin)
+        self.code = _Code(origin, pic)
         self.definitions = {f.name: f for f in module.functions if not f.is_declaration}
         self.origin, self.stack_top, self.entry = origin, stack_top, entry
         self.protected = protected
         self.data_origin = data_origin
+        self.pic = pic
+        # name -> "function" or "object": symbols bound through 8-byte
+        # import descriptors (doc/spec_WAX_v3.md §4.3), in slot order.
+        self.imports = dict(imports or {})
+        self.exit_syscall = exit_syscall
+        self.slots = {}
+        self.extents = {}
         self.uses_kernel_context = False
         self.uses_ctx_resume = False
         self.data_start = None
+
+    def slot_label(self, name):
+        return "__llvm_src32_import_" + symbol(name)
 
     def check_kernel_trap(self, kernel_trap):
         arguments = list(kernel_trap.arguments)
@@ -1407,6 +1472,18 @@ class _Module:
                 if handler in self.definitions:
                     raise CompileError(f"{handler} installs CPU vectors and needs supervisor mode; "
                                        "it is unavailable with --protected")
+        for name, kind in self.imports.items():
+            if name in self.definitions or any(g.name == name and not g.is_declaration
+                                               for g in self.module.global_variables):
+                raise CompileError(f"@{name} is both defined and imported")
+            if kind == "function" and not any(f.name == name for f in self.module.functions):
+                raise CompileError(f"imported function @{name} is not declared")
+        if self.entry is None:
+            # A library (WAL) has no startup code or process entry.
+            self.emit_functions()
+            return self.finish()
+        if self.entry not in self.definitions:
+            raise CompileError(f"entry function @{self.entry} is not defined")
         entry = self.definitions[self.entry]
         if list(entry.arguments):
             raise CompileError("freestanding entry must take no arguments (use int main(void))")
@@ -1471,9 +1548,9 @@ class _Module:
         c.imm(12, ("label", symbol(self.entry)))
         c.emit("JALR R12")
         if self.protected:
-            # User mode cannot HALT: report main's result in R1 with SYSCALL 0
-            # (exit), which the loading OS/BIOS defines.
-            c.emit("SYSCALL 0")
+            # User mode cannot HALT: report main's result in R1 with the
+            # loading OS's exit call (SYSCALL 0 unless the OS says otherwise).
+            c.emit(f"SYSCALL {self.exit_syscall}")
         else:
             c.emit("HALT")
         stop = c.fresh("stop")
@@ -1514,11 +1591,7 @@ class _Module:
             c.emit("IRET")
         if kernel_trap is not None:
             self.emit_ctx_stub()
-        for function in self.definitions.values():
-            linkage = function.linkage.name
-            if linkage not in ("external", "internal", "private"):
-                raise CompileError(f"function @{function.name}: unsupported linkage {linkage}")
-            _Function(self, function).emit()
+        self.emit_functions()
         if self.uses_kernel_context:
             # Saved kernel SP, FP, resume PC and STATUS for cpt32_run_user.
             c.label(_KERNEL_CONTEXT)
@@ -1534,20 +1607,69 @@ class _Module:
                 functions[name] = c.labels[symbol(name)]
         elif self.uses_ctx_resume:
             raise CompileError("cpt32_ctx_resume requires a kernel_trap definition")
+        return self.finish(functions)
+
+    def emit_functions(self):
+        for function in self.definitions.values():
+            linkage = function.linkage.name
+            if linkage not in ("external", "internal", "private"):
+                raise CompileError(f"function @{function.name}: unsupported linkage {linkage}")
+            _Function(self, function).emit()
+
+    def finish(self, functions=None):
+        """Place static data and import slots after the code, then resolve."""
+        c = self.code
+        if functions is None:
+            functions = {name: c.labels[symbol(name)] for name in self.definitions}
         base = _round(c.pc, 8)
         self.data_start = base
         self.image.assign(base, functions, self.data_origin)
-        if self.origin < self.stack_top <= self.image.image_end:
+        # Import descriptors: 8 zero bytes each, in RW data after the globals.
+        slot = _round(self.image.image_end, 8)
+        for name in self.imports:
+            self.slots[name] = slot
+            c.labels[self.slot_label(name)] = slot
+            slot += 8
+        self.image_end = slot if self.imports else self.image.image_end
+        if self.entry is not None and self.origin < self.stack_top <= self.image_end:
             raise CompileError("initial stack top overlaps the generated code/data image")
         if self.data_origin is not None and self.data_origin < self.stack_top <= self.image.writable_end:
             raise CompileError("initial stack top overlaps the writable data area")
-        c.resolve(self.image)
+        moved = self.pic_probe(functions, base) if self.pic else None
+        c.resolve(self.image, moved)
         lines = c.lines + self.image.emit(functions, base, self.data_origin)
+        if self.imports:
+            lines.append(f".ORG 0x{self.slots[next(iter(self.imports))]:08X}")
+            lines.extend("    .DWORD 0" for _ in range(2 * len(self.imports)))
         return "\n".join(lines) + "\n"
+
+    def pic_probe(self, functions, base):
+        """Resolve everything again with the image moved by _PIC_PROBE.
+
+        Returns the moved value of each code fixup. A WAL has no load-time
+        relocation (doc/spec_WAX_v3.md §1), so static data that changes with
+        the origin, i.e. holds an address, is rejected."""
+        c, image = self.code, self.image
+        still = {item.name: image.constant(item.typ, item.initializer) for item in image.globals}
+        labels = c.labels
+        c.labels = {name: address + _PIC_PROBE for name, address in labels.items()}
+        try:
+            image.assign(base + _PIC_PROBE, {n: a + _PIC_PROBE for n, a in functions.items()},
+                         self.data_origin)
+            for item in image.globals:
+                if image.constant(item.typ, item.initializer) != still[item.name]:
+                    raise CompileError(
+                        f"global @{item.name}: a library's static data cannot hold addresses "
+                        "(WAX v3 has no load-time relocation); compute them at run time")
+            moved = [c.value(fix, image) for fix in c.fixups]
+        finally:
+            c.labels = labels
+            image.assign(base, functions, self.data_origin)
+        return moved
 
 
 def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None,
-                   data_origin=None):
+                   data_origin=None, pic=False, imports=None, exit_syscall=0):
     """Lower an official llvmlite ModuleRef into standalone SRC32 assembly.
 
     The module is verified by LLVM, keeps its big-endian 32-bit target layout,
@@ -1559,11 +1681,23 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
     `data_origin` builds a ROM image: writable globals live in RAM at that
     address and startup copies their initial values from a load image placed
     after the read-only data, then clears the zero-initialized tail.
+
+    WAX v3 call ABI 1 (doc/spec_WAX_v3.md §6): `imports` maps the names of
+    declared functions/objects to "function"/"object"; each gets an 8-byte
+    descriptor slot after the static data (`info["slots"]`), and calls go
+    through it with R30 set to the provider's origin. `pic` emits a library:
+    origin must be 0, every address is formed from R30, and `entry=None`
+    leaves out the startup code. `exit_syscall` is the SYSCALL number the
+    protected startup code uses to exit. `info` also receives `extents`
+    (function name -> [start, end)) and `symbols` (global name -> address).
     """
     if not 0 <= origin <= 0xFFFFFFFC or origin % 4:
         raise CompileError("origin must be a word-aligned 32-bit address")
     if not 8 <= stack_top <= 0xFFFFFFF8 or stack_top % 8:
         raise CompileError("stack top must be an 8-byte-aligned 32-bit address")
+    if pic and (origin or data_origin is not None or not protected):
+        raise CompileError("position-independent code needs origin 0, a protected program "
+                           "and no ROM data origin")
     if data_origin is not None:
         if not 0 <= data_origin <= 0xFFFFFFF8 or data_origin % 8:
             raise CompileError("data origin must be an 8-byte-aligned 32-bit address")
@@ -1574,10 +1708,15 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
     except RuntimeError as exc:
         raise CompileError(f"LLVM verification failed: {exc}") from exc
     try:
-        compiled = _Module(module, origin, stack_top, entry, protected, data_origin)
+        compiled = _Module(module, origin, stack_top, entry, protected, data_origin, pic, imports,
+                           exit_syscall)
         assembly = compiled.compile()
         if info is not None:
             info["data_start"] = compiled.data_start
+            info["extents"] = compiled.extents
+            info["slots"] = compiled.slots
+            info["symbols"] = dict(compiled.image.symbols)
+            info["image_end"] = compiled.image_end
         return assembly
     except CompileError:
         raise
