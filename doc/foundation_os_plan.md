@@ -258,7 +258,7 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 | フェーズ | 内容 | 受け入れ確認 |
 |---|---|---|
 | 0 ツール | 文脈切替トラップスタブ（§4.2）、カーネル raw image のビルド、`FNDBOOT` packer | ツールチェーンのテスト。スタブが別 frame へ切り替えて復元すること（トラップスタブは実装済み: `examples/kernel-trap-c`。raw image と packer は未着手） |
-| 1 最小カーネル | trap、timer tick、U モードタスク 2 つの交互実行、例外での終了 | testbench で両タスクのカウンタが進み、片方が保護違反で落ちても他方が動き続ける |
+| 1 最小カーネル | trap、timer tick、U モードタスク 2 つの交互実行、例外での終了 | testbench で両タスクのカウンタが進み、片方が保護違反で落ちても他方が動き続ける（実装済み: [`foundation/`](../foundation/README.md)、`tests/phase1`。WAX ローダはないので、プロセスはカーネルイメージにリンクしたユーザーコードから作る。RAM 容量の取得は未決） |
 | 2 IPC | ハンドル、call/recv/reply、相手終了時の解除、console サービス | console 経由の文字表示。サーバーが終了したら call が `E_PEER_GONE` になる |
 | 3 プロセス | `proc_spawn`/`exit`/`wait`、所有権表、`FNDBOOT` の同梱モジュール | 起動・終了を繰り返しても RAM とハンドルが漏れない。WAX v3 §8 の領域ケースのうち v2 で可能なもの |
 | 4 ディスク | `blk_io`（転送先の検証）、disk サービス、DSFS 読み取りマウント | FDD 読み込み中も他スレッドが進む。不正バッファでは `E_ACCESS` になり RAM は変化しない |

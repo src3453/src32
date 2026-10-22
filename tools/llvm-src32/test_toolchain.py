@@ -401,6 +401,29 @@ int main(void) {
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_foundation_phase1_kernel(self):
+        # Foundation phase 1 (doc/foundation_os_plan.md §8): U-mode counters
+        # that never yield advance on the 10-tick slice, one process dies on a
+        # protection fault while the others keep running, and a SERVICE
+        # process checks sleep, priority preemption and syscall errors.
+        foundation = ROOT / 'foundation'
+        sources = [foundation / 'tests/phase1/user.c', foundation / 'tests/phase1/main.c',
+                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c'))]
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / ('foundation' + opt[1:] + '.wax')
+                self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
+                            '-I', foundation / 'include', '--origin', '0x10000',
+                            '--stack-top', '0x100000', opt, '-o', image)
+                for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                    with self.subTest(cpu=cpu):
+                        result = subprocess.run(
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '30'],
+                            cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                            errors='replace', timeout=120)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn('PASS:', result.stdout)
+
     def test_kernel_trap_panics_before_first_resume(self):
         # The trap depth starts at 1, so a SYSCALL before cpt32_ctx_resume
         # reaches kernel_panic with its CAUSE and EPC instead of kernel_trap.
