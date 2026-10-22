@@ -17,8 +17,11 @@ const uint32_t vfs_devnode_count = sizeof vfs_devnodes / sizeof vfs_devnodes[0];
 
 static const char *const dd_names[4] = {"0", "1", "2", "3"};
 
-/* Virtual directories: uid 0, owner/other RX (§11.1). */
+/* Virtual directories: uid 0, owner/other RX (§11.1). DSFS: files owner/
+ * other R, the root owner/other RX (§11.2). */
 #define VIRTUAL_DIR_MODE 0x002Du
+#define DSFS_FILE_MODE 0x0024u
+#define DSFS_ROOT_MODE 0x002Du
 
 static uint32_t cstr_len(const char *s) {
     uint32_t n = 0;
@@ -63,6 +66,25 @@ void vfs_mount_fs2(uint32_t mnt, fs2_vol *vol, uint32_t fs_type, uint32_t slot) 
     m->vol = vol;
 }
 
+void vfs_mount_dsfs(uint32_t mnt, dsfs_vol *vol, uint32_t slot) {
+    vfs_mount *m = &vfs_mounts[mnt];
+    m->present = 1;
+    m->kind = VFS_KIND_DSFS;
+    m->fs_type = FND_VOL_DSFS;
+    m->slot = slot;
+    m->dsfs = vol;
+}
+
+fnd_status vfs_read(vfs_node n, uint64_t off, void *buf, uint32_t len, uint32_t *got) {
+    const vfs_mount *m = &vfs_mounts[n.mnt];
+    if (m->kind == VFS_KIND_FS2)
+        return fs2_read(m->vol, n.ino, off, buf, len, got);
+    if (m->kind == VFS_KIND_DSFS && n.ino >= 2)
+        return dsfs_read(m->dsfs, n.ino - 2, off, buf, len, got);
+    *got = 0;
+    return FND_OK;
+}
+
 static const char *const reserved_names[4] = {"dev", "dd", "os", "tmp"};
 static const uint32_t reserved_mounts[4] = {VFS_DEV, VFS_DD, VFS_OS, VFS_TMP};
 
@@ -100,6 +122,28 @@ fnd_status vfs_get_info(vfs_node n, vfs_info *out) {
         out->type = FND_TYPE_DIR;
         out->mode = VIRTUAL_DIR_MODE;
         out->read_only = 1;
+        if (m->kind == VFS_KIND_DSFS) {
+            out->inode.type = FS2_TYPE_DIR;
+            out->inode.mode = DSFS_ROOT_MODE;
+            out->mode = DSFS_ROOT_MODE;
+        }
+        return FND_OK;
+    }
+    if (m->kind == VFS_KIND_DSFS) {
+        /* §11.2: DSFS has no UID or mode; seconds are zero-extended. */
+        dsfs_entry e;
+        if (n.ino - 2 >= DSFS_ENTRIES)
+            return FND_E_NOT_FOUND;
+        dsfs_entry_get(m->dsfs, n.ino - 2, &e);
+        if (!e.used)
+            return FND_E_NOT_FOUND;
+        out->type = FND_TYPE_FILE;
+        out->mode = DSFS_FILE_MODE;
+        out->read_only = 1;
+        out->inode.type = FS2_TYPE_FILE;
+        out->inode.size = e.size;
+        out->inode.created.sec = e.created;
+        out->inode.modified.sec = out->inode.changed.sec = e.modified;
         return FND_OK;
     }
     if (m->kind == VFS_KIND_DEV && n.ino >= 2 && n.ino - 2 < vfs_devnode_count) {
@@ -173,6 +217,21 @@ fnd_status vfs_lookup(vfs_node dir, const uint8_t *name, uint32_t len, vfs_node 
     }
     if (dir.ino != VFS_DIR_INO)
         return FND_E_NOT_DIR;
+    if (m->kind == VFS_KIND_DSFS) {
+        /* §11.1: valid 8.3 names, compared like every other name. */
+        static dsfs_entry e;
+        for (uint32_t i = 0; i < DSFS_ENTRIES; ++i) {
+            dsfs_entry_get(m->dsfs, i, &e);
+            if (e.used && fnd_name_key_equal(e.name, e.name_len, name, len)) {
+                out->mnt = dir.mnt;
+                out->ino = 2 + i;
+                *stored = e.name;
+                *stored_len = e.name_len;
+                return FND_OK;
+            }
+        }
+        return FND_E_NOT_FOUND;
+    }
     if (dir.mnt == VFS_DD) {
         for (uint32_t n = 0; n < 4; ++n) {
             if (vfs_mounts[VFS_DD0 + n].present && len == 1 && name[0] == (uint8_t)('0' + n)) {

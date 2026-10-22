@@ -2,6 +2,7 @@
 #define FOUNDATION_FS_VFS_H
 #include <stdint.h>
 
+#include "dsfs.h"
 #include "fs2.h"
 
 /* The VFS of the fs service (doc/spec_FS2.md §11): the mount table, path
@@ -23,6 +24,7 @@ enum {
 #define VFS_KIND_FS2 1u     /* an FS2 volume */
 #define VFS_KIND_VIRTUAL 2u /* a fixed directory: "/" without a disk, /dd, /os */
 #define VFS_KIND_DEV 3u     /* /dev and its nodes */
+#define VFS_KIND_DSFS 4u    /* a DSFS volume, read-only; node 2 + n is entry n */
 
 #define VFS_PATH_MAX 4096u
 #define VFS_DIR_INO 1u /* the root of every mount */
@@ -48,6 +50,7 @@ typedef struct {
     uint32_t parent;  /* mount this one is attached to */
     const char *name; /* its name in the parent's root */
     fs2_vol *vol;     /* VFS_KIND_FS2; "/" and /dd/<boot> share one */
+    dsfs_vol *dsfs;   /* VFS_KIND_DSFS */
 } vfs_mount;
 
 typedef struct {
@@ -59,7 +62,7 @@ typedef struct {
     uint32_t type; /* FND_TYPE_* */
     uint32_t mode, uid;
     uint32_t read_only;
-    fs2_inode inode; /* for FS2 nodes */
+    fs2_inode inode; /* FS2 nodes; size and times of DSFS nodes */
     const vfs_devnode *dev;
 } vfs_info;
 
@@ -89,6 +92,10 @@ extern const uint32_t vfs_devnode_count;
 void vfs_init(void);
 /* Attaches FS2 volumes. `fs_type` is FND_VOL_FS2 or FND_VOL_RAM. */
 void vfs_mount_fs2(uint32_t mnt, fs2_vol *vol, uint32_t fs_type, uint32_t slot);
+void vfs_mount_dsfs(uint32_t mnt, dsfs_vol *vol, uint32_t slot);
+
+/* Reads file data of an FS2 or DSFS node. */
+fnd_status vfs_read(vfs_node n, uint64_t off, void *buf, uint32_t len, uint32_t *got);
 
 fnd_status vfs_get_info(vfs_node n, vfs_info *out);
 vfs_node vfs_parent(vfs_node n);

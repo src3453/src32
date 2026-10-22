@@ -166,6 +166,7 @@ static void stream_op(fs_obj *o, const fs_req *q, const uint8_t *data, uint32_t 
                       uint32_t cap, fs_rep *r) {
     vfs_info info;
     fs2_vol *vol = o->kind == OBJ_FILE ? fs2_of(o->node) : 0;
+    uint32_t file = o->kind == OBJ_FILE;
     uint32_t readable = (o->flags & (FND_OPEN_READ | FND_OPEN_EXEC)) != 0;
     uint32_t writable = (o->flags & FND_OPEN_WRITE) != 0;
     fnd_status st;
@@ -180,8 +181,8 @@ static void stream_op(fs_obj *o, const fs_req *q, const uint8_t *data, uint32_t 
             return;
         }
         uint32_t want = q->a0 < cap ? q->a0 : cap, got = 0;
-        if (vol) {
-            st = fs2_read(vol, o->node.ino, o->pos, reply_buf, want, &got);
+        if (file) {
+            st = vfs_read(o->node, o->pos, reply_buf, want, &got);
             if (st != FND_OK) {
                 r->op = (uint32_t)st;
                 return;
@@ -228,7 +229,7 @@ static void stream_op(fs_obj *o, const fs_req *q, const uint8_t *data, uint32_t 
             r->op = (uint32_t)FND_E_BAD_ARG;
             return;
         }
-        if (!vol) {
+        if (!file) {
             r->op = (uint32_t)FND_E_UNSUPPORTED;
             return;
         }
@@ -333,6 +334,20 @@ static fnd_status dir_peek(const fs_obj *o, dir_item *it, uint32_t *phase, uint3
             it->name_chars = 0;
             fnd_name_check(dir_entry.name, dir_entry.name_bytes, &it->name_chars);
             return FND_OK;
+        }
+        if (m->kind == VFS_KIND_DSFS) {
+            static dsfs_entry e;
+            while (*cursor < DSFS_ENTRIES) {
+                dsfs_entry_get(m->dsfs, (*cursor)++, &e);
+                if (!e.used)
+                    continue;
+                it->node.mnt = o->node.mnt;
+                it->node.ino = 1 + *cursor;
+                it->name = e.name;
+                it->name_bytes = it->name_chars = e.name_len;
+                return FND_OK;
+            }
+            break;
         }
         if (o->node.mnt == VFS_DD) {
             while (*cursor < 4 && !vfs_mounts[VFS_DD0 + *cursor].present)
@@ -696,6 +711,10 @@ static fnd_status op_volume(fs_obj *s, const fs_req *q, const uint8_t *path, uin
         fs_put32(v + 4, m->vol->writable ? 0 : FND_VOL_READ_ONLY);
         fs_put64(v + 8, (uint64_t)FS2_PAYLOAD * (m->vol->total_blocks - m->vol->data_start));
         fs_put64(v + 16, (uint64_t)FS2_PAYLOAD * m->vol->free_blocks);
+    } else if (m->kind == VFS_KIND_DSFS) {
+        fs_put32(v + 4, FND_VOL_READ_ONLY);
+        fs_put64(v + 8, 512ull * (m->dsfs->total_blocks - m->dsfs->data_start));
+        fs_put64(v + 16, 512ull * m->dsfs->free_blocks);
     } else {
         fs_put32(v + 4, FND_VOL_READ_ONLY);
     }

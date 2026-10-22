@@ -22,6 +22,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 FOUNDATION = ROOT / "foundation"
 sys.path.insert(0, str(ROOT / "tools/fs2"))
+sys.path.insert(0, str(ROOT / "tools/dsfs"))
+import dsfs  # noqa: E402
 try:
     import fs2 as fs2tool  # noqa: E402
 except ImportError:  # the host tool lands with the disk boot work
@@ -181,6 +183,7 @@ class FsTestBase(unittest.TestCase):
         cls.lib.host_set_time.argtypes = [ctypes.c_int64, ctypes.c_uint32]
         cls.lib.host_attach.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32,
                                         ctypes.c_uint32, ctypes.c_uint32, ctypes.c_uint32, ctypes.c_int32]
+        cls.lib.host_attach_dsfs.argtypes = [ctypes.c_uint32, ctypes.c_void_p, ctypes.c_uint32, ctypes.c_uint32]
         cls.lib.host_format.argtypes = [ctypes.c_void_p] + [ctypes.c_uint32] * 5
 
     @classmethod
@@ -570,6 +573,38 @@ class VolumeTests(FsTestBase):
         # A data block marked used but owned by no chain (a leak).
         data_bit = layout["bitmap"] + 190 // 8
         mounted(lambda m: m.__setitem__(data_bit, m[data_bit] | (0x80 >> (190 % 8))), "FORMAT")
+
+
+class DsfsTests(FsTestBase):
+    def test_dsfs_slot_is_read_only(self):
+        fs = self.fs
+        fs.boot_disk()
+        img = bytearray(2880 * 512)
+        dsfs.mkfs(img, created=0)
+        dsfs.put_file(img, dsfs.normalize_name("HELLO.TXT"), b"hello dsfs" * 100, 1234)
+        dsfs.put_file(img, dsfs.normalize_name("README"), b"", 99)
+        image = (ctypes.c_uint8 * len(img)).from_buffer(img)
+        self.assertEqual(s32(self.lib.host_attach_dsfs(DD0 + 2, image, 2880, 2) & 0xFFFFFFFF), 0)
+        entries = {n: st for n, _, st in fs.list("/dd/2")}
+        self.assertEqual(set(entries), {"HELLO.TXT", "README"})
+        self.assertEqual((entries["HELLO.TXT"]["size"], entries["HELLO.TXT"]["mode"]), (1000, 0x24))
+        self.assertEqual(entries["README"]["modified"], (99, 0))
+        self.assertEqual(fs.get("/dd/2/hello.txt"), b"hello dsfs" * 100)
+        h = fs.open("/dd/2/HELLO.TXT")
+        fs.ok(h, ST_SEEK, 2, 0xFFFFFFFF, 0xFFFFFFFC)
+        self.assertEqual(fs.ok(h, ST_READ, 100).data, b"dsfs")
+        self.assertError("READ_ONLY", fs.call(SESSION, FS_OPEN, WRITE, data="/dd/2/HELLO.TXT"))
+        self.assertError("READ_ONLY", fs.call(SESSION, FS_UNLINK, data="/dd/2/README"))
+        self.assertError("READ_ONLY", fs.call(SESSION, FS_OPEN, WRITE | CREATE, DEFAULT, data="/dd/2/NEW"))
+        self.assertError("NOT_DIR", fs.call(SESSION, FS_STAT, data="/dd/2/README/x"))
+        vi = fs.ok(SESSION, FS_VOLUME_INFO, data="/dd/2").data
+        self.assertEqual((be(vi, 0), be(vi, 4), be(vi, 24)), (2, 1, 2))
+        self.assertEqual(be(vi, 16, 8), 512 * (2861 - 2))
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/dd")), ["0", "2"])
+        # §7: a broken DSFS volume is not mounted.
+        img[512 * 3] = 2
+        bad = (ctypes.c_uint8 * len(img)).from_buffer(img)
+        self.assertEqual(s32(self.lib.host_attach_dsfs(DD0 + 3, bad, 2880, 3) & 0xFFFFFFFF), E["FORMAT"])
 
 
 class NameTests(FsTestBase):

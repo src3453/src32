@@ -98,6 +98,15 @@ EXPORT int32_t host_attach(uint32_t mnt, uint8_t *image, uint32_t sectors, uint3
     return FND_OK;
 }
 
+EXPORT int32_t host_attach_dsfs(uint32_t mnt, uint8_t *image, uint32_t sectors, uint32_t slot) {
+    static dsfs_vol dsfs[VFS_MOUNTS];
+    dev_setup(mnt, image, sectors, 1);
+    fnd_status st = dsfs_mount(&dsfs[mnt], &devs[mnt]);
+    if (st == FND_OK)
+        vfs_mount_dsfs(mnt, &dsfs[mnt], slot);
+    return st;
+}
+
 EXPORT int32_t host_format(uint8_t *image, uint32_t sectors, uint32_t total, uint32_t boot_blocks,
                            uint32_t inodes, uint32_t root_mode) {
     memdev m = {image, 0xFFFFFFFFu, 0};
