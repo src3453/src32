@@ -1,0 +1,5 @@
+# test.base 1.0
+base_add fn(u32,u32)->u32
+base_add64 fn(u64,u64)->u64
+base_calls object
+base_greeting fn()->ptr
