@@ -1214,8 +1214,26 @@ impl PipelineCpu {
         {
             return self.ex_mem.alu_result;
         }
+        // CPUID writes R1/R2 implicitly at commit (no dest), so forward the
+        // constants from the stage that holds it.
+        if self.ex_mem.valid && self.ex_mem.cpuid {
+            if reg == REG_CPUID {
+                return CPU_ID;
+            }
+            if reg == REG_FEATURES {
+                return CPU_FEATURES;
+            }
+        }
         if self.mem_wb.valid && self.mem_wb.writeback && self.mem_wb.dest == Some(reg) {
             return self.mem_wb.value;
+        }
+        if self.mem_wb.valid && self.mem_wb.cpuid {
+            if reg == REG_CPUID {
+                return CPU_ID;
+            }
+            if reg == REG_FEATURES {
+                return CPU_FEATURES;
+            }
         }
         // Link values (JAL/JALR) are also forwarded via dest/value above
         // because EX sets dest=LR with alu_result=return address.

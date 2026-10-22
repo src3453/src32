@@ -985,12 +985,9 @@ class _Function:
             c.emit(f"SYSCALL {number}, {context}")
             self.store(inst)
         elif name == "cpt32_cpu_features":
-            # CPUID writes CPU_ID to R1 and CPU_FEATURES to R2. The pipelined
-            # CPU does not interlock on those implicit results (they retire
-            # three instructions later), so let them land first.
+            # CPUID writes CPU_ID to R1 and CPU_FEATURES to R2; every CPU kind
+            # forwards those implicit results to the next instruction.
             c.emit("CPUID")
-            for _ in range(3):
-                c.emit("NOP")
             c.move(1, 2)
             self.store(inst)
         elif name == "cpt32_mfsr":
