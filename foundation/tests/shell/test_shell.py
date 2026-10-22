@@ -60,16 +60,22 @@ class ShellTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def screen(self, *batches, step=STEP_FRAMES, at_frames=None):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None):
         """Types each batch STEP frames after the previous one; returns the
-        screen rows without the trailing blank rows."""
+        screen rows without the trailing blank rows. config is the text of a
+        config.yaml for this run only."""
         command = [str(self.harness), str(self.image), '42', '--cpu', 'pipeline',
                    '--frames', str(FRAMES), '--dump-pcg']
         for i, text in enumerate(batches):
             frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
             command += ['--type', f'{frame}={text}']
-        result = subprocess.run(command, cwd=self.work, capture_output=True, text=True,
-                                encoding='utf-8', errors='replace', timeout=600)
+        with tempfile.TemporaryDirectory(prefix='foundation-shell-run-') as run_dir:
+            cwd = self.work
+            if config is not None:
+                cwd = Path(run_dir)
+                (cwd / 'config.yaml').write_text(config, encoding='utf-8')
+            result = subprocess.run(command, cwd=cwd, capture_output=True, text=True,
+                                    encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.splitlines()
         rows = lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')]
@@ -89,6 +95,21 @@ class ShellTests(unittest.TestCase):
             '/> free',
             '   16384 KiB total',
             '   10240 KiB free',
+            '    4096 KiB VRAM',
+            '    1024 KiB PCMRAM',
+            '/>',
+        ])
+
+    def test_free_reports_installed_memory(self):
+        # The kernel takes the sizes from the BMC (spec_BMC_DMAC.md §1.4).
+        # With 8 MiB of RAM only slots 0-4 exist, and the shell holds slot 4.
+        self.assertEqual(self.screen('free\\n', config='memory:\n  ram_mib: 8\n  vram_mib: 8\n'),
+                         BANNER + [
+            '/> free',
+            '    8192 KiB total',
+            '    2048 KiB free',
+            '    8192 KiB VRAM',
+            '    1024 KiB PCMRAM',
             '/>',
         ])
 

@@ -289,7 +289,7 @@ WAX v3 の WAL を必要とするプログラムで、どのライブラリ一�
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
 | `set` | `set`／`set NAME`／`set NAME=value` | 引数なしで全変数を名前順に表示する。`NAME` だけならその値を表示する（未定義は `FND_E_NOT_FOUND`）。`NAME=value` で設定し、`value` が空なら削除する |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）と `Foundation shell 1.0` を 1 行ずつ表示する |
-| `free` | `free` | RAM 容量と空き容量を KiB で表示する（`sys_info` sel 0） |
+| `free` | `free` | Main RAM の容量と空き容量、VRAM と PCMRAM の容量を KiB で表示する（`sys_info` sel 0, 3） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |
 | `top` | `top [-n count]` | 1 秒ごとの差分から user / kernel（概算）/ idle の CPU 使用率、メモリ容量、CPU 使用率順のプロセス一覧を表示する（`sys_info` sel 0, 1, 2）。引数なしでは画面を更新し、q または Ctrl+C で終了。`-n` は正の整数で、指定回数を通常出力して終了する |
 | `help` | `help [command]` | 組み込みコマンドの一覧と 1 行説明、または指定したコマンドの書式を表示する |

@@ -640,6 +640,13 @@ static int32_t cmd_free(uint32_t argc, char **argv) {
     out(" KiB total\n");
     out_dec((int32_t)(info[4] / 1024u), 8);
     out(" KiB free\n");
+    status = fnd_sys_info(FND_INFO_MEMORY, info, FND_MEMINFO_BYTES);
+    if (status < 0)
+        return report("free", 0, status);
+    out_dec((int32_t)(info[1] / 1024u), 8);
+    out(" KiB VRAM\n");
+    out_dec((int32_t)(info[2] / 1024u), 8);
+    out(" KiB PCMRAM\n");
     return FND_OK;
 }
 

@@ -45,8 +45,20 @@ BMCは複数のバスマスターからの要求を一つずつ選び、単一�
 | `0x010` | PENDING | RO | bit 0–7: Master IDごとの要求中ビット |
 | `0x020`–`0x03C` | MASTER_PRIORITY[n] | RW | Master ID `n`の優先度。bit 2:0=P0..P7。他ビットは0。reset値はCPU P0、VPU P1、DMA P2 |
 | `0x040` | MAX_BURST | RW | DMAの最大連続beat数。値0は1 beat、reset値16、範囲1–256 |
+| `0x080` | MAIN_RAM_SIZE | RO | 実装されているMain RAMのbyte数（`0x00000000`から連続） |
+| `0x084` | VRAM_SIZE | RO | 実装されているVRAMのbyte数（`0x10000000`から連続） |
+| `0x088` | PCMRAM_SIZE | RO | 実装されているPCMRAMのbyte数（`0x18000000`から連続） |
 
 CONTROLで調停を無効にしても既に開始したbeatは完了させる。MASTER_PRIORITYへの書き込みは値の下位3-bitのみ受理する。
+
+### 1.5 メモリ容量の報告
+
+BMCは単一バス上の各メモリ窓に実装された容量を、MAIN_RAM_SIZE、VRAM_SIZE、PCMRAM_SIZEで報告する。ゲスト（BIOS、OS、アプリケーション）はこれらのレジスタでメモリ容量を知り、窓の末尾を越えるアクセス（Bus Error）を避ける。
+
+- 値はbyte単位で、各窓の先頭から連続して実装された量を表す。Main RAMは1–256 MiB、VRAMは4–128 MiB、PCMRAMは1 MiB（[システム仕様 §2.4](spec.md)）。エミュレータでは`config.yaml`の`memory.ram_mib`と`memory.vram_mib`が反映される。
+- 値はリセット後から一定で、実行中に変わらない。書き込みは無視する。
+- 窓にメモリが接続されていない構成では0を返す。このレジスタを持たない旧版のBMCでも、未定義オフセットの規則により0が読める。ソフトウェアは0を「容量不明」として扱い、従来の既定値（Main RAM 16 MiB、VRAM 4 MiB、PCMRAM 1 MiB）を仮定してよい。
+- C SDKでは[`<cpt32/bmc.h>`](../sdk/cpt32/include/cpt32/bmc.h)の`bmc_main_ram_bytes()`、`bmc_vram_bytes()`、`bmc_pcmram_bytes()`で読める。
 
 ## 2. DMAC (Direct Memory Access Controller)
 

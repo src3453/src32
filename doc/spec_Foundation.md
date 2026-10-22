@@ -109,7 +109,9 @@ S モードの R30 は、常にスタブのアドレスでなければなりま�
 
 ## 5. メモリと保護
 
-### 5.1 物理配置（v1、Main RAM 16 MiB を前提）
+### 5.1 物理配置（v1、Main RAM 16 MiB で全スロットが揃う）
+
+カーネルは実装されている Main RAM の容量を BMC の `MAIN_RAM_SIZE`（[BMC §1.5](spec_BMC_DMAC.md)）から読みます。0（容量不明）なら 16 MiB とみなします。配置は容量によらず次の表で固定で、16 MiB を超える RAM は v1 では使いません。
 
 | 範囲 | 用途 |
 |---|---|
@@ -133,7 +135,7 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 | 5 | `0x00800000–0x00BFFFFF` | アプリ A（ツールの既定） |
 | 6 | `0x00C00000–0x00FFFFFF` | アプリ B |
 
-- 実在する RAM の外にあるスロットは使えません（`FND_E_NO_MEMORY`）。
+- 実在する RAM の外にあるスロット（末尾が Main RAM の容量を超えるもの）は使えません。そこへの spawn は `FND_E_NO_MEMORY` です。たとえば 8 MiB ではスロット 0〜4 だけが使えます。
 - 1 つのプロセスは、`base_addr` を含むスロットを 1 つだけ占有します。全ブロック、ヒープ、スタックは、そのスロットの中に収まっていなければなりません（収まらなければ `FND_E_FORMAT`）。
 - 占有中のスロットへの spawn は `FND_E_ADDRESS_CONFLICT` になります。
 - 「標準の用途」はツールの既定値を示すだけで、カーネルは用途を検査しません。
@@ -321,10 +323,11 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
   - 4 = RTC 秒の上位 32 bit
 - `debug_write`：カーネルのデバッグコンソール（UART）へ出力します。1 回あたり 256 bytes まで書け、それを超える分は切り詰めます。
 - `sys_info` の sel：
-  - 0 = `fnd_sysinfo`（32 bytes）。順に `abi_major`、`abi_minor`、`tick_hz`、`ram_bytes`、`free_bytes`、`proc_count`、`boot_drive`、予約
+  - 0 = `fnd_sysinfo`（32 bytes）。順に `abi_major`、`abi_minor`、`tick_hz`、`ram_bytes`、`free_bytes`、`proc_count`、`boot_drive`、予約。`ram_bytes` は §5.1 の Main RAM 容量、`free_bytes` は実在するスロットのうち動いているプロセスが占めていないものの合計
   - 1 = プロセス一覧。1 件 48 bytes で、順に `pid`、`parent`、`state`（0 = 実行可能、1 = BLOCKED、2 = 終了済み）、`priority`、`exit_code`、`mem_bytes`、`threads`、`fault_epc`、`name[16]`
   - 2 = CPU 統計。16 bytes のヘッダ（`elapsed_cycles`、`kernel_cycles`、`idle_cycles`、`clock_hz`）に、プロセスごとの 8 bytes（`pid`、`user_cycles`）が続きます。すべて u32、カウンタは 2^32 で wrap します。レコード順は sel 1 と同じで、終了記録も含み、再利用時は新 PID のカウンタを 0 にします。PeC timer ch1 を IRQ なしの 48 MHz free-running clock としてカーネルが予約します。スケジューラの起動時から計測し、HALT 中の経過も idle に含みます。使用率はスナップショット間の符号なし差分で計算し、間隔は約89秒未満とします。
     - `kernel_cycles` は C の trap ハンドラ入口から scheduler 終了までの概算です。アセンブリの context save/restore と C 計測関数の境界外の命令は、前後の user/idle に含まれます。厳密な OS オーバーヘッドとは一致しません。`user_cycles` はプロセスの全スレッドの合計、syscall 処理時間は kernel 側です。ch1 による計測自体の実行コストもあります。
+  - 3 = `fnd_meminfo`（16 bytes）。順に `ram_bytes`、`vram_bytes`、`pcmram_bytes`、予約（0）。ハードウェアの実装容量で、BMC のメモリ容量レジスタ（[BMC §1.5](spec_BMC_DMAC.md)）の値です。`ram_bytes` は sel 0 と同じ（容量不明なら 16 MiB）。`vram_bytes` と `pcmram_bytes` は BMC の値そのままで、0 は容量不明を表します
   - その他は `FND_E_BAD_ARG`
 
 ### 9.1 ケーパビリティ

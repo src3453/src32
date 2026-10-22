@@ -9,6 +9,7 @@
  * Survey policy (same as sol/bios.sol): only touch registers that are mapped
  * in every standard configuration. Unmapped access raises a bus error, so
  * UART, PeC timer/RTC and WASM expansion slots are not probed. */
+#include <cpt32/bmc.h>
 #include <cpt32/cpu.h>
 #include <cpt32/idc.h>
 #include <cpt32/irqc.h>
@@ -23,6 +24,7 @@
 #define BOOT_STACK_TOP 0x000F0000u /* bottom of the BIOS work area */
 #define BOOT_DEVICE_RAM 0xFFFFFFFFu
 #define IDC_DRIVES 4u
+#define RAM_TEST_FALLBACK 0x00F00000u /* BMC without memory size registers */
 
 #define COLOR_TITLE 0x0Cu
 #define COLOR_TEXT 0x3Fu
@@ -45,6 +47,37 @@ static void print_hex8(uint32_t value) {
 static void print_hex2(uint32_t value) {
   print_hex_digit((value >> 4) & 0xFu);
   print_hex_digit(value & 0xFu);
+}
+
+/* Small decimal without division (values here stay below 10^4). */
+static void print_dec(uint32_t value) {
+  static const uint32_t powers[] = {1000u, 100u, 10u, 1u};
+  int started = 0;
+  for (uint32_t i = 0; i < 4u; i++) {
+    uint32_t digit = 0;
+    while (value >= powers[i]) {
+      value -= powers[i];
+      digit++;
+    }
+    if (digit || started || i == 3u) {
+      print_hex_digit(digit);
+      started = 1;
+    }
+  }
+}
+
+/* Capacity as <n>M, or <n>K when not a whole MiB; "?" when unreported. */
+static void print_size(const char *label, uint32_t bytes) {
+  pcg_prnscr(label);
+  if (bytes == 0u)
+    pcg_prnscr("?");
+  else if ((bytes & 0xFFFFFu) == 0u) {
+    print_dec(bytes >> 20);
+    pcg_prnscr("M");
+  } else {
+    print_dec(bytes >> 10);
+    pcg_prnscr("K");
+  }
 }
 
 static void print_colored(uint32_t color, const char *text) {
@@ -91,10 +124,14 @@ static int sgu_test(uint32_t address) {
 
 static void post(void) {
   pcg_colorfg(COLOR_TITLE);
-  pcg_prnlnscr("CPT32 BIOS v0.4 POST+BOOT (C)");
+  pcg_prnlnscr("CPT32 BIOS v0.5 POST+BOOT (C)");
   pcg_colorfg(COLOR_TEXT);
   pcg_prnlnscr("CPU: SRC32 @48MHz");
-  pcg_prnlnscr("MEM: RAM16M VRAM4M PCM1M");
+  uint32_t ram = bmc_main_ram_bytes();
+  print_size("MEM: RAM", ram);
+  print_size(" VRAM", bmc_vram_bytes());
+  print_size(" PCM", bmc_pcmram_bytes());
+  newline();
 
   uint32_t vdp = CPT32_MMIO8(0x80000002u);
   pcg_prnscr("VDP status=");
@@ -147,8 +184,13 @@ static void post(void) {
   print_hex8(CPT32_MMIO32(IRQC_PENDING));
   newline();
 
+  /* 1 MiB below the top of RAM (0x00F00000 on 16 MiB), clear of the BIOS
+   * work area and of small host-loaded programs. */
+  uint32_t ram_test = ram == 0u ? RAM_TEST_FALLBACK
+                      : ram > 0x00200000u ? ram - 0x00100000u
+                                          : ram >> 1;
   pcg_prnscr("RAM=");
-  verdict(ram_test32(0x00F00000u));
+  verdict(ram_test32(ram_test));
   pcg_prnscr(" VRAM=");
   verdict(ram_test32(0x10300000u));
   newline();
