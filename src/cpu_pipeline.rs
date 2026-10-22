@@ -573,6 +573,13 @@ impl PipelineCpu {
         })
     }
 
+    /// All Extension P/V registers for the debugger (no side effects).
+    pub fn system_snapshot(&self) -> crate::cpu_privilege::SystemSnapshot {
+        let mut snapshot = self.sys.snapshot(&self.reg);
+        snapshot.irq_pending = self.irq_pending.then_some(self.irq_pending_number);
+        snapshot
+    }
+
     pub fn epc(&self) -> u32 {
         self.sys.epc
     }

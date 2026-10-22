@@ -410,3 +410,30 @@ fn debugger_lists_tlb_and_translates_without_side_effects() {
         );
     }
 }
+
+#[test]
+fn debugger_system_snapshot_reports_trap_state() {
+    use cpt32::cpu_privilege::describe_cause;
+    for &kind in KINDS {
+        let user = [addi(2, 0, 0x3000), ld(4, 2, 0), syscall(1)];
+        let mut cpu = boot(kind, &user, &[HALT], &standard_map());
+        cpu.run(4000);
+        let before = cpu.system_snapshot();
+        assert_eq!(before.cause, 0x8003_0001, "{kind:?}");
+        assert_eq!(describe_cause(before.cause), "SYSCALL #1 ctx 0x00");
+        assert!(!before.user && before.pu, "{kind:?} trapped from U into S");
+        assert!(before.mmu.enabled, "{kind:?}");
+        assert_eq!(before.mmu, cpu.mmu_snapshot(), "{kind:?}");
+        assert_eq!(before.status, cpu.status(), "{kind:?}");
+        assert_eq!(before.epc, cpu.epc(), "{kind:?}");
+        assert_eq!(before.irq_pending, None, "{kind:?}");
+        // Reading is side-effect free.
+        assert_eq!(cpu.system_snapshot(), before, "{kind:?}");
+    }
+    assert_eq!(describe_cause(3), "IRQ3");
+    assert_eq!(describe_cause(0x8005_0002), "Protection fault (-W-)");
+    assert_eq!(
+        describe_cause(0x8006_000D),
+        "Page fault (R-X, protection)"
+    );
+}

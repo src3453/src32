@@ -1207,3 +1207,8 @@
 
 ## MMU debug window (2026-10-22, KAN-52)
 - `SystemState::mmu_snapshot` / `debug_translate` back the `MMU / TLB (Extension V)` debug window (`AnyCpu::mmu_snapshot`, `mmu_translate`). The translate path must stay side-effect free: it reads PTEs with `read_debug_u8` and never fills the TLB or checks permissions, so opening the window cannot change what the guest sees (`tests/cpu_vm.rs` checks the snapshot is unchanged). The window itself is not covered by tests (Xvfb renders black); only the data API is.
+
+## Debug Controls のシステムレジスタ表示 (2026-10-22, KAN-53)
+- `SystemState::snapshot` / `AnyCpu::system_snapshot` が STATUS、EPC、CAUSE、USP/UFP/UGP、RGN0..7、VCTL/PTBR/VFAULT、保留 IRQ を返す。USP/UFP/UGP は U モード中は生きたレジスタ（R28..R30）、S モード中は退避バンクなので、`MFSR` と同じ規則で解決する（`reg` を渡す理由）。読み取りは副作用なし（`tests/cpu_vm.rs` が連続取得の一致を確認）。
+- 表示しない内部状態: TLB の中身（`MMU / TLB` ウィンドウが担当）、パイプライン段・命令キャッシュ・JIT・スピン検出などの実行機構（アーキテクチャ状態ではない）、IRQC の状態（デバイス側）、割り込みの入力線レベル（保留 IRQ のみ表示）。
+- GUI 描画は目視未確認（Xvfb は黒画面）。データ API のテストのみ。

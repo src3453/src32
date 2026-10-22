@@ -199,6 +199,55 @@ pub enum DebugTranslation {
     BusError,
 }
 
+/// Every Extension P/V CPU register as the debugger sees it (read only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemSnapshot {
+    pub status: u32,
+    pub ie: bool,
+    pub pie: bool,
+    /// Protection mode: true = User, false = Supervisor.
+    pub user: bool,
+    pub pu: bool,
+    pub psm: InstructionMode,
+    pub epc: u32,
+    pub cause: u32,
+    /// User copies of R28..R30 (`USP`, `UFP`, `UGP`).
+    pub user_bank: [u32; BANK_SIZE],
+    pub regions: [Region; REGION_COUNT],
+    pub mmu: MmuSnapshot,
+    /// IRQ number latched but not yet taken. Filled in by the CPU.
+    pub irq_pending: Option<u8>,
+}
+
+/// Human-readable form of a CAUSE value (IRQ number or exception).
+pub fn describe_cause(cause: u32) -> String {
+    if cause & CAUSE_EXCEPTION == 0 {
+        return format!("IRQ{}", cause & 0xF);
+    }
+    let detail = cause & 0xFFFF;
+    let access = |bits: u32| {
+        format!(
+            "{}{}{}",
+            if bits & 1 != 0 { 'R' } else { '-' },
+            if bits & 2 != 0 { 'W' } else { '-' },
+            if bits & 4 != 0 { 'X' } else { '-' },
+        )
+    };
+    match (cause >> 16) & 0xFF {
+        1 => "Illegal instruction".to_string(),
+        2 => "Bus error".to_string(),
+        3 => format!("SYSCALL #{} ctx 0x{:02X}", detail & 0xFF, detail >> 8),
+        4 => "Privileged instruction".to_string(),
+        5 => format!("Protection fault ({})", access(detail)),
+        6 => format!(
+            "Page fault ({}, {})",
+            access(detail),
+            if detail & 8 != 0 { "protection" } else { "not present" }
+        ),
+        code => format!("Unknown exception {code}"),
+    }
+}
+
 /// First banked register; R28 (SP), R29 (FP) and R30 (GP) are banked.
 const BANK_FIRST: usize = 28;
 const BANK_SIZE: usize = 3;
@@ -445,6 +494,28 @@ impl SystemState {
         let offset = usize::from(sr.checked_sub(SR_REGION_BASE)?);
         let (region, field) = (offset / 4, offset % 4);
         (region < REGION_COUNT && field < 3).then_some((region, field))
+    }
+
+    /// Read-only view of all system registers; `reg` is the live register file.
+    pub fn snapshot(&self, reg: &[u32; 32]) -> SystemSnapshot {
+        let mut user_bank = self.other_bank;
+        if self.user {
+            user_bank.copy_from_slice(&reg[BANK_FIRST..BANK_FIRST + BANK_SIZE]);
+        }
+        SystemSnapshot {
+            status: self.status(),
+            ie: self.ie,
+            pie: self.pie,
+            user: self.user,
+            pu: self.pu,
+            psm: self.psm,
+            epc: self.epc,
+            cause: self.cause,
+            user_bank,
+            regions: self.regions,
+            mmu: self.mmu_snapshot(),
+            irq_pending: None,
+        }
     }
 
     pub fn mmu_snapshot(&self) -> MmuSnapshot {

@@ -392,6 +392,13 @@ impl AnyCpu {
         }
     }
 
+    pub fn system_snapshot(&self) -> crate::cpu_privilege::SystemSnapshot {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.system_snapshot(),
+            AnyCpu::Pipelined(cpu) => cpu.system_snapshot(),
+        }
+    }
+
     pub fn epc(&self) -> u32 {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.epc(),
