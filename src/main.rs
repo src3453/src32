@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 use cpt32::bus::Bus;
 use cpt32::cpu::InstructionMode;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CpuProfile};
-use cpt32::cpu_privilege::DebugTranslation;
+use cpt32::cpu_privilege::{DebugTranslation, describe_cause};
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::expansion::{
     EXPANSION_SLOT_COUNT, ExpansionCallKind, ExpansionCallStats, ExpansionCardDebugInfo,
@@ -2084,6 +2084,56 @@ impl DebugUiState {
                     "Total instructions executed: {}",
                     cpu.instructions_executed()
                 ));
+
+                let system = cpu.system_snapshot();
+                ui.separator();
+                ui.text("System registers (Extension P/V, read only)");
+                ui.text(format!(
+                    "STATUS: 0x{:08X}  IE={} PIE={} U={} PU={} PSM={:?}",
+                    system.status,
+                    u8::from(system.ie),
+                    u8::from(system.pie),
+                    u8::from(system.user),
+                    u8::from(system.pu),
+                    system.psm
+                ));
+                ui.text(format!(
+                    "Protection mode: {}  (previous: {})",
+                    if system.user { "User" } else { "Supervisor" },
+                    if system.pu { "User" } else { "Supervisor" }
+                ));
+                ui.text(format!("EPC: 0x{:08X}", system.epc));
+                ui.text(format!(
+                    "CAUSE: 0x{:08X}  ({})",
+                    system.cause,
+                    describe_cause(system.cause)
+                ));
+                match system.irq_pending {
+                    Some(number) => ui.text(format!("IRQ pending: IRQ{number}")),
+                    None => ui.text("IRQ pending: none"),
+                }
+                ui.text(format!(
+                    "USP: 0x{:08X}   UFP: 0x{:08X}   UGP: 0x{:08X}",
+                    system.user_bank[0], system.user_bank[1], system.user_bank[2]
+                ));
+                ui.text(format!(
+                    "VCTL: 0x{:08X} (EN={})   PTBR: 0x{:08X}   VFAULT: 0x{:08X}",
+                    u32::from(system.mmu.enabled),
+                    u8::from(system.mmu.enabled),
+                    system.mmu.ptbr,
+                    system.mmu.vfault
+                ));
+                for (index, region) in system.regions.iter().enumerate() {
+                    ui.text(format!(
+                        "RGN{index}: 0x{:08X}..0x{:08X} flags={}{}{}",
+                        region.start,
+                        region.end,
+                        if region.flags & 1 != 0 { 'R' } else { '-' },
+                        if region.flags & 2 != 0 { 'W' } else { '-' },
+                        if region.flags & 4 != 0 { 'X' } else { '-' },
+                    ));
+                }
+                ui.separator();
 
                 for base in (0..32).step_by(4) {
                     ui.text(format!(
