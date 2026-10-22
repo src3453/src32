@@ -1,6 +1,6 @@
 # Foundation シェル仕様 v1
 
-Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、未実装）**。本書は Foundation OS の標準シェル `/bin/shell.wax` の起動、構文、展開、コマンドの解決と実行、リダイレクト、組み込みコマンド、スクリプト、対話入力を定めます。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ファイルシステムと VFS は [spec_FS2.md](spec_FS2.md)、背景は [実装案 §7](foundation_os_plan.md) を参照してください。本書と実装案が異なる場合は本書が優先します。
+Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、一部実装）**。fs、`proc_spawn`、console サービスがなくても動く部分を [`foundation/shell`](../foundation/README.md#シェル) に実装しています（実装済みの範囲と暫定の扱いは README）。 本書は Foundation OS の標準シェル `/bin/shell.wax` の起動、構文、展開、コマンドの解決と実行、リダイレクト、組み込みコマンド、スクリプト、対話入力を定めます。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ファイルシステムと VFS は [spec_FS2.md](spec_FS2.md)、背景は [実装案 §7](foundation_os_plan.md) を参照してください。本書と実装案が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 

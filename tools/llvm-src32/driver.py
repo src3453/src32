@@ -340,16 +340,28 @@ def run(args) -> Path:
 
 
 def protected_blocks(blocks, data_start):
-    """Split assembled blocks at the code/data boundary: code R/X, data R/W."""
+    """Split assembled blocks at the code/data boundary: code R/X, data R/W.
+
+    Alignment padding between the sparse assembler's blocks is filled with
+    zeros, so code and data stay one block each however many globals there
+    are (PROTECTED WAX allows at most 7 blocks)."""
     perm_rx, perm_rw = 1 | 4, 1 | 2
     result = []
-    for address, data in blocks:
+    for address, data in sorted(blocks, key=lambda block: block[0]):
         data = bytes(data)
         split = min(max(data_start - address, 0), len(data))
+        parts = []
         if split:
-            result.append((address, data[:split], perm_rx))
+            parts.append((address, data[:split], perm_rx))
         if split < len(data):
-            result.append((address + split, data[split:], perm_rw))
+            parts.append((address + split, data[split:], perm_rw))
+        for part in parts:
+            if result and result[-1][2] == part[2] and result[-1][0] + len(result[-1][1]) <= part[0]:
+                start, previous, perm = result[-1]
+                gap = part[0] - start - len(previous)
+                result[-1] = (start, previous + bytes(gap) + part[1], perm)
+            else:
+                result.append(part)
     return result
 
 

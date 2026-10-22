@@ -100,7 +100,7 @@ static int32_t time_get(uint32_t selector) {
 static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     struct fnd_thread *thread = fnd_current;
     struct fnd_proc *proc = thread->proc;
-    uint32_t a1 = frame->r[1], a2 = frame->r[2];
+    uint32_t a1 = frame->r[1], a2 = frame->r[2], a3 = frame->r[3];
     int32_t result;
     if (CAUSE_SYSCALL_CONTEXT(cause) != 0) {
         frame->r[1] = (uint32_t)FND_E_BAD_CALL;
@@ -125,7 +125,10 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_DEBUG_WRITE:
         result = debug_write(proc, a1, a2);
         break;
-    case FND_SYS_INFO: case FND_SYS_IPC_CALL: case FND_SYS_IPC_RECV:
+    case FND_SYS_INFO:
+        result = proc_sys_info(proc, a1, a2, a3);
+        break;
+    case FND_SYS_IPC_CALL: case FND_SYS_IPC_RECV:
     case FND_SYS_IPC_REPLY: case FND_SYS_IPC_REPLY_RECV: case FND_SYS_PORT_CREATE:
     case FND_SYS_CHAN_CREATE: case FND_SYS_HANDLE_CLOSE: case FND_SYS_HANDLE_DUP:
     case FND_SYS_THREAD_CREATE: case FND_SYS_WAIT: case FND_SYS_PROC_SPAWN:

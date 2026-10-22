@@ -71,7 +71,7 @@ static uint32_t on_tick(uint32_t ticks) {
     if (++rounds == ROUNDS)
         return failures == 0u ? 42u : 0x100u + failures;
     /* Spawn and exit again: the slot, records and threads are reused. */
-    pid_app = fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3);
+    pid_app = fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3, 0, 0);
     check(pid_app > 0);
     return 0;
 }
@@ -79,24 +79,24 @@ static uint32_t on_tick(uint32_t ticks) {
 int main(void) {
     static const uint8_t garbage[64] = {'W', 'A', 'X', 0, 0, 3};
     /* Rejections are atomic: nothing is allocated or written. */
-    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), base_only, 1) == FND_E_DEPENDENCY);
-    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), old_math, 2) == FND_E_DEPENDENCY);
-    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app_unprotected), libs, 3) == FND_E_FORMAT);
-    check(fnd_proc_spawn_wax("bad", FND_PRIO_APP, garbage, sizeof garbage, 0, 0) == FND_E_FORMAT);
-    check(fnd_proc_spawn_wax("app", FND_PRIO_IDLE, IMAGE(app), libs, 3) == FND_E_BAD_ARG);
+    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), base_only, 1, 0, 0) == FND_E_DEPENDENCY);
+    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), old_math, 2, 0, 0) == FND_E_DEPENDENCY);
+    check(fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app_unprotected), libs, 3, 0, 0) == FND_E_FORMAT);
+    check(fnd_proc_spawn_wax("bad", FND_PRIO_APP, garbage, sizeof garbage, 0, 0, 0, 0) == FND_E_FORMAT);
+    check(fnd_proc_spawn_wax("app", FND_PRIO_IDLE, IMAGE(app), libs, 3, 0, 0) == FND_E_BAD_ARG);
     check(slot_clear(SLOT_APP));
 
-    pid_app = fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3);
-    pid_app2 = fnd_proc_spawn_wax("app2", FND_PRIO_APP, IMAGE(app2), libs, 3);
-    pid_v2 = fnd_proc_spawn_wax("v2app", FND_PRIO_APP, IMAGE(v2app), 0, 0);
-    pid_write = fnd_proc_spawn_wax("poke-write", FND_PRIO_APP, IMAGE(poke_write), 0, 0);
-    pid_exec = fnd_proc_spawn_wax("poke-exec", FND_PRIO_APP, IMAGE(poke_exec), 0, 0);
-    if (fnd_proc_spawn_wax("spin", FND_PRIO_APP, IMAGE(spin), 0, 0) < 0)
+    pid_app = fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3, 0, 0);
+    pid_app2 = fnd_proc_spawn_wax("app2", FND_PRIO_APP, IMAGE(app2), libs, 3, 0, 0);
+    pid_v2 = fnd_proc_spawn_wax("v2app", FND_PRIO_APP, IMAGE(v2app), 0, 0, 0, 0);
+    pid_write = fnd_proc_spawn_wax("poke-write", FND_PRIO_APP, IMAGE(poke_write), 0, 0, 0, 0);
+    pid_exec = fnd_proc_spawn_wax("poke-exec", FND_PRIO_APP, IMAGE(poke_exec), 0, 0, 0, 0);
+    if (fnd_proc_spawn_wax("spin", FND_PRIO_APP, IMAGE(spin), 0, 0, 0, 0) < 0)
         return 2;
     if (pid_app < 0 || pid_app2 < 0 || pid_v2 < 0 || pid_write < 0 || pid_exec < 0)
         return 2;
     /* One process per slot. */
-    if (fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3) != FND_E_ADDRESS_CONFLICT)
+    if (fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3, 0, 0) != FND_E_ADDRESS_CONFLICT)
         return 3;
     fnd_set_tick_hook(on_tick);
     fnd_kernel_run();

@@ -8,7 +8,7 @@ use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CYCLES_PER_FRAME, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
-use cpt32::devices::pec::pec::connect_pec_input;
+use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
 use cpt32::devices::pec::rng::connect_rng;
 
 use cpt32::music::guest::{STREAM_BASE, read_music_stream};
@@ -21,6 +21,111 @@ fn integer(text: &str) -> u32 {
         text.parse().expect("invalid integer")
     }
 }
+/// HID keyboard usages (page 0x07, US layout) that type `text`. Escapes:
+/// `\n` Enter, `\b` Backspace, `\t` Tab, `\e` Esc, `\\` a backslash,
+/// `\L` `\R` `\U` `\D` arrows, `\H` Home, `\E` End, `\X` Delete, `\C` Ctrl+C.
+fn typed_keys(text: &str) -> Vec<HostInputEvent> {
+    const SHIFT: u8 = 225;
+    const CTRL: u8 = 224;
+    fn usage(c: char) -> Option<(u8, bool)> {
+        const PLAIN: &str = "1234567890\0\0\0\0 -=[]\\\0;'`,./";
+        const SHIFTED: &str = "!@#$%^&*()\0\0\0\0 _+{}|\0:\"~<>?";
+        match c {
+            'a'..='z' => Some((4 + (c as u8 - b'a'), false)),
+            'A'..='Z' => Some((4 + (c as u8 - b'A'), true)),
+            _ => PLAIN
+                .chars()
+                .position(|p| p == c)
+                .map(|i| (30 + i as u8, false))
+                .or_else(|| {
+                    SHIFTED
+                        .chars()
+                        .position(|p| p == c)
+                        .map(|i| (30 + i as u8, true))
+                }),
+        }
+    }
+    let mut events = Vec::new();
+    let mut press = |code: u8, modifier: Option<u8>| {
+        if let Some(m) = modifier {
+            events.push(HostInputEvent::Key {
+                usage: m,
+                down: true,
+            });
+        }
+        events.push(HostInputEvent::Key {
+            usage: code,
+            down: true,
+        });
+        events.push(HostInputEvent::Key {
+            usage: code,
+            down: false,
+        });
+        if let Some(m) = modifier {
+            events.push(HostInputEvent::Key {
+                usage: m,
+                down: false,
+            });
+        }
+    };
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        let (code, modifier) = if c == '\\' {
+            match chars.next().expect("--type: escape at end of text") {
+                'n' => (40, None),
+                'b' => (42, None),
+                't' => (43, None),
+                'e' => (41, None),
+                'L' => (80, None),
+                'R' => (79, None),
+                'U' => (82, None),
+                'D' => (81, None),
+                'H' => (74, None),
+                'E' => (77, None),
+                'X' => (76, None),
+                'C' => (6, Some(CTRL)),
+                '\\' => (49, None),
+                other => panic!("--type: unknown escape \\{other}"),
+            }
+        } else {
+            let (code, shifted) = usage(c).unwrap_or_else(|| panic!("--type: no key for {c:?}"));
+            (code, shifted.then_some(SHIFT))
+        };
+        press(code, modifier);
+    }
+    events
+}
+
+/// The visible PCG text screen, one line per row with trailing blanks
+/// removed. Follows SCREEN_MODE and SCROLL_Y; modes 0, 1 and 3 only.
+fn pcg_screen(cpu: &mut AnyCpu) -> Vec<String> {
+    let mode = cpu.read_mem_u8(0x8000_F003);
+    let (columns, cell_height) = match mode {
+        0 => (40, 8),
+        3 => (80, 16),
+        _ => (80, 8),
+    };
+    let scroll_y =
+        u32::from(cpu.read_mem_u8(0x8000_F00E)) | u32::from(cpu.read_mem_u8(0x8000_F00F)) << 8;
+    let top = scroll_y / cell_height;
+    (0..30)
+        .map(|row| {
+            let ring = (top + row) % 30;
+            let line: String = (0..columns)
+                .map(|column| {
+                    let byte = cpu.read_mem_u8(0x1000_0000 + ring * columns + column);
+                    if (0x20..0x7F).contains(&byte) {
+                        byte as char
+                    } else {
+                        ' '
+                    }
+                })
+                .collect();
+            line.trim_end().to_string()
+        })
+        .collect()
+}
+
 fn gp0_noise_pixel(cpu: &mut AnyCpu, x: usize, y: usize) -> u8 {
     let index = cpu.read_mem_u8(0x1000_0000 + (y * 320 + x) as u32);
     cpu.read_mem_u8(0x1001_2C00 + u32::from(index) * 3)
@@ -29,7 +134,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--dump-pcg] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -47,6 +152,8 @@ fn main() {
     let mut profile_cpu = false;
     let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
+    let mut typed: Vec<(usize, Vec<HostInputEvent>)> = Vec::new();
+    let mut dump_pcg = false;
     let mut options = args.iter().skip(1);
     while let Some(option) = options.next() {
         match option.as_str() {
@@ -76,6 +183,15 @@ fn main() {
                     u8::try_from(integer(value)).expect("value must fit u8"),
                 ));
             }
+            "--type" => {
+                let (frame, text) = options
+                    .next()
+                    .expect("--type requires FRAME=TEXT")
+                    .split_once('=')
+                    .expect("expected FRAME=TEXT");
+                typed.push((integer(frame) as usize, typed_keys(text)));
+            }
+            "--dump-pcg" => dump_pcg = true,
             _ if option.starts_with('-') => panic!("unknown option: {option}"),
             _ => expected = integer(option),
         }
@@ -89,7 +205,7 @@ fn main() {
         .map(|path| read_music_stream(Path::new(path), image.len()).expect("invalid music stream"));
 
     let mut bus = Bus::new();
-    let _input_sender = connect_pec_input(&mut bus);
+    let input_sender = connect_pec_input(&mut bus);
     connect_rng(&mut bus);
     let vdp = connect_devices_with_vdp(&mut bus);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
@@ -128,6 +244,17 @@ fn main() {
     let frame_count = frames.unwrap_or((cycle_budget + cycles_per_frame - 1) / cycles_per_frame);
     let mut cpu_profile = CpuProfile::default();
     for frame in 0..frame_count {
+        let mut sent = false;
+        for (_, events) in typed.iter().filter(|(at, _)| *at == frame) {
+            for &event in events {
+                input_sender.send(event).expect("PeC input thread stopped");
+            }
+            sent = true;
+        }
+        if sent {
+            // The PeC input thread applies host events asynchronously.
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         vdp.borrow_mut().tick();
         cpu.set_irq_source(0, true);
         cpu.set_irq_source(0, false);
@@ -182,6 +309,13 @@ fn main() {
 
     if let Some(stats) = cpu.jit_stats() {
         println!("CPU JIT: {stats:?}");
+    }
+    if dump_pcg {
+        println!("PCG SCREEN BEGIN");
+        for line in pcg_screen(&mut cpu) {
+            println!("{line}");
+        }
+        println!("PCG SCREEN END");
     }
     let result = cpu.read_reg(1);
     assert!(

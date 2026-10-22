@@ -364,6 +364,16 @@ int main(void) {
         text = assembly.read_text(encoding='utf-8')
         self.assertIn('SYSCALL 0', text)
         self.assertNotIn('HALT', text)
+        # Alignment padding between globals splits the sparse assembler's
+        # blocks; --protected fills it so data stays one RW block.
+        many = self.work / 'many.c'
+        many.write_text('char a = 1;\nint b = 2;\nchar c[3] = {3};\nlong long d = 4;\nshort e;\n'
+                        'static int big[300];\nchar f = 5;\n'
+                        'int main(void) { big[a] = b; return a + b + c[0] + (int)d + e + f + big[1]; }\n',
+                        encoding='utf-8')
+        image = self.work / 'many.wax'
+        self.driver(many, '--protected', '--origin', '0x10000', '--stack-top', '0x40000', '-o', image)
+        self.assertEqual([block['perm'] for block in parse_wax(image.read_bytes())['blocks']], [5, 3])
 
     def test_data_origin_rom_layout(self):
         sys.path.insert(0, str(ROOT / 'tools/wax'))

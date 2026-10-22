@@ -129,6 +129,8 @@ jobs:
         run: |
           "$CLANG" --version
           python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
+      - name: Foundation shell (testbench, PCG screen)
+        run: python -m unittest discover -s foundation/tests/shell -v
 
   # sol コンパイラ / VM / LSP、WAX ツール、Foundation WAX ローダのホストテスト。
   # sol の Foundation 実行テストは testbench を使う。
