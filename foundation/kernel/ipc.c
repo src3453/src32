@@ -35,35 +35,6 @@ static struct {
 } services[MAX_SERVICES];
 static uint32_t next_seq, next_lookup_badge;
 
-/* By words, eight per step where it can: the compiler keeps nothing in
- * registers, so the loop overhead is most of the cost. */
-void kmem_copy(uint32_t dst, uint32_t src, uint32_t len) {
-    uint32_t at = 0;
-    if (((dst | src) & 3u) == 0) {
-        volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)dst;
-        const volatile uint32_t *s = (const volatile uint32_t *)(uintptr_t)src;
-        for (; at + 32u <= len; at += 32u, d += 8, s += 8) {
-            d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s[3];
-            d[4] = s[4], d[5] = s[5], d[6] = s[6], d[7] = s[7];
-        }
-        for (; at + 4u <= len; at += 4u)
-            *d++ = *s++;
-    }
-    volatile uint8_t *d = (volatile uint8_t *)(uintptr_t)dst;
-    const volatile uint8_t *s = (const volatile uint8_t *)(uintptr_t)src;
-    for (; at < len; ++at)
-        d[at] = s[at];
-}
-
-void kmem_zero(uint32_t start, uint32_t end) {
-    volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)start;
-    uint32_t n = (end - start) / 4u;
-    for (; n >= 8u; n -= 8u, d += 8)
-        d[0] = 0, d[1] = 0, d[2] = 0, d[3] = 0, d[4] = 0, d[5] = 0, d[6] = 0, d[7] = 0;
-    for (; n; --n)
-        *d++ = 0;
-}
-
 /* A user struct of size bytes at addr: 4-byte aligned and inside regions
  * with perm. */
 static int32_t user_struct(const struct fnd_proc *proc, uint32_t addr, uint32_t size, uint32_t perm) {
@@ -263,16 +234,18 @@ static uint32_t token_of(const struct fnd_thread *t) {
     return (uint32_t)(t - fnd_threads + 1) | t->gen << TOKEN_INDEX_BITS;
 }
 
-/* Writes a received message into the receiver's fnd_recv at rcv. */
-static void write_recv(uint32_t rcv, const fnd_msg *msg, uint32_t token, uint32_t badge,
-                       uint32_t reply_cap, uint32_t total) {
-    fnd_recv *r = (fnd_recv *)(uintptr_t)rcv;
-    r->msg = *msg;
-    r->msg.buf = r->data;
-    r->token = token;
-    r->badge = badge;
-    r->reply_cap = reply_cap;
-    r->total = total;
+/* Writes a received message into the fnd_recv at rcv of proc, the receiver. */
+static void write_recv(const struct fnd_proc *proc, uint32_t rcv, const fnd_msg *msg, uint32_t token,
+                       uint32_t badge, uint32_t reply_cap, uint32_t total) {
+    fnd_recv r;
+    mm_copy_from_user(&r, proc, rcv, sizeof r);
+    r.msg = *msg;
+    r.msg.buf = r.data;
+    r.token = token;
+    r.badge = badge;
+    r.reply_cap = reply_cap;
+    r.total = total;
+    mm_copy_to_user(proc, rcv, &r, sizeof r);
 }
 
 static void deliver_gone(struct fnd_thread *receiver, struct fnd_port *port) {
@@ -281,7 +254,7 @@ static void deliver_gone(struct fnd_thread *receiver, struct fnd_port *port) {
     if (!port->gone_head)
         port->gone_tail = 0;
     fnd_msg msg = {FND_NOTIFY_CLIENT_GONE, 0, 0, 0, 0, 0, 0, 0};
-    write_recv(receiver->rcv, &msg, 0, chan->badge, 0, 0);
+    write_recv(receiver->proc, receiver->rcv, &msg, 0, chan->badge, 0, 0);
     chan->used = 0;
 }
 
@@ -290,17 +263,19 @@ static void deliver_gone(struct fnd_thread *receiver, struct fnd_port *port) {
  * transferred), which the caller is then woken with. */
 static int32_t deliver_call(struct fnd_thread *receiver, struct fnd_thread *caller) {
     fnd_msg msg = caller->req;
-    fnd_recv *r = (fnd_recv *)(uintptr_t)receiver->rcv;
+    fnd_recv r;
+    mm_copy_from_user(&r, receiver->proc, receiver->rcv, sizeof r);
     if (msg.flags & FND_MSG_XFER_HANDLE) {
         int32_t moved = handle_move(caller->proc, msg.a3, receiver->proc);
         if (moved < 0)
             return moved;
         msg.a3 = (uint32_t)moved;
     }
-    uint32_t n = msg.len < r->cap ? msg.len : r->cap;
-    kmem_copy(r->data, msg.buf, n);
+    uint32_t n = msg.len < r.cap ? msg.len : r.cap;
+    mm_copy_user(receiver->proc, r.data, caller->proc, msg.buf, n);
     msg.len = n;
-    write_recv(receiver->rcv, &msg, token_of(caller), caller->badge, caller->rep_cap, caller->req.len);
+    write_recv(receiver->proc, receiver->rcv, &msg, token_of(caller), caller->badge, caller->rep_cap,
+               caller->req.len);
     caller->reason = B_REPLY;
     caller->wait_proc = receiver->proc; /* the process that may answer */
     return FND_OK;
@@ -327,7 +302,7 @@ static int32_t read_msg(const struct fnd_proc *proc, uint32_t addr, fnd_msg *msg
     int32_t status = user_struct(proc, addr, sizeof *msg, CPT32_PERM_R);
     if (status != FND_OK)
         return status;
-    *msg = *(const fnd_msg *)(uintptr_t)addr;
+    mm_copy_from_user(msg, proc, addr, sizeof *msg);
     if (msg->flags & ~FND_MSG_XFER_HANDLE)
         return FND_E_BAD_ARG;
     if (msg->len > FND_IPC_MAX_DATA)
@@ -349,8 +324,9 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
         status = user_struct(proc, rep, sizeof(fnd_msg), CPT32_PERM_R | CPT32_PERM_W);
     if (status != FND_OK)
         return status;
-    const fnd_msg *r = (const fnd_msg *)(uintptr_t)rep;
-    if (!proc_user_range_ok(proc, r->buf, r->len, CPT32_PERM_W))
+    fnd_msg r;
+    mm_copy_from_user(&r, proc, rep, sizeof r);
+    if (!proc_user_range_ok(proc, r.buf, r.len, CPT32_PERM_W))
         return FND_E_ACCESS;
     if ((msg.flags & FND_MSG_XFER_HANDLE) && !entry(proc, msg.a3))
         return FND_E_BAD_HANDLE;
@@ -358,8 +334,8 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
         return FND_E_PEER_GONE;
     thread->req = msg;
     thread->rep = rep;
-    thread->rep_buf = r->buf;
-    thread->rep_cap = r->len;
+    thread->rep_buf = r.buf;
+    thread->rep_cap = r.len;
     thread->port = chan->port;
     thread->badge = chan->badge;
     thread->seq = ++next_seq;
@@ -379,18 +355,19 @@ int32_t sys_ipc_recv(struct fnd_thread *thread, uint32_t h, uint32_t rcv) {
     int32_t status = user_struct(proc, rcv, sizeof(fnd_recv), CPT32_PERM_R | CPT32_PERM_W);
     if (status != FND_OK)
         return status;
-    const fnd_recv *r = (const fnd_recv *)(uintptr_t)rcv;
-    if (r->reserved)
+    fnd_recv r;
+    mm_copy_from_user(&r, proc, rcv, sizeof r);
+    if (r.reserved)
         return FND_E_BAD_ARG;
-    if (!proc_user_range_ok(proc, r->data, r->cap, CPT32_PERM_W))
+    if (!proc_user_range_ok(proc, r.data, r.cap, CPT32_PERM_W))
         return FND_E_ACCESS;
     thread->rcv = rcv;
     if (take_next(thread, e->object))
         return FND_OK;
-    if (r->timeout == 0)
+    if (r.timeout == 0)
         return FND_E_WOULD_BLOCK;
     thread->port = e->object;
-    sched_block(thread, B_RECV, r->timeout);
+    sched_block(thread, B_RECV, r.timeout);
     return FND_OK;
 }
 
@@ -424,9 +401,9 @@ int32_t sys_ipc_reply(struct fnd_thread *thread, uint32_t token, uint32_t addr) 
             return moved;
         msg.a3 = (uint32_t)moved;
     }
-    kmem_copy(caller->rep_buf, msg.buf, msg.len);
+    mm_copy_user(caller->proc, caller->rep_buf, proc, msg.buf, msg.len);
     msg.buf = caller->rep_buf;
-    *(fnd_msg *)(uintptr_t)caller->rep = msg;
+    mm_copy_to_user(caller->proc, caller->rep, &msg, sizeof msg);
     sched_wake(caller, FND_OK);
     return FND_OK;
 }
@@ -453,7 +430,7 @@ static int32_t read_name(const struct fnd_proc *proc, uint32_t addr, char name[S
             return FND_E_BAD_ARG;
         if (!proc_user_range_ok(proc, addr + i, 1u, CPT32_PERM_R))
             return FND_E_ACCESS;
-        char c = *(const volatile char *)(uintptr_t)(addr + i);
+        char c = (char)mm_read8(proc, addr + i);
         name[i] = c;
         if (c == 0)
             break;
@@ -536,7 +513,7 @@ int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32
     }
     if (target->state != FND_PROC_LIVE) {
         if (code_ptr)
-            *(volatile int32_t *)(uintptr_t)code_ptr = target->exit_code;
+            mm_write32(thread->proc, code_ptr, (uint32_t)target->exit_code);
         return FND_OK;
     }
     if (timeout == 0)
@@ -552,7 +529,7 @@ void ipc_proc_exited(struct fnd_proc *proc) {
         struct fnd_thread *t = &fnd_threads[i];
         if (t->state == T_BLOCKED && t->reason == B_WAIT && t->wait_proc == proc) {
             if (t->code_ptr)
-                *(volatile int32_t *)(uintptr_t)t->code_ptr = proc->exit_code;
+                mm_write32(t->proc, t->code_ptr, (uint32_t)proc->exit_code);
             sched_wake(t, FND_OK);
         }
     }

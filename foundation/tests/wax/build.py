@@ -71,8 +71,8 @@ def app(base, data, protected=True):
                          Block(base + data, b"", memory_size=8 * len(APP_IMPORTS), perm=PERM_RW)]).data
 
 
-def poke(base, entry):
-    blocks, symbols = assemble("poke.asm", {"APP_BASE": base, "DATA_ADDR": base + 0x100})
+def poke(base, entry, data=0x100):
+    blocks, symbols = assemble("poke.asm", {"APP_BASE": base, "DATA_ADDR": base + data})
     return build("wax", image_id="test.poke", entry_offset=symbols[entry] - base,
                  stack_top=SLOT_END[base], stack_size=STACK,
                  blocks=[Block(blocks[0][0], blocks[0][1], perm=PERM_RX),
@@ -120,6 +120,10 @@ def main(argv=None):
         "poke_write": poke(0x00600000, "write_code"),
         "poke_exec": poke(0x00500000, "exec_data"),
         "spin": poke(0x00480000, "spin"),
+        # With V a page has one set of permissions, so these keep code and data
+        # on different pages (foundation/tests/vm).
+        "poke_write_vm": poke(0x00600000, "write_code", 0x1000),
+        "poke_exec_vm": poke(0x00500000, "exec_data", 0x1000),
         "v2app": v2_program(args.out, args.clang),
     }
     # Big-endian words: the same bytes in SRC32 memory, 4-byte aligned.

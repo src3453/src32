@@ -24,6 +24,11 @@ struct blk_req {
     uint32_t drive, op, lba, count, buf;
 };
 
+/* The DMAC knows physical addresses only, and the pages of a user buffer
+ * need not be adjacent: with V every transfer goes through the kernel's bounce
+ * buffer (mm_bounce) and is copied to or from the process by software. */
+static uint32_t dma_address(const struct blk_req *r) { return mm_vm ? mm_bounce() : r->buf; }
+
 /* queue[0] is the request on the IDC while `running`. */
 static struct blk_req queue[FND_MAX_THREADS];
 static uint32_t queued, running;
@@ -62,11 +67,9 @@ static int32_t identify(const struct blk_req *r) {
     int32_t result = idc_result();
     idc_clear();
     if (result == FND_OK) {
-        volatile uint32_t *out = (volatile uint32_t *)(uintptr_t)r->buf;
-        out[0] = FND_REG32(IDC_DRIVE_TYPE);
-        out[1] = FND_REG32(IDC_SECTOR_SIZE);
-        out[2] = FND_REG32(IDC_CAPACITY);
-        out[3] = FND_REG32(IDC_DRIVE_FLAGS);
+        uint32_t out[4] = {FND_REG32(IDC_DRIVE_TYPE), FND_REG32(IDC_SECTOR_SIZE), FND_REG32(IDC_CAPACITY),
+                           FND_REG32(IDC_DRIVE_FLAGS)};
+        mm_copy_to_user(r->thread->proc, r->buf, out, sizeof out);
     }
     return result;
 }
@@ -80,11 +83,13 @@ static void start(const struct blk_req *r) {
     FND_REG32(IDC_DRIVE_SELECT) = r->drive;
     FND_REG32(IDC_LBA) = r->lba;
     FND_REG32(IDC_SECTOR_COUNT) = r->count;
+    if (mm_vm && r->op == BLK_WRITE)
+        mm_copy_from_user((void *)(uintptr_t)mm_bounce(), r->thread->proc, r->buf, r->count << 9);
     if (r->op == BLK_READ) {
         FND_REG32(IDC_DMA_CH0_SRC) = IDC_DATA;
-        FND_REG32(IDC_DMA_CH0_DST) = r->buf;
+        FND_REG32(IDC_DMA_CH0_DST) = dma_address(r);
     } else {
-        FND_REG32(IDC_DMA_CH0_SRC) = r->buf;
+        FND_REG32(IDC_DMA_CH0_SRC) = dma_address(r);
         FND_REG32(IDC_DMA_CH0_DST) = IDC_DATA;
     }
     FND_REG32(IDC_DMA_CH0_COUNT) = r->count << 9;
@@ -125,6 +130,9 @@ void blk_irq(void) {
     int32_t result = idc_result();
     idc_clear();
     running = 0;
+    if (mm_vm && result == FND_OK && queue[0].op == BLK_READ)
+        mm_copy_to_user(queue[0].thread->proc, queue[0].buf, (const void *)(uintptr_t)mm_bounce(),
+                        queue[0].count << 9);
     sched_wake(queue[0].thread, result);
     pop();
     run_queue();
@@ -157,7 +165,8 @@ int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk) {
         return FND_E_BAD_ARG;
     if (!proc_user_range_ok(proc, blk, 24, CPT32_PERM_R))
         return FND_E_ACCESS;
-    const volatile uint32_t *w = (const volatile uint32_t *)(uintptr_t)blk;
+    uint32_t w[6];
+    mm_copy_from_user(w, proc, blk, sizeof w);
     struct blk_req r = {thread, w[0], w[1], w[2], w[3], w[4]};
     if (w[5] || r.drive > 3 || r.op < BLK_READ || r.op > BLK_IDENTIFY)
         return FND_E_BAD_ARG;

@@ -6,13 +6,13 @@
 #include <cpt32/bmc.h>
 
 static struct fnd_proc procs[FND_MAX_PROCS];
+/* proc_spawn's copy of the child's startup block (§9.3) before it is validated. */
+static uint8_t spawn_startup[FND_STARTUP_MAX] __attribute__((aligned(4)));
 static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((aligned(4)));
 /* proc_spawn copies the image here before validating it (§9.2): the kernel
  * heap (§5.1), which FNDBOOT only uses before the first process runs. */
 #define STAGING 0x00100000u
 #define STAGING_END 0x00400000u /* the kernel heap (§5.1) */
-static struct fnd_proc *active; /* process whose regions are programmed */
-static uint32_t active_regions; /* regions with nonzero FLAGS on the CPU */
 static uint32_t next_pid = 1;
 static uint32_t boot_drive;
 
@@ -25,90 +25,18 @@ static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
 uint32_t fnd_slot_base(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot] : 0; }
 uint32_t fnd_slot_end(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot + 1u] : 0; }
 
-/* §5.1: the installed Main RAM as the BMC reports it; hardware without the
- * register is taken to have v1's 16 MiB. */
-#define RAM_BYTES_FALLBACK 0x01000000u
+/* §5.2: a slot that does not lie wholly in the installed RAM is unusable.
+ * With V the slots are only address ranges and need no RAM of their own. */
+static int slot_present(uint32_t slot) { return mm_vm || slot_bounds[slot + 1u] <= mm_ram_bytes(); }
 
-static uint32_t ram_bytes(void) {
-    uint32_t bytes = bmc_main_ram_bytes();
-    return bytes ? bytes : RAM_BYTES_FALLBACK;
-}
-
-/* §5.2: a slot that does not lie wholly in the installed RAM is unusable. */
-static int slot_present(uint32_t slot) { return slot_bounds[slot + 1u] <= ram_bytes(); }
-
-/* MTSR takes a constant system register, so each region field gets its own
- * writer. Separate noinline functions keep the optimizer from merging the
- * calls into one MTSR with a computed register number. */
-#define REGION_WRITERS(n)                                                                    \
-    static __attribute__((noinline)) void start_##n(uint32_t v) { cpt32_mtsr(CPT32_SR_RGN_START(n), v); } \
-    static __attribute__((noinline)) void end_##n(uint32_t v) { cpt32_mtsr(CPT32_SR_RGN_END(n), v); }     \
-    static __attribute__((noinline)) void flags_##n(uint32_t v) { cpt32_mtsr(CPT32_SR_RGN_FLAGS(n), v); }
-REGION_WRITERS(0)
-REGION_WRITERS(1)
-REGION_WRITERS(2)
-REGION_WRITERS(3)
-REGION_WRITERS(4)
-REGION_WRITERS(5)
-REGION_WRITERS(6)
-REGION_WRITERS(7)
-typedef void (*region_writer)(uint32_t);
-static const region_writer region_writers[3][FND_REGIONS] = {
-    {start_0, start_1, start_2, start_3, start_4, start_5, start_6, start_7},
-    {end_0, end_1, end_2, end_3, end_4, end_5, end_6, end_7},
-    {flags_0, flags_1, flags_2, flags_3, flags_4, flags_5, flags_6, flags_7}};
-
-/* field: 0 = START, 1 = END, 2 = FLAGS. */
-static void region_write(uint32_t index, uint32_t field, uint32_t value) {
-    region_writers[field][index](value);
-}
-
-/* §5.3: program each region, then disable the ones the previous process had
- * beyond them. Region checks apply only in U mode (spec_CPU_priv.md), so the
- * old and new settings are never seen half-written, and the 8 + 4n MTSR
- * writes of disabling everything first (about a third of a context switch)
- * become 3n + (old - n). A switch between threads of the same process
- * leaves the regions alone. */
-void proc_activate(struct fnd_proc *proc) {
-    if (proc == active)
-        return;
-    uint32_t n = proc->region_count;
-    for (uint32_t i = 0; i < n; ++i) {
-        region_write(i, 0, proc->regions[i].start);
-        region_write(i, 1, proc->regions[i].end);
-        region_write(i, 2, proc->regions[i].flags);
-    }
-    for (uint32_t i = n; i < active_regions; ++i)
-        region_write(i, 2, 0);
-    active_regions = n;
-    active = proc;
-}
-
-/* §5.4: no 32-bit overflow, nothing at or above 0xFFFF0000, and every byte
- * inside a RAM region of the process that has all of perm. */
-int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm) {
-    if (len == 0)
-        return 1;
-    if (addr + len < addr || addr + len > 0xFFFF0000u)
-        return 0;
-    while (len) {
-        uint32_t covered = 0;
-        for (uint32_t i = 0; i < proc->region_count; ++i) {
-            const struct fnd_region *r = &proc->regions[i];
-            if (!r->mmio && (r->flags & perm) == perm && r->start <= addr && addr < r->end) {
-                covered = r->end - addr;
-                break;
-            }
-        }
-        if (!covered)
-            return 0;
-        if (covered >= len)
-            return 1;
-        addr += covered;
-        len -= covered;
-    }
-    return 1;
-}
+/* The vm backend's user address space (doc/foundation_vm_plan.md §3): images
+ * and libraries are placed below VM_WINDOW_END, which keeps clear of the
+ * MMIO windows that grants map at their own addresses; the heap may grow up
+ * to VM_HEAP_TOP or the next reservation above it. Page 0 is never mapped. */
+#define VM_WINDOW_START 0x00001000u
+#define VM_WINDOW_END 0x10000000u
+#define VM_HEAP_TOP 0x80000000u
+#define VM_NO_SLOT FND_SLOTS /* proc->slot of a process that has none */
 
 #define zero_range kmem_zero
 
@@ -128,13 +56,8 @@ void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
     proc->fault_epc = fault_epc;
     proc->state = FND_PROC_EXITED;
     handle_close_all(proc);
-    if (active == proc) {
-        for (uint32_t i = 0; i < active_regions; ++i)
-            region_write(i, 2, 0);
-        active_regions = 0;
-        active = 0;
-    }
-    for (uint32_t i = 0; i < proc->region_count; ++i) {
+    mm_release(proc); /* the vm backend frees its frames here; they are zeroed when handed out */
+    for (uint32_t i = 0; !mm_vm && i < proc->region_count; ++i) {
         if (proc->regions[i].owned)
             zero_range(proc->regions[i].start, proc->regions[i].end);
     }
@@ -168,7 +91,7 @@ struct fnd_proc *fnd_proc_get(uint32_t pid) {
 static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
     struct fnd_proc *proc = 0;
     for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
-        if (procs[i].state == FND_PROC_LIVE && procs[i].slot == slot) {
+        if (!mm_vm && procs[i].state == FND_PROC_LIVE && procs[i].slot == slot) {
             *error = FND_E_ADDRESS_CONFLICT;
             return 0;
         }
@@ -180,6 +103,10 @@ static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
             proc = &procs[i]; /* nobody can wait for it any more */
     }
     *error = FND_E_LIMIT;
+    if (proc) {
+        proc->pt_root = 0;
+        proc->vm_pages = 0;
+    }
     return proc;
 }
 
@@ -218,6 +145,7 @@ static int32_t start_proc(struct fnd_proc *proc, struct fnd_thread *thread, cons
 int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priority,
                                 uint32_t ram_size, uint32_t code_start, uint32_t code_end,
                                 uint32_t entry, uint32_t arg) {
+    mm_init();
     if (slot >= FND_SLOTS || priority > FND_PRIO_APP)
         return FND_E_BAD_ARG;
     if (ram_size < 64u || (ram_size & 7u) || ram_size > slot_bounds[slot + 1u] - slot_bounds[slot])
@@ -237,7 +165,21 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
     if (!thread)
         return FND_E_LIMIT;
 
-    zero_range(ram, end);
+    if (mm_vm) {
+        /* The code stays where the kernel image put it (VA = PA); the data
+         * is private frames at the slot's addresses. */
+        int32_t status = mm_vm_create(proc);
+        if (status == FND_OK)
+            status = mm_vm_map(proc, ram, end, CPT32_PERM_R | CPT32_PERM_W);
+        if (status == FND_OK)
+            status = mm_vm_map_phys(proc, code_start, code_end, code_start, CPT32_PERM_R | CPT32_PERM_X, 0);
+        if (status != FND_OK) {
+            mm_release(proc);
+            return status;
+        }
+    } else {
+        zero_range(ram, end);
+    }
     proc->parent = 0;
     proc->caps = 0;
     proc->heap_start = proc->heap_end = proc->heap_limit = 0;
@@ -248,7 +190,7 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
     proc->regions[1] = (struct fnd_region){code_start, code_end, CPT32_PERM_R | CPT32_PERM_X, 0, 0};
     proc->region_count = 2;
     uint32_t sp = end - 8u;
-    *(volatile uint32_t *)(uintptr_t)sp = arg;
+    mm_write32(proc, sp, arg);
     return start_proc(proc, thread, name, slot, priority, entry, sp, slot_bounds[slot]);
 }
 
@@ -335,29 +277,47 @@ static struct wax_launch launch;
 /* Plans the heap of a loaded image (§5.3 step 3): it starts at the end of
  * the highest WAX block and may grow up to the next reservation above it
  * (stack or a library) or the end of the slot. */
-static void plan_heap(struct fnd_proc *proc, uint32_t slot) {
-    uint32_t top = launch.top, limit = slot_bounds[slot + 1u];
-    proc->heap_region = FND_REGIONS; /* none yet */
+static void plan_heap(struct fnd_proc *proc, uint32_t slot, const struct fnd_grant *grants,
+                      uint32_t grant_count) {
+    uint32_t top = launch.top, limit = mm_vm ? VM_HEAP_TOP : slot_bounds[slot + 1u];
+    proc->heap_region = FND_PROC_REGIONS; /* none yet */
     for (uint32_t i = 0; i < launch.region_count; ++i) {
         const struct wax_region *r = &launch.region[i];
         if (r->start >= top && r->start < limit)
             limit = r->start;
-        if (i != 0 && r->end == top && r->flags == (CPT32_PERM_R | CPT32_PERM_W))
+        if (!mm_vm && i != 0 && r->end == top && r->flags == (CPT32_PERM_R | CPT32_PERM_W))
             proc->heap_region = i; /* grow this one */
+    }
+    if (mm_vm) {
+        /* Whole pages of their own, so the heap never shares a page with a
+         * block of other permissions; MMIO grants are in the way too. */
+        for (uint32_t i = 0; i < grant_count; ++i) {
+            if (grants[i].start >= top && grants[i].start < limit)
+                limit = grants[i].start & ~MM_PAGE_MASK;
+        }
+        proc->heap_start = proc->heap_end = (top + MM_PAGE_MASK) & ~MM_PAGE_MASK;
+        proc->heap_limit = limit & ~MM_PAGE_MASK;
+        return;
     }
     /* 8-byte aligned, like every mem_grow delta: blocks end anywhere. */
     proc->heap_start = proc->heap_end = (top + 7u) & ~7u;
     proc->heap_limit = limit;
 }
 
-/* The common part of every WAX launch. startup is copied into the new
- * process's startup block (kernel or user memory, already checked). */
+/* Where the loader finds process addresses of a vm launch. */
+static uint8_t *vm_load_map(void *context, uint32_t address, uint32_t *run) {
+    return mm_vm_ptr(context, address, run);
+}
+
+/* The common part of every WAX launch. startup is kernel memory, copied into
+ * the new process's startup block. */
 static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, uint32_t parent,
                            const void *image, uint32_t size, const struct fnd_image *libs,
                            uint32_t lib_count, const struct fnd_grant *grants, uint32_t grant_count,
                            const void *startup, uint32_t startup_len) {
     struct wax_library table[FND_MAX_LIBRARIES];
     uint32_t base, slot = 0;
+    mm_init();
     if (priority > FND_PRIO_APP || lib_count > FND_MAX_LIBRARIES || (lib_count && !libs) ||
         startup_len > FND_STARTUP_MAX)
         return FND_E_BAD_ARG;
@@ -367,12 +327,16 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
     enum wax_error error = wax_base_addr(image, size, &base);
     if (error != WAX_OK)
         return wax_status(error);
-    while (slot < FND_SLOTS && !(slot_bounds[slot] <= base && base < slot_bounds[slot + 1u]))
-        ++slot;
-    if (slot == FND_SLOTS)
-        return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
-    if (!slot_present(slot))
-        return FND_E_NO_MEMORY;
+    if (mm_vm) {
+        slot = VM_NO_SLOT; /* any address in the window will do */
+    } else {
+        while (slot < FND_SLOTS && !(slot_bounds[slot] <= base && base < slot_bounds[slot + 1u]))
+            ++slot;
+        if (slot == FND_SLOTS)
+            return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
+        if (!slot_present(slot))
+            return FND_E_NO_MEMORY;
+    }
     struct fnd_proc *proc = claim_record(slot, &status);
     if (!proc)
         return status;
@@ -380,18 +344,37 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
         table[i].data = libs[i].data;
         table[i].size = libs[i].size;
     }
-    struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR, slot_bounds[slot],
-                                slot_bounds[slot + 1u]};
+    struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR,
+                                mm_vm ? VM_WINDOW_START : slot_bounds[slot],
+                                mm_vm ? VM_WINDOW_END : slot_bounds[slot + 1u]};
     if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
         return wax_status(error);
-    if (launch.region_count + grant_count > FND_REGIONS)
+    if (!mm_vm && launch.region_count + grant_count > FND_REGIONS)
         return FND_E_REGION_LIMIT; /* §5.3: the grants come after the image */
     struct fnd_thread *thread = sched_alloc_thread();
     if (!thread)
         return FND_E_LIMIT;
 
+    if (mm_vm) {
+        /* The whole address space is built before anything is loaded, so
+         * running out of frames leaves no trace either. Grants map MMIO
+         * pages at their own addresses; a grant is rounded out to whole pages. */
+        status = mm_vm_create(proc);
+        for (uint32_t i = 0; status == FND_OK && i < launch.region_count; ++i)
+            status = mm_vm_map(proc, launch.region[i].start, launch.region[i].end, launch.region[i].flags);
+        for (uint32_t i = 0; status == FND_OK && i < grant_count; ++i)
+            status = mm_vm_map_phys(proc, grants[i].start, grants[i].end, grants[i].start, grants[i].perm, 1);
+        if (status != FND_OK) {
+            mm_release(proc);
+            return status == FND_E_ADDRESS_CONFLICT ? FND_E_ACCESS : status;
+        }
+    }
+
     /* Nothing has changed until here, so every failure above leaves no trace. */
-    wax_load(&launch, 0);
+    if (mm_vm)
+        wax_load_mapped(&launch, vm_load_map, proc);
+    else
+        wax_load(&launch, 0);
     for (uint32_t i = 0; i < launch.region_count; ++i) {
         proc->regions[i] = (struct fnd_region){launch.region[i].start, launch.region[i].end,
                                                launch.region[i].flags, 1, 0};
@@ -403,7 +386,7 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
     proc->region_count = launch.region_count + grant_count;
     proc->parent = parent;
     proc->caps = caps;
-    plan_heap(proc, slot);
+    plan_heap(proc, slot, grants, grant_count);
     uint32_t index = (uint32_t)(proc - procs);
     kmem_copy((uint32_t)(uintptr_t)startup_blocks[index], (uint32_t)(uintptr_t)startup, startup_len);
     proc->startup_len = startup_len;
@@ -456,11 +439,12 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
 int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
     struct fnd_grant grants[FND_MAX_GRANTS];
     char name[16];
+    fnd_spawn sp;
     if (addr & 3u)
         return FND_E_BAD_ARG;
     if (!proc_user_range_ok(caller, addr, sizeof(fnd_spawn), CPT32_PERM_R))
         return FND_E_ACCESS;
-    fnd_spawn sp = *(const fnd_spawn *)(uintptr_t)addr;
+    mm_copy_from_user(&sp, caller, addr, sizeof sp);
     if ((sp.libs & 3u) || sp.priority > FND_PRIO_APP || (sp.caps & ~FND_CAP_ALL) ||
         ((sp.handles | sp.grants) & 3u))
         return FND_E_BAD_ARG;
@@ -480,11 +464,12 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
             return FND_E_BAD_ARG;
         if (!proc_user_range_ok(caller, sp.name + i, 1u, CPT32_PERM_R))
             return FND_E_ACCESS;
-        name[i] = *(const volatile char *)(uintptr_t)(sp.name + i);
+        name[i] = (char)mm_read8(caller, sp.name + i);
         if (!name[i])
             break;
     }
-    const uint32_t *handles = (const uint32_t *)(uintptr_t)sp.handles;
+    uint32_t handles[FND_SPAWN_MAX_HANDLES];
+    mm_copy_from_user(handles, caller, sp.handles, 4u * sp.handle_count);
     for (uint32_t i = 0; i < sp.handle_count; ++i) {
         uint32_t h = handles[i];
         if (h == 0 || h > FND_MAX_HANDLES || caller->handles[h - 1u].kind == FND_OBJ_NONE)
@@ -493,21 +478,24 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
     if (handle_free_count(caller) == 0)
         return FND_E_LIMIT; /* no room for the PROCESS handle */
     for (uint32_t i = 0; i < sp.grant_count; ++i) {
-        const uint32_t *g = (const uint32_t *)(uintptr_t)(sp.grants + 12u * i);
+        uint32_t g[3];
+        mm_copy_from_user(g, caller, sp.grants + 12u * i, 12u);
         grants[i] = (struct fnd_grant){g[0], g[1], g[2]};
     }
     /* The WALs follow the image in the staging area (§9.2). */
     struct fnd_image libs[FND_SPAWN_MAX_LIBS];
+    uint32_t list[2u + 2u * FND_SPAWN_MAX_LIBS];
     uint32_t lib_count = 0, at = (STAGING + sp.image_len + 3u) & ~3u;
     if (sp.libs) {
         if (!proc_user_range_ok(caller, sp.libs, 8u, CPT32_PERM_R))
             return FND_E_ACCESS;
-        const uint32_t *list = (const uint32_t *)(uintptr_t)sp.libs;
+        mm_copy_from_user(list, caller, sp.libs, 8u);
         lib_count = list[0];
         if (lib_count > FND_SPAWN_MAX_LIBS || list[1])
             return FND_E_BAD_ARG;
         if (!proc_user_range_ok(caller, sp.libs + 8u, 8u * lib_count, CPT32_PERM_R))
             return FND_E_ACCESS;
+        mm_copy_from_user(list + 2, caller, sp.libs + 8u, 8u * lib_count);
         for (uint32_t i = 0; i < lib_count; ++i) {
             uint32_t image = list[2u + 2u * i], len = list[3u + 2u * i];
             if (!proc_user_range_ok(caller, image, len, CPT32_PERM_R))
@@ -518,12 +506,13 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
             at = (at + len + 3u) & ~3u;
         }
         for (uint32_t i = 0; i < lib_count; ++i)
-            kmem_copy((uint32_t)(uintptr_t)libs[i].data, list[2u + 2u * i], libs[i].size);
+            mm_copy_from_user((void *)(uintptr_t)libs[i].data, caller, list[2u + 2u * i], libs[i].size);
     }
-    kmem_copy(STAGING, sp.image, sp.image_len);
+    mm_copy_from_user((void *)(uintptr_t)STAGING, caller, sp.image, sp.image_len);
+    mm_copy_from_user(spawn_startup, caller, sp.startup, sp.startup_len);
     int32_t pid = spawn_image(name, sp.priority, sp.caps, caller->pid, (const void *)(uintptr_t)STAGING,
-                              sp.image_len, libs, lib_count, grants, sp.grant_count,
-                              (const void *)(uintptr_t)sp.startup, sp.startup_len);
+                              sp.image_len, libs, lib_count, grants, sp.grant_count, spawn_startup,
+                              sp.startup_len);
     if (pid < 0)
         return pid;
     struct fnd_proc *child = fnd_proc_get((uint32_t)pid);
@@ -538,7 +527,7 @@ int32_t proc_startup(const struct fnd_proc *proc, uint32_t buf, uint32_t cap) {
         cap = len;
     if (!proc_user_range_ok(proc, buf, cap, CPT32_PERM_W))
         return FND_E_ACCESS;
-    kmem_copy(buf, (uint32_t)(uintptr_t)startup_blocks[proc - procs], cap);
+    mm_copy_to_user(proc, buf, startup_blocks[proc - procs], cap);
     return (int32_t)len;
 }
 
@@ -552,7 +541,16 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
         return (int32_t)old;
     if (!proc->heap_limit || old > proc->heap_limit || delta > proc->heap_limit - old)
         return FND_E_NO_MEMORY;
-    if (proc->heap_region == FND_REGIONS) {
+    if (mm_vm) {
+        /* Frames are zeroed when handed out, and need not be adjacent. */
+        int32_t status = mm_vm_map(proc, old, old + delta, CPT32_PERM_R | CPT32_PERM_W);
+        if (status != FND_OK)
+            return status;
+        proc->heap_end = old + delta;
+        mm_reload(proc);
+        return (int32_t)old;
+    }
+    if (proc->heap_region == FND_PROC_REGIONS) {
         if (proc->region_count == FND_REGIONS)
             return FND_E_REGION_LIMIT;
         proc->heap_region = proc->region_count++;
@@ -567,10 +565,7 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
     zero_range(from, old + delta);
     proc->heap_end = old + delta;
     proc->regions[proc->heap_region].end = proc->heap_end;
-    if (active == proc) {
-        active = 0;
-        proc_activate(proc);
-    }
+    mm_reload(proc);
     return (int32_t)old;
 }
 
@@ -582,6 +577,8 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
 #define MEMINFO_BYTES 16u
 
 static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
+    if (mm_vm)
+        return mm_vm_proc_bytes(proc);
     uint32_t bytes = 0;
     for (uint32_t i = 0; i < proc->region_count; ++i) {
         if (proc->regions[i].owned)
@@ -590,9 +587,10 @@ static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
     return bytes;
 }
 
-static void put_word(uint32_t buf, uint32_t cap, uint32_t offset, uint32_t value) {
+static void put_word(const struct fnd_proc *proc, uint32_t buf, uint32_t cap, uint32_t offset,
+                     uint32_t value) {
     if (offset + 4u <= cap)
-        *(volatile uint32_t *)(uintptr_t)(buf + offset) = value;
+        mm_write32(proc, buf + offset, value);
 }
 
 int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf, uint32_t cap) {
@@ -600,7 +598,7 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
     for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
         if (procs[i].state == FND_PROC_LIVE) {
             ++live;
-            used += slot_bounds[procs[i].slot + 1u] - slot_bounds[procs[i].slot];
+            used += mm_vm ? 0 : slot_bounds[procs[i].slot + 1u] - slot_bounds[procs[i].slot];
         }
         if (procs[i].state != FND_PROC_FREE)
             ++records;
@@ -626,33 +624,34 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         uint32_t info[4];
         sched_cpu_snapshot(info);
         for (uint32_t w = 0; w < 4u; ++w)
-            put_word(buf, cap, 4u * w, info[w]);
+            put_word(caller, buf, cap, 4u * w, info[w]);
         uint32_t offset = 16u;
         for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
             if (procs[i].state == FND_PROC_FREE)
                 continue;
-            put_word(buf, cap, offset, procs[i].pid);
-            put_word(buf, cap, offset + 4u, procs[i].cpu_cycles);
+            put_word(caller, buf, cap, offset, procs[i].pid);
+            put_word(caller, buf, cap, offset + 4u, procs[i].cpu_cycles);
             offset += 8u;
         }
         return (int32_t)size;
     }
     if (sel == 3) {
-        uint32_t info[4] = {ram_bytes(), bmc_vram_bytes(), bmc_pcmram_bytes(), 0};
+        uint32_t info[4] = {mm_ram_bytes(), bmc_vram_bytes(), bmc_pcmram_bytes(), 0};
         for (uint32_t w = 0; w < 4u; ++w)
-            put_word(buf, cap, 4u * w, info[w]);
+            put_word(caller, buf, cap, 4u * w, info[w]);
         return (int32_t)size;
     }
     if (sel == 0) {
         uint32_t user = 0;
-        for (uint32_t slot = 0; slot < FND_SLOTS; ++slot) {
+        for (uint32_t slot = 0; !mm_vm && slot < FND_SLOTS; ++slot) {
             if (slot_present(slot))
                 user += slot_bounds[slot + 1u] - slot_bounds[slot];
         }
-        uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, ram_bytes(), user - used, live,
+        uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, mm_ram_bytes(),
+                            mm_vm ? mm_vm_free_bytes() : user - used, live,
                             boot_drive, 0};
         for (uint32_t w = 0; w < 8u; ++w)
-            put_word(buf, cap, 4u * w, info[w]);
+            put_word(caller, buf, cap, 4u * w, info[w]);
         return (int32_t)size;
     }
     uint32_t offset = 0;
@@ -665,12 +664,12 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
                             (uint32_t)p->exit_code, p->state == FND_PROC_LIVE ? proc_mem_bytes(p) : 0,
                             p->threads, p->fault_epc};
         for (uint32_t w = 0; w < 8u; ++w)
-            put_word(buf, cap, offset + 4u * w, info[w]);
+            put_word(caller, buf, cap, offset + 4u * w, info[w]);
         for (uint32_t w = 0; w < 4u; ++w) {
             uint32_t word = 0;
             for (uint32_t b = 0; b < 4u; ++b)
                 word = word << 8 | (uint8_t)p->name[4u * w + b];
-            put_word(buf, cap, offset + 32u + 4u * w, word);
+            put_word(caller, buf, cap, offset + 32u + 4u * w, word);
         }
         offset += PROCINFO_BYTES;
     }

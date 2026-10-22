@@ -11,12 +11,17 @@
 
 #define FND_MAX_PROCS 7u    /* one per user slot */
 #define FND_MAX_THREADS 8u  /* user threads; the idle thread is extra */
-#define FND_REGIONS 8u
+#define FND_REGIONS 8u      /* Extension P regions: the slot backend's limit */
+/* The regions a process record holds: an image's (at most 8) and the MMIO
+ * grants (at most FND_MAX_GRANTS). The slot backend keeps all in the 8 CPU
+ * regions; the vm backend only records them. */
+#define FND_PROC_REGIONS 16u
 #define FND_TICK_HZ 1000u
 #define FND_TICK_CYCLES 48000u /* PeC timer ch0 RELOAD at 48 MHz */
 #define FND_SLICE_TICKS 10u
 
-/* User slots (§5.2). */
+/* User slots (§5.2): the slot backend's fixed physical areas. With
+ * Extension V the same numbers are only link-time addresses. */
 #define FND_SLOTS 7u
 uint32_t fnd_slot_base(uint32_t slot);
 uint32_t fnd_slot_end(uint32_t slot);
@@ -49,7 +54,9 @@ struct fnd_proc {
     uint32_t fault_epc; /* EPC of the fault that ended it, else 0 */
     uint32_t cpu_cycles; /* elapsed user-context cycles, modulo 2^32 */
     uint32_t region_count;
-    struct fnd_region regions[FND_REGIONS];
+    struct fnd_region regions[FND_PROC_REGIONS];
+    uint32_t pt_root;  /* vm backend: physical address of the level-1 table, else 0 */
+    uint32_t vm_pages; /* vm backend: frames of memory the process holds */
     uint32_t heap_start, heap_end, heap_limit, heap_region; /* mem_grow (§5.3) */
     uint32_t startup_len; /* bytes of its startup block (§9.3) */
     struct fnd_handle_entry handles[FND_MAX_HANDLES];

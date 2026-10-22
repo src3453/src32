@@ -29,6 +29,16 @@ void cpt32_halt(void);
 #define CPT32_SR_RGN_START(n) (0x10u + 4u * (n))
 #define CPT32_SR_RGN_END(n) (0x11u + 4u * (n))
 #define CPT32_SR_RGN_FLAGS(n) (0x12u + 4u * (n))
+/* Extension V (doc/spec_CPU_vm.md); present when CPT32_FEATURE_V is set. */
+#define CPT32_SR_VCTL 0x40u
+#define CPT32_SR_PTBR 0x41u
+#define CPT32_SR_VFAULT 0x42u
+#define CPT32_SR_TLBFLUSH 0x43u
+#define CPT32_SR_TLBINV 0x44u
+#define CPT32_VCTL_EN 1u
+/* CPU_FEATURES bits (doc/spec_CPU.md §4.5). */
+#define CPT32_FEATURE_P 0x100u
+#define CPT32_FEATURE_V 0x200u
 
 /* STATUS bits and region permission bits. */
 #define CPT32_STATUS_IE 0x01u
@@ -55,6 +65,10 @@ uint32_t cpt32_syscall(uint32_t number, uint32_t context, uint32_t a1, uint32_t 
 #define CPT32_SYSCALL2(number, a1, a2) cpt32_syscall((number), 0u, (a1), (a2), 0u, 0u)
 #define CPT32_SYSCALL3(number, a1, a2, a3) cpt32_syscall((number), 0u, (a1), (a2), (a3), 0u)
 #define CPT32_SYSCALL4(number, a1, a2, a3, a4) cpt32_syscall((number), 0u, (a1), (a2), (a3), (a4))
+
+/* CPU_FEATURES as the CPUID instruction reports it (doc/spec_CPU.md). */
+/* CPUID命令が返すCPU_FEATURESを読みます。 */
+uint32_t cpt32_cpu_features(void);
 
 /* Read/write a system register; sr must be one of CPT32_SR_* as a constant.
  * Supervisor mode only. */

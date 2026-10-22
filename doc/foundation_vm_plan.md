@@ -1,6 +1,6 @@
-# vmfoundation 設計メモ（草案 0.2）
+# vmfoundation 設計メモ（0.3）
 
-状態: 議論用の草案。Extension V の仕様はまだ存在しない（`doc/spec_CPU.md` §Planning extensions に「V: Virtual Memory, MMU, TLB」の 1 行があるのみ）。したがって本書は「Foundation が V に何を求めるか」と「V が決まったときの Foundation 側の変更」を並べた叩き台で、どちらの契約も未確定。
+状態: §12 のとおり実装済み（KAN-49）。以下は設計時の記録で、実装と違う点は §12 を優先します。当時は Extension V の仕様がなかった（`doc/spec_CPU.md` §Planning extensions に「V: Virtual Memory, MMU, TLB」の 1 行があるのみ）。したがって本書は「Foundation が V に何を求めるか」と「V が決まったときの Foundation 側の変更」を並べた叩き台で、どちらの契約も未確定。
 
 ## 1. 現状の制約（なぜ V が欲しいか）
 
@@ -169,3 +169,14 @@
 - TLB ミスはハードウェア walk、S モードは変換しない、V 有効時の U では Extension P の 8 領域を使わない（`0xFFFF0000` 以上の拒否は維持）。
 - 拡張の有無は `CPUID` の `CPU_FEATURES` で判定する（V は bit 9）。
 - V の無い CPU でのカーネル側エミュレーション（§9）は、将来の FPGA 実装などに備えた設計案に留め、実装しない。
+
+## 12. 実装状況（2026-10-22、KAN-49）
+
+§7 の手順 3〜4 を実装しました。仕様は `doc/spec_Foundation.md` §5.5、コードは `foundation/kernel/mm.c`/`mm.h` です。
+
+- **mm 層**：`mm_slot` と `mm_vm` は `mm.c` の 2 つの実装で、`mm_init()` が最初の spawn で `CPUID` を見て選びます（`-D FND_MM_SLOT_ONLY` で固定）。カーネルがユーザーの仮想アドレスを直接参照する場所をなくし、`proc_user_range_ok` と `mm_copy_*` に集めました。§8 の確認事項は、ポインタ検証が `proc_user_range_ok`、ユーザーバッファの複写が `ipc.c`・`proc.c`・`blk.c`・`trap.c` の数十か所だったので、そこをすべて置き換えました。
+- **決めたこと（§6 の Q）**：Q2 2 段・4 KiB、Q3 領域は使わない、Q4 S は変換しない、Q5 ハードウェア walk、Q7 スワップなし。
+- **§10.1 からの変更**：ヒープはページ境界から始め、`mem_grow` はページを足すだけ（領域を使わない）。DMA は `blk_io` だけで、64 KiB のバウンスバッファを使います。
+- **仕様案の限界として残したもの**：権限がページ単位なので、同じページに載るブロックは権限の和になります。MMIO の付与もページ単位です。需要ページング、COW、WAL の共有ページ、7 個を超えるプロセスは未実装です。
+- **Q9（`sys_info` の能力ビット）**：まだ足していません。`mm_swap` を実装するときに足します。
+- **ツールチェーン**：`cpt32_cpu_features()`（`CPUID`）と、`cpt32_mtsr`/`mfsr` で SR `0x40..0x44` が使えます。パイプライン CPU は `CPUID` の暗黙の R1/R2 を interlock しないので、コンパイラは `CPUID` の後に NOP を 3 つ置きます。

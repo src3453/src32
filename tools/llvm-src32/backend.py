@@ -18,12 +18,14 @@ from data import CompileError, DataImage, Layout, parse_type, split_top, symbol
 
 
 # Extension P (doc/spec_CPU_priv.md) system register numbers accepted by
-# cpt32_mfsr/cpt32_mtsr: STATUS, EPC, CAUSE, USP, UFP, UGP, RGN0..7 fields.
-_SYSTEM_REGISTERS = {0x00, 0x01, 0x02, 0x08, 0x09, 0x0A} | {
+# cpt32_mfsr/cpt32_mtsr: STATUS, EPC, CAUSE, USP, UFP, UGP, RGN0..7 fields and
+# the Extension V registers VCTL, PTBR, VFAULT, TLBFLUSH, TLBINV (doc/spec_CPU_vm.md).
+_SYSTEM_REGISTERS = {0x00, 0x01, 0x02, 0x08, 0x09, 0x0A, 0x40, 0x41, 0x42, 0x43, 0x44} | {
     0x10 + 4 * region + field for region in range(8) for field in range(3)}
 # C-callable compiler intrinsics. Each is lowered inline; none may be defined.
 _INTRINSICS = ("cpt32_halt", "cpt32_syscall", "cpt32_mfsr", "cpt32_mtsr",
-               "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump", "cpt32_ctx_resume")
+               "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump", "cpt32_ctx_resume",
+               "cpt32_cpu_features")
 # Intrinsics that execute supervisor-only instructions (HALT, MFSR, MTSR, IRET).
 _SUPERVISOR_INTRINSICS = ("cpt32_halt", "cpt32_mfsr", "cpt32_mtsr",
                           "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_ctx_resume")
@@ -967,6 +969,7 @@ class _Function:
             "cpt32_halt": (0, "void"), "cpt32_syscall": (6, "i32"), "cpt32_mfsr": (1, "i32"),
             "cpt32_mtsr": (2, "void"), "cpt32_run_user": (2, "i32"), "cpt32_return_to_kernel": (1, "void"),
             "cpt32_jump": (3, "void"), "cpt32_ctx_resume": (1, "void"),
+            "cpt32_cpu_features": (0, "i32"),
         }
         count, result = signatures[name]
         if len(values) != count or str(inst.type) != result:
@@ -980,6 +983,15 @@ class _Function:
             for register, value in enumerate(values[2:], start=1):
                 self.load(value, register)
             c.emit(f"SYSCALL {number}, {context}")
+            self.store(inst)
+        elif name == "cpt32_cpu_features":
+            # CPUID writes CPU_ID to R1 and CPU_FEATURES to R2. The pipelined
+            # CPU does not interlock on those implicit results (they retire
+            # three instructions later), so let them land first.
+            c.emit("CPUID")
+            for _ in range(3):
+                c.emit("NOP")
+            c.move(1, 2)
             self.store(inst)
         elif name == "cpt32_mfsr":
             sr = self.constant_operand(values[0], "system register", _SYSTEM_REGISTERS)
