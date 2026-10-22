@@ -8,6 +8,7 @@ static uint32_t clock_value;
 
 void cpt32_halt(void) {}
 void proc_activate(struct fnd_proc *proc) { (void)proc; }
+void ipc_timed_out(struct fnd_thread *thread) { (void)thread; }
 static struct fnd_proc test_procs[2];
 static struct fnd_thread test_threads[2];
 

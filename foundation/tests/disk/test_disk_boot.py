@@ -2,7 +2,7 @@
 
 Builds foundation.img with foundation/boot/build.py and boots it through the
 BIOS (doc/spec_BIOS.md): IDC boot sector -> stage1 -> FNDBOOT -> kernel ->
-the shell module. The testbench program is a 4-byte zero word, so the BIOS
+the console, fs and init modules -> /bin/shell.wax. The testbench program is a 4-byte zero word, so the BIOS
 skips the RAM boot (bios/README.md). The kernel stops the machine at
 STOP_TICKS with R1 = 42; stage1 HALTs with R1 = its failed step.
 
@@ -92,7 +92,7 @@ class DiskBootTests(unittest.TestCase):
     def test_boots_the_shell_from_disk(self):
         # Slot 1 with dd0 empty: stage1 must use the drive the BIOS passed in R1.
         rows = self.boot(self.image, 42, FRAMES, '--type', f'{TYPE_FRAME}=uname\\n', slot=1)
-        self.assertEqual(rows, BANNER + ['/> uname'] + BANNER + ['/>'])
+        self.assertEqual(rows, BANNER + ['/> uname', BANNER[0], '/>'])
 
     def test_image_layout(self):
         volume = fs2.Volume(bytearray(self.image))
@@ -106,12 +106,16 @@ class DiskBootTests(unittest.TestCase):
         self.assertEqual((header['magic'], header['version'], header['size']), (fndboot.MAGIC, 1, len(boot)))
         self.assertEqual((header['kernel_load'], header['kernel_entry']), (0x10000, 0x10000))
         self.assertEqual(boot[header['kernel_off']:][:header['kernel_size']], kernel)
-        shell = (self.build / 'shell.wax').read_bytes()
-        self.assertEqual([m['name'] for m in modules], ['shell'])
-        self.assertEqual(boot[modules[0]['offset']:][:modules[0]['size']], shell)
-        inode = volume.resolve('/bin/shell.wax')
-        self.assertEqual(volume.read(inode), shell)
-        self.assertEqual(inode['mode'], 0x003D)
+        self.assertEqual([m['name'] for m in modules], ['console', 'fs', 'init'])  # init last (§11)
+        for module in modules:
+            image = (self.build / f"{module['name']}.wax").read_bytes()
+            self.assertEqual(boot[module['offset']:][:module['size']], image)
+        self.assertEqual([m['caps'] for m in modules], [8, 8, 0])  # SVC for the services
+        self.assertEqual(len(modules[0]['grants']), 3)  # the console's MMIO windows
+        for path in ('/bin/shell.wax', '/bin/echo.wax', '/lib/fnd.1.wal'):
+            inode = volume.resolve(path)
+            self.assertEqual(volume.read(inode), (self.build / 'root' / path[1:]).read_bytes())
+            self.assertEqual(inode['mode'], 0x003D)
 
     def corrupt(self, offset, mask):
         image = bytearray(self.image)

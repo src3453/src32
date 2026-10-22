@@ -1,55 +1,31 @@
 /* Foundation kernel entry: spawns the FNDBOOT modules (doc/spec_Foundation.md
- * §11) in table order. Today the only module is the shell (/bin/shell.wax,
- * doc/spec_Foundation_shell.md) in slot 4 at APP priority.
+ * §11) in table order, init last. build.py packs
+ *
+ *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
+ *   fs       slot 3, SERVICE, SVC (provisional read-only fs with /bin, /lib)
+ *   init     slot 0, SERVICE, starts /bin/shell.wax and restarts it
  *
  * Disk boot: stage1 enters with R1 = boot drive and R2 = the FNDBOOT image
  * staged at 0x00200000. FOUNDATION_BOOT_EMBEDDED builds a WAX that the host
  * loads directly; build.py then links a module-only FNDBOOT into the image
  * (fndboot_image.h) and R1/R2 are ignored.
  *
- * Provisional until init and the console service exist: the shell drives the
- * console itself (foundation/lib/fnd/con_pcg.c) through the MMIO grants in
- * its module entry, and when the last module (the shell standing in for init)
- * exits, the kernel spawns it again from the image, as init would restart
- * it. So the staging area stays in use instead of being released.
- *
- * boot_libs.h holds the WALs the kernel passes to every module (build.py
- * --fnd-wal: libfnd as the WAL fnd, doc/spec_Foundation.md §9.5). */
+ * The modules are PROTECTED WAX v2 with libfnd linked in, so they get no
+ * WAL list. Once they are spawned the staged FNDBOOT is no longer needed:
+ * proc_spawn reuses the area for the images it stages (§9.2). */
 #include <foundation/kernel.h>
 
-#include "boot_libs.h"
 #ifdef FOUNDATION_BOOT_EMBEDDED
 #include "fndboot_image.h"
 #endif
 
-#ifdef FOUNDATION_BOOT_FND_WAL
-static const struct fnd_image libs[] = {{img_fnd, img_fnd_size}};
-#define LIBS libs, 1u
-#else
-#define LIBS 0, 0u
-#endif
-
-#define RESPAWN_TICKS 100u
-
-static const void *boot_image;
-static uint32_t last_module;
-static int32_t last_pid;
-
-static uint32_t on_tick(uint32_t ticks) {
-    if (ticks % RESPAWN_TICKS == 0) {
-        struct fnd_proc *proc = fnd_proc_get((uint32_t)last_pid);
-        if (!proc || proc->state != FND_PROC_LIVE)
-            last_pid = fnd_boot_spawn(boot_image, last_module, LIBS);
-    }
 #ifdef FOUNDATION_BOOT_STOP_TICKS
-    /* tests: stop the machine so src32_testbench can read the screen */
-    if (ticks == FOUNDATION_BOOT_STOP_TICKS)
-        return 42u;
+/* tests: stop the machine so src32_testbench can read the screen */
+static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_TICKS ? 42u : 0u; }
 #endif
-    return 0;
-}
 
 int main(uint32_t drive, uint32_t fndboot) {
+    const void *boot_image;
 #ifdef FOUNDATION_BOOT_EMBEDDED
     (void)drive;
     (void)fndboot;
@@ -62,11 +38,12 @@ int main(uint32_t drive, uint32_t fndboot) {
     if (count < 0)
         return count;
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-        last_pid = fnd_boot_spawn(boot_image, i, LIBS);
-        if (last_pid < 0)
-            return last_pid;
+        int32_t pid = fnd_boot_spawn(boot_image, i, 0, 0);
+        if (pid < 0)
+            return pid;
     }
-    last_module = (uint32_t)count - 1u;
+#ifdef FOUNDATION_BOOT_STOP_TICKS
     fnd_set_tick_hook(on_tick);
+#endif
     fnd_kernel_run();
 }

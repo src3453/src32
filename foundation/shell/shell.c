@@ -1,13 +1,12 @@
-/* Foundation shell 1.0 (doc/spec_Foundation_shell.md), the part that runs
- * on the current kernel: lexing and syntax (§3, §4), variables (§5.1), the
- * built-in commands that need no file system (§10), messages (§11) and the
- * interactive line editor (§9).
+/* Foundation shell 1.0 (doc/spec_Foundation_shell.md): lexing and syntax
+ * (§3, §4), variables (§5.1), redirection (§6), command resolution and
+ * external programs (§7), the built-in commands cd, set, exit and help
+ * (§10.1), messages (§11) and the interactive line editor (§9). Every
+ * other command is a program in /bin (§10.3).
  *
- * Not yet possible, and reported as FND_E_UNSUPPORTED or "command not found"
- * (README.md lists them): the fs service and libfnd file calls (file
- * redirection, wildcards, cd to a path, ls/cat/cp/rm/mv/mkdir/rmdir, scripts,
- * /etc/profile.fsh and PATH lookup), proc_spawn (external programs) and the
- * Ctrl+C break thread (thread_create, CON_BREAK_WAIT). */
+ * Not yet: wildcards (the fs has no directory listing yet), scripts, -c and
+ * /etc/profile.fsh, and the Ctrl+C break thread (thread_create). README.md
+ * lists the details. */
 #include <stdint.h>
 
 #include <foundation/fnd.h>
@@ -92,13 +91,17 @@ static int parse_i32(const char *text, int32_t *out) {
 
 /* ---- output ---- */
 
+/* The streams of the command being run: the shell's own, or the files of
+ * its redirections (§6). */
+static fnd_handle cur_in, cur_out, cur_err;
+
 static void put(fnd_handle h, const char *s, uint32_t n) {
     if (n)
         (void)fnd_write(h, s, n, 0);
 }
-static void out(const char *s) { put(fnd_std_out(), s, str_len(s)); }
-static void out_n(const char *s, uint32_t n) { put(fnd_std_out(), s, n); }
-static void err(const char *s) { put(fnd_std_err(), s, str_len(s)); }
+static void out(const char *s) { put(cur_out, s, str_len(s)); }
+static void out_n(const char *s, uint32_t n) { put(cur_out, s, n); }
+static void err(const char *s) { put(cur_err, s, str_len(s)); }
 
 static void out_dec(int32_t value, uint32_t width) {
     char text[12];
@@ -522,46 +525,12 @@ static const struct builtin *find_builtin(const char *name);
 static int exit_requested;
 static int32_t exit_code;
 
-/* No fs session yet: the cwd is always /. */
 static int32_t cmd_cd(uint32_t argc, char **argv) {
     if (argc > 2u)
         return usage("cd [path]");
-    if (argc == 1u)
-        return FND_OK; /* to /, as there is no home directory in v1 */
-    return report("cd", argv[1], FND_E_UNSUPPORTED);
-}
-
-static int32_t cmd_pwd(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("pwd");
-    out("/\n");
-    return FND_OK;
-}
-
-/* Commands that need the fs service, which does not exist yet. */
-static int32_t cmd_needs_fs(uint32_t argc, char **argv) {
-    (void)argc;
-    const struct builtin *b = find_builtin(argv[0]);
-    return report(b->name, 0, FND_E_UNSUPPORTED);
-}
-
-static int32_t cmd_clear(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("clear");
-    fnd_status status = fnd_con_clear();
-    return status == FND_OK ? FND_OK : report("clear", 0, status);
-}
-
-static int32_t cmd_echo(uint32_t argc, char **argv) {
-    for (uint32_t i = 1; i < argc; ++i) {
-        if (i > 1u)
-            out(" ");
-        out(argv[i]);
-    }
-    out("\n");
-    return FND_OK;
+    /* No argument: /, as there is no home directory in v1. */
+    fnd_status status = fnd_cwd_set(argc == 1u ? "/" : argv[1]);
+    return status == FND_OK ? FND_OK : report("cd", argc == 1u ? "/" : argv[1], status);
 }
 
 static void show_var(const struct var *v) {
@@ -600,16 +569,10 @@ static int32_t cmd_set(uint32_t argc, char **argv) {
     return status == FND_OK ? FND_OK : report("set", name, status);
 }
 
-static int32_t read_sysinfo(uint32_t info[8]) {
-    int32_t size = fnd_sys_info(FND_INFO_SYSTEM, info, FND_SYSINFO_BYTES);
-    return size < 0 ? size : FND_OK;
-}
-
-/* uname and the start-up banner (§2.1): the OS, then the shell. */
-static int32_t show_versions(void) {
+/* The start-up banner (§2.1): the OS, then the shell. */
+static void show_versions(void) {
     uint32_t info[8];
-    int32_t status = read_sysinfo(info);
-    if (status == FND_OK) {
+    if (fnd_sys_info(FND_INFO_SYSTEM, info, FND_SYSINFO_BYTES) >= 0) {
         out("Foundation OS (kernel ABI ");
         out_dec((int32_t)info[0], 0);
         out(".");
@@ -617,194 +580,6 @@ static int32_t show_versions(void) {
         out(")\n");
     }
     out("Foundation shell " SHELL_VERSION "\n");
-    return status;
-}
-
-static int32_t cmd_uname(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("uname");
-    int32_t status = show_versions();
-    return status == FND_OK ? FND_OK : report("uname", 0, status);
-}
-
-static int32_t cmd_free(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("free");
-    uint32_t info[8];
-    int32_t status = read_sysinfo(info);
-    if (status != FND_OK)
-        return report("free", 0, status);
-    out_dec((int32_t)(info[3] / 1024u), 8);
-    out(" KiB total\n");
-    out_dec((int32_t)(info[4] / 1024u), 8);
-    out(" KiB free\n");
-    status = fnd_sys_info(FND_INFO_MEMORY, info, FND_MEMINFO_BYTES);
-    if (status < 0)
-        return report("free", 0, status);
-    out_dec((int32_t)(info[1] / 1024u), 8);
-    out(" KiB VRAM\n");
-    out_dec((int32_t)(info[2] / 1024u), 8);
-    out(" KiB PCMRAM\n");
-    return FND_OK;
-}
-
-#define PS_MAX 16u
-static uint32_t ps_buf[PS_MAX * FND_PROCINFO_BYTES / 4u];
-
-static void show_process(const uint32_t *p) {
-    static const char *const states[3] = {"RUN  ", "BLOCK", "EXIT "};
-    char name[17];
-    for (uint32_t i = 0; i < 16u; ++i)
-        name[i] = (char)(p[8u + i / 4u] >> (24u - 8u * (i % 4u)));
-    name[16] = 0;
-    out_dec((int32_t)p[0], 5);
-    out_dec((int32_t)p[1], 7);
-    out(" ");
-    out(p[2] < 3u ? states[p[2]] : "?    ");
-    out_dec((int32_t)p[3], 5);
-    out_dec((int32_t)(p[5] / 1024u), 7);
-    out("K ");
-    out(name);
-    out("\n");
-}
-
-static int32_t cmd_ps(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("ps");
-    int32_t size = fnd_sys_info(FND_INFO_PROCESSES, ps_buf, sizeof ps_buf);
-    if (size < 0)
-        return report("ps", 0, size);
-    if ((uint32_t)size > sizeof ps_buf)
-        size = (int32_t)sizeof ps_buf;
-    out("  PID PARENT STATE PRIO     MEM NAME\n");
-    for (uint32_t off = 0; off + FND_PROCINFO_BYTES <= (uint32_t)size; off += FND_PROCINFO_BYTES)
-        show_process(ps_buf + off / 4u);
-    return FND_OK;
-}
-
-/* CPU snapshots: four header words followed by (pid, cycles) pairs.
- * Subtraction is unsigned so clock/counter wrap is harmless within a refresh. */
-#define CPU_WORDS (4u + PS_MAX * 2u)
-static uint32_t top_before[CPU_WORDS], top_after[CPU_WORDS];
-
-static int32_t read_cpu(uint32_t *buf) {
-    int32_t size = fnd_sys_info(FND_INFO_CPU, buf, CPU_WORDS * 4u);
-    if (size < 0)
-        return size;
-    if (size < (int32_t)FND_CPUINFO_HEADER_BYTES || size > (int32_t)(CPU_WORDS * 4u)
-        || ((uint32_t)size - FND_CPUINFO_HEADER_BYTES) % FND_CPUINFO_RECORD_BYTES)
-        return FND_E_FORMAT;
-    return size / 4;
-}
-
-static uint32_t cpu_delta(uint32_t pid, uint32_t before_words, uint32_t after_words) {
-    uint32_t previous = 0;
-    for (uint32_t i = 4; i + 1u < before_words; i += 2u) {
-        if (top_before[i] == pid)
-            previous = top_before[i + 1u];
-    }
-    for (uint32_t i = 4; i + 1u < after_words; i += 2u) {
-        if (top_after[i] == pid)
-            return top_after[i + 1u] - previous;
-    }
-    return 0;
-}
-
-/* One decimal place, without overflowing a 32-bit cycles * 1000 product. */
-static uint32_t cpu_percent(uint32_t cycles, uint32_t total) {
-    uint32_t unit = total / 1000u;
-    uint32_t value = unit ? cycles / unit : 0;
-    return value > 1000u ? 1000u : value;
-}
-
-static void out_percent(uint32_t value) {
-    out_dec((int32_t)(value / 10u), 3);
-    out(".");
-    out_dec((int32_t)(value % 10u), 0);
-    out("%");
-}
-
-static int32_t cmd_top(uint32_t argc, char **argv) {
-    int32_t count = 0; /* zero means interactive */
-    if (argc != 1u && (argc != 3u || !name_is(argv[1], "-n")
-        || !parse_i32(argv[2], &count) || count <= 0))
-        return usage("top [-n count]");
-    int32_t before_words = read_cpu(top_before);
-    if (before_words < 0)
-        return report("top", 0, before_words);
-    uint32_t refresh = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_HZ);
-    if (!refresh || refresh > 1000000u)
-        return report("top", 0, FND_E_BAD_ARG);
-    for (;;) {
-        uint32_t begin = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO);
-        while ((uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO) - begin < refresh) {
-            fnd_key_t key;
-            int32_t status = fnd_con_pollkey(&key);
-            if (status < 0)
-                return report("top", 0, status);
-            if (status == FND_OK && key.code == FND_KEY_CHAR
-                && (ascii_upper(key.ch) == 'Q'
-                    || ((key.mods & FND_MOD_CTRL) && ascii_upper(key.ch) == 'C')))
-                return FND_OK;
-            fnd_sys_sleep(10u);
-        }
-        int32_t size = fnd_sys_info(FND_INFO_PROCESSES, ps_buf, sizeof ps_buf);
-        if (size < 0 || (uint32_t)size > sizeof ps_buf)
-            return report("top", 0, size < 0 ? size : FND_E_LIMIT);
-        int32_t after_words = read_cpu(top_after);
-        if (after_words < 0)
-            return report("top", 0, after_words);
-        uint32_t total = top_after[0] - top_before[0];
-        uint32_t kernel = top_after[1] - top_before[1];
-        uint32_t idle = top_after[2] - top_before[2];
-        uint32_t user = total - kernel - idle;
-        if (!count)
-            fnd_con_clear();
-        out("top - CPU (q/Ctrl+C to quit)\nuser ");
-        out_percent(cpu_percent(user, total));
-        out("  kernel~ ");
-        out_percent(cpu_percent(kernel, total));
-        out("  idle ");
-        out_percent(cpu_percent(idle, total));
-        out("\n");
-        uint32_t info[8];
-        int32_t status = read_sysinfo(info);
-        if (status < 0)
-            return report("top", 0, status);
-        out("Mem: ");
-        out_dec((int32_t)(info[3] / 1024u), 0);
-        out("K total, ");
-        out_dec((int32_t)(info[4] / 1024u), 0);
-        out("K free\n");
-        out("  CPU%   PID PARENT STATE PRIO     MEM NAME\n");
-        uint32_t rows = (uint32_t)size / FND_PROCINFO_BYTES;
-        uint32_t order[PS_MAX], cycles[PS_MAX];
-        for (uint32_t i = 0; i < rows; ++i) {
-            order[i] = i;
-            cycles[i] = cpu_delta(ps_buf[i * FND_PROCINFO_BYTES / 4u],
-                                  (uint32_t)before_words, (uint32_t)after_words);
-        }
-        for (uint32_t i = 0; i < rows; ++i) {
-            for (uint32_t j = i + 1u; j < rows; ++j) {
-                if (cycles[order[j]] > cycles[order[i]]) {
-                    uint32_t tmp = order[i];
-                    order[i] = order[j];
-                    order[j] = tmp;
-                }
-            }
-            out_percent(cpu_percent(cycles[order[i]], total));
-            out(" ");
-            show_process(ps_buf + order[i] * FND_PROCINFO_BYTES / 4u);
-        }
-        if (count && --count == 0)
-            return FND_OK;
-        for (uint32_t i = 0; i < (uint32_t)after_words; ++i)
-            top_before[i] = top_after[i];
-        before_words = after_words;
-    }
 }
 
 static int32_t cmd_help(uint32_t argc, char **argv);
@@ -820,21 +595,7 @@ static int32_t cmd_exit(uint32_t argc, char **argv) {
 
 static const struct builtin builtins[] = {
     {"cd", cmd_cd, "cd [path]", "change the current directory"},
-    {"pwd", cmd_pwd, "pwd", "show the current directory"},
-    {"ls", cmd_needs_fs, "ls [-l] [path...]", "list a directory"},
-    {"cat", cmd_needs_fs, "cat path...", "write files to the output"},
-    {"cp", cmd_needs_fs, "cp [-f] src... dst", "copy files"},
-    {"rm", cmd_needs_fs, "rm path...", "delete files"},
-    {"mv", cmd_needs_fs, "mv old new", "rename or move a file"},
-    {"mkdir", cmd_needs_fs, "mkdir path...", "make directories"},
-    {"rmdir", cmd_needs_fs, "rmdir path...", "remove empty directories"},
-    {"clear", cmd_clear, "clear", "clear the screen"},
-    {"echo", cmd_echo, "echo [word...]", "write words"},
     {"set", cmd_set, "set [NAME[=value]]", "show or set variables"},
-    {"uname", cmd_uname, "uname", "show the OS and shell versions"},
-    {"free", cmd_free, "free", "show memory"},
-    {"ps", cmd_ps, "ps", "list processes"},
-    {"top", cmd_top, "top [-n count]", "monitor CPU and processes"},
     {"help", cmd_help, "help [command]", "show help"},
     {"exit", cmd_exit, "exit [code]", "leave the shell"},
 };
@@ -860,6 +621,7 @@ static int32_t cmd_help(uint32_t argc, char **argv) {
         out("\n");
         return FND_OK;
     }
+    out("Foundation shell " SHELL_VERSION "\n");
     for (uint32_t i = 0; i < BUILTINS; ++i) {
         uint32_t n = str_len(builtins[i].name);
         out(builtins[i].name);
@@ -868,56 +630,203 @@ static int32_t cmd_help(uint32_t argc, char **argv) {
         out(builtins[i].summary);
         out("\n");
     }
+    out("Other commands are programs found in $PATH.\n");
     return FND_OK;
 }
 
 /* ---- execution (§6, §7) ---- */
 
+/* §7.1: a path to run, in found; 0, or FND_E_NOT_FOUND after printing
+ * "command not found", or another error. */
+static char found[LINE_MAX + 16u];
+
+static int is_file(const char *path) {
+    fnd_stat_t st;
+    return fnd_path_stat(path, &st) == FND_OK && st.type == FND_TYPE_FILE;
+}
+
+static int has_suffix(const char *name, const char *suffix) {
+    uint32_t n = str_len(name), k = str_len(suffix);
+    return n >= k && name_cmp(name + n - k, k, suffix, k) == 0;
+}
+
+static int32_t resolve(const char *name) {
+    uint32_t n = str_len(name);
+    if (n + 1u > sizeof found - 6u)
+        return FND_E_LIMIT;
+    for (const char *p = name; *p; ++p) {
+        if (*p == '/') { /* step 1: a path, no extension added */
+            copy_bytes(found, name, n + 1u);
+            return FND_OK;
+        }
+    }
+    const struct var *path = var_find("PATH", 4);
+    uint32_t len = path ? path->value_len : 0;
+    for (uint32_t i = 0; i < len;) {
+        uint32_t start = i;
+        while (i < len && path->value[i] != ':')
+            ++i;
+        uint32_t dir = i - start;
+        ++i;
+        if (dir == 0 || path->value[start] != '/' || dir + n + 6u > sizeof found)
+            continue; /* empty or relative entries are ignored */
+        copy_bytes(found, path->value + start, dir);
+        found[dir] = '/';
+        copy_bytes(found + dir + 1u, name, n);
+        uint32_t end = dir + 1u + n;
+        if (has_suffix(name, ".wax") || has_suffix(name, ".fsh")) {
+            found[end] = 0;
+            if (is_file(found))
+                return FND_OK;
+            continue;
+        }
+        copy_bytes(found + end, ".wax", 5);
+        if (is_file(found))
+            return FND_OK;
+        copy_bytes(found + end, ".fsh", 5);
+        if (is_file(found))
+            return FND_OK;
+    }
+    err(name);
+    err(": command not found (");
+    char code[12];
+    format_i32(FND_E_NOT_FOUND, code);
+    err(code);
+    err(")\n");
+    return FND_E_NOT_FOUND;
+}
+
+static void out_hex(uint32_t value) {
+    char text[9];
+    for (uint32_t i = 0; i < 8u; ++i) {
+        uint32_t d = (value >> (28u - 4u * i)) & 0xFu;
+        text[i] = (char)(d < 10u ? '0' + d : 'A' + d - 10u);
+    }
+    text[8] = 0;
+    err(text);
+}
+
+/* §11.1: a program that ended on a fault. Its record stays until its
+ * PROCESS handle is closed, so sys_info sel 1 still has its EPC. */
+#define PS_MAX 16u
+static uint32_t ps_buf[PS_MAX * FND_PROCINFO_BYTES / 4u];
+
+static void report_fault(const char *name, int32_t code) {
+    uint32_t epc = 0;
+    int32_t size = fnd_sys_info(FND_INFO_PROCESSES, ps_buf, sizeof ps_buf);
+    for (uint32_t off = 0; size > 0 && off + FND_PROCINFO_BYTES <= (uint32_t)size &&
+                           off + FND_PROCINFO_BYTES <= sizeof ps_buf;
+         off += FND_PROCINFO_BYTES) {
+        const uint32_t *p = ps_buf + off / 4u;
+        if (p[2] == 2u && (int32_t)p[4] == code)
+            epc = p[7];
+    }
+    err(name);
+    err(": fault ");
+    out_hex((uint32_t)code);
+    err(" at ");
+    out_hex(epc);
+    err("\n");
+}
+
+/* §7.2: runs the program at found with argv and waits for it. */
+static int32_t run_program(uint32_t argc, char **argv) {
+    if (has_suffix(found, ".fsh"))
+        return report(argv[0], 0, FND_E_UNSUPPORTED); /* scripts: not yet */
+    if (!has_suffix(found, ".wax"))
+        return report(argv[0], 0, FND_E_FORMAT);
+    fnd_exec_t ex = {argc, (const char *const *)argv, 0, cur_in, cur_out, cur_err, 0};
+    fnd_handle proc;
+    fnd_status status = fnd_proc_exec(found, &ex, &proc);
+    if (status != FND_OK)
+        return report(argv[0], 0, status);
+    int32_t code = 0;
+    status = fnd_sys_wait(proc, FND_FOREVER, &code);
+    if (status == FND_OK && code <= -256)
+        report_fault(argv[0], code);
+    fnd_sys_handle_close(proc);
+    return status == FND_OK ? code : report(argv[0], 0, status);
+}
+
+/* §6: opens one redirection target. */
+static int32_t open_target(uint32_t kind, const char *path, fnd_handle *h) {
+    uint32_t flags = kind == TK_IN ? FND_OPEN_READ
+                     : kind == TK_APPEND || kind == TK_ERR_APPEND
+                         ? FND_OPEN_WRITE | FND_OPEN_CREATE | FND_OPEN_APPEND
+                         : FND_OPEN_WRITE | FND_OPEN_CREATE | FND_OPEN_TRUNC;
+    return fnd_file_open(path, flags, FND_MODE_DEFAULT, h);
+}
+
 static int32_t run_command(const struct command *c) {
     char *argv[WORDS_MAX + 1u];
     uint32_t argc = 0;
-    int32_t redirect_target = -1;
+    fnd_handle opened[8];
+    uint32_t open_count = 0;
+    int32_t status = FND_OK;
     args_len = 0;
-    for (uint32_t i = 0; i < c->count; ++i) {
+    for (uint32_t i = 0; i < c->count && status == FND_OK; ++i) {
         const struct token *t = &tokens[c->first + i];
         if (is_redirect(t->kind)) {
-            if (t->kind == TK_ERR_DUP)
-                continue; /* STDERR is already the console STDOUT */
+            if (t->kind == TK_ERR_DUP) {
+                cur_err = cur_out; /* the STDOUT of this point (§6) */
+                continue;
+            }
             int32_t at = expand(&tokens[c->first + ++i]);
-            if (at < 0)
-                return report("shell", 0, FND_E_LIMIT);
-            if (redirect_target < 0)
-                redirect_target = at;
+            fnd_handle h;
+            if (at < 0) {
+                status = report("shell", 0, FND_E_LIMIT);
+            } else if (tokens[c->first + i].glob) {
+                status = report("shell", args + at, FND_E_UNSUPPORTED); /* §5.2 */
+            } else if (open_count == 8u) {
+                status = report("shell", "too many redirections", FND_E_LIMIT);
+            } else if ((status = open_target(t->kind, args + at, &h)) != FND_OK) {
+                fnd_handle shell_err = cur_err;
+                cur_err = fnd_std_err();
+                report("shell", args + at, status);
+                cur_err = shell_err;
+            } else {
+                opened[open_count++] = h;
+                if (t->kind == TK_IN)
+                    cur_in = h;
+                else if (t->kind == TK_OUT || t->kind == TK_APPEND)
+                    cur_out = h;
+                else
+                    cur_err = h;
+            }
             continue;
         }
-        if (argc == WORDS_MAX)
-            return report("shell", "too many words", FND_E_LIMIT);
+        if (argc == WORDS_MAX) {
+            status = report("shell", "too many words", FND_E_LIMIT);
+            break;
+        }
         int32_t at = expand(t);
-        if (at < 0)
-            return report("shell", 0, FND_E_LIMIT);
+        if (at < 0) {
+            status = report("shell", 0, FND_E_LIMIT);
+            break;
+        }
         argv[argc++] = args + at;
         if (t->glob) /* §5.2 needs fs directory listings */
-            return report("shell", args + at, FND_E_UNSUPPORTED);
+            status = report("shell", args + at, FND_E_UNSUPPORTED);
     }
     argv[argc] = 0;
-    /* §6: opening files needs the fs service. */
-    if (redirect_target >= 0)
-        return report(argv[0], args + redirect_target, FND_E_UNSUPPORTED);
-    int has_slash = 0;
-    for (const char *p = argv[0]; *p; ++p)
-        has_slash |= *p == '/';
-    const struct builtin *b = has_slash ? 0 : find_builtin(argv[0]);
-    if (!b) {
-        /* §7.1 steps 1 and 3 need the fs service: nothing can be found. */
-        err(argv[0]);
-        err(": command not found (");
-        char code[12];
-        format_i32(FND_E_NOT_FOUND, code);
-        err(code);
-        err(")\n");
-        return FND_E_NOT_FOUND;
+    if (status == FND_OK) {
+        const struct builtin *b = 0;
+        int has_slash = 0;
+        for (const char *p = argv[0]; *p; ++p)
+            has_slash |= *p == '/';
+        if (!has_slash)
+            b = find_builtin(argv[0]);
+        if (b)
+            status = b->fn(argc, argv);
+        else if ((status = resolve(argv[0])) == FND_OK)
+            status = run_program(argc, argv);
     }
-    return b->fn(argc, argv);
+    for (uint32_t i = 0; i < open_count; ++i)
+        fnd_close(opened[i]); /* §6: closed when the command ends */
+    cur_in = fnd_std_in();
+    cur_out = fnd_std_out();
+    cur_err = fnd_std_err();
+    return status;
 }
 
 static int valid_utf8(const char *s, uint32_t len) {
@@ -1170,15 +1079,31 @@ static int read_line(void) {
     }
 }
 
+static char cwd[FND_IPC_MAX_DATA + 1u];
+
+/* §9.1: the cwd and "> ". */
+static void prompt(void) {
+    uint32_t len;
+    if (fnd_cwd_get(cwd, sizeof cwd, &len) != FND_OK) {
+        cwd[0] = '?';
+        cwd[1] = 0;
+    }
+    out(cwd);
+    out("> ");
+}
+
 int main(void) {
     if (fnd_init() != FND_OK || !fnd_std_in() || !fnd_std_out() || !fnd_console())
         fnd_exit(FND_E_BAD_HANDLE);
+    cur_in = fnd_std_in();
+    cur_out = fnd_std_out();
+    cur_err = fnd_std_err();
     var_set("PATH", 4, "/bin", 4);
-    /* §2.1: no startup block yet, so always interactive; /etc/profile.fsh
-     * would need the fs service. */
+    /* §2.1: arguments (-c, scripts) and /etc/profile.fsh are not handled
+     * yet, so the shell is always interactive. */
     show_versions();
     for (;;) {
-        out("/> "); /* §9.1: the cwd, which is / until there is an fs */
+        prompt();
         if (read_line() != 0)
             continue; /* Ctrl+C: $? is unchanged */
         remember();
