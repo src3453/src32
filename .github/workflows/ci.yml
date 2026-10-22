@@ -97,6 +97,8 @@ jobs:
   toolchain:
     name: LLVM toolchain + Foundation tests
     needs: rust
+    # 統合テストが落ちても testbench artifact があれば実行する。
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
@@ -135,6 +137,8 @@ jobs:
   solc:
     name: sol compiler + WAX tests
     needs: rust
+    # 統合テストが落ちても testbench artifact があれば実行する。
+    if: ${{ !cancelled() }}
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v5
