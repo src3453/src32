@@ -2,8 +2,7 @@
 
 Builds the boot image with foundation/boot/build.py, types keys through the
 testbench's PeC input (--type) and compares the PCG text screen (--dump-pcg).
-The kernel stops the machine at STOP_TICKS with R1 = 42. FndWalShellTests
-runs the same tests with libfnd as the WAL fnd (build.py --fnd-wal).
+The kernel stops the machine at STOP_TICKS with R1 = 42.
 
     python -m unittest discover -s foundation/tests/shell -v
 
@@ -20,7 +19,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 STOP_TICKS = 3000
-FRAMES = 260
+FRAMES = 330
 FIRST_FRAME = 30   # the shell is loaded and waiting for keys by then
 STEP_FRAMES = 6    # between two --type batches
 BANNER = ['Foundation OS (kernel ABI 1.0)', 'Foundation shell 1.0']  # §2.1
@@ -38,15 +37,13 @@ def find_testbench():
 
 
 class ShellTests(unittest.TestCase):
-    BUILD_OPTIONS = []
-
     @classmethod
     def setUpClass(cls):
         cls.harness = find_testbench()
         cls.temp = tempfile.TemporaryDirectory(prefix='foundation-shell-')
         cls.work = Path(cls.temp.name)
         command = [sys.executable, str(ROOT / 'foundation/boot/build.py'), str(cls.work),
-                   '--stop-ticks', str(STOP_TICKS), *cls.BUILD_OPTIONS]
+                   '--stop-ticks', str(STOP_TICKS)]
         clang = os.environ.get('CLANG') or shutil.which('clang')
         if clang:
             command += ['--clang', clang]
@@ -77,18 +74,19 @@ class ShellTests(unittest.TestCase):
             rows.pop()
         return rows
 
-    def test_banner_builtins_and_versions(self):
-        # Command names are case-insensitive (§1).
+    def test_banner_and_external_commands(self):
+        # echo, uname and free are /bin programs (§10.3); names are
+        # case-insensitive (§1, §7.1).
         self.assertEqual(self.screen('echo hello   world\\n', 'UName\\n', 'echo\\n', 'free\\n'), BANNER + [
             '/> echo hello   world',
             'hello world',
             '/> UName',
-            *BANNER,
+            BANNER[0],
             '/> echo',
             '',
             '/> free',
             '   16384 KiB total',
-            '   10240 KiB free',
+            '    4608 KiB free',
             '/>',
         ])
 
@@ -159,23 +157,47 @@ class ShellTests(unittest.TestCase):
             '/>',
         ])
 
-    def test_needs_file_system(self):
-        # Provisional: no fs service yet (README.md).
+    def test_help_lists_only_builtins(self):
+        # §10: cd, set, help and exit are built in; help names the shell.
+        self.assertEqual(self.screen('help\\n', 'help cd\\n', 'help ls\\n'), BANNER + [
+            '/> help',
+            BANNER[1],
+            'cd      change the current directory',
+            'set     show or set variables',
+            'help    show help',
+            'exit    leave the shell',
+            'Other commands are programs found in $PATH.',
+            '/> help cd',
+            'usage: cd [path]',
+            '/> help ls',
+            'help: ls: not found (-10)',
+            '/>',
+        ])
+
+    def test_paths_and_provisional_file_system(self):
+        # §7.1 against the provisional read-only fs (services/bootfs): /bin
+        # only, no writes, no globs yet.
         self.assertEqual(self.screen(
-            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd\\n', 'pwd\\n', 'cd /bin\\n', '/bin/x.wax\\n'), BANNER + [
+            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd /bin\\n', 'pwd\\n',
+            './echo.wax a\\n', './echo b\\n', 'cd ..\\n', 'bin/x.wax\\n', 'cd nope\\n'), BANNER + [
             '/> echo a > out.txt',
-            'echo: out.txt: not supported (-13)',
+            'shell: out.txt: read-only (-18)',
             '/> echo *.txt',
             'shell: *.txt: not supported (-13)',
             '/> ls -l',
-            'ls: not supported (-13)',
-            '/> cd',
-            '/> pwd',
-            '/',
+            'ls: command not found (-10)',
             '/> cd /bin',
-            'cd: /bin: not supported (-13)',
-            '/> /bin/x.wax',
-            '/bin/x.wax: command not found (-10)',
+            '/bin> pwd',
+            '/bin',
+            '/bin> ./echo.wax a',
+            'a',
+            '/bin> ./echo b',
+            './echo: bad format (-12)',
+            '/bin> cd ..',
+            '/> bin/x.wax',
+            'bin/x.wax: not found (-10)',
+            '/> cd nope',
+            'cd: nope: not found (-10)',
             '/>',
         ])
 
@@ -211,25 +233,33 @@ class ShellTests(unittest.TestCase):
         self.assertNotIn('first', '\n'.join(rows))
 
     def test_exit_restarts_shell(self):
-        # EXIT ends the shell; the boot image starts it again (as init would).
+        # EXIT ends the shell; init starts it again. ps shows the services,
+        # init, the new shell and ps itself; exited processes are gone.
         rows = self.screen('exit 3\\n', 'ps\\n', step=20)
-        self.assertEqual(rows[:5] + rows[6:], BANNER + [
-            '/> ps',
-            '  PID PARENT STATE PRIO     MEM NAME',
-            '    1      0 EXIT     2      0K shell',
-            '/>',
-        ])
-        # MEM: the image (its size depends on the build) and the 16 KiB stack.
-        self.assertRegex(rows[5], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
+        self.assertEqual(rows[:7], BANNER + ['/> exit 3'] + BANNER + ['/> ps', '  PID PARENT STATE PRIO     MEM NAME'])
+        # MEM depends on the build.
+        patterns = [r'    1      0 BLOCK    1 +[1-9][0-9]*K console',
+                    r'    2      0 BLOCK    1 +[1-9][0-9]*K fs',
+                    r'    3      0 BLOCK    1 +[1-9][0-9]*K init',
+                    r'    5      3 BLOCK    2 +[1-9][0-9]*K shell',
+                    r'    6      5 RUN      2 +[1-9][0-9]*K ps']
+        self.assertEqual(len(rows), 13, rows)
+        for row, pattern in zip(rows[7:12], patterns):
+            self.assertRegex(row, '^' + pattern + '$')
+        self.assertEqual(rows[12], '/>')
 
     def test_top_snapshot_and_return_to_shell(self):
         rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 135])
         self.assertEqual(rows[:4], BANNER + ['/> top -n 1', 'top - CPU (q/Ctrl+C to quit)'])
         self.assertRegex(rows[4], r'^user +\d+\.\d%  kernel~ +\d+\.\d%  idle +\d+\.\d%$')
-        self.assertEqual(rows[5:7], ['Mem: 16384K total, 10240K free',
+        self.assertEqual(rows[5:7], ['Mem: 16384K total, 4608K free',
                                     '  CPU%   PID PARENT STATE PRIO     MEM NAME'])
-        self.assertRegex(rows[7], r'^ +\d+\.\d% +1 +0 RUN +2 +[1-9][0-9]*K shell$')
-        self.assertEqual(rows[8:], ['/> echo done', 'done', '/>'])
+        # /bin/top runs beside the services, init and the shell, busiest first.
+        names = sorted(row.split()[-1] for row in rows[7:12])
+        self.assertEqual(names, ['console', 'fs', 'init', 'shell', 'top'])
+        for row in rows[7:12]:
+            self.assertRegex(row, r'^ +\d+\.\d% +\d+ +\d+ (RUN  |BLOCK) +[12] +[1-9][0-9]*K \w+$')
+        self.assertEqual(rows[12:], ['/> echo done', 'done', '/>'])
         # Check measured proportions, rather than pinning costs to one build.
         values = [float(v.rstrip('%')) for v in rows[4].split() if v.endswith('%')]
         self.assertTrue(all(0 <= v <= 100 for v in values))
@@ -247,27 +277,29 @@ class ShellTests(unittest.TestCase):
             with self.subTest(quit_key=quit_key):
                 rows = self.screen('top\\n', quit_key, 'echo done\\n', at_frames=[30, 125, 145])
                 self.assertEqual(rows[0], 'top - CPU (q/Ctrl+C to quit)')
-                self.assertIn('Mem: 16384K total, 10240K free', rows)
+                self.assertIn('Mem: 16384K total, 4608K free', rows)
                 self.assertEqual(rows[-3:], ['/> echo done', 'done', '/>'])
 
     def test_top_invalid_arguments_and_help(self):
+        # top is /bin/top.wax, not a built-in (§10.3), so help does not know it.
         rows = self.screen('top -n 0\\n', 'top -n -1\\n', 'top -n x\\n',
                            'top -n\\n', 'top extra\\n', 'help top\\n')
-        self.assertEqual(rows.count('usage: top [-n count]'), 6)
-        self.assertEqual(rows[-1], '/>')
+        self.assertEqual(rows.count('usage: top [-n count]'), 5)
+        self.assertEqual(rows[-2:], ['help: top: not found (-10)', '/>'])
 
 
-class FndWalShellTests(ShellTests):
-    """The shell as a WAX v3 importing libfnd from the WAL fnd 1.0."""
-    BUILD_OPTIONS = ['--fnd-wal']
-
-    def test_shell_imports_libfnd(self):
-        shell, fnd = (self.work / 'shell.wax').read_bytes(), (self.work / 'fnd.wal').read_bytes()
-        self.assertEqual(shell[4:8], b'\x00\x03\x00\x01')  # v3 WAX
+    def test_programs_import_libfnd(self):
+        # The shell and the commands are WAX v3 that import the WAL fnd from
+        # /lib (build.py, Foundation §9.5).
+        root = self.work / 'root'
+        fnd = (root / 'lib/fnd.1.wal').read_bytes()
         self.assertEqual(fnd[4:8], b'\x00\x03\x00\x02')  # v3 WAL
-        self.assertIn(b'fnd_write\x00', shell)  # an import
-        self.assertNotIn(b'needs fsck', shell)  # strerror lives in fnd
         self.assertIn(b'needs fsck', fnd)
+        for name in ('shell', 'echo', 'ps'):
+            image = (root / 'bin' / f'{name}.wax').read_bytes()
+            self.assertEqual(image[4:8], b'\x00\x03\x00\x01', name)  # v3 WAX
+            self.assertIn(b'fnd_write\x00', image)  # an import
+            self.assertNotIn(b'needs fsck', image)  # strerror lives in fnd
 
 
 if __name__ == '__main__':

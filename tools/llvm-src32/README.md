@@ -141,7 +141,7 @@ python tools/llvm-src32/driver.py app.c --wax3 --import-wal lib.wal --origin 0x8
 - ブロックはコード（RX）とデータ（RW、静的データと import 記述子）の 2 つです。WAL にはスタックと入口がなく、起動コードも入りません。
 - `--wax3` の起動コードは `main` の戻り値を R1 に置いて Foundation の `proc_exit`（`SYSCALL 0x11`）を呼びます。`--os` は今のところ `foundation`（OS ABI 1.0）だけです。
 - `--image-id` の既定は出力ファイル名（小文字）、`--abi-version` の既定は `1.0` です。WAX では `abi_major` はアプリケーションの契約の版です。
-- 実例：[`foundation/tests/wal`](../../foundation/tests/wal)（WAL から WAL を import する例）、libfnd の WAL 化（`foundation/boot/build.py --fnd-wal`、export 一覧は `foundation/lib/fnd/fnd.exports`）。
+- 実例：[`foundation/tests/wal`](../../foundation/tests/wal)（WAL から WAL を import する例）、libfnd の WAL 化（`foundation/boot/build.py` がシェルと `/bin` のコマンドをそれを import する WAX v3 にする。export 一覧は `foundation/lib/fnd/fnd.exports`）。
 
 ## C++ 開発サンプル
 
