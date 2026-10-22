@@ -63,6 +63,12 @@ python foundation/run.py
 
 リポジトリルートで実行してください。スクリプトを絶対パスで指定すれば、別の作業ディレクトリからも使えます。Python と llvmlite、Clang、Rust/Cargo が必要です（[ツールチェーンの準備](../tools/llvm-src32/README.md#必要なツール)）。`--clang PATH` で Clang を指定でき、`--build-only` はビルドと設定生成だけを行います。
 
+`--arg` 以降の引数は、そのままエミュレーターへ渡します。`run.py` のオプションは `--arg` より前に指定してください。空白を含む値は通常のシェル引数と同様に引用符で囲みます。
+
+```sh
+python foundation/run.py --disk --arg --debug-gui --start-paused --cpu pipeline
+```
+
 このコマンドはシェルとカーネルを `target/foundation-boot/foundation.wax` にビルドし、release エミュレーターをビルドして起動します。作業用一時ファイルも同ディレクトリ内に置きます。`target/foundation-boot/run/config.yaml` に 16 MiB RAM と付属の `assets/UNSCII.F08` フォントを設定し、そのディレクトリをエミュレーターの作業ディレクトリにします。普段使うルートの `config.yaml` は変更しません。
 
 手動で起動する場合は `python foundation/boot/build.py target/foundation-boot` で画像を作り、BIOS 未設定の作業ディレクトリから画像の絶対パスをエミュレーターへ渡してください。`bios.image` があると WAX の入口より BIOS が優先されます。PCG の文字を表示するには、作業ディレクトリの `config.yaml` に `pcg.font`（例：`assets/UNSCII.F08` の絶対パス）が必要です。
