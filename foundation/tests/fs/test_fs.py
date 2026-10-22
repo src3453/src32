@@ -467,7 +467,11 @@ class DeviceTests(FsTestBase):
         r = fs.ok(SESSION, FS_OPEN, READ | WRITE, data="/dev/con")
         self.assertEqual((r.a[0], r.fwd, r.new_badge), (4, 77, 0))
         self.assertEqual(fs.lib.host_dev_open_flags(), READ | WRITE)
-        self.assertError("ACCESS", fs.call(SESSION, FS_OPEN, READ | WRITE | TRUNC, data="/dev/con"))
+        # TRUNC and APPEND are ignored for devices ("> /dev/null"); EXEC is not.
+        fs.ok(SESSION, FS_OPEN, WRITE | CREATE | TRUNC, DEFAULT, data="/dev/con")
+        self.assertEqual(fs.lib.host_dev_open_flags(), WRITE)
+        self.assertError("ACCESS", fs.call(SESSION, FS_OPEN, READ | EXEC, data="/dev/con"))
+        self.assertError("EXISTS", fs.call(SESSION, FS_OPEN, WRITE | CREATE | EXCL, DEFAULT, data="/dev/null"))
         n = fs.ok(SESSION, FS_OPEN, READ | WRITE, data="/dev/null")
         self.assertEqual(n.a[0], 3)
         self.assertEqual(fs.ok(n.new_badge, ST_WRITE, data=b"gone").a[0], 4)

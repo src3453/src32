@@ -458,9 +458,14 @@ static void dir_op(fs_obj *o, const fs_req *q, uint32_t len, uint32_t cap, fs_re
 
 /* ---- session operations (§6) -------------------------------------------- */
 
+/* §6.4 for /dev nodes: TRUNC and APPEND mean nothing to a device and are
+ * ignored, so that "> /dev/null" works; EXEC is refused, and CREATE | EXCL
+ * finds the node existing. */
 static fnd_status open_device(fs_obj *s, const vfs_info *info, uint32_t flags, fs_rep *r) {
-    if (flags & ~(FND_OPEN_READ | FND_OPEN_WRITE | FND_OPEN_CREATE))
+    if (flags & FND_OPEN_EXEC)
         return FND_E_ACCESS;
+    if ((flags & (FND_OPEN_CREATE | FND_OPEN_EXCL)) == (FND_OPEN_CREATE | FND_OPEN_EXCL))
+        return FND_E_EXISTS;
     uint32_t need = rw_need(flags);
     fnd_status st = vfs_permit(&s->cred, info, need);
     if (st != FND_OK)
