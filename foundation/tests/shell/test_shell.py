@@ -60,13 +60,14 @@ class ShellTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
-    def screen(self, *batches, step=STEP_FRAMES):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows."""
         command = [str(self.harness), str(self.image), '42', '--cpu', 'pipeline',
                    '--frames', str(FRAMES), '--dump-pcg']
         for i, text in enumerate(batches):
-            command += ['--type', f'{FIRST_FRAME + step * i}={text}']
+            frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
+            command += ['--type', f'{frame}={text}']
         result = subprocess.run(command, cwd=self.work, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -220,6 +221,40 @@ class ShellTests(unittest.TestCase):
         ])
         # MEM: the image (its size depends on the build) and the 16 KiB stack.
         self.assertRegex(rows[5], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
+
+    def test_top_snapshot_and_return_to_shell(self):
+        rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 135])
+        self.assertEqual(rows[:4], BANNER + ['/> top -n 1', 'top - CPU (q/Ctrl+C to quit)'])
+        self.assertRegex(rows[4], r'^user +\d+\.\d%  kernel~ +\d+\.\d%  idle +\d+\.\d%$')
+        self.assertEqual(rows[5:7], ['Mem: 16384K total, 10240K free',
+                                    '  CPU%   PID PARENT STATE PRIO     MEM NAME'])
+        self.assertRegex(rows[7], r'^ +\d+\.\d% +1 +0 RUN +2 +[1-9][0-9]*K shell$')
+        self.assertEqual(rows[8:], ['/> echo done', 'done', '/>'])
+        # Check measured proportions, rather than pinning costs to one build.
+        values = [float(v.rstrip('%')) for v in rows[4].split() if v.endswith('%')]
+        self.assertTrue(all(0 <= v <= 100 for v in values))
+        self.assertAlmostEqual(sum(values), 100, delta=0.3)
+        self.assertGreater(values[1], 0)
+        self.assertGreater(values[2], 50)
+
+    def test_top_multiple_snapshots(self):
+        rows = self.screen('top -n 2\\n')
+        self.assertEqual(rows.count('top - CPU (q/Ctrl+C to quit)'), 2)
+        self.assertEqual(rows[-1], '/>')
+
+    def test_top_refresh_and_quit(self):
+        for quit_key in ('q', '\\C'):
+            with self.subTest(quit_key=quit_key):
+                rows = self.screen('top\\n', quit_key, 'echo done\\n', at_frames=[30, 125, 145])
+                self.assertEqual(rows[0], 'top - CPU (q/Ctrl+C to quit)')
+                self.assertIn('Mem: 16384K total, 10240K free', rows)
+                self.assertEqual(rows[-3:], ['/> echo done', 'done', '/>'])
+
+    def test_top_invalid_arguments_and_help(self):
+        rows = self.screen('top -n 0\\n', 'top -n -1\\n', 'top -n x\\n',
+                           'top -n\\n', 'top extra\\n', 'help top\\n')
+        self.assertEqual(rows.count('usage: top [-n count]'), 6)
+        self.assertEqual(rows[-1], '/>')
 
 
 class FndWalShellTests(ShellTests):

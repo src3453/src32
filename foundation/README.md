@@ -50,16 +50,18 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 
 `shell/shell.c` は [シェル仕様](../doc/spec_Foundation_shell.md) のうち、いまのカーネル（IPC、ハンドル、fs がない）で動く部分です。PROTECTED WAX v2 としてスロット 4（`0x600000`）に置き、APP 優先度で動きます。
 
-- **できること**：字句と構文（§3、§4。引用、`;`、`&&`、`||`、コメント、予約記号のエラー、構文エラーの行は何も実行しない）、変数（§5.1。`set`、`$NAME`、`${NAME}`、`$?`、`$0`、`$#`、`$1`〜`$9`、既定の `PATH`）、行編集（§9.2。←→、Home、End、Backspace、Delete、16 行の履歴、Ctrl+C）、エラーメッセージ（§11.1）、組み込みコマンド `clear`、`echo`、`set`、`uname`、`free`、`ps`、`help`、`exit`、`pwd`、引数なしの `cd`（コマンド名は UNIX 風で、大文字小文字を区別しない）。起動時に OS とシェルの版（`uname` と同じ 2 行）を表示し、プロンプトは `/> ` です。
+- **できること**：字句と構文（§3、§4。引用、`;`、`&&`、`||`、コメント、予約記号のエラー、構文エラーの行は何も実行しない）、変数（§5.1。`set`、`$NAME`、`${NAME}`、`$?`、`$0`、`$#`、`$1`〜`$9`、既定の `PATH`）、行編集（§9.2。←→、Home、End、Backspace、Delete、16 行の履歴、Ctrl+C）、エラーメッセージ（§11.1）、組み込みコマンド `clear`、`echo`、`set`、`uname`、`free`、`ps`、`top`、`help`、`exit`、`pwd`、引数なしの `cd`（コマンド名は UNIX 風で、大文字小文字を区別しない）。起動時に OS とシェルの版（`uname` と同じ 2 行）を表示し、プロンプトは `/> ` です。
 - **まだできないこと**：fs サービスがないので、ファイルへのリダイレクト（`2>&1` は使える）、ワイルドカード、`cd path`、`ls`、`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` は `FND_E_UNSUPPORTED`、外部コマンドとパスでの指定は `command not found`（`FND_E_NOT_FOUND`）になります。スクリプト、`-c`、`/etc/profile.fsh` もありません。`proc_spawn` がないので外部プログラムを起動できず、`thread_create` と `CON_BREAK_WAIT` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **暫定の部分**：console サービス（フェーズ 2 の IPC が必要）の代わりに、`lib/fnd/con_pcg.c` をシェルにリンクしています。これが PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で直接扱い、出力は [API 仕様 §8.1](../doc/spec_Foundation_API.md)、キーは §8.3 のキーコードに従います。キー入力は `irq_bind` がないので、FIFO を 4 tick ごとに見ます。`fnd_init` は起動ブロックを読めない（`proc_startup` が未実装）ので argc = 0 とし、STDIN、STDOUT、STDERR、CONSOLE の役割をすべてこのコンソール（ハンドル 1）にします。シェル仕様ではシェルは `caps = 0` で MMIO を持ちませんが、これを入れ替えるまでは、起動イメージが VDP の窓、PCG のテキスト面と属性面（VRAM `0x10000000–0x10002FFF`）、PeC の入力窓を付与します。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表を順に spawn します。いまのモジュールはシェルだけで、上の MMIO の付与はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT（`fndboot_image.h`）をリンクします（次の節）。表の最後のモジュール（init がまだないのでシェル）が終了すると、次の 100 tick 境界でそれを起動し直します（init の代わり）。そのため §11 と違い、staging 領域は解放せずに残します。
 - **libfnd の WAL**：`boot/build.py --fnd-wal` は、libfnd を WAL「fnd」1.0（`fnd.wal`、export は `lib/fnd/fnd.exports`）にし、シェルをそれを import する WAX v3 にします。どちらのカーネルも `fnd.wal` をリンクし（`boot_libs.h`）、同梱モジュールを起動するときにライブラリ一覧として渡します。ディスクには `/lib/fnd.1.wal` も置きます（§9.5）。既定は今のところ静的リンクの WAX v2 です。シェルのテストは両方で実行します（`FndWalShellTests`）。
-- `uname`、`free`、`ps` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` は 0（`proc_spawn` がまだない）、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
+- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` は 0（`proc_spawn` がまだない）、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh
 python foundation/run.py
 ```
+
+シェルの `top` は CPU 使用率（user / kernel 概算 / idle）、メモリ容量と CPU 使用率順のプロセス一覧を 1 秒ごとに更新します。`q` または Ctrl+C で戻ります。`top -n 1` は 1 回分を表示して終了します。kernel の値は C ハンドラの計測で、context save/restore を含む厳密な OS オーバーヘッドではありません。
 
 リポジトリルートで実行してください。スクリプトを絶対パスで指定すれば、別の作業ディレクトリからも使えます。Python と llvmlite、Clang、Rust/Cargo が必要です（[ツールチェーンの準備](../tools/llvm-src32/README.md#必要なツール)）。`--clang PATH` で Clang を指定でき、`--build-only` はビルドと設定生成だけを行います。
 

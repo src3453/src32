@@ -264,18 +264,21 @@ static int decode(uint32_t event, fnd_key_t *key) {
 }
 
 /* No irq_bind yet, so the FIFO is polled, sleeping between empty polls. */
-void con_pcg_read_key(fnd_key_t *key) {
+int con_pcg_poll_key(fnd_key_t *key) {
     for (;;) {
         uint32_t status = MMIO32(PEC_EVENT_STATUS);
         if (status & 2u)
             MMIO32(PEC_EVENT_STATUS) = 2u; /* overflow: W1C, keep reading */
-        if (!(status & 1u)) {
-            fnd_sys_sleep(POLL_TICKS);
-            continue;
-        }
+        if (!(status & 1u))
+            return 0;
         uint32_t event = MMIO32(PEC_EVENT_DATA);
         MMIO32(PEC_EVENT_POP) = 1u;
         if (decode(event, key))
-            return;
+            return 1;
     }
+}
+
+void con_pcg_read_key(fnd_key_t *key) {
+    while (!con_pcg_poll_key(key))
+        fnd_sys_sleep(POLL_TICKS);
 }

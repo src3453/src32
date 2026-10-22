@@ -323,6 +323,8 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 - `sys_info` の sel：
   - 0 = `fnd_sysinfo`（32 bytes）。順に `abi_major`、`abi_minor`、`tick_hz`、`ram_bytes`、`free_bytes`、`proc_count`、`boot_drive`、予約
   - 1 = プロセス一覧。1 件 48 bytes で、順に `pid`、`parent`、`state`（0 = 実行可能、1 = BLOCKED、2 = 終了済み）、`priority`、`exit_code`、`mem_bytes`、`threads`、`fault_epc`、`name[16]`
+  - 2 = CPU 統計。16 bytes のヘッダ（`elapsed_cycles`、`kernel_cycles`、`idle_cycles`、`clock_hz`）に、プロセスごとの 8 bytes（`pid`、`user_cycles`）が続きます。すべて u32、カウンタは 2^32 で wrap します。レコード順は sel 1 と同じで、終了記録も含み、再利用時は新 PID のカウンタを 0 にします。PeC timer ch1 を IRQ なしの 48 MHz free-running clock としてカーネルが予約します。スケジューラの起動時から計測し、HALT 中の経過も idle に含みます。使用率はスナップショット間の符号なし差分で計算し、間隔は約89秒未満とします。
+    - `kernel_cycles` は C の trap ハンドラ入口から scheduler 終了までの概算です。アセンブリの context save/restore と C 計測関数の境界外の命令は、前後の user/idle に含まれます。厳密な OS オーバーヘッドとは一致しません。`user_cycles` はプロセスの全スレッドの合計、syscall 処理時間は kernel 側です。ch1 による計測自体の実行コストもあります。
   - その他は `FND_E_BAD_ARG`
 
 ### 9.1 ケーパビリティ

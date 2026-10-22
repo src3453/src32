@@ -6,6 +6,7 @@ fnd_argc fn()->u32
 fnd_argv fn(u32)->ptr
 fnd_con_clear fn()->i32
 fnd_con_getkey fn(ptr)->i32
+fnd_con_pollkey fn(ptr)->i32
 fnd_con_size fn(ptr,ptr)->i32
 fnd_con_write fn(ptr)->i32
 fnd_console fn()->u32
