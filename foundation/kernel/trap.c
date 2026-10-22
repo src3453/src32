@@ -54,6 +54,8 @@ static void handle_irqs(void) {
         uint32_t active = FND_REG16(FND_IRQC_PENDING) & FND_REG16(FND_IRQC_ENABLE);
         if (!active && (FND_REG32(TIMER_PENDING) & 1u))
             active = 1u << FND_IRQ_TIMER;
+        if (!active && blk_pending())
+            active = 1u << FND_IRQ_IDC; /* the same race for the IDC level */
         if (!active)
             return;
         uint32_t line = 0;
@@ -63,6 +65,8 @@ static void handle_irqs(void) {
             sched_tick();
             if (tick_hook && !stop_code)
                 stop_code = tick_hook(fnd_ticks());
+        } else if (line == FND_IRQ_IDC) {
+            blk_irq();
         } else {
             FND_REG16(FND_IRQC_ENABLE) = FND_REG16(FND_IRQC_ENABLE) & ~(1u << line);
         }
@@ -173,7 +177,10 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_SVC_LOOKUP:
         result = sys_svc_lookup(proc, a1);
         break;
-    case FND_SYS_THREAD_CREATE: case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK: case FND_SYS_BLK_IO:
+    case FND_SYS_BLK_IO:
+        result = sys_blk_io(thread, a1);
+        break;
+    case FND_SYS_THREAD_CREATE: case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK:
         result = FND_E_UNSUPPORTED; /* defined by the ABI, later phases */
         break;
     default:
