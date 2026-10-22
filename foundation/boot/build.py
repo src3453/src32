@@ -26,7 +26,7 @@ SHELL_STACK = 0x4000
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "con_pcg.c", "strerror.c")]
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "wax.c")]
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "wax.c")]
 
 
 def driver(sources, output, args, *extra):
