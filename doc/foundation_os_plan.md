@@ -239,6 +239,8 @@ stage1 は署名 `0x55 0xAA` を保つため、DSFS のブートセクタ規約�
 
 ## 7. API ライブラリ libfnd とシェル
 
+libfnd とサービスのプロトコルは [API 仕様](spec_Foundation_API.md)、シェルは [シェル仕様](spec_Foundation_shell.md) で定めました。以下と異なる場合は仕様が優先します。
+
 - 名前は `fnd_` で始めます。戻り値は `fnd_status`（0 または負のエラー）で、結果は出力引数で返します。
   - ファイル：`fnd_file_open(path, mode, &h)`、`fnd_file_read`、`fnd_file_write`、`fnd_file_seek`、`fnd_file_close`、`fnd_file_delete`、`fnd_file_rename`。
   - ディレクトリ：DOS の FindFirst/FindNext 風の `fnd_dir_open`／`fnd_dir_next`／`fnd_dir_close`、`fnd_dir_make`、`fnd_dir_remove`。
