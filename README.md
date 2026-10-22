@@ -234,6 +234,7 @@ driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止�
 - [ハードウェア仕様](doc/Hardware.md)
 - [言語・パッケージ・ツール](doc/Software.md)
 - [チュートリアルと開発ガイド](doc/Guides.md)
+- [依存関係の更新（Dependabot）](doc/dependency-updates.md)
 
 英語原文があるページには `doc/ja/` 以下に対応する日本語版があります。
 

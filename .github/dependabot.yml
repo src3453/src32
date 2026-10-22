@@ -1,0 +1,48 @@
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directories:
+      - /
+      - /sdk/wasm-expansion-card
+      - /templates/wasm-expansion-card
+      - /examples/wasm-expansion-timer
+      - /examples/wasm-3ws88pwn4
+      - /examples/wasm-psg
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+    groups:
+      # 同じバージョンで使う関連 crate を別々の PR に分けない。
+      cranelift:
+        patterns:
+          - "cranelift-*"
+
+  - package-ecosystem: npm
+    directory: /tools/vscode-sol-syntax
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: pip
+    directory: /tools/llvm-src32
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+      time: "09:00"
+      timezone: Asia/Tokyo
+    open-pull-requests-limit: 5
