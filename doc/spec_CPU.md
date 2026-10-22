@@ -208,6 +208,13 @@ All results are identical to treating every device as timing-sensitive.
 Never declare it for a device whose reads or writes interact with time, DMA,
 IRQs or CPU state.
 
+The debug GUI `Reset` button resets the CPU to the loaded machine's original
+boot entry and pauses execution. With a BIOS configured this is its ROM entry
+(`0xFF000000` for raw BIOS, the declared entry for WAX BIOS); otherwise it is
+the program entry. Loading another cartridge updates this reset target.
+CPU counters and IRQ-controller state are cleared; guest RAM and bus time
+are preserved.
+
 ## 2. Registers
 
 - General-purpose registers: `R0`-`R31` (32 registers, 32-bit)
@@ -298,6 +305,7 @@ Bit positions:
   - Bit 6: Extension F (not implemented and not reported by this CPU)
   - Bit 7: Extension p (pipelining; pipeline CPU only)
   - Bit 8: Extension P (privilege levels and system calls)
+  - Bit 9: Extension V (virtual memory; draft, see `doc/spec_CPU_vm.md`, not implemented)
 
 The current CPU implements Base and Extensions A, L, M, S, I and P. It reports
 `CPU_FEATURES = 0x0000013F` (pipeline: `0x000001BF`); Extension F remains a

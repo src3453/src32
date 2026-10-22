@@ -207,17 +207,35 @@ class ShellTests(unittest.TestCase):
             '/>',
         ])
 
+    def test_ls(self):
+        # §10.3, §10.4: names sorted ignoring case, -l with the totals, a
+        # file path lists just that file, errors use the §11.1 format.
+        rows = self.screen('echo a > B.txt\\n', 'echo a > a.txt\\n', 'ls /tmp\\n', 'ls\\n', 'ls /bin/echo.wax\\n',
+                           'ls /nope\\n', 'ls -x\\n')
+        self.assertEqual(rows[:2], BANNER)
+        self.assertIn('/> ls', rows)
+        self.assertIn('a.txt', rows)
+        self.assertLess(rows.index('a.txt'), rows.index('B.txt'))
+        self.assertIn('/bin/echo.wax', rows)
+        self.assertIn('ls: /nope: not found (-10)', rows)
+        self.assertIn('usage: ls [-l] [path...]', rows)
+
+    def test_ls_long(self):
+        rows = self.screen('ls -l /bin\\n')
+        self.assertTrue(any(r.endswith('  ls.wax') and '  <DIR>' not in r for r in rows), rows)
+        self.assertTrue(any(r.endswith(' file(s), 1 dir(s)') or ' file(s), 0 dir(s)' in r for r in rows), rows)
+
     def test_paths_and_file_system(self):
         # §7.1 against the fs service on the boot disk: writes work, globs
         # are not there yet.
         self.assertEqual(self.screen(
-            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd /bin\\n', 'pwd\\n',
+            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls out.txt\\n', 'cd /bin\\n', 'pwd\\n',
             './echo.wax a\\n', './echo b\\n', 'cd ..\\n', 'bin/x.wax\\n', 'cd nope\\n'), BANNER + [
             '/> echo a > out.txt',
             '/> echo *.txt',
             'shell: *.txt: not supported (-13)',
-            '/> ls -l',
-            'ls: command not found (-10)',
+            '/> ls out.txt',
+            'out.txt',
             '/> cd /bin',
             '/bin> pwd',
             '/bin',

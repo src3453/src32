@@ -72,7 +72,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 
 - **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.1（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
-- **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`ls`、`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` はまだ `/bin` にありません。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
+- **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` はまだ `/bin` にありません（`ls` は追加済み）。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
 - **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 4 tick ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
@@ -211,6 +211,9 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 `tools/llvm-src32/test_toolchain.py` の `test_foundation_wax_loader` が、`-O0`/`-O1`/`-O2` × Scalar/Cached/CachedRelaxed/Pipeline で実行します。記述子の origin をずらす、UGP を 0 にする、領域に全権限を与える、といった改変版ではこのテストが失敗することを確認しています。
 
 ### C から作る WAL のテスト
+
+外部 C ライブラリを WAL 化する例は [LZMA SDK デモ](../examples/lzma-wal/README.md) を参照してください。
+`liblzma.wal` の圧縮・展開 API、export 定義、WAX 側の import、ディスクへの配置を説明しています。
 
 `tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 

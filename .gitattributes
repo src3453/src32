@@ -2,3 +2,6 @@
 assets/unscii-8.hex -text
 THIRD_PARTY_NOTICES.txt text eol=lf
 tools/vscode-sol-syntax/THIRD_PARTY_NOTICES.txt text eol=lf
+# Keep the SDK subset byte-for-byte identical to its official archive.
+foundation/lib/lzma/vendor/*.[ch] -text whitespace=-blank-at-eol,-blank-at-eof
+foundation/lib/lzma/vendor/lzma-sdk.txt -text whitespace=-blank-at-eol,-blank-at-eof

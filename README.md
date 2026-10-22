@@ -53,7 +53,7 @@ CPU実行ポリシーは `--cpu-execution strict|best-effort|cycle-independent` 
 デバッグ GUI の `Windows` メニューから `Bus Composition View` を選ぶと、領域サイズをバーで比較し、その下の一覧で登録デバイスの開始・終了アドレスと容量を確認できます。未登録のアドレス範囲は一覧に表示されません。
 `Performance` ウィンドウでは、Strict／Best-effort の `Cycles / frame` に対するCPU使用率と実時間比を確認できます。Cycle-independent では固定サイクル予算がないため、サイクル使用率は N/A です。実時間比は各フレームのCPU実行時間（VSync待ち・描画時間を除く）をエミュレーション時間で割って100倍します。100%がリアルタイム、100%未満はより速く、100%超はより遅いことを示します。速度倍率は `100 / 実時間比` です（例: 50% → 2.00x、200% → 0.50x）。両指標にプログレスバーと直近120サンプルの折れ線グラフを表示します。実時間比バーは100%で満杯になり、100%超では赤色です。実時間比グラフは0～200%スケール、数値表示に上限はありません。命令実行速度（KIPS）とIPCも表示します。
 CPU内部とフレーム処理の時間内訳を取るには `--profile-cpu` を指定します。このオプションはデバッグGUIを有効にして `Performance` を開き、直近フレームと直近120フレーム平均を表示します。CPU内訳は Device/IRQ、Fetch、Decode、Execute、Memory、Commit、Other に分かれます。Cached Interpreter は Fetch にcache lookupとdecodeを含みます。フレーム内訳はVDP/VSync IRQ、CPU、CPU側の描画送信、音声合成、音声キュー投入です。GPU実行時間とVSync待ちは計測しません。`--debug-gui` だけではこれらの追加計測は動かず、計測器の時間計測は `--profile-cpu` 指定時のみ有効です。プロファイラー有効時はCPU実行が遅くなるため、絶対時間ではなく処理段階の比較に使ってください。
-`Debug Controls` はCPUの状態、PC、モード、合計サイクル数、合計実行命令数を表示します。`Reset` はCPUのサイクル数・稼働サイクル数・実行命令数をゼロにしてアドレス `0x00000000` から再初期化し、一時停止します。IRQコントローラの保留要求・許可・入力レベルも消去します。ゲストRAMとバスのシステム時刻は保持します。
+`Debug Controls` はCPUの状態、PC、モード、合計サイクル数、合計実行命令数を表示します。`Reset` はCPUのサイクル数・稼働サイクル数・実行命令数をゼロにして、起動時と同じエントリアドレスから再初期化し、一時停止します。BIOS設定時はBIOSのエントリ（raw ROMは `0xFF000000`、WAXは宣言されたエントリ）、BIOS未設定時はプログラムのエントリ（rawバイナリは `0x00000000`）に戻ります。カートリッジを読み替えた場合は、新しい起動エントリを使います。IRQコントローラの保留要求・許可・入力レベルも消去します。ゲストRAMとバスのシステム時刻は保持します。
 
 ```sh
 cargo run --release --bin cpt32 -- path/to/program.bin --debug-gui --start-paused
@@ -234,6 +234,7 @@ driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止�
 - [ハードウェア仕様](doc/Hardware.md)
 - [言語・パッケージ・ツール](doc/Software.md)
 - [チュートリアルと開発ガイド](doc/Guides.md)
+- [依存関係の更新（Dependabot）](doc/dependency-updates.md)
 
 英語原文があるページには `doc/ja/` 以下に対応する日本語版があります。
 

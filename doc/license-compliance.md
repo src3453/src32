@@ -25,6 +25,7 @@ CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`�
 | VS Code sol 拡張 | package-lock の production 依存8パッケージ（Language Client / Protocol / Types / JSON-RPC / semver 等）を収録。拡張フォルダーにも LICENSE と通知全文を配置。開発ツールを配布する場合は別途その依存も対象になる。 |
 | Unicode CaseFolding 16.0.0 | `tools/fs2/CaseFolding-16.0.0-CF.txt` は Unicode, Inc. のデータ（C と F の行だけを抜き出したもの）。Unicode License V3 の著作権・許諾表示をファイル先頭に保持。FS2 の名前照合（spec_FS2.md §6）に使う。 |
 | Berkeley SoftFloat 3e | BSD-3-Clause。既存の COPYING、ソースのヘッダー、UPSTREAM.md を保持。ゲストバイナリだけを配る場合も通知全文を同梱する。 |
+| LZMA SDK 26.05 | Igor Pavlov による public domain の C 部分を `foundation/lib/lzma/vendor/` に収録。原文 `lzma-sdk.txt`、各ソースの宣言、取得元・アーカイブ SHA-256 を保持。CPT32 のアダプターと区別し、SDK を MIT に再ライセンスしない。 |
 | UNSCII-8 | 上流の PD / CC0 宣言を保存。CGA.F08 を削除し、UNSCII.F08 に置換。CP437 の256スロット、1文字8 byte、合計2048 byte。図柄は変わるが、文字コード・VRAM・MMIOの契約は変更しない。上流にない4文字（0x0F、0x7F、0xA9、0xF9）は `?` で代替。 |
 | GNU Unifont | MIT 対象外。OFL-1.1 の選択肢を利用。公式18.0.01アーカイブの標準BDFから著作権表示を保存し、同梱HEXとの一致を確認。リリースのOFL全文も同梱。変換したROMもOFL-1.1を維持。 |
 | SVG 内の Source Sans Pro | `doc/cpt32-architecture.svg` の埋め込み WOFF の name table で Adobe 2010–2018、Reserved Font Name “Source”、OFL-1.1 を確認。`licenses/SOURCE-SANS-PRO.txt` を同梱。 |
