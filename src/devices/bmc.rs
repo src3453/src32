@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
@@ -6,6 +6,11 @@ use crate::bus::{Bus, Device};
 pub const BMC_BASE: u32 = 0x8006_0000;
 pub const BMC_SIZE: u32 = 0x1_0000;
 const AGE_GRANTS: u16 = 256;
+
+/// Bases of the memory windows whose mapped size the BMC reports: Main RAM,
+/// VRAM and PCMRAM, in the order of MAIN_RAM_SIZE, VRAM_SIZE, PCMRAM_SIZE.
+pub const MEMORY_WINDOW_BASES: [u32; 3] = [0x0000_0000, 0x1000_0000, 0x1800_0000];
+const MEMORY_SIZE_REGISTERS: u32 = 0x080;
 
 /// Shared arbitration state used by the MMIO register block and system bus.
 pub struct Bmc {
@@ -148,16 +153,26 @@ impl Default for Bmc {
     }
 }
 
-struct BmcRegisters(Rc<RefCell<Bmc>>);
+/// The register block plus the bus's live record of mapped memory sizes.
+struct BmcRegisters(Rc<RefCell<Bmc>>, Rc<Cell<[u32; 3]>>);
+
+impl BmcRegisters {
+    fn read_register(&self, addr: u32) -> u32 {
+        match (addr & !3).wrapping_sub(MEMORY_SIZE_REGISTERS) {
+            index @ (0 | 4 | 8) => self.1.get()[index as usize / 4],
+            _ => self.0.borrow().read_register(addr),
+        }
+    }
+}
 
 impl Device for BmcRegisters {
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
-        let value = self.0.borrow().read_register(addr);
+        let value = self.read_register(addr);
         Some((value >> ((3 - (addr & 3)) * 8)) as u8)
     }
 
     fn read(&mut self, addr: u32) -> u8 {
-        let value = self.0.borrow().read_register(addr);
+        let value = self.read_register(addr);
         let shift = (3 - (addr & 3)) * 8;
         (value >> shift) as u8
     }
@@ -176,7 +191,7 @@ pub fn connect_bmc(bus: &mut Bus) -> Rc<RefCell<Bmc>> {
     bus.add_device(
         BMC_BASE,
         "BMC MMIO",
-        Box::new(BmcRegisters(Rc::clone(&bmc))),
+        Box::new(BmcRegisters(Rc::clone(&bmc), bus.memory_sizes())),
     );
     bus.attach_bmc(Rc::clone(&bmc));
     bmc
@@ -284,5 +299,25 @@ mod tests {
         assert_eq!(bus.read_u32_be(BMC_BASE), 0x424D_4301);
         bus.write_u32_be(BMC_BASE + 0x020, 7);
         assert_eq!(bus.read_u32_be(BMC_BASE + 0x020), 7);
+    }
+
+    #[test]
+    fn reports_memory_sizes_mapped_before_or_after_connecting() {
+        let mut bus = Bus::new();
+        crate::devices::ram::connect_ram_with_size(&mut bus, 0x0020_0000);
+        connect_bmc(&mut bus);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x080), 0x0020_0000);
+        // Windows that are not mapped read as 0.
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x084), 0);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x088), 0);
+        crate::devices::vdp::vdp::connect_vdp_with_vram_size(&mut bus, 0x0080_0000);
+        crate::devices::sgu::sgu::connect_sgu(&mut bus);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x084), 0x0080_0000);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x088), 0x0010_0000);
+        assert_eq!(bus.read_u8(BMC_BASE + 0x085), 0x80);
+        // Read-only: writes are ignored.
+        bus.write_u32_be(BMC_BASE + 0x080, 0);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x080), 0x0020_0000);
+        assert_eq!(bus.read_u32_be(BMC_BASE + 0x08C), 0);
     }
 }

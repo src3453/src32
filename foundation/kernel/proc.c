@@ -3,6 +3,7 @@
  * (phase 1) or from a PROTECTED WAX loaded by wax.c. */
 #include "internal.h"
 #include "wax.h"
+#include <cpt32/bmc.h>
 
 static struct fnd_proc procs[FND_MAX_PROCS];
 static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((aligned(4)));
@@ -22,6 +23,18 @@ static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
 
 uint32_t fnd_slot_base(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot] : 0; }
 uint32_t fnd_slot_end(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot + 1u] : 0; }
+
+/* §5.1: the installed Main RAM as the BMC reports it; hardware without the
+ * register is taken to have v1's 16 MiB. */
+#define RAM_BYTES_FALLBACK 0x01000000u
+
+static uint32_t ram_bytes(void) {
+    uint32_t bytes = bmc_main_ram_bytes();
+    return bytes ? bytes : RAM_BYTES_FALLBACK;
+}
+
+/* §5.2: a slot that does not lie wholly in the installed RAM is unusable. */
+static int slot_present(uint32_t slot) { return slot_bounds[slot + 1u] <= ram_bytes(); }
 
 /* MTSR takes a constant system register, so each region field gets its own
  * writer. Separate noinline functions keep the optimizer from merging the
@@ -203,6 +216,8 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
         return FND_E_BAD_ARG;
     if (code_start >= code_end || entry < code_start || entry >= code_end || (entry & 3u))
         return FND_E_BAD_ARG;
+    if (!slot_present(slot))
+        return FND_E_NO_MEMORY;
     uint32_t end = slot_bounds[slot + 1u], ram = end - ram_size;
     if (code_start < end && slot_bounds[slot] < code_end)
         return FND_E_ADDRESS_CONFLICT; /* code must not lie in the writable slot */
@@ -348,6 +363,8 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
         ++slot;
     if (slot == FND_SLOTS)
         return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
+    if (!slot_present(slot))
+        return FND_E_NO_MEMORY;
     struct fnd_proc *proc = claim_record(slot, &status);
     if (!proc)
         return status;
@@ -550,10 +567,11 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
 }
 
 /* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list, sel 2 CPU
- * accounting. Copies up to cap bytes and returns the whole answer's size. */
+ * accounting, sel 3 fnd_meminfo. Copies up to cap bytes and returns the
+ * whole answer's size. */
 #define SYSINFO_BYTES 32u
 #define PROCINFO_BYTES 48u
-#define RAM_BYTES 0x01000000u /* §5.1: v1 assumes the default 16 MiB */
+#define MEMINFO_BYTES 16u
 
 static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
     uint32_t bytes = 0;
@@ -586,6 +604,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         size = records * PROCINFO_BYTES;
     else if (sel == 2)
         size = 16u + records * 8u;
+    else if (sel == 3)
+        size = MEMINFO_BYTES;
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -609,9 +629,19 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         }
         return (int32_t)size;
     }
+    if (sel == 3) {
+        uint32_t info[4] = {ram_bytes(), bmc_vram_bytes(), bmc_pcmram_bytes(), 0};
+        for (uint32_t w = 0; w < 4u; ++w)
+            put_word(buf, cap, 4u * w, info[w]);
+        return (int32_t)size;
+    }
     if (sel == 0) {
-        uint32_t user = slot_bounds[FND_SLOTS] - slot_bounds[0];
-        uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, RAM_BYTES, user - used, live,
+        uint32_t user = 0;
+        for (uint32_t slot = 0; slot < FND_SLOTS; ++slot) {
+            if (slot_present(slot))
+                user += slot_bounds[slot + 1u] - slot_bounds[slot];
+        }
+        uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, ram_bytes(), user - used, live,
                             boot_drive, 0};
         for (uint32_t w = 0; w < 8u; ++w)
             put_word(buf, cap, 4u * w, info[w]);

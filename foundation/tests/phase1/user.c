@@ -42,7 +42,7 @@ void task_probe(volatile uint32_t *box) {
     box[PROBE_CPU_SIZE] = (uint32_t)fnd_sys_info(2u, 0, 0);
     box[PROBE_CPU_BAD_POINTER] = (uint32_t)fnd_sys_info(2u, (void *)0x100u, 16u);
     box[PROBE_CPU_ALIGNMENT] = (uint32_t)fnd_sys_info(2u, (void *)((uintptr_t)cpu + 1u), 16u);
-    box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(3u, cpu, sizeof cpu);
+    box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(4u, cpu, sizeof cpu);
     int32_t needed = fnd_sys_info(2u, cpu, 16u);
     box[PROBE_CPU_PREFIX] = needed == 48 && cpu[4] == 0x12345678u && cpu[0] > 0 && cpu[1] > 0;
     box[PROBE_CPU_CLOCK] = cpu[3];

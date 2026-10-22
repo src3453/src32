@@ -316,7 +316,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `clear` | `clear` | 画面を消す（CONSOLE の役割を使う。STDOUT がリダイレクトされていても画面を消す）。CONSOLE がなければ `FND_E_BAD_HANDLE` |
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |
-| `free` | `free` | RAM 容量と空き容量を KiB で表示する（`sys_info` sel 0） |
+| `free` | `free` | Main RAM の容量と空き容量、VRAM と PCMRAM の容量を KiB で表示する（`sys_info` sel 0, 3） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |
 | `top` | `top [-n count]` | 1 秒ごとの差分から user / kernel（概算）/ idle の CPU 使用率、メモリ容量、CPU 使用率順のプロセス一覧を表示する（`sys_info` sel 0, 1, 2）。引数なしでは画面を更新し、q または Ctrl+C で終了（キーは `fnd_con_pollkey` で待たずに読む）。`-n` は正の整数で、指定回数を通常出力して終了する |
 

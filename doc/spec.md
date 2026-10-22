@@ -81,6 +81,8 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
 
 両設定を省略した場合は従来の容量を使用する。VRAM の上限はアドレス窓がPCMRAMと重ならない128 MiB。
 
+ゲストは Main RAM・VRAM・PCMRAM の実装容量を BMC の `MAIN_RAM_SIZE`（`0x80060080`）、`VRAM_SIZE`（`0x80060084`）、`PCMRAM_SIZE`（`0x80060088`）で読める（[`spec_BMC_DMAC.md` §1.5](spec_BMC_DMAC.md)）。
+
 ### PCMRAM
 - 容量: 1MB
 - 用途:
