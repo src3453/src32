@@ -76,6 +76,28 @@ class ToolchainTests(unittest.TestCase):
                     with self.subTest(cpu=cpu):
                         self.execute(image, 42, cpu)
 
+    def test_backslash_bytes_in_constants(self):
+        # LLVM prints a 0x5C byte inside c"..." as \\ (every other escape is
+        # \XX); byte arrays and string literals that hold one must compile.
+        source = self.work / 'backslash.c'
+        source.write_text(r'''#include <stdint.h>
+static const uint8_t bytes[6] = {1, 0x5C, 0x5C, 0x22, 0x5C, 2};
+static const char path[] = "C:\\dir\\\"x\"\\";
+int main(void) {
+  uint32_t sum = 0;
+  for (int i = 0; i < 6; ++i) sum = sum * 3 + bytes[i];
+  if (sum != 1u * 243 + 92 * 81 + 92 * 27 + 34 * 9 + 92 * 3 + 2) return 1;
+  if (sizeof path != 12 || path[2] != 0x5C || path[6] != 0x5C || path[7] != '"'
+      || path[10] != 0x5C || path[11] != 0) return 2;
+  return 42;
+}
+''', encoding='utf-8')
+        image = self.work / 'backslash.wax'
+        for opt in ('-O0', '-O2'):
+            with self.subTest(optimization=opt):
+                self.driver(source, opt, '-o', image)
+                self.execute(image, 42)
+
     def test_unsigned_multiply_overflow_and_three_way_compare(self):
         # Keep operands dynamic so Clang cannot constant-fold the boundaries.
         source = self.work / 'overflow.c'

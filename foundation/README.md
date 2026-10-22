@@ -114,5 +114,4 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
 - 1プロセス1スレッドです。`thread_create`、IPC、ハンドル、`proc_spawn` システムコール、`mem_grow`、`irq_bind` などはフェーズ2以降で実装します。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
-- `tools/llvm-src32` は、byte `0x5C`（`\`）を含む `uint8_t` 配列の定数をコンパイルできません（`invalid LLVM byte escape`）。そのため `build.py` は画像を big-endian の `uint32_t` 配列として書き出します。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。
