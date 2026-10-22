@@ -21,7 +21,7 @@ import unittest
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 STOP_TICKS = 3000
-FRAMES = 260
+FRAMES = 330
 FIRST_FRAME = 30   # the shell is loaded and waiting for keys by then
 STEP_FRAMES = 6    # between two --type batches
 BANNER = ['Foundation OS (kernel ABI 1.0)', 'Foundation shell 1.0']  # §2.1
@@ -82,18 +82,19 @@ class ShellTests(unittest.TestCase):
             rows.pop()
         return rows
 
-    def test_banner_builtins_and_versions(self):
-        # Command names are case-insensitive (§1).
+    def test_banner_and_external_commands(self):
+        # echo, uname and free are /bin programs (§10.3); names are
+        # case-insensitive (§1, §7.1).
         self.assertEqual(self.screen('echo hello   world\\n', 'UName\\n', 'echo\\n', 'free\\n'), BANNER + [
             '/> echo hello   world',
             'hello world',
             '/> UName',
-            *BANNER,
+            BANNER[0],
             '/> echo',
             '',
             '/> free',
             '   16384 KiB total',
-            '   10240 KiB free',
+            '    4608 KiB free',
             '/>',
         ])
 
@@ -164,23 +165,47 @@ class ShellTests(unittest.TestCase):
             '/>',
         ])
 
-    def test_needs_file_system(self):
-        # Provisional: no fs service yet (README.md).
+    def test_help_lists_only_builtins(self):
+        # §10: cd, set, help and exit are built in; help names the shell.
+        self.assertEqual(self.screen('help\\n', 'help cd\\n', 'help ls\\n'), BANNER + [
+            '/> help',
+            BANNER[1],
+            'cd      change the current directory',
+            'set     show or set variables',
+            'help    show help',
+            'exit    leave the shell',
+            'Other commands are programs found in $PATH.',
+            '/> help cd',
+            'usage: cd [path]',
+            '/> help ls',
+            'help: ls: not found (-10)',
+            '/>',
+        ])
+
+    def test_paths_and_provisional_file_system(self):
+        # §7.1 against the provisional read-only fs (services/bootfs): /bin
+        # only, no writes, no globs yet.
         self.assertEqual(self.screen(
-            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd\\n', 'pwd\\n', 'cd /bin\\n', '/bin/x.wax\\n'), BANNER + [
+            'echo a > out.txt\\n', 'echo *.txt\\n', 'ls -l\\n', 'cd /bin\\n', 'pwd\\n',
+            './echo.wax a\\n', './echo b\\n', 'cd ..\\n', 'bin/x.wax\\n', 'cd nope\\n'), BANNER + [
             '/> echo a > out.txt',
-            'echo: out.txt: not supported (-13)',
+            'shell: out.txt: read-only (-18)',
             '/> echo *.txt',
             'shell: *.txt: not supported (-13)',
             '/> ls -l',
-            'ls: not supported (-13)',
-            '/> cd',
-            '/> pwd',
-            '/',
+            'ls: command not found (-10)',
             '/> cd /bin',
-            'cd: /bin: not supported (-13)',
-            '/> /bin/x.wax',
-            '/bin/x.wax: command not found (-10)',
+            '/bin> pwd',
+            '/bin',
+            '/bin> ./echo.wax a',
+            'a',
+            '/bin> ./echo b',
+            './echo: bad format (-12)',
+            '/bin> cd ..',
+            '/> bin/x.wax',
+            'bin/x.wax: not found (-10)',
+            '/> cd nope',
+            'cd: nope: not found (-10)',
             '/>',
         ])
 
@@ -216,17 +241,20 @@ class ShellTests(unittest.TestCase):
         self.assertNotIn('first', '\n'.join(rows))
 
     def test_exit_restarts_shell(self):
-        # EXIT ends the shell; the boot image starts it again (as init would).
+        # EXIT ends the shell; init starts it again. ps shows the services,
+        # init, the new shell and ps itself; exited processes are gone.
         rows = self.screen('exit 3\\n', 'ps\\n', step=20)
-        self.assertEqual(rows[:5] + rows[6:], BANNER + [
-            '/> ps',
-            '  PID PARENT STATE PRIO     MEM NAME',
-            '    1      0 EXIT     2      0K shell',
-            '/>',
-        ])
-        # MEM: the image (its size depends on the build) and the 16 KiB stack.
-        self.assertRegex(rows[5], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
-
+        self.assertEqual(rows[:7], BANNER + ['/> exit 3'] + BANNER + ['/> ps', '  PID PARENT STATE PRIO     MEM NAME'])
+        # MEM depends on the build.
+        patterns = [r'    1      0 BLOCK    1 +[1-9][0-9]*K console',
+                    r'    2      0 BLOCK    1 +[1-9][0-9]*K fs',
+                    r'    3      0 BLOCK    1 +[1-9][0-9]*K init',
+                    r'    5      3 BLOCK    2 +[1-9][0-9]*K shell',
+                    r'    6      5 RUN      2 +[1-9][0-9]*K ps']
+        self.assertEqual(len(rows), 13, rows)
+        for row, pattern in zip(rows[7:12], patterns):
+            self.assertRegex(row, '^' + pattern + '$')
+        self.assertEqual(rows[12], '/>')
 
 if __name__ == '__main__':
     unittest.main()

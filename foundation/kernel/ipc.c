@@ -35,21 +35,33 @@ static struct {
 } services[MAX_SERVICES];
 static uint32_t next_seq, next_lookup_badge;
 
+/* By words, eight per step where it can: the compiler keeps nothing in
+ * registers, so the loop overhead is most of the cost. */
 void kmem_copy(uint32_t dst, uint32_t src, uint32_t len) {
+    uint32_t at = 0;
+    if (((dst | src) & 3u) == 0) {
+        volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)dst;
+        const volatile uint32_t *s = (const volatile uint32_t *)(uintptr_t)src;
+        for (; at + 32u <= len; at += 32u, d += 8, s += 8) {
+            d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s[3];
+            d[4] = s[4], d[5] = s[5], d[6] = s[6], d[7] = s[7];
+        }
+        for (; at + 4u <= len; at += 4u)
+            *d++ = *s++;
+    }
     volatile uint8_t *d = (volatile uint8_t *)(uintptr_t)dst;
     const volatile uint8_t *s = (const volatile uint8_t *)(uintptr_t)src;
-    if (((dst | src | len) & 3u) == 0) {
-        for (uint32_t i = 0; i < len; i += 4u)
-            *(volatile uint32_t *)(uintptr_t)(dst + i) = *(const volatile uint32_t *)(uintptr_t)(src + i);
-        return;
-    }
-    for (uint32_t i = 0; i < len; ++i)
-        d[i] = s[i];
+    for (; at < len; ++at)
+        d[at] = s[at];
 }
 
 void kmem_zero(uint32_t start, uint32_t end) {
-    for (uint32_t a = start; a < end; a += 4u)
-        *(volatile uint32_t *)(uintptr_t)a = 0;
+    volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)start;
+    uint32_t n = (end - start) / 4u;
+    for (; n >= 8u; n -= 8u, d += 8)
+        d[0] = 0, d[1] = 0, d[2] = 0, d[3] = 0, d[4] = 0, d[5] = 0, d[6] = 0, d[7] = 0;
+    for (; n; --n)
+        *d++ = 0;
 }
 
 /* A user struct of size bytes at addr: 4-byte aligned and inside regions

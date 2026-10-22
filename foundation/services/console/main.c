@@ -14,7 +14,7 @@
 #define POLL_TICKS 4u
 #define STREAMS 16u
 #define PENDING 16u
-#define KEYS 32u
+#define KEYS 256u /* type-ahead; as deep as the PeC event FIFO */
 #define LINE_MAX 1023u
 #define LOOKUP_BADGE 0x80000000u
 

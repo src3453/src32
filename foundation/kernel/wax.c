@@ -781,6 +781,38 @@ static void put32(uintptr_t bias, uint32_t address, uint32_t value) {
     p[3] = (uint8_t)value;
 }
 
+/* Byte copies and fills, by words (eight per step) where the addresses are
+ * 4-byte aligned: byte by byte, loading the boot modules took most of a
+ * second. */
+static void copy_bytes(volatile uint8_t *dst, const uint8_t *src, uint32_t n) {
+    uint32_t at = 0;
+    if ((((uintptr_t)dst | (uintptr_t)src) & 3u) == 0) {
+        volatile uint32_t *d = (volatile uint32_t *)dst;
+        const uint32_t *s = (const uint32_t *)src;
+        for (; at + 32u <= n; at += 32u, d += 8, s += 8) {
+            d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s[3];
+            d[4] = s[4], d[5] = s[5], d[6] = s[6], d[7] = s[7];
+        }
+        for (; at + 4u <= n; at += 4u)
+            *d++ = *s++;
+    }
+    for (; at < n; ++at)
+        dst[at] = src[at];
+}
+
+static void zero_bytes(volatile uint8_t *dst, uint32_t n) {
+    uint32_t at = 0;
+    for (; at < n && ((uintptr_t)(dst + at) & 3u); ++at)
+        dst[at] = 0;
+    volatile uint32_t *d = (volatile uint32_t *)(dst + at);
+    for (; at + 32u <= n; at += 32u, d += 8)
+        d[0] = 0, d[1] = 0, d[2] = 0, d[3] = 0, d[4] = 0, d[5] = 0, d[6] = 0, d[7] = 0;
+    for (; at + 4u <= n; at += 4u)
+        *d++ = 0;
+    for (; at < n; ++at)
+        dst[at] = 0;
+}
+
 void wax_load(const struct wax_launch *launch, uintptr_t bias) {
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];
@@ -789,16 +821,11 @@ void wax_load(const struct wax_launch *launch, uintptr_t bias) {
             get_block(im, k, &b);
             volatile uint8_t *dst = (volatile uint8_t *)(bias + im->origin + (b.address - im->base));
             const uint8_t *src = im->data + b.file_offset;
-            uint32_t at = 0;
-            for (; at < b.file_size; ++at)
-                dst[at] = src[at];
-            for (; at < b.memory_size; ++at)
-                dst[at] = 0;
+            copy_bytes(dst, src, b.file_size);
+            zero_bytes(dst + b.file_size, b.memory_size - b.file_size);
         }
     }
-    volatile uint8_t *stack = (volatile uint8_t *)(bias + launch->stack_top - launch->stack_size);
-    for (uint32_t at = 0; at < launch->stack_size; ++at)
-        stack[at] = 0;
+    zero_bytes((volatile uint8_t *)(bias + launch->stack_top - launch->stack_size), launch->stack_size);
     /* Import descriptors (§4.3): resolved address, provider origin. */
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];
