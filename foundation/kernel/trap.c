@@ -79,8 +79,10 @@ static int32_t debug_write(struct fnd_proc *proc, uint32_t buffer, uint32_t len)
         len = FND_DEBUG_WRITE_MAX;
     if (!proc_user_range_ok(proc, buffer, len, CPT32_PERM_R))
         return FND_E_ACCESS;
+    uint8_t bytes[FND_DEBUG_WRITE_MAX];
+    mm_copy_from_user(bytes, proc, buffer, len);
     for (uint32_t i = 0; i < len; ++i)
-        fnd_debug_putc(*(volatile uint8_t *)(uintptr_t)(buffer + i));
+        fnd_debug_putc(bytes[i]);
     return (int32_t)len;
 }
 
@@ -223,6 +225,7 @@ void kernel_panic(uint32_t cause, uint32_t epc) {
 }
 
 void fnd_kernel_run(void) {
+    mm_init();
     sched_timer_start();
     cpt32_ctx_frame *next = sched_next();
     sched_cpu_leave();

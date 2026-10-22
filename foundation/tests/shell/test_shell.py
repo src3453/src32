@@ -14,6 +14,7 @@ snapshot use pipeline. FOUNDATION_TEST_CPU overrides the engine for all checks.
 """
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -25,6 +26,8 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fs2  # noqa: E402
 STOP_TICKS = 6000
+# FND_MM=slot builds the kernel without virtual memory (foundation/boot/build.py).
+SLOT_MM = os.environ.get('FND_MM') == 'slot'
 FRAMES = 600
 # Keys typed before the shell is up (about frame 120: fs checks the boot
 # volume, then init reads /bin/shell.wax) wait in the console's type-ahead.
@@ -66,6 +69,30 @@ class ShellTests(unittest.TestCase):
     def tearDownClass(cls):
         cls.temp.cleanup()
 
+    def free_kib(self, rows):
+        """With virtual memory the free memory depends on how big the images
+        are, so check it is plausible and pin it to 0 in the rows."""
+        out = []
+        for row in rows:
+            match = re.match(r'^( +)(\d+)( KiB free)$', row)
+            if match and not SLOT_MM:
+                self.assertGreater(int(match.group(2)), 0, row)
+                row = ' ' * (len(match.group(1)) + len(match.group(2)) - 1) + 'N' + match.group(3)
+            match = re.match(r'^(Mem: \d+K total, )(\d+)(K free)$', row)
+            if match and not SLOT_MM:
+                self.assertGreater(int(match.group(2)), 0, row)
+                row = match.group(1) + 'N' + match.group(3)
+            out.append(row)
+        return out
+
+    @staticmethod
+    def free_line(kib):
+        return '%8s KiB free' % (kib if SLOT_MM else 'N')
+
+    @staticmethod
+    def mem_line(kib):
+        return 'Mem: 16384K total, %sK free' % (kib if SLOT_MM else 'N')
+
     def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached'):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows. config is the text of a
@@ -89,7 +116,7 @@ class ShellTests(unittest.TestCase):
         rows = lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')]
         while rows and not rows[-1]:
             rows.pop()
-        return rows
+        return self.free_kib(rows)
 
     def test_banner_and_external_commands(self):
         # echo, uname and free are /bin programs (§10.3); names are
@@ -103,7 +130,7 @@ class ShellTests(unittest.TestCase):
             '',
             '/> free',
             '   16384 KiB total',
-            '    4096 KiB free',
+            self.free_line(4096),
             '    4096 KiB VRAM',
             '    1024 KiB PCMRAM',
             '/>',
@@ -117,7 +144,7 @@ class ShellTests(unittest.TestCase):
                          BANNER + [
             '/> free',
             '   12288 KiB total',
-            '       0 KiB free',
+            self.free_line(0),
             '    8192 KiB VRAM',
             '    1024 KiB PCMRAM',
             '/>',
@@ -329,7 +356,7 @@ class ShellTests(unittest.TestCase):
         rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 300], cpu='pipeline')
         self.assertEqual(rows[:4], BANNER + ['/> top -n 1', 'top - CPU (q/Ctrl+C to quit)'])
         self.assertRegex(rows[4], r'^user +\d+\.\d%  kernel~ +\d+\.\d%  idle +\d+\.\d%$')
-        self.assertEqual(rows[5:7], ['Mem: 16384K total, 4096K free',
+        self.assertEqual(rows[5:7], [self.mem_line(4096),
                                     '  CPU%   PID PARENT STATE PRIO     MEM NAME'])
         # /bin/top runs beside the services, init and the shell, busiest first.
         names = sorted(row.split()[-1] for row in rows[7:13])
@@ -354,7 +381,7 @@ class ShellTests(unittest.TestCase):
             with self.subTest(quit_key=quit_key):
                 rows = self.screen('top\\n', quit_key, 'echo done\\n', at_frames=[30, 290, 320])
                 self.assertEqual(rows[0], 'top - CPU (q/Ctrl+C to quit)')
-                self.assertIn('Mem: 16384K total, 4096K free', rows)
+                self.assertIn(self.mem_line(4096), rows)
                 self.assertEqual(rows[-3:], ['/> echo done', 'done', '/>'])
 
     def test_top_invalid_arguments_and_help(self):

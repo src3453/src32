@@ -97,4 +97,10 @@ enum wax_error wax_plan(struct wax_launch *launch, const void *data, uint32_t si
  * and writes the import descriptors. Address a is written at bias + a. */
 void wax_load(const struct wax_launch *launch, uintptr_t bias);
 
+/* The same through a mapping, for an address space the loader cannot write
+ * directly: map(context, a, &run) returns where process address a lives and
+ * how many bytes from there are contiguous (at least 1). */
+typedef uint8_t *(*wax_map_fn)(void *context, uint32_t address, uint32_t *run);
+void wax_load_mapped(const struct wax_launch *launch, wax_map_fn map, void *context);
+
 #endif

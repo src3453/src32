@@ -1,6 +1,7 @@
 #ifndef FOUNDATION_KERNEL_INTERNAL_H
 #define FOUNDATION_KERNEL_INTERNAL_H
 #include <foundation/kernel.h>
+#include "mm.h"
 
 /* Thread states and BLOCKED reasons (doc/spec_Foundation.md §2). */
 enum { T_FREE, T_READY, T_RUNNING, T_BLOCKED, T_DEAD };
@@ -50,8 +51,6 @@ void sched_cpu_leave(void);
 void sched_cpu_snapshot(uint32_t info[4]);
 
 /* proc.c */
-void proc_activate(struct fnd_proc *proc);
-int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm);
 void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc);
 int32_t proc_spawn(struct fnd_proc *caller, uint32_t spawn);
 int32_t proc_startup(const struct fnd_proc *proc, uint32_t buf, uint32_t cap);
@@ -79,10 +78,6 @@ int32_t sys_svc_register(struct fnd_proc *proc, uint32_t name, uint32_t port);
 int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name);
 int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32_t code_ptr);
 int32_t sys_proc_kill(struct fnd_proc *proc, uint32_t h);
-
-/* User memory, after proc_user_range_ok. */
-void kmem_copy(uint32_t dst, uint32_t src, uint32_t len);
-void kmem_zero(uint32_t start, uint32_t end);
 
 /* MMIO (doc/spec_PeC.md, doc/spec_IRQC.md). */
 #define FND_REG32(address) (*(volatile uint32_t *)(uintptr_t)(address))

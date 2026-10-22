@@ -773,14 +773,6 @@ enum wax_error wax_plan(struct wax_launch *launch, const void *data, uint32_t si
     return WAX_OK;
 }
 
-static void put32(uintptr_t bias, uint32_t address, uint32_t value) {
-    volatile uint8_t *p = (volatile uint8_t *)(bias + address);
-    p[0] = (uint8_t)(value >> 24);
-    p[1] = (uint8_t)(value >> 16);
-    p[2] = (uint8_t)(value >> 8);
-    p[3] = (uint8_t)value;
-}
-
 /* Byte copies and fills, by words (eight per step) where the addresses are
  * 4-byte aligned: byte by byte, loading the boot modules took most of a
  * second. */
@@ -813,19 +805,56 @@ static void zero_bytes(volatile uint8_t *dst, uint32_t n) {
         dst[at] = 0;
 }
 
-void wax_load(const struct wax_launch *launch, uintptr_t bias) {
+/* The kernel's own view: address a is at bias + a. */
+static uint8_t *bias_map(void *context, uint32_t address, uint32_t *run) {
+    *run = 0xFFFFFFFFu;
+    return (uint8_t *)((uintptr_t)context + address);
+}
+
+/* Writes n bytes at the process address a through map, one contiguous run
+ * at a time. */
+static void put_bytes(wax_map_fn map, void *context, uint32_t address, const uint8_t *src, uint32_t n) {
+    while (n) {
+        uint32_t run;
+        uint8_t *dst = map(context, address, &run);
+        if (run > n)
+            run = n;
+        copy_bytes(dst, src, run);
+        address += run;
+        src += run;
+        n -= run;
+    }
+}
+
+static void put_zeros(wax_map_fn map, void *context, uint32_t address, uint32_t n) {
+    while (n) {
+        uint32_t run;
+        uint8_t *dst = map(context, address, &run);
+        if (run > n)
+            run = n;
+        zero_bytes(dst, run);
+        address += run;
+        n -= run;
+    }
+}
+
+static void put32(wax_map_fn map, void *context, uint32_t address, uint32_t value) {
+    uint8_t bytes[4] = {(uint8_t)(value >> 24), (uint8_t)(value >> 16), (uint8_t)(value >> 8), (uint8_t)value};
+    put_bytes(map, context, address, bytes, 4u);
+}
+
+void wax_load_mapped(const struct wax_launch *launch, wax_map_fn map, void *context) {
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];
         for (uint32_t k = 0; k < im->block_count; ++k) {
             struct block b;
             get_block(im, k, &b);
-            volatile uint8_t *dst = (volatile uint8_t *)(bias + im->origin + (b.address - im->base));
-            const uint8_t *src = im->data + b.file_offset;
-            copy_bytes(dst, src, b.file_size);
-            zero_bytes(dst + b.file_size, b.memory_size - b.file_size);
+            uint32_t address = im->origin + (b.address - im->base);
+            put_bytes(map, context, address, im->data + b.file_offset, b.file_size);
+            put_zeros(map, context, address + b.file_size, b.memory_size - b.file_size);
         }
     }
-    zero_bytes((volatile uint8_t *)(bias + launch->stack_top - launch->stack_size), launch->stack_size);
+    put_zeros(map, context, launch->stack_top - launch->stack_size, launch->stack_size);
     /* Import descriptors (§4.3): resolved address, provider origin. */
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];
@@ -834,8 +863,12 @@ void wax_load(const struct wax_launch *launch, uintptr_t bias) {
             const struct wax_image *provider = &launch->image[im->dep_image[word(im, e)]];
             uint32_t x = find_export(provider, str(im, word(im, e + 4)));
             uint32_t slot = im->origin + word(im, e + 12);
-            put32(bias, slot, provider->origin + word(provider, x + 8));
-            put32(bias, slot + 4u, provider->origin);
+            put32(map, context, slot, provider->origin + word(provider, x + 8));
+            put32(map, context, slot + 4u, provider->origin);
         }
     }
+}
+
+void wax_load(const struct wax_launch *launch, uintptr_t bias) {
+    wax_load_mapped(launch, bias_map, (void *)bias);
 }

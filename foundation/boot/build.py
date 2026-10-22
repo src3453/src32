@@ -21,6 +21,10 @@ kernel starts them before there is an fs.
 The four modules (slots 0 to 3) go into FNDBOOT (§11); /bin and /lib are
 files on the boot disk, which fs serves as "/".
 
+Environment: FND_MM=slot builds the kernel for fixed slots only, which is
+what a CPU without Extension V runs; otherwise it uses virtual memory when
+CPUID reports V (doc/foundation_vm_plan.md).
+
 Outputs:
   root/           /bin/*.wax (the shell and the commands) and /lib/fnd.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
@@ -81,7 +85,7 @@ INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "inclu
 # that start no others leave out proc.c.
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerror.c")]
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "blk.c", "wax.c",
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
@@ -193,6 +197,10 @@ def main(argv=None):
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
         kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
+    if os.environ.get("FND_MM") == "slot":
+        # Ignore Extension V and run on fixed slots even on a CPU that has it
+        # (doc/foundation_vm_plan.md); the tests use this to check both backends.
+        kernel_args += ["-D", "FND_MM_SLOT_ONLY"]
     image = driver([HERE / "main.c", *KERNEL], out / "foundation.wax", args,
                    "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
     # The module-only FNDBOOT goes where stage1 stages it (§11).

@@ -32,7 +32,8 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `include/foundation/sys.h` | U モード用のシステムコールマクロ |
 | `include/foundation/kernel.h` | カーネルをリンクするイメージ（起動コード・デモ・テスト）向けの S モード API |
 | `kernel/sched.c` | スレッド、優先度キュー、tick、sleep、idle |
-| `kernel/proc.c` | プロセス、スロット、保護領域、ポインタ検証、終了処理 |
+| `kernel/proc.c` | プロセス、起動（`proc_spawn`、WAX の読み込み）、`mem_grow`、`sys_info`、終了処理 |
+| `kernel/mm.c`, `mm.h` | メモリ管理層。スロット（保護領域の切り替え、ポインタ検証）と仮想記憶（Extension V：フレーム表、ページ表、ユーザーメモリの複写）の 2 つのバックエンド（[仕様 §5.5](../doc/spec_Foundation.md)） |
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
 | `kernel/ipc.c`, `include/foundation/ipc.h` | ハンドル、IPC、サービス名、`wait`、`proc_kill`（§6〜§9） |
@@ -49,6 +50,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
 | `tests/wax/` | WAX ローダのテスト（ホスト単体テストと testbench） |
+| `tests/vm/` | 仮想記憶のテスト（同じアドレスのイメージの同時実行、ページフォルト、フレームの返却。testbench） |
 | `tests/wal/` | C から作った WAL と WAX v3 を、カーネルで実行するテスト |
 | `tests/shell/` | シェルのテスト（testbench にキー入力を送り、PCG の画面を比べる） |
 | `tests/disk/` | ディスク起動のテスト（BIOS → stage1 → FNDBOOT → シェル、stage1 とカーネルの拒否ケース） |
@@ -146,7 +148,7 @@ python -m unittest discover -s foundation/tests/disk -v
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -202,9 +204,9 @@ python -m unittest discover -s foundation/tests/wax -v
 ```sh
 python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
-  --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wax/test.wax
+  --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
 ```
 
@@ -220,13 +222,27 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 ```sh
 python foundation/tests/wal/build.py target/foundation-wal
 python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
-  --origin 0x10000 --stack-top 0x100000 -O1 -o target/foundation-wal/test.wax
+  --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wal/test.wax
 src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120
 ```
 
 `tools/llvm-src32/test_toolchain.py` の `test_foundation_wal_from_c` が、画像を `-O0`/`-O1`/`-O2` で作り、Scalar と Pipeline で実行します。
+
+### 仮想記憶のテスト
+
+カーネルは `CPUID` で Extension V を見つけると、スロットの代わりにページ表を使います（[仕様 §5.5](../doc/spec_Foundation.md)、設計は [foundation_vm_plan.md](../doc/foundation_vm_plan.md)）。V のない CPU を想定してスロット方式で動かすには、カーネルを `-D FND_MM_SLOT_ONLY` でビルドします（`boot/build.py` は環境変数 `FND_MM=slot`）。同じソースの 2 つのバックエンドを、次のように確かめます。
+
+- `tests/phase1`、`tests/wax`、`tests/wal` は物理スロットの中身を直接見るので、`FND_MM_SLOT_ONLY` でビルドします。
+- `tests/shell`、`tests/disk`、`tests/lzma` など、起動イメージを丸ごと動かすテストは、どちらのモードでも通ります。メモリ量の表示だけが違うので、`tests/shell` は `FND_MM=slot` かどうかで期待値を切り替えます。
+
+```sh
+python -m unittest discover -s foundation/tests/shell          # 仮想記憶（V のある testbench）
+FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロット
+```
+
+`tests/vm/main.c` は testbench 上の実行テストで、`tests/wax/build.py` の画像を使います。同じアドレスにリンクした `app` を 2 つ同時に起動してどちらも 42 で終了すること（スロットでは `FND_E_ADDRESS_CONFLICT`）、RX への書き込みと RW の実行がページフォルト（`0x8006000A`、`0x8006000C`）で終わること、拒否された起動と終了したプロセスがフレームを一つも残さないこと（未使用フレームの合計が起動前と一致）を確認します。`tools/llvm-src32/test_toolchain.py` の `test_foundation_vm_kernel` が `-O0`/`-O1`/`-O2` × 4 種の CPU で実行します。
 
 ## fs サービス
 
@@ -241,6 +257,8 @@ src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline 
 
 - `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が出力したりすると、カーネル内でバスエラーになります。エミュレーター本体では UART に出力されます。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
+- 仮想記憶では、権限はページ単位です。コードとデータが同じページにあるイメージは、そのページが RWX になります（W^X を保つには、権限の違うブロックを 4 KiB 境界から始めます）。MMIO の付与もページ単位で、窓の検査は byte 単位ですが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
+- 仮想記憶でもプロセスは 7 個、スレッドは 8 個までです。スロットの数に縛られなくなったので、`FND_MAX_PROCS` を増やせます。
 - 1プロセス1スレッドです。`thread_create`、`irq_bind` はまだありません。
 - `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 230 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。

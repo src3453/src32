@@ -484,13 +484,13 @@ int main(void) {
         # process checks sleep, priority preemption and syscall errors.
         foundation = ROOT / 'foundation'
         sources = [foundation / 'tests/phase1/user.c', foundation / 'tests/phase1/main.c',
-                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
+                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
         for opt in ('-O0', '-O1', '-O2'):
             with self.subTest(optimization=opt):
                 image = self.work / ('foundation' + opt[1:] + '.wax')
                 self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
                             '-I', foundation / 'include', '--origin', '0x10000',
-                            '--stack-top', '0x100000', opt, '-o', image)
+                            '--stack-top', '0x100000', '-D', 'FND_MM_SLOT_ONLY', opt, '-o', image)
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
@@ -514,19 +514,47 @@ int main(void) {
             capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         sources = [foundation / 'tests/wax/main.c',
-                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
+                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
         for opt in ('-O0', '-O1', '-O2'):
             with self.subTest(optimization=opt):
                 image = self.work / ('wax' + opt[1:] + '.wax')
                 self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
-                            '-I', images, '--origin', '0x10000', '--stack-top', '0x100000', opt,
-                            '-o', image)
+                            '-I', images, '--origin', '0x10000', '--stack-top', '0x100000',
+                            '-D', 'FND_MM_SLOT_ONLY', opt, '-o', image)
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
                             [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '90'],
                             cwd=self.work, capture_output=True, text=True, encoding='utf-8',
                             errors='replace', timeout=120)
+                        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                        self.assertIn('PASS:', result.stdout)
+
+    def test_foundation_vm_kernel(self):
+        # Foundation on Extension V (doc/foundation_vm_plan.md): the images of
+        # the WAX loader test, but two copies of one executable run at once
+        # at the same address, protection faults are page faults, and every
+        # frame comes back when a process ends. Needs a CPU with V.
+        foundation = ROOT / 'foundation'
+        images = self.work / 'vm-images'
+        result = subprocess.run(
+            [sys.executable, str(foundation / 'tests/wax/build.py'), str(images), '--clang', self.clang],
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=300)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        sources = [foundation / 'tests/vm/main.c',
+                   *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
+        for opt in ('-O0', '-O1', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / ('vm' + opt[1:] + '.wax')
+                self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
+                            '-I', foundation / 'kernel', '-I', images, '--origin', '0x10000',
+                            '--stack-top', '0x100000', opt, '-o', image)
+                for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                    with self.subTest(cpu=cpu):
+                        result = subprocess.run(
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '120'],
+                            cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                            errors='replace', timeout=300)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn('PASS:', result.stdout)
 
@@ -537,7 +565,7 @@ int main(void) {
         # checks are in foundation/tests/wal/app.c; the kernel stops with 42.
         foundation = ROOT / 'foundation'
         kernel = [foundation / 'tests/wal/main.c',
-                  *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
+                  *(foundation / 'kernel' / name for name in ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'blk.c', 'wax.c'))]
         for opt in ('-O0', '-O1', '-O2'):
             with self.subTest(optimization=opt):
                 images = self.work / ('wal' + opt[1:])
@@ -548,7 +576,7 @@ int main(void) {
                 image = images / 'kernel.wax'
                 self.driver(*kernel, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
                             '-I', images, '--origin', '0x10000', '--stack-top', '0x100000', '-O1',
-                            '-o', image)
+                            '-D', 'FND_MM_SLOT_ONLY', '-o', image)
                 for cpu in ('scalar', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
