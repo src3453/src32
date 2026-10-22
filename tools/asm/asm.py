@@ -75,7 +75,9 @@ OP_INFO = {
 
 
 # Extension P system registers: names accepted by MFSR/MTSR.
-SYSTEM_REGS = {"STATUS": 0x00, "EPC": 0x01, "CAUSE": 0x02, "USP": 0x08, "UFP": 0x09, "UGP": 0x0A} | {
+SYSTEM_REGS = {"STATUS": 0x00, "EPC": 0x01, "CAUSE": 0x02, "USP": 0x08, "UFP": 0x09, "UGP": 0x0A,
+    # Extension V (doc/spec_CPU_vm.md)
+    "VCTL": 0x40, "PTBR": 0x41, "VFAULT": 0x42, "TLBFLUSH": 0x43, "TLBINV": 0x44} | {
     f"RGN{n}_{field}": 0x10 + 4 * n + index
     for n in range(8)
     for index, field in enumerate(("START", "END", "FLAGS"))

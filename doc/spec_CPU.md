@@ -5,7 +5,7 @@ Revision 3.1 (2026-10-21)
 - 3.1 (2026-10-21): Added Extension P (privilege levels and system calls):
   `SYSCALL`/`MFSR`/`MTSR`, S/U modes, banked R28–R30, user-mode protection
   regions, and exception CAUSE codes. See `doc/spec_CPU_priv.md`. CPUID bit 8;
-  scalar/cached/JIT report `0x13F`, pipeline `0x1BF`. Illegal instructions now
+  scalar/cached/JIT report `0x33F`, pipeline `0x3BF`. Illegal instructions now
   trap instead of stopping the host. Bus error CAUSE is `0x8002_0000`.
 - 3.0 (2026-10-18): Added host-side GUI CPU execution policies; no ISA change.
 - 2.9 (2026-10-18): JIT batches validated warm native instructions inside idle-device windows; no ISA change.
@@ -45,7 +45,7 @@ The goal is clarity and experimentation over micro-architectural complexity.
 
 Select `--cpu cached-relaxed` or YAML `cpu.microarchitecture: cached-relaxed`
 without requiring the JIT feature. This uses Cached instructions and CPUID
-(`0x13F`), but batches idle device progression in groups of at most 256 CPU
+(`0x33F`), but batches idle device progression in groups of at most 256 CPU
 cycles (5.3 us at 48 MHz). Accesses to timing-sensitive devices (DMAC, IDC,
 BMC, IRQC, PeC, CPU registers, expansion cards), timer IRQ deadlines,
 HALT/IRET, and `run` budget exits flush deferred cycles. Accesses to
@@ -70,7 +70,7 @@ Pipeline remains the default.
 
 Build with `--features jit` and select `--cpu jit` (or YAML
 `cpu.microarchitecture: jit`). Builds without the feature reject that selection.
-Pipeline remains the default. JIT reports CPUID features `0x13F` and follows
+Pipeline remains the default. JIT reports CPUID features `0x33F` and follows
 Cached instruction, IRQ, bus, and cycle-budget semantics, including 3-cycle
 MUL/MULH and 16-cycle DIV/DIVU/MOD.
 
@@ -305,10 +305,10 @@ Bit positions:
   - Bit 6: Extension F (not implemented and not reported by this CPU)
   - Bit 7: Extension p (pipelining; pipeline CPU only)
   - Bit 8: Extension P (privilege levels and system calls)
-  - Bit 9: Extension V (virtual memory; draft, see `doc/spec_CPU_vm.md`, not implemented)
+  - Bit 9: Extension V (virtual memory; see `doc/spec_CPU_vm.md`)
 
-The current CPU implements Base and Extensions A, L, M, S, I and P. It reports
-`CPU_FEATURES = 0x0000013F` (pipeline: `0x000001BF`); Extension F remains a
+The current CPU implements Base and Extensions A, L, M, S, I, P and V. It reports
+`CPU_FEATURES = 0x0000033F` (pipeline: `0x000003BF`); Extension F remains a
 future instruction-set definition and is not decoded or executed by the
 current CPU.
 ### 4.6 Extension I (Interrupts)

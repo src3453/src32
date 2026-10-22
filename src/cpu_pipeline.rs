@@ -6,7 +6,9 @@
 // same architectural state (registers, PC, mode, memory).
 
 use crate::bus::{Bus, BusAccessSource, BusRegion};
-use crate::cpu_privilege::{Access, EXT_P, Exception, SystemState, format_sr, format_syscall};
+use crate::cpu_privilege::{
+    Access, EXT_P, EXT_V, Exception, SystemState, format_sr, format_syscall,
+};
 use crate::devices::cpu::CpuRegisterBlock;
 use crate::devices::irqc::irqc::IrqController;
 use std::cell::RefCell;
@@ -29,7 +31,8 @@ const EXT_M: u32 = 0x08;
 const EXT_S: u32 = 0x10;
 const EXT_I: u32 = 0x20;
 const EXT_P_SMALL: u32 = 0x80; // Extension p (lowercase): pipelining (micro-arch only, no ISA change)
-const CPU_FEATURES: u32 = EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL | EXT_P;
+const CPU_FEATURES: u32 =
+    EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL | EXT_P | EXT_V;
 const CPU_ID: u32 = 0x5352_4332;
 
 const INSN_SIZE: u32 = 4;
@@ -119,7 +122,8 @@ struct IfId {
     mode: InstructionMode,
     raw: RawInstr,
     /// User-mode fetch denied: no bus read happened; trap at commit.
-    fetch_fault: bool,
+    /// Exception raised by a denied fetch, carried to commit.
+    fetch_fault: Option<Exception>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -388,7 +392,7 @@ impl PipelineCpu {
                 pc: 0,
                 mode: InstructionMode::Normal,
                 raw: RawInstr::Normal(0),
-                fetch_fault: false,
+                fetch_fault: None,
             },
             id_ex: invalid_id_ex(),
             ex_mem: invalid_ex_mem(),
@@ -978,8 +982,8 @@ impl PipelineCpu {
         out.valid = true;
         out.pc = if_id.pc;
         out.mode = if_id.mode;
-        if if_id.fetch_fault {
-            out.exception = Some(Exception::ProtectionFault(Access::Fetch));
+        if let Some(exception) = if_id.fetch_fault {
+            out.exception = Some(exception);
             return out;
         }
         match if_id.raw {
@@ -1666,6 +1670,9 @@ impl PipelineCpu {
     /// Exception entry (doc/spec_CPU_priv.md section 6) with a flushed pipeline.
     /// `mode` is the instruction mode to resume at `epc`.
     fn enter_exception(&mut self, exception: Exception, epc: u32, mode: InstructionMode) {
+        if let Exception::PageFault { addr, .. } = exception {
+            self.sys.vm.vfault = addr;
+        }
         self.sys
             .enter_trap(&mut self.reg, epc, exception.cause(), mode);
         let vector = exception.vector();
@@ -1688,7 +1695,16 @@ impl PipelineCpu {
             InstructionMode::Normal => INSN_SIZE,
             InstructionMode::Short => SHORT_INSN_SIZE,
         });
-        if wb.exception != Some(Exception::ProtectionFault(Access::Fetch)) {
+        if !matches!(
+            wb.exception,
+            Some(
+                Exception::ProtectionFault(Access::Fetch)
+                    | Exception::PageFault {
+                        access: Access::Fetch,
+                        ..
+                    }
+            )
+        ) {
             // A denied fetch never executed, as on the scalar CPU.
             self.instructions_executed += 1;
         }
@@ -1877,22 +1893,23 @@ impl PipelineCpu {
             } else {
                 Access::Write
             };
-            if (em.is_load || em.is_store)
-                && em.mem_size != 0
-                && !self.sys.allows(em.mem_addr, u32::from(em.mem_size), access)
-            {
-                // Precise: older instructions have committed; nothing is accessed.
-                self.enter_exception(Exception::ProtectionFault(access), em.pc, em.mode);
-                return;
+            if (em.is_load || em.is_store) && em.mem_size != 0 {
+                if let Err(exception) = self.sys.check_access(
+                    &mut self.bus,
+                    em.mem_addr,
+                    u32::from(em.mem_size),
+                    access,
+                ) {
+                    // Precise: older instructions have committed; nothing is accessed.
+                    self.enter_exception(exception, em.pc, em.mode);
+                    return;
+                }
             }
             if em.is_load && em.mem_size != 0 {
                 let v = match em.mem_size {
-                    4 => self.bus.read_u32_be(em.mem_addr),
-                    1 => self.bus.read_u8(em.mem_addr) as u32,
-                    2 => {
-                        let b0 = self.bus.read_u8(em.mem_addr) as u32;
-                        let b1 = self.bus.read_u8(em.mem_addr.wrapping_add(1)) as u32;
-                        (b0 << 8) | b1
+                    1 | 2 | 4 => {
+                        self.sys
+                            .read_data(&mut self.bus, em.mem_addr, u32::from(em.mem_size))
                     }
                     _ => 0,
                 };
@@ -1900,12 +1917,15 @@ impl PipelineCpu {
                 next_mem_wb.writeback = true;
             } else if em.is_store && em.mem_size != 0 {
                 match em.mem_size {
-                    4 => self.bus.write_u32_be(em.mem_addr, em.store_value),
-                    1 => self.bus.write_u8(em.mem_addr, em.store_value as u8),
+                    4 => self
+                        .sys
+                        .write_data(&mut self.bus, em.mem_addr, 4, em.store_value),
+                    1 => self
+                        .sys
+                        .write_data(&mut self.bus, em.mem_addr, 1, em.store_value & 0xFF),
                     2 => {
-                        self.bus.write_u8(em.mem_addr, (em.store_value >> 8) as u8);
-                        self.bus
-                            .write_u8(em.mem_addr.wrapping_add(1), (em.store_value & 0xFF) as u8);
+                        self.sys
+                            .write_data(&mut self.bus, em.mem_addr, 2, em.store_value & 0xFFFF)
                     }
                     _ => {}
                 }
@@ -2056,37 +2076,39 @@ impl PipelineCpu {
                 InstructionMode::Normal => INSN_SIZE,
                 InstructionMode::Short => SHORT_INSN_SIZE,
             };
-            if !self.sys.allows(self.fetch_pc, fetch_len, Access::Fetch) {
+            if let Err(exception) =
+                self.sys
+                    .check_access(&mut self.bus, self.fetch_pc, fetch_len, Access::Fetch)
+            {
                 next_if_id = IfId {
                     valid: true,
                     pc: self.fetch_pc,
                     mode: self.fetch_mode,
                     raw: RawInstr::Normal(0),
-                    fetch_fault: true,
+                    fetch_fault: Some(exception),
                 };
                 self.fetch_pc = self.fetch_pc.wrapping_add(fetch_len);
             } else {
                 match self.fetch_mode {
                     InstructionMode::Normal => {
-                        let raw = self.bus.read_u32_be(self.fetch_pc);
+                        let raw = self.sys.read_data(&mut self.bus, self.fetch_pc, 4);
                         next_if_id = IfId {
                             valid: true,
                             pc: self.fetch_pc,
                             mode: InstructionMode::Normal,
                             raw: RawInstr::Normal(raw),
-                            fetch_fault: false,
+                            fetch_fault: None,
                         };
                         self.fetch_pc = self.fetch_pc.wrapping_add(INSN_SIZE);
                     }
                     InstructionMode::Short => {
-                        let hi = self.bus.read_u8(self.fetch_pc) as u16;
-                        let lo = self.bus.read_u8(self.fetch_pc.wrapping_add(1)) as u16;
+                        let half = self.sys.read_data(&mut self.bus, self.fetch_pc, 2) as u16;
                         next_if_id = IfId {
                             valid: true,
                             pc: self.fetch_pc,
                             mode: InstructionMode::Short,
-                            raw: RawInstr::Short((hi << 8) | lo),
-                            fetch_fault: false,
+                            raw: RawInstr::Short(half),
+                            fetch_fault: None,
                         };
                         self.fetch_pc = self.fetch_pc.wrapping_add(SHORT_INSN_SIZE);
                     }
@@ -2319,7 +2341,7 @@ mod hazard_tests {
                 pc: 0,
                 mode: InstructionMode::Normal,
                 raw,
-                fetch_fault: false,
+                fetch_fault: None,
             };
             let decoded = cpu.decode_id(&instruction);
             let sources = cpu.id_sources(&instruction);
