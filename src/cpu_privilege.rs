@@ -142,6 +142,63 @@ fn read_pte(bus: &mut Bus, addr: u32) -> Option<u32> {
     (!bus.take_bus_error()).then_some(value)
 }
 
+/// One TLB slot as shown by the debugger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlbEntryView {
+    pub index: usize,
+    pub valid: bool,
+    /// Page-aligned virtual and physical addresses.
+    pub virtual_page: u32,
+    pub physical_page: u32,
+    pub flags: TlbFlags,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TlbFlags {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+    pub user: bool,
+}
+
+impl TlbFlags {
+    fn from_pte(pte: u32) -> Self {
+        Self {
+            read: pte & PTE_R != 0,
+            write: pte & PTE_W != 0,
+            execute: pte & PTE_X != 0,
+            user: pte & PTE_U != 0,
+        }
+    }
+}
+
+/// Extension V state for the debugger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmuSnapshot {
+    pub enabled: bool,
+    /// Translation is applied right now (enabled and in U mode).
+    pub translating: bool,
+    pub ptbr: u32,
+    pub vfault: u32,
+    pub next_victim: usize,
+    pub entries: Vec<TlbEntryView>,
+}
+
+/// Result of a side-effect-free translation for the debugger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugTranslation {
+    Mapped {
+        physical: u32,
+        flags: TlbFlags,
+        /// Served by a TLB entry (otherwise by a table walk).
+        in_tlb: bool,
+    },
+    /// No valid leaf (V = 0, malformed PTE or unsupported huge page).
+    Unmapped,
+    /// A PTE could not be read from the bus.
+    BusError,
+}
+
 /// First banked register; R28 (SP), R29 (FP) and R30 (GP) are banked.
 const BANK_FIRST: usize = 28;
 const BANK_SIZE: usize = 3;
@@ -388,6 +445,51 @@ impl SystemState {
         let offset = usize::from(sr.checked_sub(SR_REGION_BASE)?);
         let (region, field) = (offset / 4, offset % 4);
         (region < REGION_COUNT && field < 3).then_some((region, field))
+    }
+
+    pub fn mmu_snapshot(&self) -> MmuSnapshot {
+        MmuSnapshot {
+            enabled: self.vm.enabled,
+            translating: self.translating(),
+            ptbr: self.vm.ptbr,
+            vfault: self.vm.vfault,
+            next_victim: self.vm.next_victim,
+            entries: self
+                .vm
+                .tlb
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| TlbEntryView {
+                    index,
+                    valid: entry.valid,
+                    virtual_page: entry.vpn << PAGE_SHIFT,
+                    physical_page: entry.ppn << PAGE_SHIFT,
+                    flags: TlbFlags::from_pte(entry.flags),
+                })
+                .collect(),
+        }
+    }
+
+    /// Translate `va` like the hardware would, without filling the TLB or
+    /// checking permissions. `read_word` reads one physical word.
+    pub fn debug_translate(
+        &self,
+        va: u32,
+        mut read_word: impl FnMut(u32) -> Option<u32>,
+    ) -> DebugTranslation {
+        let (entry, in_tlb) = match self.vm.lookup(va >> PAGE_SHIFT) {
+            Some(entry) => (entry, true),
+            None => match self.vm.walk(va, &mut read_word) {
+                Err(()) => return DebugTranslation::BusError,
+                Ok(None) => return DebugTranslation::Unmapped,
+                Ok(Some(entry)) => (entry, false),
+            },
+        };
+        DebugTranslation::Mapped {
+            physical: (entry.ppn << PAGE_SHIFT) | (va & (PAGE_SIZE - 1)),
+            flags: TlbFlags::from_pte(entry.flags),
+            in_tlb,
+        }
     }
 
     /// Whether U-mode accesses are translated (Extension V).

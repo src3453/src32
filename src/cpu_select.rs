@@ -378,6 +378,20 @@ impl AnyCpu {
         }
     }
 
+    pub fn mmu_snapshot(&self) -> crate::cpu_privilege::MmuSnapshot {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.mmu_snapshot(),
+            AnyCpu::Pipelined(cpu) => cpu.mmu_snapshot(),
+        }
+    }
+
+    pub fn mmu_translate(&mut self, va: u32) -> crate::cpu_privilege::DebugTranslation {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.mmu_translate(va),
+            AnyCpu::Pipelined(cpu) => cpu.mmu_translate(va),
+        }
+    }
+
     pub fn epc(&self) -> u32 {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.epc(),
