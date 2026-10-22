@@ -53,6 +53,15 @@ typedef struct {
     uint32_t ino, index, lba, age;
 } fs2_hint;
 
+/* Folded-key hashes of the used entries of one directory, so a lookup reads
+ * one entry instead of scanning the chain (entries are 1040 bytes). Any
+ * change drops all of them (begin_change). */
+#define FS2_DIRIDX 4u
+typedef struct {
+    uint32_t dir, count, free_slot, age;
+    uint32_t *key; /* 2 * count words: hash, slot; 0 when unused */
+} fs2_dir_index;
+
 typedef struct {
     fs_dev *dev;
     uint32_t writable; /* mounted read-write */
@@ -68,8 +77,10 @@ typedef struct {
     uint8_t *bitmap;     /* bitmap_blocks * 512 bytes, as on the media */
     uint8_t *inode_used; /* one bit per inode number, bit n = inode n */
     uint32_t clock;
+    uint32_t scan, scan_lba, scan_n; /* sec_get bypasses the cache: see dir_index_get */
     fs2_cache_line cache[FS2_CACHE_SECTORS];
     fs2_hint hints[FS2_HINTS];
+    fs2_dir_index dir_index[FS2_DIRIDX];
     uint8_t ahead[FS2_READ_AHEAD * FS2_BLOCK];
 } fs2_vol;
 

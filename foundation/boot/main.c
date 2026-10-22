@@ -8,17 +8,18 @@
  *
  * Disk boot: stage1 enters with R1 = boot drive and R2 = the FNDBOOT image
  * staged at 0x00200000. FOUNDATION_BOOT_EMBEDDED builds a WAX that the host
- * loads directly; build.py then links a module-only FNDBOOT into the image
- * (fndboot_image.h), R1/R2 are ignored and the boot drive is 0.
+ * loads directly; build.py then adds a module-only FNDBOOT as a block at
+ * 0x00200000, where stage1 would have staged it, so the kernel keeps the §5.1
+ * layout (linking the modules into the kernel image overran the kernel stack
+ * once they passed 900 KiB). R1/R2 are ignored and the boot drive is 0.
  *
  * The modules are PROTECTED WAX v2 with libfnd linked in, so they get no
  * WAL list. Once they are spawned the staged FNDBOOT is no longer needed:
  * proc_spawn reuses the area for the images it stages (§9.2). */
 #include <foundation/kernel.h>
 
-#ifdef FOUNDATION_BOOT_EMBEDDED
-#include "fndboot_image.h"
-#endif
+/* Where stage1 stages FNDBOOT (§11); the embedded WAX carries it there too. */
+#define FNDBOOT_STAGING 0x00200000u
 
 #ifdef FOUNDATION_BOOT_STOP_TICKS
 /* tests: stop the machine so src32_testbench can read the screen */
@@ -30,7 +31,7 @@ int main(uint32_t drive, uint32_t fndboot) {
 #ifdef FOUNDATION_BOOT_EMBEDDED
     (void)drive;
     (void)fndboot;
-    boot_image = img_fndboot;
+    boot_image = (const void *)(uintptr_t)FNDBOOT_STAGING;
 #else
     fnd_set_boot_drive(drive);
     boot_image = (const void *)(uintptr_t)fndboot;
