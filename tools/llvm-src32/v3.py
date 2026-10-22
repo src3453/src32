@@ -175,7 +175,7 @@ def pack(wax3, *, kind, image_id, abi, blocks, info, imports, exports=(), origin
     table = [wax3.Import(dependency[index], name, kind_, info["slots"][name] - origin, size, signature)
              for index, name, kind_, size, signature in imports.entries]
     table.sort(key=lambda i: i.slot)
-    v3_blocks = [wax3.Block(address, data, perm=perm, alignment=8 if address % 8 == 0 else 4)
+    v3_blocks = [wax3.Block(address, data, perm=perm, alignment=4096 if perm == wax3.PERM_RW and address % 4096 == 0 else 8 if address % 8 == 0 else 4)
                  for address, data, perm in blocks]
     return wax3.build(kind, image_id=image_id, abi_major=abi[0], abi_minor=abi[1], blocks=v3_blocks,
                       entry_offset=0, stack_top=stack_top, stack_size=stack_size, deps=deps,

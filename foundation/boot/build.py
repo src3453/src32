@@ -109,12 +109,12 @@ def layout(slot, stack=STACK):
 
 def static(sources, output, args, slot, *extra, stack=STACK):
     """A PROTECTED WAX v2 with libfnd linked in."""
-    return driver([*sources, *LIBFND], output, args, "--protected", *layout(slot, stack), *extra)
+    return driver([*sources, *LIBFND], output, args, "--protected", "--page-align", *layout(slot, stack), *extra)
 
 
 def program(sources, output, args, slot, image_id, fnd):
     """A WAX v3 that imports the WAL fnd."""
-    return driver(sources, output, args, "--wax3", "--image-id", image_id, "--import-wal", fnd, *layout(slot))
+    return driver(sources, output, args, "--wax3", "--page-align", "--image-id", image_id, "--import-wal", fnd, *layout(slot))
 
 
 def embed(name, data):
@@ -170,7 +170,7 @@ def main(argv=None):
     (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
 
-    fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--image-id", "fnd",
+    fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--page-align", "--image-id", "fnd",
                  "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:

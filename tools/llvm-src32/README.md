@@ -118,6 +118,7 @@ python tools/llvm-src32/driver.py app.c --protected --origin 0x100000 --stack-to
 ```
 
 - 出力は [保護付き WAX](../../doc/spec_WAX.md)。コード block は R/X、データ（静的データとゼロ初期化領域）block は R/W、ユーザースタックは `--stack-top` の下 `--user-stack-size` byte（既定 0x4000、8の倍数）です。
+- `--page-align` はデータ block の先頭を 4 KiB 境界にそろえます（`--protected`／`--wax3`／`--wal` 用）。コードのページとデータのページが分かれるので、ページ単位で権限を付ける Foundation の仮想記憶（Extension V）で W^X になります。WAX v3 ではデータ block の整列も 4096 になります。
 - 起動コードは HALT できないので、`main` の戻り値を R1 に置いて `SYSCALL 0` を発行します。**`SYSCALL 0` を exit とするのはこのツールチェーンの規約**で、読み込む BIOS/OS が定義します（Foundation では 0 番は `sys_info` で、終了は `proc_exit` です。[Foundation §12](../../doc/spec_Foundation.md)）。
 - `cpt32_halt`、`cpt32_mfsr`、`cpt32_mtsr`、`cpt32_run_user`、`cpt32_return_to_kernel`、`cpt32_ctx_resume`、`irqc_dispatch`、`syscall_dispatch`、`kernel_trap` はSモード専用なのでエラーです。デバイスは BIOS/OS が SYSCALL で提供します。
 - 現在、保護付き WAX を起動できるのは BIOS の WAX loader（未実装）だけです。ホストの直接ロードは拒否します。
