@@ -1215,3 +1215,8 @@
 
 
 - 2026-10-22 (W^X and MMIO, KAN-49 follow-up): the owner chose the real-OS way. `llvm-src32 --page-align` starts RW data on a 4 KiB boundary and `v3.py` gives the RW block alignment 4096 (only when it already sits on a page); `foundation/boot/build.py` passes it for services, shell, commands and the fnd WAL, so a vm page is never both writable and executable. Images built without it still get the permission union of mm_vm_map. `.rodata` stays inside RW data. MMIO stays page-granular (U-mode accesses inside a mapped page cannot be intercepted); check_grants additionally requires every window the rounded page range reaches to be grantable and, if exclusive, free. The PeC page still exposes timer/RTC to a UART or input grantee. Pipeline CPUID interlock is tracked as KAN-51 (the 3-NOP workaround stays).
+
+## /bin/hex (2026-10-23, KAN-56)
+- dos の HEX（`dos.sol` と `examples/dos-c/main.c`、どちらも同じ書式）を `foundation/bin/hex.c` へ移植した。画面は 16 行×16 バイト＋ASCII 欄、コマンドは N/P/G/E/W/Q（DOS の別名 NEXT/PREV/GOTO/SET/SAVE も）、メッセージの文言は DOS のまま。DOS の `HEX NAME` は 8.3 名だったが、こちらは `hex path`。
+- stdin は console の LINE モードで 1 行ずつ `fnd_read` する（RAW にしない）。画面消去は `fnd_con_clear`、保存は `FND_OPEN_WRITE|TRUNC` で開いて全体を書き `fnd_sync`。保存は同サイズで、ファイルは 64 KiB まで、空ファイルは編集不可（DOS と同じ）。Ctrl+D（EOF）も終了扱い。
+- テストは `foundation/tests/shell` の `test_hex`（要 `CLANG=clang-20` と llvmlite 0.46）。エディタは毎回 `fnd_con_clear` するので、画面比較は終了後の最終画面（直前の hex 表示が残る）で見る。
