@@ -4,7 +4,8 @@
  *
  * Mounts at start-up: IDC slot n is /dd/<n> when it holds a valid FS2 or
  * DSFS volume, and the FS2 volume of the boot drive (sys_info boot_drive)
- * is also "/". A volume that fails the mount check (§10) is not shown;
+ * is also "/". A volume that fails the enabled mount checks is not shown
+ * (KAN-38: boot/build.py temporarily skips the full FS2 §10 scan);
  * DIRTY media need an offline fsck (FND_E_NEEDS_FSCK). Nothing is logged:
  * debug_write faults on machines without a UART (src32_testbench). */
 #include <string.h>

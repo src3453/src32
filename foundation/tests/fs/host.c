@@ -5,12 +5,20 @@
 #include <string.h>
 
 #include "server.h"
+#include "name.h"
 
 #ifdef _WIN32
 #define EXPORT __declspec(dllexport)
 #else
 #define EXPORT
 #endif
+
+/* Export the name API through the harness, including on Windows DLLs. */
+EXPORT int host_name_equal(const char *a, const char *b) { return fnd_name_equal(a, b); }
+EXPORT int host_name_match(const char *p, const char *n) { return fnd_name_match(p, n); }
+EXPORT fnd_status host_name_fold(const char *n, char *out, uint32_t cap, uint32_t *len) {
+    return fnd_name_fold(n, out, cap, len);
+}
 
 typedef struct {
     uint8_t *data;

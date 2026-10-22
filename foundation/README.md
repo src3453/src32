@@ -126,7 +126,7 @@ python -m unittest discover -s foundation/tests/shell -v
 python foundation/run.py --disk
 ```
 
-で、BIOS（`assets/bios.rom`）と dd0 の HDD（書き込み可）を設定してエミュレーターを起動します。プログラムには先頭 word が 0 の 4 bytes を渡すので、BIOS は RAM 起動を飛ばしてディスクから起動します。POST の表示を 120 frame 保持した後、HDD なら約 115 frame（fs のマウント検査と、シェルの読み込み）で、FDD（`type: "fdd"`）なら 6 秒ほどで（62,500 B/s）シェルが出ます。ディスクの中身は `tools/fs2/fs2.py`（[README](../tools/fs2/README.md)）で見たり変えたりできます。
+で、BIOS（`assets/bios.rom`）と dd0 の HDD（書き込み可）を設定してエミュレーターを起動します。プログラムには先頭 word が 0 の 4 bytes を渡すので、BIOS は RAM 起動を飛ばしてディスクから起動します。POST の表示は120 frame保持します。全マウント検査を行っていた時点では、その後HDDで約115 frame、FDD（`type: "fdd"`、62,500 B/s）で約6秒かかっていました。現在は下記の暫定対策で全走査を省略します。ディスクの中身は `tools/fs2/fs2.py`（[README](../tools/fs2/README.md)）で見たり変えたりできます。
 
 ```sh
 python tools/fs2/fs2.py ls target/foundation-boot/foundation.img /bin
@@ -229,9 +229,9 @@ src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline 
 `fs/`（スロット 3）は FS2（[仕様](../doc/spec_FS2.md)）を `/` として見せる fs サービスです。disk サービス（`services/disk/`、スロット 2）の IPC を通して、カーネルの `blk_io`（IDC + DMAC）でディスクを読み書きします。
 
 - **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
-- **マウント**：§10 の検査で全チェーンを辿るので、ここが起動時間の大半です。disk サービスは 128 sector まで先読みし、fs は 8 sector の先読みと 32 ラインのキャッシュ（メタデータ 8、データ 24）、ワード単位のコピーで IDC のコマンド回数（1 回 10 ms）を減らしています。
+- **マウント**：KAN-38 の暫定対策で、fsサービスの全チェーン・ディレクトリ・参照整合性検査を省略します。署名・レイアウト・DIRTY拒否とbitmap/inodeの基本検査は残します。clean媒体の破損を見逃すため、事前に `python tools/fs2/fs2.py check IMAGE` で検査してください。`foundation/boot/build.py` の `FS2_FULL_MOUNT_CHECK` を1に戻して再ビルドすると、§10の完全検査を復元できます（[仕様の暫定例外](../doc/spec_FS2.md#101-foundation-の一時的な起動対策kan-38)）。disk サービスは128 sector、fsは8 sectorの先読みと32ラインのキャッシュを使います。
 - **DIRTY**：最初の書き込みで DIRTY を立てます。シャットダウン時にはアンマウントしないので、書き込んだ後は fsck が要ります（ホスト側の `tools/fs2` は `allow_dirty` で読めます）。
-- **起動時間**：Pipeline の直接 WAX 起動＋IDC 上の FS2 では初回プロンプトまで約 100 frame です。共通 string ランタイムの最適化による短縮は小さく、マウント時の全チェーン検査と IDC 転送は引き続き必要です。[KAN-36 の計測](../doc/kan36_performance.md)を参照してください。
+- **起動時間**：完全検査時はPipelineの直接WAX起動＋IDC上のFS2で初回プロンプトまで約100 frameでした。この値はKAN-38の全走査省略前の値です。[KAN-36 の計測](../doc/kan36_performance.md)を参照してください。
 
 ## 注意と未決事項
 

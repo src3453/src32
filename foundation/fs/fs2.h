@@ -84,8 +84,10 @@ typedef struct {
 fnd_status fs2_format(fs_dev *dev, uint32_t total_blocks, uint32_t boot_blocks, uint32_t inode_count,
                       uint32_t root_mode, fs_time now);
 
-/* §10: verifies everything before using the volume. DIRTY media are refused
- * with FND_E_NEEDS_FSCK. `writable` = 0 mounts read-only. */
+/* §10: verifies everything unless built with FS2_FULL_MOUNT_CHECK=0
+ * (temporary boot mitigation: header/bitmap/inode checks only).
+ * DIRTY media are refused with FND_E_NEEDS_FSCK in both modes.
+ * `writable` = 0 mounts read-only. */
 fnd_status fs2_mount(fs2_vol *v, fs_dev *dev, uint32_t writable);
 /* §9.1: writes DIRTY = 0 last. The VFS checks that nothing refers to it. */
 fnd_status fs2_unmount(fs2_vol *v);

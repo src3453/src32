@@ -286,6 +286,17 @@ read-only を含む通常mountは次をすべて検証し、失敗すれば媒�
 fsckの検査モードはDIRTYを許容して走査するが、安全でないポインタを追ってはならない。
 連結走査回数はデータblock数、木の走査はinode数で制限する。検証途中の情報をクライアントへ公開しない。
 
+### 10.1 Foundation の一時的な起動対策（KAN-38）
+
+起動時の全走査を避ける暫定措置として、`foundation/boot/build.py` はfsサービスを
+`FS2_FULL_MOUNT_CHECK=0` でビルドする。署名・superblock・位置/個数・DIRTY拒否、
+bitmapとinodeの基本検査（rootのtype/parentを含む）は維持し、使用中inodeと空きblock数を初期化する。
+全チェーン、ディレクトリエントリ、到達性/親参照、block共有・leakの検査は省略する。
+このモードは完全な§10検証ではなく、DIRTY=0でも構造破損を見逃す。
+媒体は事前にホストの `tools/fs2/fs2.py check` で検査する。
+`build.py` の `FS2_FULL_MOUNT_CHECK` を1に戻して再ビルドすると完全検査を復元できる。
+単独のドライバビルドの既定値、ホストツール、DSFSの検査は従来どおり。
+
 ## 11. 仮想ファイルシステム (VFS)
 
 FS2 は永続化形式であり、VFS はFoundationのfsサービス内の共通インターフェースである。

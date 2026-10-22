@@ -1,5 +1,8 @@
 # KAN-36 / KAN-37: Foundation 起動とシェルテストの計測
 
+以下のKAN-36/KAN-37計測は完全マウント検査を行う時点の記録。
+後続のKAN-38による暫定的な全走査省略は末尾に記す。
+
 2026-10-22、Windows、AMD Clang 20、Python 3.15、llvmlite 0.50、release
 `src32_testbench.exe` で計測。変更前は `f2a6b96`（KAN-15 と sol/libfnd を統合済み）。
 ゲストは `foundation/boot/build.py -O1 --stop-ticks 6000` の生成物、RAM 16 MiB、
@@ -72,3 +75,23 @@ Windows は TEMP/TMP を workspace 内の書き込み可能なディレクトリ
 PowerShell の CPU 指定は `$env:FOUNDATION_TEST_CPU='pipeline'`。
 比較時は同じ testbench バイナリとゲスト最適化レベルを使い、ビルド込みと
 ビルド済み生成物の実行時間を区別する。ほかの計測プロセスとの競合も記録する。
+
+## KAN-38: マウント全走査の一時省略
+
+2026-10-22、`28f8d08` の完全検査イメージと、同じ `-O1 --stop-ticks 6000` の
+暫定対策後のイメージを比較した。同じrelease testbench、Pipeline、RAM 16 MiB、
+VRAM 4 MiB、read-onlyの8 MiB HDD、BIOSなしの直接WAX起動で、入力せず
+バナーと `/>` が揃う最小frame数を二分探索した。
+初回プロンプトは **99 → 61 frame**（約38%短縮、60 Hzで約1.65 → 1.02秒）。
+これはゲストのframe数であり、ホストの実行秒数やBIOS経由の起動時間ではない。
+
+`foundation/boot/build.py` はfsサービスに `FS2_FULL_MOUNT_CHECK=0` を渡す。
+署名・レイアウト・DIRTY拒否とbitmap/inodeの基本検査、割当管理の初期化は残す。
+全チェーン・ディレクトリ・参照整合性検査を省き、走査用の一時bitmapも割り当てない。
+clean媒体の破損を見逃す暫定措置であり、事前にホストツールの `check` を行う。
+定数を1に戻して再ビルドすると完全検査に戻る。詳細は `spec_FS2.md` §10.1。
+
+検証はホストfs全27件（完全検査と暫定モード）、シェル全16件（Cachedと代表Pipeline）、
+BIOS/ディスク起動全7件が成功した。シェル・ディスク検証は再ビルドした生成物を再利用し、
+各ケースのディスクは独立コピー。シェル116.945秒、ディスク56.502秒は他の検証と
+並走した各1回の値で、ビルド時間を含まず、上記の過去の時間との性能比較には使わない。

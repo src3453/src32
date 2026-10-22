@@ -81,6 +81,8 @@ LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "ipc.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
+# KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
+FS2_FULL_MOUNT_CHECK = 0
 ASSEMBLER = ROOT / "tools/asm/asm.py"
 
 
@@ -177,6 +179,7 @@ def main(argv=None):
              image=static([services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
         dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
              image=static([*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
+                        f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
                         "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
              image=static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),

@@ -11,6 +11,12 @@
 
 #include "name.h"
 
+/* KAN-38: boot/build.py temporarily disables the expensive full scan.
+ * Keep standalone/host builds strict unless explicitly overridden. */
+#ifndef FS2_FULL_MOUNT_CHECK
+#define FS2_FULL_MOUNT_CHECK 1
+#endif
+
 /* ---- sectors ---------------------------------------------------------- */
 
 /* Direct-mapped, so a lookup is one compare and a read-ahead run never
@@ -293,7 +299,7 @@ static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint3
             return st;
         b = next_of(buf);
         if (b < v->data_start || b >= v->total_blocks)
-            return FND_E_IO; /* the chain was verified at mount */
+            return FND_E_IO; /* also needed when the full mount scan is off */
         ++at;
     }
     hint_note(v, ino, index, b);
@@ -1076,6 +1082,15 @@ static fnd_status check_volume(fs2_vol *v, check_state *cs) {
                 return FND_E_FORMAT;
         }
     }
+    if (!FS2_FULL_MOUNT_CHECK) {
+        /* Mount bookkeeping is still required when the full scan is off.
+         * Do not read file/directory chains just to count free blocks. */
+        v->free_blocks = 0;
+        for (uint32_t b = v->data_start; b < v->total_blocks; ++b)
+            if (!bit_get(v->bitmap, b))
+                ++v->free_blocks;
+        return FND_OK;
+    }
     /* Step 7 for every inode, before any directory is read through its
      * chain. */
     for (uint32_t ino = 1; ino <= v->inode_count; ++ino) {
@@ -1176,9 +1191,11 @@ fnd_status fs2_mount(fs2_vol *v, fs_dev *dev, uint32_t writable) {
     v->bitmap = (uint8_t *)fs_alloc(v->bitmap_blocks * FS2_BLOCK);
     v->inode_used = (uint8_t *)fs_alloc(v->inode_count / 8 + 1);
     check_state cs = {0, 0, 0, 0};
-    cs.seen = (uint8_t *)fs_alloc(v->bitmap_blocks * FS2_BLOCK);
-    cs.refd = (uint8_t *)fs_alloc(v->inode_count / 8 + 1);
-    if (!v->bitmap || !v->inode_used || !cs.seen || !cs.refd) {
+    if (FS2_FULL_MOUNT_CHECK) {
+        cs.seen = (uint8_t *)fs_alloc(v->bitmap_blocks * FS2_BLOCK);
+        cs.refd = (uint8_t *)fs_alloc(v->inode_count / 8 + 1);
+    }
+    if (!v->bitmap || !v->inode_used || (FS2_FULL_MOUNT_CHECK && (!cs.seen || !cs.refd))) {
         st = FND_E_NO_MEMORY;
     } else {
         for (uint32_t i = 0; i < v->bitmap_blocks && st == FND_OK; ++i)

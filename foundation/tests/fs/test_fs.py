@@ -166,6 +166,8 @@ class Host:
 
 
 class FsTestBase(unittest.TestCase):
+    mount_cflags = []
+
     @classmethod
     def setUpClass(cls):
         cc = os.environ.get("CC") or shutil.which("cc") or shutil.which("gcc") or shutil.which("clang")
@@ -177,7 +179,9 @@ class FsTestBase(unittest.TestCase):
                    FOUNDATION / "lib/fnd/name_api.c"]
         sources = [s for s in sources if s.name != "main.c"]
         extra = os.environ.get("FS_TEST_CFLAGS", "").split()
-        subprocess.run([cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-shared", "-fPIC", *extra,
+        pic = [] if os.name == "nt" else ["-fPIC"]
+        subprocess.run([cc, "-std=c11", "-O1", "-Wall", "-Wextra", "-Werror", "-shared", *pic, *extra,
+                        *cls.mount_cflags,
                         "-I", str(FOUNDATION / "include"), "-I", str(FOUNDATION / "lib/fnd"),
                         "-I", str(FOUNDATION / "fs"), *map(str, sources), "-o", str(library)], check=True)
         cls.lib = ctypes.CDLL(str(library))
@@ -189,6 +193,11 @@ class FsTestBase(unittest.TestCase):
 
     @classmethod
     def tearDownClass(cls):
+        if os.name == "nt":
+            # Windows locks a loaded DLL, even when its CDLL is collected.
+            import _ctypes
+            _ctypes.FreeLibrary(cls.lib._handle)
+        del cls.lib
         cls.temp.cleanup()
 
     def setUp(self):
@@ -580,6 +589,49 @@ class VolumeTests(FsTestBase):
         mounted(lambda m: m.__setitem__(data_bit, m[data_bit] | (0x80 >> (190 % 8))), "FORMAT")
 
 
+class QuickMountTests(FsTestBase):
+    """The temporary guest mode still initialises allocation state correctly."""
+    mount_cflags = ["-DFS2_FULL_MOUNT_CHECK=0"]
+
+    def test_existing_files_allocation_and_remount(self):
+        fs = self.fs
+        fs.boot_disk()
+        fs.put("/old", b"old" * 400)
+        self.assertEqual(fs.remount(), 0)
+        fs.put("/new", b"new" * 700)
+        self.assertEqual(fs.get("/old"), b"old" * 400)
+        self.assertEqual(fs.get("/new"), b"new" * 700)
+        self.assertEqual(fs.remount(), 0)
+        self.assertEqual(fs.get("/new"), b"new" * 700)
+        self.assertEqual(fs2tool.check_image(bytearray(self.image_bytes())), [])
+
+    def test_skips_chain_scan_but_keeps_dirty_and_layout_checks(self):
+        fs = self.fs
+        good = fs.format(sectors=200, inodes=16)
+        fs.attach(ROOT_MNT, good)
+        fs.put("/f", b"payload")
+        fs.lib.host_unmount(ROOT_MNT)
+        base = bytes(good)
+        inodes = be(base, 512 + 0x20) * 512
+        first = be(base, inodes + 128 + 0x0C)
+        # Nonzero payload padding is rejected by a full scan, but not by
+        # the temporary guest mode. Mount must not write to the medium.
+        image = (ctypes.c_uint8 * len(base)).from_buffer_copy(base)
+        image[first * 512 + 511] = 1
+        before = bytes(image)
+        self.assertEqual(Host(self.lib).attach(ROOT_MNT, image), 0)
+        self.assertEqual(bytes(image), before)
+        self.assertTrue(fs2tool.check_image(bytearray(image)))
+        for offset, value, error in ((512 + 7, 1, "NEEDS_FSCK"),
+                                     (512 + 0x2F, 99, "FORMAT"),
+                                     (inodes + 1, 1, "FORMAT")):
+            image = (ctypes.c_uint8 * len(base)).from_buffer_copy(base)
+            image[offset] = value
+            before = bytes(image)
+            self.assertEqual(Host(self.lib).attach(ROOT_MNT, image), E[error])
+            self.assertEqual(bytes(image), before)
+
+
 class DsfsTests(FsTestBase):
     def test_dsfs_slot_is_read_only(self):
         fs = self.fs
@@ -730,10 +782,10 @@ class Fs2ToolTests(FsTestBase):
 class NameTests(FsTestBase):
     def test_libfnd_name_functions(self):
         lib = self.lib
-        lib.fnd_name_equal.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        lib.fnd_name_match.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
-        eq = lambda a, b: lib.fnd_name_equal(a.encode(), b.encode())  # noqa: E731
-        match = lambda p, n: lib.fnd_name_match(p.encode(), n.encode())  # noqa: E731
+        lib.host_name_equal.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        lib.host_name_match.argtypes = [ctypes.c_char_p, ctypes.c_char_p]
+        eq = lambda a, b: lib.host_name_equal(a.encode(), b.encode())  # noqa: E731
+        match = lambda p, n: lib.host_name_match(p.encode(), n.encode())  # noqa: E731
         self.assertEqual(eq("Straße", "STRASSE"), 1)
         self.assertEqual(eq("é", "é"), 0)
         self.assertEqual(eq("Readme", "README"), 1)
@@ -741,13 +793,13 @@ class NameTests(FsTestBase):
         self.assertEqual(match("r?adme.*", "README.md"), 1)
         self.assertEqual(match("*.txt", "readme.md"), 0)
         self.assertEqual(match("a*b*c", "aXbYbZc"), 1)
-        self.assertEqual(lib.fnd_name_equal(b"\xff", b"\xff"), 0)
+        self.assertEqual(lib.host_name_equal(b"\xff", b"\xff"), 0)
         out = ctypes.create_string_buffer(16)
         n = ctypes.c_uint32()
-        lib.fnd_name_fold.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
-        self.assertEqual(lib.fnd_name_fold("Straße".encode(), out, 16, ctypes.byref(n)), 0)
+        lib.host_name_fold.argtypes = [ctypes.c_char_p, ctypes.c_char_p, ctypes.c_uint32, ctypes.POINTER(ctypes.c_uint32)]
+        self.assertEqual(lib.host_name_fold("Straße".encode(), out, 16, ctypes.byref(n)), 0)
         self.assertEqual(out.value, b"strasse")
-        self.assertEqual(s32(lib.fnd_name_fold(b"ABCDEFGHIJKLMNOPQ", out, 16, ctypes.byref(n)) & 0xFFFFFFFF),
+        self.assertEqual(s32(lib.host_name_fold(b"ABCDEFGHIJKLMNOPQ", out, 16, ctypes.byref(n)) & 0xFFFFFFFF),
                          E["LIMIT"])
         self.assertEqual(n.value, 18)
 
