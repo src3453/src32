@@ -7,6 +7,13 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
 追加ファイルをfsの実行イメージへ埋め込む必要はありません。
 
+## C版 TinyBASIC
+
+シェルで `tinybasic` を起動すると対話モード、`tinybasic program.bas` ならファイルを読み込んで実行し、終了後にシェルへ戻ります。
+`LOAD "path"` / `SAVE "path"`、標準入出力のリダイレクトにも対応します。
+`python foundation/run.py --root examples/tinybasic-c/foundation-root` でデモ入りのディスクを起動し、`tinybasic demo.bas` を実行できます。
+ビルド・言語・制限は [Foundation TinyBASIC仕様](../doc/spec_Foundation_tinybasic.md) を参照してください。
+
 ## フェーズ1: 最小カーネル
 
 [`kernel_trap` トラップスタブ](../tools/llvm-src32/README.md)（フェーズ0）の上に、次のものを実装しています。
@@ -78,7 +85,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
 - **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 4 tick ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
-- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は実在するユーザースロットのうち動いているプロセスが占めていないものの合計、`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
+- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、スロット方式では実在するユーザースロットのうち動いているプロセスが占めていないものの合計です。12 MiB のスロット方式では、サービス・init・シェル・実行中のコマンドで全スロットを使うため、`free` の `0 KiB free` は正常です。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh
 python foundation/run.py
@@ -235,7 +242,9 @@ src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline 
 カーネルは `CPUID` で Extension V を見つけると、スロットの代わりにページ表を使います（[仕様 §5.5](../doc/spec_Foundation.md)、設計は [foundation_vm_plan.md](../doc/foundation_vm_plan.md)）。V のない CPU を想定してスロット方式で動かすには、カーネルを `-D FND_MM_SLOT_ONLY` でビルドします（`boot/build.py` は環境変数 `FND_MM=slot`）。同じソースの 2 つのバックエンドを、次のように確かめます。
 
 - `tests/phase1`、`tests/wax`、`tests/wal` は物理スロットの中身を直接見るので、`FND_MM_SLOT_ONLY` でビルドします。
-- `tests/shell`、`tests/disk`、`tests/lzma` など、起動イメージを丸ごと動かすテストは、どちらのモードでも通ります。メモリ量の表示だけが違うので、`tests/shell` は `FND_MM=slot` かどうかで期待値を切り替えます。
+- `tests/shell`、`tests/disk`、`tests/lzma` など、起動イメージを丸ごと動かすテストは、どちらのモードでも通ります。`tests/shell` は実際に使う testbench と CPU エンジンで `cpu_features.a` の CPUID を実行し、V がなくてもスロット方式の期待値を使います。`FND_MM=slot` は CPU の V の有無にかかわらずスロット方式です。仮想記憶では空き容量が正であることを検証し、スロット方式では正確な値（12 MiB 構成では 0 KiB）を比較します。
+
+`tests/shell` は `SRC32_TESTBENCH` があればその実行ファイル、なければ `target/release`、`target/debug` の順で testbench を探します。古い release 版が残っていると新しい debug 版より優先されます。仮想記憶を検証するときは `cargo build --release --bin src32_testbench` で更新するか、`SRC32_TESTBENCH` に V 対応のビルドの絶対パスを指定してください。
 
 ```sh
 python -m unittest discover -s foundation/tests/shell          # 仮想記憶（V のある testbench）
