@@ -54,11 +54,14 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 - `VER`、`MEM`、`PS` は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` と `boot_drive` は 0 です（`proc_spawn` と stage1 がまだない）。
 
 ```sh
-python foundation/boot/build.py target/foundation-boot
-cargo run --release --bin cpt32 -- target/foundation-boot/foundation.wax
+python foundation/run.py
 ```
 
-PCG のフォントはエミュレーターの設定（`config.yaml` の `pcg.font`、例 `assets/UNSCII.F08`）で読み込みます。設定がないと文字が表示されません。
+リポジトリルートで実行してください。スクリプトを絶対パスで指定すれば、別の作業ディレクトリからも使えます。Python と llvmlite、Clang、Rust/Cargo が必要です（[ツールチェーンの準備](../tools/llvm-src32/README.md#必要なツール)）。`--clang PATH` で Clang を指定でき、`--build-only` はビルドと設定生成だけを行います。
+
+このコマンドはシェルとカーネルを `target/foundation-boot/foundation.wax` にビルドし、release エミュレーターをビルドして起動します。作業用一時ファイルも同ディレクトリ内に置きます。`target/foundation-boot/run/config.yaml` に 16 MiB RAM と付属の `assets/UNSCII.F08` フォントを設定し、そのディレクトリをエミュレーターの作業ディレクトリにします。普段使うルートの `config.yaml` は変更しません。
+
+手動で起動する場合は `python foundation/boot/build.py target/foundation-boot` で画像を作り、BIOS 未設定の作業ディレクトリから画像の絶対パスをエミュレーターへ渡してください。`bios.image` があると WAX の入口より BIOS が優先されます。PCG の文字を表示するには、作業ディレクトリの `config.yaml` に `pcg.font`（例：`assets/UNSCII.F08` の絶対パス）が必要です。
 
 `tests/shell/test_shell.py` は、`--stop-ticks 3000` でビルドした起動イメージを `src32_testbench` で 260 frame 動かします。`--type FRAME=TEXT` でその frame にキーを送り（`\n` Enter、`\b` Backspace、`\L` `\R` `\U` `\D` 矢印、`\H` Home、`\E` End、`\X` Delete、`\C` Ctrl+C、`\\` バックスラッシュ）、`--dump-pcg` で最後の画面（SCROLL_Y を反映した 30 行）を出力させて比べます。GUI は Xvfb の下では黒い画面になるので、画面の確認はこの方法で行います。
 
