@@ -5,7 +5,7 @@
  *
  * Not yet possible, and reported as FND_E_UNSUPPORTED or "command not found"
  * (README.md lists them): the fs service and libfnd file calls (file
- * redirection, wildcards, CD to a path, DIR/TYPE/COPY/DEL/REN/MD/RD, scripts,
+ * redirection, wildcards, cd to a path, ls/cat/cp/rm/mv/mkdir/rmdir, scripts,
  * /etc/profile.fsh and PATH lookup), proc_spawn (external programs) and the
  * Ctrl+C break thread (thread_create, CON_BREAK_WAIT). */
 #include <stdint.h>
@@ -71,7 +71,7 @@ static uint32_t format_i32(int32_t value, char *out) {
     return len;
 }
 
-/* Decimal i32 (§10 EXIT); 0 if text is not one. */
+/* Decimal i32 (§10 exit); 0 if text is not one. */
 static int parse_i32(const char *text, int32_t *out) {
     uint32_t i = 0, negative = 0, value = 0;
     if (text[0] == '-' || text[0] == '+')
@@ -522,14 +522,21 @@ static const struct builtin *find_builtin(const char *name);
 static int exit_requested;
 static int32_t exit_code;
 
+/* No fs session yet: the cwd is always /. */
 static int32_t cmd_cd(uint32_t argc, char **argv) {
     if (argc > 2u)
-        return usage("CD [path]");
-    if (argc == 1u) {
-        out("/\n"); /* no fs session yet: the cwd is always / */
-        return FND_OK;
-    }
-    return report("CD", argv[1], FND_E_UNSUPPORTED);
+        return usage("cd [path]");
+    if (argc == 1u)
+        return FND_OK; /* to /, as there is no home directory in v1 */
+    return report("cd", argv[1], FND_E_UNSUPPORTED);
+}
+
+static int32_t cmd_pwd(uint32_t argc, char **argv) {
+    (void)argv;
+    if (argc != 1u)
+        return usage("pwd");
+    out("/\n");
+    return FND_OK;
 }
 
 /* Commands that need the fs service, which does not exist yet. */
@@ -539,12 +546,12 @@ static int32_t cmd_needs_fs(uint32_t argc, char **argv) {
     return report(b->name, 0, FND_E_UNSUPPORTED);
 }
 
-static int32_t cmd_cls(uint32_t argc, char **argv) {
+static int32_t cmd_clear(uint32_t argc, char **argv) {
     (void)argv;
     if (argc != 1u)
-        return usage("CLS");
+        return usage("clear");
     fnd_status status = fnd_con_clear();
-    return status == FND_OK ? FND_OK : report("CLS", 0, status);
+    return status == FND_OK ? FND_OK : report("clear", 0, status);
 }
 
 static int32_t cmd_echo(uint32_t argc, char **argv) {
@@ -571,17 +578,17 @@ static int32_t cmd_set(uint32_t argc, char **argv) {
         return FND_OK;
     }
     if (argc != 2u)
-        return usage("SET [NAME[=value]]");
+        return usage("set [NAME[=value]]");
     const char *arg = argv[1];
     uint32_t n = 0;
     while (arg[n] && arg[n] != '=')
         ++n;
     if (!valid_name(arg, n))
-        return usage("SET [NAME[=value]]");
+        return usage("set [NAME[=value]]");
     if (!arg[n]) {
         const struct var *v = var_find(arg, n);
         if (!v)
-            return report("SET", arg, FND_E_NOT_FOUND);
+            return report("set", arg, FND_E_NOT_FOUND);
         out_n(v->value, v->value_len);
         out("\n");
         return FND_OK;
@@ -590,7 +597,7 @@ static int32_t cmd_set(uint32_t argc, char **argv) {
     copy_bytes(name, arg, n);
     name[n] = 0;
     int32_t status = var_set(arg, n, arg + n + 1u, str_len(arg + n + 1u));
-    return status == FND_OK ? FND_OK : report("SET", name, status);
+    return status == FND_OK ? FND_OK : report("set", name, status);
 }
 
 static int32_t read_sysinfo(uint32_t info[8]) {
@@ -598,31 +605,37 @@ static int32_t read_sysinfo(uint32_t info[8]) {
     return size < 0 ? size : FND_OK;
 }
 
-static int32_t cmd_ver(uint32_t argc, char **argv) {
-    (void)argv;
-    if (argc != 1u)
-        return usage("VER");
+/* uname and the start-up banner (§2.1): the OS, then the shell. */
+static int32_t show_versions(void) {
     uint32_t info[8];
-    out("Foundation shell " SHELL_VERSION "\n");
     int32_t status = read_sysinfo(info);
-    if (status != FND_OK)
-        return report("VER", 0, status);
-    out("Kernel ABI ");
-    out_dec((int32_t)info[0], 0);
-    out(".");
-    out_dec((int32_t)info[1], 0);
-    out("\n");
-    return FND_OK;
+    if (status == FND_OK) {
+        out("Foundation OS (kernel ABI ");
+        out_dec((int32_t)info[0], 0);
+        out(".");
+        out_dec((int32_t)info[1], 0);
+        out(")\n");
+    }
+    out("Foundation shell " SHELL_VERSION "\n");
+    return status;
 }
 
-static int32_t cmd_mem(uint32_t argc, char **argv) {
+static int32_t cmd_uname(uint32_t argc, char **argv) {
     (void)argv;
     if (argc != 1u)
-        return usage("MEM");
+        return usage("uname");
+    int32_t status = show_versions();
+    return status == FND_OK ? FND_OK : report("uname", 0, status);
+}
+
+static int32_t cmd_free(uint32_t argc, char **argv) {
+    (void)argv;
+    if (argc != 1u)
+        return usage("free");
     uint32_t info[8];
     int32_t status = read_sysinfo(info);
     if (status != FND_OK)
-        return report("MEM", 0, status);
+        return report("free", 0, status);
     out_dec((int32_t)(info[3] / 1024u), 8);
     out(" KiB total\n");
     out_dec((int32_t)(info[4] / 1024u), 8);
@@ -636,10 +649,10 @@ static uint32_t ps_buf[PS_MAX * FND_PROCINFO_BYTES / 4u];
 static int32_t cmd_ps(uint32_t argc, char **argv) {
     (void)argv;
     if (argc != 1u)
-        return usage("PS");
+        return usage("ps");
     int32_t size = fnd_sys_info(FND_INFO_PROCESSES, ps_buf, sizeof ps_buf);
     if (size < 0)
-        return report("PS", 0, size);
+        return report("ps", 0, size);
     if ((uint32_t)size > sizeof ps_buf)
         size = (int32_t)sizeof ps_buf;
     static const char *const states[3] = {"RUN  ", "BLOCK", "EXIT "};
@@ -668,31 +681,30 @@ static int32_t cmd_help(uint32_t argc, char **argv);
 static int32_t cmd_exit(uint32_t argc, char **argv) {
     int32_t code = last_status;
     if (argc > 2u || (argc == 2u && !parse_i32(argv[1], &code)))
-        return usage("EXIT [code]");
+        return usage("exit [code]");
     exit_requested = 1;
     exit_code = code;
     return code;
 }
 
 static const struct builtin builtins[] = {
-    {"CD", cmd_cd, "CD [path]", "show or change the current directory"},
-    {"DIR", cmd_needs_fs, "DIR [-b] [path...]", "list a directory"},
-    {"TYPE", cmd_needs_fs, "TYPE path...", "write files to the output"},
-    {"COPY", cmd_needs_fs, "COPY [-f] src... dst", "copy files"},
-    {"DEL", cmd_needs_fs, "DEL path...", "delete files"},
-    {"REN", cmd_needs_fs, "REN old new", "rename or move a file"},
-    {"MD", cmd_needs_fs, "MD path...", "make directories"},
-    {"MKDIR", cmd_needs_fs, "MKDIR path...", "make directories"},
-    {"RD", cmd_needs_fs, "RD path...", "remove empty directories"},
-    {"RMDIR", cmd_needs_fs, "RMDIR path...", "remove empty directories"},
-    {"CLS", cmd_cls, "CLS", "clear the screen"},
-    {"ECHO", cmd_echo, "ECHO [word...]", "write words"},
-    {"SET", cmd_set, "SET [NAME[=value]]", "show or set variables"},
-    {"VER", cmd_ver, "VER", "show versions"},
-    {"MEM", cmd_mem, "MEM", "show memory"},
-    {"PS", cmd_ps, "PS", "list processes"},
-    {"HELP", cmd_help, "HELP [command]", "show help"},
-    {"EXIT", cmd_exit, "EXIT [code]", "leave the shell"},
+    {"cd", cmd_cd, "cd [path]", "change the current directory"},
+    {"pwd", cmd_pwd, "pwd", "show the current directory"},
+    {"ls", cmd_needs_fs, "ls [-l] [path...]", "list a directory"},
+    {"cat", cmd_needs_fs, "cat path...", "write files to the output"},
+    {"cp", cmd_needs_fs, "cp [-f] src... dst", "copy files"},
+    {"rm", cmd_needs_fs, "rm path...", "delete files"},
+    {"mv", cmd_needs_fs, "mv old new", "rename or move a file"},
+    {"mkdir", cmd_needs_fs, "mkdir path...", "make directories"},
+    {"rmdir", cmd_needs_fs, "rmdir path...", "remove empty directories"},
+    {"clear", cmd_clear, "clear", "clear the screen"},
+    {"echo", cmd_echo, "echo [word...]", "write words"},
+    {"set", cmd_set, "set [NAME[=value]]", "show or set variables"},
+    {"uname", cmd_uname, "uname", "show the OS and shell versions"},
+    {"free", cmd_free, "free", "show memory"},
+    {"ps", cmd_ps, "ps", "list processes"},
+    {"help", cmd_help, "help [command]", "show help"},
+    {"exit", cmd_exit, "exit [code]", "leave the shell"},
 };
 #define BUILTINS (sizeof builtins / sizeof builtins[0])
 
@@ -706,11 +718,11 @@ static const struct builtin *find_builtin(const char *name) {
 
 static int32_t cmd_help(uint32_t argc, char **argv) {
     if (argc > 2u)
-        return usage("HELP [command]");
+        return usage("help [command]");
     if (argc == 2u) {
         const struct builtin *b = find_builtin(argv[1]);
         if (!b)
-            return report("HELP", argv[1], FND_E_NOT_FOUND);
+            return report("help", argv[1], FND_E_NOT_FOUND);
         out("usage: ");
         out(b->syntax);
         out("\n");
@@ -1032,6 +1044,7 @@ int main(void) {
     var_set("PATH", 4, "/bin", 4);
     /* §2.1: no startup block yet, so always interactive; /etc/profile.fsh
      * would need the fs service. */
+    show_versions();
     for (;;) {
         out("/> "); /* §9.1: the cwd, which is / until there is an fs */
         if (read_line() != 0)
