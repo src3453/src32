@@ -353,3 +353,60 @@ fn disabled_v_leaves_extension_p_regions_in_charge() {
         assert_eq!(cpu.read_reg(11), 0x8005_0001, "{kind:?} region fault");
     }
 }
+
+#[test]
+fn debugger_lists_tlb_and_translates_without_side_effects() {
+    use cpt32::cpu_privilege::DebugTranslation;
+    for &kind in KINDS {
+        let user = [addi(2, 0, 0x3000), ld(4, 2, 0), syscall(1)];
+        let mut cpu = boot(kind, &user, &[HALT], &standard_map());
+        cpu.run(4000);
+        let snapshot = cpu.mmu_snapshot();
+        assert!(snapshot.enabled, "{kind:?}");
+        assert_eq!(snapshot.ptbr, L1, "{kind:?}");
+        let valid: Vec<_> = snapshot
+            .entries
+            .iter()
+            .filter(|entry| entry.valid)
+            .map(|entry| (entry.virtual_page, entry.physical_page))
+            .collect();
+        assert!(
+            valid.contains(&(0x2000, 0x1000)),
+            "{kind:?} code page {valid:?}"
+        );
+        assert!(
+            valid.contains(&(0x3000, 0x2000)),
+            "{kind:?} data page {valid:?}"
+        );
+
+        match cpu.mmu_translate(0x3008) {
+            DebugTranslation::Mapped {
+                physical,
+                in_tlb,
+                flags,
+            } => {
+                assert_eq!(
+                    (physical, in_tlb, flags.write),
+                    (0x2008, true, true),
+                    "{kind:?}"
+                );
+            }
+            other => panic!("{kind:?} {other:?}"),
+        }
+        // 0x4000 was never touched: found by a walk, and the TLB stays as is.
+        match cpu.mmu_translate(0x4010) {
+            DebugTranslation::Mapped {
+                physical, in_tlb, ..
+            } => {
+                assert_eq!((physical, in_tlb), (0x4010, false), "{kind:?}");
+            }
+            other => panic!("{kind:?} {other:?}"),
+        }
+        assert_eq!(cpu.mmu_snapshot(), snapshot, "{kind:?} no side effects");
+        assert_eq!(
+            cpu.mmu_translate(0x6000),
+            DebugTranslation::Unmapped,
+            "{kind:?}"
+        );
+    }
+}
