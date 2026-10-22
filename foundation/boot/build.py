@@ -1,18 +1,28 @@
-"""Builds the Foundation boot image with the shell into OUT/foundation.wax.
+"""Builds the Foundation boot images into OUT.
 
-The shell is a PROTECTED WAX v2 for slot 4 (doc/spec_Foundation_shell.md §1),
-built with tools/llvm-src32 --protected. Until FNDBOOT exists, its bytes are
-linked into the kernel image through OUT/shell_image.h (boot/main.c).
+    python foundation/boot/build.py OUT [--clang PATH] [-O0|-O1|-O2] [--stop-ticks N]
+                                        [--root DIR] [--disk-blocks N]
 
-    python foundation/boot/build.py OUT [--clang PATH] [-O0|-O1|-O2] [--stop-ticks N] [--fnd-wal]
+Outputs:
+  shell.wax       the shell, a PROTECTED WAX v2 for slot 4 (doc/spec_Foundation_shell.md §1)
+  foundation.wax  kernel + module-only FNDBOOT linked in (fndboot_image.h); the host
+                  loads it directly (doc/spec_Foundation.md §11 without stage1)
+  kernel.bin      kernel raw image for 0x00010000, entered by stage1
+  fndboot.bin     FNDBOOT: kernel.bin and the module table (§11)
+  stage1.bin      boot sector (foundation/boot/stage1.a)
+  foundation.img  bootable FS2 volume (doc/spec_FS2.md): stage1 in block 0, FNDBOOT
+                  in the reserved boot area, /bin/shell.wax, plus the files under --root
 
---stop-ticks makes the kernel stop with R1 = 42 at that tick (tests/shell).
+--stop-ticks makes the kernel stop with R1 = 42 at that tick (tests).
 --fnd-wal builds libfnd as the WAL "fnd" 1.0 (OUT/fnd.wal, exports in
-lib/fnd/fnd.exports) and the shell as a WAX v3 that imports it; the kernel
-passes the WAL when it spawns the shell.
+lib/fnd/fnd.exports) and the shell as a WAX v3 that imports it. Both kernels
+link the WAL (boot_libs.h) and pass it when they spawn the FNDBOOT modules
+(doc/spec_Foundation.md §9.5); the disk also gets /lib/fnd.1.wal.
 """
 import argparse
+import os
 from pathlib import Path
+import re
 import subprocess
 import sys
 
@@ -20,16 +30,30 @@ HERE = Path(__file__).resolve().parent
 FOUNDATION = HERE.parent
 ROOT = FOUNDATION.parent
 DRIVER = ROOT / "tools/llvm-src32/driver.py"
+sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(ROOT / "tools/fs2"))
+import fndboot  # noqa: E402
+import fs2  # noqa: E402
 
 # Slot 4 (doc/spec_Foundation.md §5.2) and the shell's stack.
 SHELL_ORIGIN = 0x00600000
 SHELL_STACK_TOP = 0x00800000
 SHELL_STACK = 0x4000
+FND_PRIO_APP = 2
+KERNEL_LOAD = 0x00010000
+KERNEL_STACK_TOP = 0x00100000
+# Disk defaults: 8 MiB, with the reserved boot area sized for the largest
+# FNDBOOT stage1 accepts (2 MiB), so a bigger kernel never needs a re-format.
+DISK_BLOCKS = 16384
+BOOT_BLOCKS = fndboot.MAX_SIZE // fs2.BLOCK
+DISK_INODES = 256
+MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8)
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "con_pcg.c", "strerror.c")]
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "wax.c")]
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "trap.c", "wax.c", "fndboot.c")]
+ASSEMBLER = ROOT / "tools/asm/asm.py"
 
 
 def driver(sources, output, args, *extra):
@@ -49,12 +73,36 @@ def embed(name, data):
             f"static const uint32_t img_{name}[{len(padded) // 4}] = {{{words}}};\n")
 
 
+def console_grants():
+    """The shell's provisional MMIO grants: the windows in con_pcg.h (VDP, PCG text, PeC input)."""
+    text = (FOUNDATION / "lib/fnd/con_pcg.h").read_text(encoding="utf-8")
+    value = {name: int(number, 16) for name, number in re.findall(r"#define (CON_PCG_\w+) (0x[0-9A-Fa-f]+)u", text)}
+    return [(value[f"CON_PCG_{window}_START"], value[f"CON_PCG_{window}_END"], 3)
+            for window in ("VDP", "TEXT", "INPUT")]
+
+
+def disk_image(stage1, boot, files, blocks):
+    """An FS2 volume: stage1 in block 0, FNDBOOT in the reserved area, files = {path: (bytes, mode)}."""
+    img = fs2.format_image(blocks, BOOT_BLOCKS, DISK_INODES)
+    volume = fs2.Volume(img)
+    volume.install_boot(boot, stage1)
+    for path, (data, mode) in sorted(files.items()):
+        volume.mkdir(path.rsplit("/", 1)[0] or "/", parents=True)
+        volume.put(path, data, mode=mode)
+    problems = fs2.check_image(img)
+    if problems:
+        raise RuntimeError(f"generated image does not mount: {problems[0]}")
+    return img
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
     parser.add_argument("--clang")
     parser.add_argument("--stop-ticks", type=int)
+    parser.add_argument("--root", type=Path, help="host directory copied into the disk root (e.g. root/bin/*.wax)")
     parser.add_argument("--fnd-wal", action="store_true", help="link libfnd as the WAL fnd 1.0")
+    parser.add_argument("--disk-blocks", type=int, default=DISK_BLOCKS, help=f"disk size in blocks (default {DISK_BLOCKS})")
     level = parser.add_mutually_exclusive_group()
     for n in range(3):
         level.add_argument(f"-O{n}", dest="optimization", action="store_const", const=f"-O{n}")
@@ -64,23 +112,46 @@ def main(argv=None):
 
     layout = ["--origin", hex(SHELL_ORIGIN), "--stack-top", hex(SHELL_STACK_TOP),
               "--user-stack-size", hex(SHELL_STACK)]
-    header = ["/* Generated by foundation/boot/build.py. */", "#include <stdint.h>"]
+    libs = ["/* Generated by foundation/boot/build.py. */", "#include <stdint.h>"]
+    files = {}
     if args.fnd_wal:
         fnd = driver(LIBFND, args.out / "fnd.wal", args, "--wal", "--image-id", "fnd",
                      "--abi-version", "1.0", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
         shell = driver([FOUNDATION / "shell/shell.c"], args.out / "shell.wax", args, "--wax3",
-                       "--image-id", "foundation.shell", "--import-wal", fnd, *layout)
-        header += ["#define FOUNDATION_BOOT_FND_WAL 1", embed("fnd", fnd.read_bytes())]
+                       "--image-id", "foundation.shell", "--import-wal", fnd, *layout).read_bytes()
+        libs += ["#define FOUNDATION_BOOT_FND_WAL 1", embed("fnd", fnd.read_bytes())]
+        files["/lib/fnd.1.wal"] = (fnd.read_bytes(), None)
     else:
         shell = driver([FOUNDATION / "shell/shell.c", *LIBFND], args.out / "shell.wax", args, "--protected",
-                       *layout)
-    header.append(embed("shell", shell.read_bytes()))
-    (args.out / "shell_image.h").write_text("\n".join(header), encoding="utf-8")
-    extra = ["-I", str(args.out), "--origin", "0x10000", "--stack-top", "0x100000"]
+                       *layout).read_bytes()
+    (args.out / "boot_libs.h").write_text("\n".join(libs) + "\n", encoding="utf-8")
+    modules = [dict(name="shell", image=shell, priority=FND_PRIO_APP, grants=console_grants())]
+    kernel_args = ["-I", str(args.out), "--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
-        extra += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
-    image = driver([HERE / "main.c", *KERNEL], args.out / "foundation.wax", args, *extra)
+        kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
+
+    header = ["/* Generated by foundation/boot/build.py. */", "#include <stdint.h>",
+              embed("fndboot", fndboot.pack(b"", modules))]
+    (args.out / "fndboot_image.h").write_text("\n".join(header), encoding="utf-8")
+    image = driver([HERE / "main.c", *KERNEL], args.out / "foundation.wax", args,
+                   "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
     print(f"Wrote {image}")
+
+    kernel = driver([HERE / "main.c", *KERNEL], args.out / "kernel.bin", args, *kernel_args).read_bytes()
+    boot = fndboot.pack(kernel, modules)
+    (args.out / "fndboot.bin").write_bytes(boot)
+    stage1 = args.out / "stage1.bin"
+    subprocess.run([sys.executable, str(ASSEMBLER), "-o", str(stage1), str(HERE / "stage1.a")], check=True)
+    files["/bin/shell.wax"] = (shell, MODE_EXEC)
+    if args.root:
+        for host in sorted(p for p in args.root.rglob("*") if p.is_file()):
+            path = "/" + host.relative_to(args.root).as_posix()
+            files[path] = (host.read_bytes(), MODE_EXEC if path.startswith("/bin/") else None)
+    disk = args.out / "foundation.img"
+    temporary = disk.with_name(disk.name + ".tmp")
+    temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))
+    os.replace(temporary, disk)
+    print(f"Wrote {disk}")
     return 0
 
 

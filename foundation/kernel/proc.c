@@ -7,6 +7,9 @@
 static struct fnd_proc procs[FND_MAX_PROCS];
 static struct fnd_proc *active; /* process whose regions are programmed */
 static uint32_t next_pid = 1;
+static uint32_t boot_drive;
+
+void fnd_set_boot_drive(uint32_t drive) { boot_drive = drive; }
 
 static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
     0x00400000u, 0x00480000u, 0x00500000u, 0x00580000u,
@@ -369,7 +372,7 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
     if (sel == 0) {
         uint32_t user = slot_bounds[FND_SLOTS] - slot_bounds[0];
         uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, RAM_BYTES, user - used, live,
-                            0 /* boot_drive: no stage1 yet */, 0};
+                            boot_drive, 0};
         for (uint32_t w = 0; w < 8u; ++w)
             put_word(buf, cap, 4u * w, info[w]);
         return (int32_t)size;

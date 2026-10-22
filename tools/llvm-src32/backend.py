@@ -1485,14 +1485,22 @@ class _Module:
         if self.entry not in self.definitions:
             raise CompileError(f"entry function @{self.entry} is not defined")
         entry = self.definitions[self.entry]
-        if list(entry.arguments):
-            raise CompileError("freestanding entry must take no arguments (use int main(void))")
+        entry_arguments = list(entry.arguments)
+        if len(entry_arguments) > 2 or any(str(argument.type) != "i32" for argument in entry_arguments):
+            raise CompileError("freestanding entry takes no arguments or up to two uint32_t "
+                               "(R1 and R2 at entry), e.g. int main(void)")
         result = entry.global_value_type.get_function_return()
         if str(result) not in ("void", "i32"):
             raise CompileError("freestanding entry must return i32 or void")
         c.label("__llvm_src32_start")
         c.imm(28, self.stack_top)
         c.move(29, 0)
+        if entry_arguments:
+            # A loader's R1/R2 hand-off (e.g. Foundation stage1) becomes the
+            # entry's arguments, stored before anything else uses them.
+            c.add_const(28, 28, -8)
+            c.mem("ST", 1, 28, 0)
+            c.mem("ST", 2, 28, 4)
         if self.data_origin is not None:
             # ROM layout: copy initialized writable data to RAM, clear the rest.
             copy, copied = c.fresh("data_copy"), c.fresh("data_copied")
