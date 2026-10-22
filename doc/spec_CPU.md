@@ -298,6 +298,7 @@ Bit positions:
   - Bit 6: Extension F (not implemented and not reported by this CPU)
   - Bit 7: Extension p (pipelining; pipeline CPU only)
   - Bit 8: Extension P (privilege levels and system calls)
+  - Bit 9: Extension V (virtual memory; draft, see `doc/spec_CPU_vm.md`, not implemented)
 
 The current CPU implements Base and Extensions A, L, M, S, I and P. It reports
 `CPU_FEATURES = 0x0000013F` (pipeline: `0x000001BF`); Extension F remains a
