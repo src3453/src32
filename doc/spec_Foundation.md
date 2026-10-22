@@ -514,6 +514,10 @@ FNDBOOT のヘッダ（64 bytes）：
 | 24–31 | 予約 |
 | 32 | `name[16]` |
 
+`grant_off` は、`proc_spawn`（§9.2）の `grants` と同じ 12 bytes（`start`、`end`、`perm`）の付与を `grant_count` 個並べた配列の位置です（0 個なら 0）。オフセットはすべてイメージ先頭からの byte 数で、4-byte 境界に置きます。`name` は NUL で終わる ASCII です。
+
+stage1 は、`kernel_load` = `0x00010000`、`kernel_size` ≤ `0xE0000`（§5.1 のカーネルイメージ領域）、`kernel_entry` がカーネルの範囲内であること、`size` = FS2 の `boot_size` であることも検査します。stage1 が失敗したときは、割り込み禁止のまま R1 = 失敗した段階（1 = IDENTIFY か superblock の読み込み、2 = superblock の検査、3 = FNDBOOT の読み込みか検査）で HALT します。
+
 カーネルは同梱モジュールを表の順に spawn します。各モジュールには、argv = [name]、cwd = `/`、役割表なしの起動ブロックを与えます。表の最後は init でなければなりません。すべて spawn し終えたら、staging 領域を解放します。
 
 ## 12. C からの利用
