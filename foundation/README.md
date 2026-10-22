@@ -74,7 +74,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 
 - **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.1（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
-- **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir` はまだ `/bin` にありません（`ls` は追加済み）。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
+- **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir`、`ls` は `/bin` にあります（`cp` の同一ファイル検出はパス文字列の比較だけです）。`thread_create` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
 - **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 4 tick ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
