@@ -249,7 +249,7 @@ libfnd とサービスのプロトコルは [API 仕様](spec_Foundation_API.md)
   - コンソール：`fnd_con_write`、`fnd_con_read_line`、`fnd_con_getkey`。
   - 標準ハンドル：`fnd_std_in()`、`fnd_std_out()`（起動情報から取得する）。
 - エラーコード（初期案）：`E_OK=0`、`E_NOT_FOUND`、`E_EXISTS`、`E_NOT_DIR`、`E_IS_DIR`、`E_NOT_EMPTY`、`E_BAD_PATH`、`E_BAD_HANDLE`、`E_ACCESS`、`E_NO_MEDIA`、`E_IO`、`E_NO_SPACE`、`E_NO_MEMORY`、`E_LIMIT`、`E_PEER_GONE`、`E_FORMAT`、`E_UNSUPPORTED`。
-- シェル `/bin/shell.wax`（仕様は [spec_Foundation_shell.md](spec_Foundation_shell.md)。以下と異なる場合は仕様が優先。`KILL` は v1 では除外）：
+- シェル `/bin/shell.wax`（仕様は [spec_Foundation_shell.md](spec_Foundation_shell.md)。以下と異なる場合は仕様が優先。2026-10-22 にコマンド名を UNIX 風（`ls`、`cat`、`pwd` など）に変更し、`KILL` は v1 では除外）：
   - 内部コマンド：`DIR`、`CD`、`TYPE`、`COPY`、`DEL`、`REN`、`MD`/`MKDIR`、`RD`/`RMDIR`、`CLS`、`ECHO`、`VER`、`MEM`、`PS`、`KILL`、`HELP`、`EXIT`。
   - コマンド名は大文字小文字を区別しません。内部コマンドでなければ、`/bin/<name>.wax` を探して起動します。
   - `/` はパス区切りなので、オプションには `-x` を使います（DOS の `/x` は使わない）。
