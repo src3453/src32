@@ -32,7 +32,7 @@ void task_probe(volatile uint32_t *box) {
     box[PROBE_BAD_POINTER] = (uint32_t)fnd_sys_debug_write(0x100u, 4u);
     box[PROBE_BAD_NUMBER] = cpt32_syscall(0x3Eu, 0u, 0u, 0u, 0u, 0u);
     box[PROBE_BAD_CONTEXT] = cpt32_syscall(FND_SYS_YIELD, 1u, 0u, 0u, 0u, 0u);
-    box[PROBE_UNSUPPORTED] = cpt32_syscall(FND_SYS_PORT_CREATE, 0u, 0u, 0u, 0u, 0u);
+    box[PROBE_UNSUPPORTED] = cpt32_syscall(FND_SYS_THREAD_CREATE, 0u, 0u, 0u, 0u, 0u);
     box[PROBE_TICK_HZ] = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_HZ);
     /* Length 0 only: src32_testbench has no UART, so writing a byte would
      * be a bus error in the kernel. */
@@ -42,7 +42,7 @@ void task_probe(volatile uint32_t *box) {
     box[PROBE_CPU_SIZE] = (uint32_t)fnd_sys_info(2u, 0, 0);
     box[PROBE_CPU_BAD_POINTER] = (uint32_t)fnd_sys_info(2u, (void *)0x100u, 16u);
     box[PROBE_CPU_ALIGNMENT] = (uint32_t)fnd_sys_info(2u, (void *)((uintptr_t)cpu + 1u), 16u);
-    box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(3u, cpu, sizeof cpu);
+    box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(4u, cpu, sizeof cpu);
     int32_t needed = fnd_sys_info(2u, cpu, 16u);
     box[PROBE_CPU_PREFIX] = needed == 48 && cpu[4] == 0x12345678u && cpu[0] > 0 && cpu[1] > 0;
     box[PROBE_CPU_CLOCK] = cpu[3];

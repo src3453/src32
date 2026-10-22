@@ -4,6 +4,7 @@
 
 #include <cpt32/cpu.h>
 #include <foundation/abi.h>
+#include <foundation/ipc.h>
 
 /* Supervisor-side interface of the kernel, for the image that links
  * it (boot code, demo, tests). User programs use <foundation/abi.h>. */
@@ -28,17 +29,30 @@ struct fnd_region {
     uint32_t mmio;  /* an MMIO grant (§10.3): never a RAM region for §5.4 */
 };
 
+/* A handle table entry (§6): kind FND_OBJ_* and the kernel object. */
+enum { FND_OBJ_NONE, FND_OBJ_PORT, FND_OBJ_CHANNEL, FND_OBJ_PROCESS };
+struct fnd_handle_entry {
+    uint32_t kind;
+    void *object;
+};
+
 struct fnd_proc {
     uint32_t state;
     uint32_t pid;
+    uint32_t parent; /* pid of the spawner, 0 for the kernel */
     uint32_t slot;
     uint32_t priority;
+    uint32_t caps;    /* FND_CAP_* (§9.1) */
     uint32_t threads; /* live threads */
+    uint32_t refs;    /* PROCESS handles: the record stays until they close */
     int32_t exit_code;
     uint32_t fault_epc; /* EPC of the fault that ended it, else 0 */
     uint32_t cpu_cycles; /* elapsed user-context cycles, modulo 2^32 */
     uint32_t region_count;
     struct fnd_region regions[FND_REGIONS];
+    uint32_t heap_start, heap_end, heap_limit, heap_region; /* mem_grow (§5.3) */
+    uint32_t startup_len; /* bytes of its startup block (§9.3) */
+    struct fnd_handle_entry handles[FND_MAX_HANDLES];
     char name[16];
 };
 
@@ -78,12 +92,18 @@ struct fnd_grant {
 int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
                            const struct fnd_image *libs, uint32_t lib_count,
                            const struct fnd_grant *grants, uint32_t grant_count);
+/* A bundled module started by the kernel (§11): like fnd_proc_spawn_wax,
+ * with the capabilities caps. The startup block is argv = [name], cwd = "/"
+ * and no roles. */
+int32_t fnd_proc_spawn_module(const char *name, uint32_t priority, uint32_t caps, const void *image,
+                              uint32_t size, const struct fnd_image *libs, uint32_t lib_count,
+                              const struct fnd_grant *grants, uint32_t grant_count);
 /* FNDBOOT bundled modules (§11). fnd_boot_check validates the header and
  * the module table of the image stage1 staged (or one linked into the
  * kernel image) and returns the module count or FND_E_FORMAT. Call
  * fnd_boot_spawn only after a successful check: it spawns module index with
- * its priority and grants, with libs as its WAL list (§9.5), and returns
- * what fnd_proc_spawn_wax returns. The image must stay in memory while the
+ * its priority, caps and grants, with libs as its WAL list (§9.5), and returns
+ * what fnd_proc_spawn_module returns. The image must stay in memory while the
  * modules may be spawned. */
 int32_t fnd_boot_check(const void *fndboot);
 int32_t fnd_boot_spawn(const void *fndboot, uint32_t index, const struct fnd_image *libs,

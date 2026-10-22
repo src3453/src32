@@ -3,8 +3,6 @@
  * cells of 8x8. Scrolling moves SCROLL_Y by one cell row and clears only the
  * ring row that comes back at the bottom; the cursor keeps its screen row
  * apart from the physical ring row. */
-#include <foundation/sys.h>
-
 #include "con_pcg.h"
 
 #define MMIO8(address) (*(volatile uint8_t *)(uintptr_t)(address))
@@ -28,7 +26,6 @@
 #define PEC_EVENT_DATA 0x80040030u
 #define PEC_EVENT_STATUS 0x80040034u
 #define PEC_EVENT_POP 0x80040038u
-#define POLL_TICKS 4u
 
 #define COLOR_FG 0x3Fu
 #define COLOR_BG 0x00u
@@ -263,7 +260,8 @@ static int decode(uint32_t event, fnd_key_t *key) {
     return 1;
 }
 
-/* No irq_bind yet, so the FIFO is polled, sleeping between empty polls. */
+/* Takes one key press from the PeC event FIFO; 0 when it is empty. No
+ * irq_bind yet, so the service polls this between messages. */
 int con_pcg_poll_key(fnd_key_t *key) {
     for (;;) {
         uint32_t status = MMIO32(PEC_EVENT_STATUS);
@@ -278,7 +276,13 @@ int con_pcg_poll_key(fnd_key_t *key) {
     }
 }
 
-void con_pcg_read_key(fnd_key_t *key) {
-    while (!con_pcg_poll_key(key))
-        fnd_sys_sleep(POLL_TICKS);
+void con_pcg_get_cursor(uint32_t *x, uint32_t *y) {
+    *x = col;
+    *y = row;
+}
+
+void con_pcg_set_cursor(uint32_t x, uint32_t y) {
+    col = x;
+    row = y;
+    show_cursor();
 }

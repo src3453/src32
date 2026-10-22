@@ -128,13 +128,52 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_INFO:
         result = proc_sys_info(proc, a1, a2, a3);
         break;
-    case FND_SYS_IPC_CALL: case FND_SYS_IPC_RECV:
-    case FND_SYS_IPC_REPLY: case FND_SYS_IPC_REPLY_RECV: case FND_SYS_PORT_CREATE:
-    case FND_SYS_CHAN_CREATE: case FND_SYS_HANDLE_CLOSE: case FND_SYS_HANDLE_DUP:
-    case FND_SYS_THREAD_CREATE: case FND_SYS_WAIT: case FND_SYS_PROC_SPAWN:
-    case FND_SYS_PROC_KILL: case FND_SYS_PROC_STARTUP: case FND_SYS_MEM_GROW:
-    case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK: case FND_SYS_BLK_IO:
-    case FND_SYS_SVC_REGISTER: case FND_SYS_SVC_LOOKUP:
+    case FND_SYS_IPC_CALL:
+        result = sys_ipc_call(thread, a1, a2, a3);
+        break;
+    case FND_SYS_IPC_RECV:
+        result = sys_ipc_recv(thread, a1, a2);
+        break;
+    case FND_SYS_IPC_REPLY:
+        result = sys_ipc_reply(thread, a1, a2);
+        break;
+    case FND_SYS_IPC_REPLY_RECV:
+        result = sys_ipc_reply_recv(thread, a1, a2, a3, frame->r[4]);
+        break;
+    case FND_SYS_PORT_CREATE:
+        result = sys_port_create(proc);
+        break;
+    case FND_SYS_CHAN_CREATE:
+        result = sys_chan_create(proc, a1, a2);
+        break;
+    case FND_SYS_HANDLE_CLOSE:
+        result = sys_handle_close(proc, a1);
+        break;
+    case FND_SYS_HANDLE_DUP:
+        result = sys_handle_dup(proc, a1);
+        break;
+    case FND_SYS_WAIT:
+        result = sys_wait(thread, a1, a2, a3);
+        break;
+    case FND_SYS_PROC_SPAWN:
+        result = proc_spawn(proc, a1);
+        break;
+    case FND_SYS_PROC_KILL:
+        result = sys_proc_kill(proc, a1);
+        break;
+    case FND_SYS_PROC_STARTUP:
+        result = proc_startup(proc, a1, a2);
+        break;
+    case FND_SYS_MEM_GROW:
+        result = proc_mem_grow(proc, a1);
+        break;
+    case FND_SYS_SVC_REGISTER:
+        result = sys_svc_register(proc, a1, a2);
+        break;
+    case FND_SYS_SVC_LOOKUP:
+        result = sys_svc_lookup(proc, a1);
+        break;
+    case FND_SYS_THREAD_CREATE: case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK: case FND_SYS_BLK_IO:
         result = FND_E_UNSUPPORTED; /* defined by the ABI, later phases */
         break;
     default:
