@@ -1,0 +1,191 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  PYTHON_VERSION: "3.12"
+
+jobs:
+  # エミュレータ本体と src32_testbench。testbench は後続ジョブで使うので artifact にする。
+  rust:
+    name: Rust (testbench build + integration tests)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build src32_testbench
+        run: cargo build --bin src32_testbench
+      - uses: actions/upload-artifact@v4
+        with:
+          name: src32_testbench
+          path: target/debug/src32_testbench
+          retention-days: 7
+      - name: Build sol guest images used by integration tests
+        run: |
+          set -e
+          mkdir -p target/guests
+          build() {
+            python3 tools/solc/solc.py compile "$1" -o "target/guests/$2.a"
+            python3 tools/asm/asm.py "target/guests/$2.a" -o "$2.bin"
+          }
+          build dos.sol dos
+          build tinybasic.sol tinybasic
+          build tools/dsfs/dsfs_smoke.sol dsfs_guest
+      # lib の単体テストは外部リポジトリ (s3w2_core) の golden ファイルを include するため
+      # CI ではビルドできない。tests/ の統合テストだけを実行する。
+      # strek_* と tb_load_live は既知の失敗/外部ファイル依存なので known-failures ジョブへ回す。
+      - name: Integration tests
+        run: |
+          set -e
+          args=()
+          for f in tests/*.rs; do
+            name=$(basename "$f" .rs)
+            case "$name" in
+              strek_micro|strek_smoke|strek_verify|tb_load_live) continue ;;
+            esac
+            args+=(--test "$name")
+          done
+          cargo test --no-fail-fast "${args[@]}" -- \
+            --skip dos_hex_returns_to_shell_at_800_cycles_per_frame
+
+  # 失敗が既知のテスト。ステップ単位の continue-on-error なので PR のチェックは緑のまま、
+  # 結果はこのジョブのログ (Known-failing tests ステップ) で確認できる。
+  known-failures:
+    name: Rust known failures (non-blocking)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system packages
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Build sol guest images
+        run: |
+          set -e
+          mkdir -p target/guests
+          python3 tools/solc/solc.py compile dos.sol -o target/guests/dos.a
+          python3 tools/asm/asm.py target/guests/dos.a -o dos.bin
+          python3 tools/solc/solc.py compile tinybasic.sol -o target/guests/tinybasic.a
+          python3 tools/asm/asm.py target/guests/tinybasic.a -o tinybasic.bin
+      - name: Known-failing tests
+        continue-on-error: true
+        run: |
+          cargo test --no-fail-fast --test strek_micro --test strek_smoke --test tb_load_live
+          cargo test --test dos_smoke dos_hex_returns_to_shell_at_800_cycles_per_frame
+
+  # LLVM/SRC32 ツールチェーンと Foundation の受け入れテスト (test_toolchain.py)。
+  # Clang は llvmlite が組み込んでいる LLVM と同じメジャーバージョンを使う
+  # (ずれると -O1/-O2 で "icmp constexprs" エラーになる)。
+  toolchain:
+    name: LLVM toolchain + Foundation tests
+    needs: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: tools/llvm-src32/requirements.txt
+      - name: Install Python packages
+        run: pip install -r tools/llvm-src32/requirements.txt
+      - name: Install Clang matching llvmlite
+        run: |
+          set -e
+          major=$(python -c "import llvmlite.binding as l; print(l.llvm_version_info[0])")
+          echo "llvmlite uses LLVM $major"
+          wget -q https://apt.llvm.org/llvm.sh
+          sudo bash llvm.sh "$major"
+          echo "CLANG=/usr/bin/clang-$major" >> "$GITHUB_ENV"
+      - uses: actions/download-artifact@v4
+        with:
+          name: src32_testbench
+          path: target/debug
+      - name: Prepare testbench
+        run: |
+          chmod +x target/debug/src32_testbench
+          echo "SRC32_TESTBENCH=$PWD/target/debug/src32_testbench" >> "$GITHUB_ENV"
+      - name: Toolchain tests
+        run: |
+          "$CLANG" --version
+          python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
+
+  # sol コンパイラ / VM / LSP、WAX ツール、Foundation WAX ローダのホストテスト。
+  # sol の Foundation 実行テストは testbench を使う。
+  solc:
+    name: sol compiler + WAX tests
+    needs: rust
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pytest
+      - uses: actions/download-artifact@v4
+        with:
+          name: src32_testbench
+          path: target/debug
+      - name: Prepare testbench
+        run: |
+          chmod +x target/debug/src32_testbench
+          echo "SRC32_TESTBENCH=$PWD/target/debug/src32_testbench" >> "$GITHUB_ENV"
+      - name: pytest
+        run: python -m pytest tools/solc tools/wax -q
+      - name: Foundation WAX loader (host)
+        run: python -m unittest discover -s foundation/tests/wax -v
+
+  wasm-sdk:
+    name: WASM expansion card SDK
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Package builder tests
+        run: python -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v
+
+  # VS Code 拡張 (sol / SRC32 アセンブリ) の .vsix を作って artifact に残す。
+  vscode-extensions:
+    name: VS Code extensions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/vscode-sol-syntax/package-lock.json
+      - name: Package vscode-sol-syntax
+        working-directory: tools/vscode-sol-syntax
+        run: |
+          npm ci
+          npm run compile
+          npx vsce package --no-dependencies
+      - name: Package vscode-src32-asm-syntax
+        working-directory: tools/vscode-src32-asm-syntax
+        run: npx --yes @vscode/vsce@3 package --no-dependencies
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extensions
+          path: tools/*/*.vsix
+          retention-days: 7

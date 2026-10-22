@@ -1,0 +1,115 @@
+name: Release
+
+# v で始まるタグ (例: v0.1.0) を push すると、各 OS の cpt32 バイナリと
+# VS Code 拡張の .vsix を GitHub Releases に公開する。
+# 手動実行 (workflow_dispatch) と、このファイルを変更した PR では Release を作らず、
+# 成果物を artifact に残すだけ (ビルドの確認用)。
+on:
+  push:
+    tags: ["v*"]
+  pull_request:
+    paths: [".github/workflows/release.yml"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  binaries:
+    name: Binaries (${{ matrix.name }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux-x86_64
+            os: ubuntu-24.04
+            ext: ""
+          - name: windows-x86_64
+            os: windows-latest
+            ext: ".exe"
+          - name: macos-arm64
+            os: macos-latest
+            ext: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v5
+      - name: Install system packages
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: release
+      - name: Build
+        run: cargo build --release --bin cpt32 --bin cpt32-tool --bin src32_testbench
+      - name: Stage files
+        shell: bash
+        run: |
+          set -e
+          name="cpt32-${GITHUB_REF_NAME//\//-}-${{ matrix.name }}"
+          dir="dist/$name"
+          mkdir -p "$dir/assets"
+          for bin in cpt32 cpt32-tool src32_testbench; do
+            cp "target/release/$bin${{ matrix.ext }}" "$dir/"
+          done
+          cp README.md LICENSE THIRD_PARTY_NOTICES.txt ACKNOWLEDGEMENTS.md config.example.yaml "$dir/"
+          cp -r licenses "$dir/"
+          cp assets/bios.rom "$dir/assets/"
+          echo "PKG_NAME=$name" >> "$GITHUB_ENV"
+      - name: Archive (zip)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path "dist/$env:PKG_NAME" -DestinationPath "dist/$env:PKG_NAME.zip"
+      - name: Archive (tar.gz)
+        if: runner.os != 'Windows'
+        run: tar -C dist -czf "dist/$PKG_NAME.tar.gz" "$PKG_NAME"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: binaries-${{ matrix.name }}
+          path: |
+            dist/*.zip
+            dist/*.tar.gz
+          if-no-files-found: error
+
+  vscode-extensions:
+    name: VS Code extensions
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/vscode-sol-syntax/package-lock.json
+      - name: Package vscode-sol-syntax
+        working-directory: tools/vscode-sol-syntax
+        run: |
+          npm ci
+          npm run compile
+          npx vsce package --no-dependencies
+      - name: Package vscode-src32-asm-syntax
+        working-directory: tools/vscode-src32-asm-syntax
+        run: npx --yes @vscode/vsce@3 package --no-dependencies
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vscode-extensions
+          path: tools/*/*.vsix
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [binaries, vscode-extensions]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true
+          prerelease: ${{ contains(github.ref_name, '-') }}
