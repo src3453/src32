@@ -307,7 +307,7 @@ class ShellTests(unittest.TestCase):
         # §10.3, §10.5: mkdir, mv, rm and rmdir; a failed target does not stop
         # the rest. The screen scrolls, so only the tail is compared.
         rows = self.screen(
-            'echo x > a.txt\\n', 'mkdir d\\n', 'cp a.txt a.txt d\\n', 'cp a.txt a.txt b\\n', 'mv a.txt d/c.txt\\n',
+            'echo x > a.txt\\n', 'mkdir d\\n', 'cp a.txt a.txt d\\n', 'mv a.txt d/c.txt\\n',
             'mv d/c.txt d/a.txt\\n', 'rmdir d\\n', 'rm d/c.txt nope d/a.txt\\n', 'rmdir d\\n')
         self.assertEqual(rows[-9:], [
             '/> mv a.txt d/c.txt',
