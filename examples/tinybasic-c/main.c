@@ -1,12 +1,16 @@
+#ifdef FOUNDATION_GUEST
+#include <foundation/fnd.h>
+#else
 #include <cpt32/cpu.h>
 #include <cpt32/irqc.h>
 #include <cpt32/mmio.h>
 #include <cpt32/pcg.h>
 #include <cpt32/pec_rng.h>
+#endif
 #include <stdint.h>
 
-/* Freestanding translation of tinybasic.sol. Large arrays stay at the guest
- * addresses and sizes used by that program; there is no host runtime. */
+/* Shared translation of tinybasic.sol, without a host runtime. The bare-metal
+ * platform retains its fixed addresses; Foundation uses private process memory. */
 #define PEC_DATA 0x80040030u
 #define PEC_STATUS 0x80040034u
 #define PEC_POP 0x80040038u
@@ -139,6 +143,9 @@ typedef struct {
   int32_t line;
   Node *root;
 } DirectoryEntry;
+#ifdef FOUNDATION_GUEST
+#include "../../foundation/bin/tinybasic_memory.h"
+#else
 static Token *const tokens = (Token *)(uintptr_t)TOK_BUF;
 static char *const input = (char *)(uintptr_t)INPUT_BASE;
 static char *const wordbuf = (char *)(uintptr_t)WORD_BASE;
@@ -148,14 +155,19 @@ static int32_t *const vars = (int32_t *)(uintptr_t)VAR_BASE;
 static int32_t *const arrays = (int32_t *)(uintptr_t)ARRAY_BASE;
 static int32_t *const gosub = (int32_t *)(uintptr_t)GOSUB_BASE;
 static uint32_t ast_bump = AST_BASE, str_bump = STR_POOL_BASE;
+#endif
 static uint32_t token_count, str_used, parser_pos, disk_pos;
 static int32_t disk_limit;
 static int32_t line_count, pc, line_no, error, stop, jump, trace;
 static int32_t gosub_sp, for_sp, shift_down, caps_lock;
+#ifndef FOUNDATION_GUEST
 static int32_t *const for_mem = (int32_t *)(uintptr_t)FOR_BASE;
+#endif
 static Node *current;
+#ifndef FOUNDATION_GUEST
 static volatile uint32_t event_ring[512];
 static volatile uint32_t event_head, event_tail;
+#endif
 static inline uint32_t u32(int32_t x) { return (uint32_t)x; }
 static inline int32_t si(uint32_t x) { return (int32_t)x; }
 static inline int32_t add_i(int32_t a, int32_t b) {
@@ -174,6 +186,9 @@ static inline char *line_ptr(int32_t n) {
 static void print_string(const char *s);
 static void print_number(int32_t n);
 static void newline(void);
+#ifdef FOUNDATION_GUEST
+#include "../../foundation/bin/tinybasic_io.h"
+#else
 static void putc_tb(int32_t ch) {
   if (ch == 13)
     return;
@@ -199,6 +214,7 @@ static void print_string(const char *s) {
 
 static void newline(void) { pcg_prnlnscr(""); }
 
+#endif
 static void print_number(int32_t number) {
   uint32_t value;
   if (number < 0) {
@@ -250,12 +266,19 @@ static void help(void) {
   newline();
   print_string("PRINT: , tab, ; no newline, #N right-justifies next number.");
   newline();
+#ifdef FOUNDATION_GUEST
+  print_string("LOAD/SAVE \"path\"; BYE/QUIT returns to Foundation.");
+#else
   print_string("LOAD/SAVE use slot 0: LBA and sector count; LOAD clamps "
                "sectors to image size.");
+#endif
   newline();
 }
 
 static void report_error(void) {
+#ifdef FOUNDATION_GUEST
+  tb_had_error = 1;
+#endif
   if (!line_no) {
     print_string("? ERROR");
   } else {
@@ -320,6 +343,7 @@ static void store_input_line(void) {
     copy_line(input + pos, line_ptr(number));
 }
 
+#ifndef FOUNDATION_GUEST
 static int32_t key_ascii(uint32_t usage, int32_t shifted, int32_t caps) {
   int32_t ch;
   if (usage >= 4 && usage <= 29) {
@@ -417,6 +441,7 @@ static void irq3(void) {
     CPT32_MMIO32(PEC_POP) = 1;
   }
 }
+#endif
 static int word_eq(const char *text) {
   uint32_t i = 0;
   while (wordbuf[i] == (uint8_t)text[i]) {
@@ -828,6 +853,15 @@ static Node *parse_sys(int32_t code) {
     ++parser_pos;
     if (peek() == T_EOF || peek() == ':')
       return alloc_node(S_SYS, code, 0, 0, 0);
+#ifdef FOUNDATION_GUEST
+    if (peek() != T_STR) {
+      error = 1;
+      return 0;
+    }
+    char *path = pool_string(strbuf + (uint32_t)peek_val());
+    ++parser_pos;
+    return alloc_node(S_SYS, code, (Node *)path, 0, 0);
+#else
     l = parse_expr(0);
     if (error)
       return 0;
@@ -838,6 +872,7 @@ static Node *parse_sys(int32_t code) {
     if (error)
       return 0;
     return alloc_node(S_SYS, code, l, s, 0);
+#endif
   }
   ++parser_pos;
   return alloc_node(S_SYS, code, 0, 0, 0);
@@ -1173,6 +1208,7 @@ static int32_t input_value(void) {
     v = (uint8_t)input[0];
   return mul_i(v, sign);
 }
+#ifndef FOUNDATION_GUEST
 static void disk_transfer(int32_t lba, int32_t sectors, int32_t cmd,
                           int32_t *out) {
   uint32_t bytes, dc, status;
@@ -1223,6 +1259,7 @@ static uint32_t disk_capacity(void) {
   s = CPT32_MMIO32(IDC + 8);
   return (s & 4u) ? 0 : CPT32_MMIO32(IDC + 48);
 }
+#endif
 static void buffer_byte(int32_t c) {
   if ((int32_t)disk_pos < disk_limit)
     bytes_at(DISK_BASE)[disk_pos++] = (uint8_t)c;
@@ -1250,8 +1287,10 @@ static void save_serialize(void) {
       buffer_byte(10);
     }
   }
+#ifndef FOUNDATION_GUEST
   while ((int32_t)disk_pos < disk_limit)
     buffer_byte(0);
+#endif
 }
 static void finish_load_line(int32_t st, int32_t ln, uint32_t addr,
                              uint32_t idx) {
@@ -1331,6 +1370,11 @@ static void exec_list(Node *n) {
   }
 }
 static void cls(void) {
+#ifdef FOUNDATION_GUEST
+  tb_flush();
+  if (fnd_console())
+    (void)fnd_con_clear();
+#else
   pcg_scroll_y = 0;
   pcg_vram_row = 0;
   CPT32_MMIO8(0x8000f00e) = 0;
@@ -1341,6 +1385,7 @@ static void cls(void) {
     bytes_at(0x10002000 + i)[0] = 0;
   }
   pcg_locate(0, 0);
+#endif
 }
 static void exec_sys(int32_t code) {
   if (code == SYS_RUN) {
@@ -1397,11 +1442,19 @@ static void exec_sys(int32_t code) {
     return;
   }
   if (code == SYS_BYE) {
+#ifdef FOUNDATION_GUEST
+    tb_flush();
+    fnd_exit(FND_OK);
+#else
     for (;;)
       cpt32_halt();
+#endif
   }
   error = 1;
 }
+#ifdef FOUNDATION_GUEST
+#include "../../foundation/bin/tinybasic_file.h"
+#else
 static void exec_disk(int32_t cmd, Node *lban, Node *secn) {
   int32_t lba = 0, sectors = 0, res;
   uint32_t capacity, available;
@@ -1458,6 +1511,7 @@ static void exec_disk(int32_t cmd, Node *lban, Node *secn) {
   if (pc >= 0 && cmd == SYS_LOAD)
     stop = 1;
 }
+#endif
 static void exec_print(Node *items) {
   int32_t nl = 1, v;
   for (Node *p = items; p; p = p->c) {
@@ -1673,6 +1727,33 @@ static void repl(void) {
   }
 }
 int main(void) {
+#ifdef FOUNDATION_GUEST
+  if (fnd_init() != FND_OK)
+    fnd_exit(FND_E_BAD_HANDLE);
+  tb_memory = fnd_mem_alloc(sizeof *tb_memory);
+  if (!tb_memory)
+    fnd_exit(FND_E_NO_MEMORY);
+  clear_program();
+  clear_variables();
+  if (fnd_argc() > 2) {
+    static const char usage[] = "usage: tinybasic [program.bas]\n";
+    (void)fnd_write(fnd_std_err(), usage, sizeof usage - 1, 0);
+    fnd_exit(FND_E_BAD_ARG);
+  }
+  if (fnd_argc() == 2) {
+    tb_batch = 1;
+    pc = -1;
+    exec_disk(SYS_LOAD, (Node *)fnd_argv(1), 0);
+    if (tb_file_status != FND_OK) {
+      tb_flush();
+      fnd_exit(tb_file_status);
+    }
+    exec_sys(SYS_RUN);
+    run_loop();
+    tb_flush();
+    fnd_exit(tb_file_status < 0 ? tb_file_status : (tb_had_error ? FND_E_BAD_ARG : FND_OK));
+  }
+#else
   CPT32_MMIO8(0x80000000u) = 1;
   pcg_initPCG();
   pec_rng_initPRNG();
@@ -1680,6 +1761,7 @@ int main(void) {
   irqc_init();
   irqc_register(3, irq3);
   irqc_enable(8);
+#endif
   repl();
   return 0;
 }

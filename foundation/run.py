@@ -13,6 +13,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-only", action="store_true", help="build without opening the emulator")
     parser.add_argument("--clang", help="Clang executable passed to the SRC32 compiler")
+    parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
     parser.add_argument("--disk", action="store_true",
                         help="boot foundation.img through the BIOS and stage1 instead of loading the WAX")
     parser.add_argument("--arg", nargs=argparse.REMAINDER, default=[], metavar="ARG",
@@ -28,6 +29,8 @@ def main():
     command = [sys.executable, str(ROOT / "foundation/boot/build.py"), str(output)]
     if args.clang:
         command += ["--clang", args.clang]
+    if args.root:
+        command += ["--root", str(args.root.resolve())]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
     subprocess.run(["cargo", "build", "--release", "--bin", "cpt32"],
                    cwd=ROOT, env=environment, check=True)

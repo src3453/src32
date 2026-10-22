@@ -39,3 +39,11 @@ cargo run --release --bin cpt32 -- target/tinybasic-c/tinybasic.wax
 ```
 
 The program initializes PCG text mode, PeC RNG, and IRQ3 before displaying the help banner and entering the `OK` / `> ` REPL.
+
+## Foundation guest
+
+The same interpreter also builds as `/bin/tinybasic.wax` in the Foundation boot disk.
+Run `tinybasic` for the REPL or `tinybasic program.bas` to load and execute a file from the shell.
+The Foundation platform uses private process storage and libfnd streams/files;
+`LOAD "path"` / `SAVE "path"` replace raw LBA transfers, and BYE/QUIT exits to the shell.
+See the [Foundation TinyBASIC specification](../../doc/spec_Foundation_tinybasic.md) for build commands, limits, and tests.

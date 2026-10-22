@@ -7,6 +7,13 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
 追加ファイルをfsの実行イメージへ埋め込む必要はありません。
 
+## C版 TinyBASIC
+
+シェルで `tinybasic` を起動すると対話モード、`tinybasic program.bas` ならファイルを読み込んで実行し、終了後にシェルへ戻ります。
+`LOAD "path"` / `SAVE "path"`、標準入出力のリダイレクトにも対応します。
+`python foundation/run.py --root examples/tinybasic-c/foundation-root` でデモ入りのディスクを起動し、`tinybasic demo.bas` を実行できます。
+ビルド・言語・制限は [Foundation TinyBASIC仕様](../doc/spec_Foundation_tinybasic.md) を参照してください。
+
 ## フェーズ1: 最小カーネル
 
 [`kernel_trap` トラップスタブ](../tools/llvm-src32/README.md)（フェーズ0）の上に、次のものを実装しています。
