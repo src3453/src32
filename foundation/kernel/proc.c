@@ -68,7 +68,7 @@ int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len,
         uint32_t covered = 0;
         for (uint32_t i = 0; i < proc->region_count; ++i) {
             const struct fnd_region *r = &proc->regions[i];
-            if ((r->flags & perm) == perm && r->start <= addr && addr < r->end) {
+            if (!r->mmio && (r->flags & perm) == perm && r->start <= addr && addr < r->end) {
                 covered = r->end - addr;
                 break;
             }
@@ -187,8 +187,8 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
     zero_range(ram, end);
     /* Region 0: stack and data at the top of the slot (RW). Region 1: the
      * code (RX). */
-    proc->regions[0] = (struct fnd_region){ram, end, CPT32_PERM_R | CPT32_PERM_W, 1};
-    proc->regions[1] = (struct fnd_region){code_start, code_end, CPT32_PERM_R | CPT32_PERM_X, 0};
+    proc->regions[0] = (struct fnd_region){ram, end, CPT32_PERM_R | CPT32_PERM_W, 1, 0};
+    proc->regions[1] = (struct fnd_region){code_start, code_end, CPT32_PERM_R | CPT32_PERM_X, 0, 0};
     proc->region_count = 2;
     uint32_t sp = end - 8u;
     *(volatile uint32_t *)(uintptr_t)sp = arg;
@@ -218,15 +218,73 @@ static int32_t wax_status(enum wax_error error) {
     }
 }
 
+/* MMIO windows that may be granted (§10.3). VRAM and PCMRAM go to one
+ * process at a time. */
+static const struct {
+    uint32_t start, end, exclusive;
+} grant_windows[] = {
+    {0x80000000u, 0x80010000u, 0}, /* VDP */
+    {0x80010000u, 0x80020000u, 0}, /* SGC */
+    {0x80020000u, 0x80030000u, 0}, /* SGU */
+    {0x80040000u, 0x80040030u, 0}, /* PeC UART and RNG */
+    {0x80040030u, 0x80040180u, 0}, /* PeC input */
+    {0x10000000u, 0x18000000u, 1}, /* VRAM */
+    {0x18000000u, 0x18100000u, 1}, /* PCMRAM */
+};
+#define GRANT_WINDOWS (sizeof grant_windows / sizeof grant_windows[0])
+
+/* Index of the window that holds the whole grant, or -1. */
+static int grant_window(const struct fnd_grant *g) {
+    for (unsigned i = 0; i < GRANT_WINDOWS; ++i) {
+        if (grant_windows[i].start <= g->start && g->end <= grant_windows[i].end)
+            return (int)i;
+    }
+    return -1;
+}
+
+/* A live process already holds part of an exclusive window. */
+static int window_taken(unsigned window) {
+    for (uint32_t p = 0; p < FND_MAX_PROCS; ++p) {
+        if (procs[p].state != FND_PROC_LIVE)
+            continue;
+        for (uint32_t i = 0; i < procs[p].region_count; ++i) {
+            const struct fnd_region *r = &procs[p].regions[i];
+            if (r->mmio && r->start < grant_windows[window].end && grant_windows[window].start < r->end)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+static int32_t check_grants(const struct fnd_grant *grants, uint32_t count) {
+    if (count > FND_MAX_GRANTS || (count && !grants))
+        return FND_E_BAD_ARG;
+    for (uint32_t i = 0; i < count; ++i) {
+        const struct fnd_grant *g = &grants[i];
+        if (g->start >= g->end || (g->perm != CPT32_PERM_R && g->perm != (CPT32_PERM_R | CPT32_PERM_W)))
+            return FND_E_BAD_ARG;
+        int window = grant_window(g);
+        if (window < 0)
+            return FND_E_ACCESS;
+        if (grant_windows[window].exclusive && window_taken((unsigned)window))
+            return FND_E_BUSY;
+    }
+    return FND_OK;
+}
+
 /* One launch at a time: the kernel runs with interrupts off. */
 static struct wax_launch launch;
 
 int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
-                           const struct fnd_image *libs, uint32_t lib_count) {
+                           const struct fnd_image *libs, uint32_t lib_count,
+                           const struct fnd_grant *grants, uint32_t grant_count) {
     struct wax_library table[FND_MAX_LIBRARIES];
     uint32_t base, slot = 0;
     if (priority > FND_PRIO_APP || lib_count > FND_MAX_LIBRARIES || (lib_count && !libs))
         return FND_E_BAD_ARG;
+    int32_t status = check_grants(grants, grant_count);
+    if (status != FND_OK)
+        return status;
     enum wax_error error = wax_base_addr(image, size, &base);
     if (error != WAX_OK)
         return wax_status(error);
@@ -234,7 +292,6 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
         ++slot;
     if (slot == FND_SLOTS)
         return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
-    int32_t status;
     struct fnd_proc *proc = claim_record(slot, &status);
     if (!proc)
         return status;
@@ -246,6 +303,8 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
                                 slot_bounds[slot + 1u]};
     if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
         return wax_status(error);
+    if (launch.region_count + grant_count > FND_REGIONS)
+        return FND_E_REGION_LIMIT; /* §5.3: the grants come after the image */
     struct fnd_thread *thread = sched_alloc_thread();
     if (!thread)
         return FND_E_LIMIT;
@@ -254,8 +313,85 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
     wax_load(&launch, 0);
     for (uint32_t i = 0; i < launch.region_count; ++i) {
         proc->regions[i] = (struct fnd_region){launch.region[i].start, launch.region[i].end,
-                                               launch.region[i].flags, 1};
+                                               launch.region[i].flags, 1, 0};
     }
-    proc->region_count = launch.region_count;
+    for (uint32_t i = 0; i < grant_count; ++i) {
+        proc->regions[launch.region_count + i] =
+            (struct fnd_region){grants[i].start, grants[i].end, grants[i].perm, 0, 1};
+    }
+    proc->region_count = launch.region_count + grant_count;
     return start_proc(proc, thread, name, slot, priority, launch.entry, launch.stack_top, base);
+}
+
+/* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list. Copies up to
+ * cap bytes to buf and returns the size of the whole answer. */
+#define SYSINFO_BYTES 32u
+#define PROCINFO_BYTES 48u
+#define RAM_BYTES 0x01000000u /* §5.1: v1 assumes the default 16 MiB */
+
+static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
+    uint32_t bytes = 0;
+    for (uint32_t i = 0; i < proc->region_count; ++i) {
+        if (proc->regions[i].owned)
+            bytes += proc->regions[i].end - proc->regions[i].start;
+    }
+    return bytes;
+}
+
+static void put_word(uint32_t buf, uint32_t cap, uint32_t offset, uint32_t value) {
+    if (offset + 4u <= cap)
+        *(volatile uint32_t *)(uintptr_t)(buf + offset) = value;
+}
+
+int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf, uint32_t cap) {
+    uint32_t live = 0, used = 0, records = 0;
+    for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
+        if (procs[i].state == FND_PROC_LIVE) {
+            ++live;
+            used += slot_bounds[procs[i].slot + 1u] - slot_bounds[procs[i].slot];
+        }
+        if (procs[i].state != FND_PROC_FREE)
+            ++records;
+    }
+    uint32_t size;
+    if (sel == 0)
+        size = SYSINFO_BYTES;
+    else if (sel == 1)
+        size = records * PROCINFO_BYTES;
+    else
+        return FND_E_BAD_ARG;
+    if (cap > size)
+        cap = size;
+    if (cap && (buf & 3u))
+        return FND_E_BAD_ARG;
+    if (!proc_user_range_ok(caller, buf, cap, CPT32_PERM_W))
+        return FND_E_ACCESS;
+    if (sel == 0) {
+        uint32_t user = slot_bounds[FND_SLOTS] - slot_bounds[0];
+        uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, RAM_BYTES, user - used, live,
+                            0 /* boot_drive: no stage1 yet */, 0};
+        for (uint32_t w = 0; w < 8u; ++w)
+            put_word(buf, cap, 4u * w, info[w]);
+        return (int32_t)size;
+    }
+    uint32_t offset = 0;
+    for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
+        const struct fnd_proc *p = &procs[i];
+        if (p->state == FND_PROC_FREE)
+            continue;
+        uint32_t state = p->state == FND_PROC_EXITED ? 2u : sched_proc_runnable(p) ? 0u : 1u;
+        uint32_t info[8] = {p->pid, 0 /* parent: no proc_spawn yet */, state, p->priority,
+                            (uint32_t)p->exit_code, p->state == FND_PROC_LIVE ? proc_mem_bytes(p) : 0,
+                            p->threads, p->fault_epc};
+        for (uint32_t w = 0; w < 8u; ++w)
+            put_word(buf, cap, offset + 4u * w, info[w]);
+        for (uint32_t w = 0; w < 4u; ++w) {
+            uint32_t word = 0;
+            for (uint32_t b = 0; b < 4u; ++b)
+                word = word << 8 | (uint8_t)p->name[4u * w + b];
+            put_word(buf, cap, offset + 32u + 4u * w, word);
+        }
+        offset += PROCINFO_BYTES;
+    }
+    return (int32_t)size;
 }

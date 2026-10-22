@@ -174,6 +174,15 @@ void sched_kill_proc(struct fnd_proc *proc) {
     }
 }
 
+/* Some thread of proc is ready or running (sys_info state 0). */
+int sched_proc_runnable(const struct fnd_proc *proc) {
+    for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
+        if (threads[i].proc == proc && (threads[i].state == T_READY || threads[i].state == T_RUNNING))
+            return 1;
+    }
+    return 0;
+}
+
 /* Chooses the thread to resume after a trap and returns its frame. */
 cpt32_ctx_frame *sched_next(void) {
     struct fnd_thread *current = fnd_current;

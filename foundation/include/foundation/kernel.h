@@ -25,6 +25,7 @@ enum fnd_proc_state { FND_PROC_FREE, FND_PROC_LIVE, FND_PROC_EXITED };
 struct fnd_region {
     uint32_t start, end, flags;
     uint32_t owned; /* zeroed and released when the process ends */
+    uint32_t mmio;  /* an MMIO grant (§10.3): never a RAM region for §5.4 */
 };
 
 struct fnd_proc {
@@ -56,15 +57,26 @@ struct fnd_image {
 };
 #define FND_MAX_LIBRARIES 16u
 
+/* An MMIO grant of fnd_spawn (§9.2, §10.3): [start, end) with perm R (1)
+ * or RW (3). */
+struct fnd_grant {
+    uint32_t start, end, perm;
+};
+#define FND_MAX_GRANTS 8u
+
 /* Loads a PROTECTED WAX into the user slot that contains its base_addr and
  * starts it as §9.2 describes: v2, or v3 with the WAL graph it needs, chosen
  * from libs (doc/spec_WAX_v3.md §4.1, §7). The image and the libraries must
  * stay unchanged during the call; the kernel does not copy them first.
- * Atomic: on failure nothing is allocated or written. Returns the pid (>= 1)
- * or FND_E_FORMAT, FND_E_UNSUPPORTED, FND_E_DEPENDENCY, FND_E_REGION_LIMIT,
- * FND_E_ADDRESS_CONFLICT (slot in use), FND_E_LIMIT or FND_E_BAD_ARG. */
+ * grants become the last regions (§5.3 step 4); a grant outside the §10.3
+ * windows is FND_E_ACCESS, and VRAM or PCMRAM already granted to a live
+ * process is FND_E_BUSY. Atomic: on failure nothing is allocated or written.
+ * Returns the pid (>= 1) or FND_E_FORMAT, FND_E_UNSUPPORTED,
+ * FND_E_DEPENDENCY, FND_E_REGION_LIMIT, FND_E_ADDRESS_CONFLICT (slot in
+ * use), FND_E_LIMIT, FND_E_ACCESS, FND_E_BUSY or FND_E_BAD_ARG. */
 int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
-                           const struct fnd_image *libs, uint32_t lib_count);
+                           const struct fnd_image *libs, uint32_t lib_count,
+                           const struct fnd_grant *grants, uint32_t grant_count);
 /* NULL for an unknown pid. Exited processes keep their record. */
 struct fnd_proc *fnd_proc_get(uint32_t pid);
 

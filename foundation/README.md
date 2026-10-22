@@ -9,7 +9,7 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 - **トラップ**（§3.4）: IRQ、SYSCALL、U モードの例外を `kernel_trap` で振り分けます。カーネルは割り込み禁止のまま、カーネルスタック1本で動きます。U モードで fault が起きたら、そのプロセスを終了させます。終了コードは CAUSE を i32 として扱った値で、fault の EPC も記録します。idle で例外が起きた場合は `kernel_panic` になります。
 - **スケジューラ**（§10.1）: 優先度は DRIVER / SERVICE / APP / IDLE の4段で、同じ優先度の中は FIFO のラウンドロビンです。tick は PeC timer ch0 の 1000 Hz（IRQ4）、タイムスライスは 10 tick です。より高い優先度のスレッドが起きたら、カーネルからユーザーへ戻る時点で切り替えます。idle は S モードのスレッドで、`HALT` を繰り返します。
 - **プロセスと保護**（§5）: 7つのユーザースロットを使います。別プロセスへ切り替えるときは、§5.3 の順（全 FLAGS=0 → START/END → FLAGS）で8領域を書き換えます。終了時は全スレッドを DEAD にし、付与した RAM をゼロにします。ユーザーポインタは §5.4 の手順で検証します。
-- **システムコール**（§7, §9）: `yield`、`sleep`（`FND_FOREVER` を含む）、`thread_exit`、`proc_exit`、`time_get`、`debug_write` を実装しています。ABI で定義済みでも未実装のものは `FND_E_UNSUPPORTED`、未定義の番号と context byte が 0 でない呼び出しは `FND_E_BAD_CALL` を返します。
+- **システムコール**（§7, §9）: `sys_info`（sel 0 と 1）、`yield`、`sleep`（`FND_FOREVER` を含む）、`thread_exit`、`proc_exit`、`time_get`、`debug_write` を実装しています。ABI で定義済みでも未実装のものは `FND_E_UNSUPPORTED`、未定義の番号と context byte が 0 でない呼び出しは `FND_E_BAD_CALL` を返します。
 
 `fnd_proc_create_builtin()` は、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。WAX から作る方法は次の節を参照してください。このとき `[code_start, code_end)` が R/X、スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
 
@@ -22,21 +22,49 @@ CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md
 | `kernel/proc.c` | プロセス、スロット、保護領域、ポインタ検証、終了処理 |
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
+| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。コンソールは暫定実装 |
+| `shell/` | シェル（[シェル仕様](../doc/spec_Foundation_shell.md)）の、いまのカーネルで動く部分 |
+| `boot/` | シェルを起動する起動イメージと、そのビルドスクリプト |
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
 | `tests/wax/` | WAX ローダのテスト（ホスト単体テストと testbench） |
+| `tests/shell/` | シェルのテスト（testbench にキー入力を送り、PCG の画面を比べる） |
 
 ## WAX ローダ
 
-`fnd_proc_spawn_wax(name, priority, image, size, libs, lib_count)` は、カーネルメモリ上の WAX を、その `base_addr` を含むユーザースロットに読み込んで起動します（[仕様 §9.2・§9.5](../doc/spec_Foundation.md)）。
+`fnd_proc_spawn_wax(name, priority, image, size, libs, lib_count, grants, grant_count)` は、カーネルメモリ上の WAX を、その `base_addr` を含むユーザースロットに読み込んで起動します（[仕様 §9.2・§9.5](../doc/spec_Foundation.md)）。
 
 - 形式は PROTECTED の [WAX v2](../doc/spec_WAX.md) と [WAX/WAL v3](../doc/spec_WAX_v3.md) です。v3 では、依存する WAL を `libs` から選び（同じ ID と major の中で最大の minor）、スロット内に first fit で置き、import スロットに記述子（アドレスと origin）を書きます。
 - 保護領域は region 0 がスタック、その後が全画像のブロックをアドレス順に並べたものです。隣接していて権限が同じブロックだけをまとめ、8 を超えると `FND_E_REGION_LIMIT` です。
+- `grants` は MMIO の付与（§9.2 の `grants`、§10.3）で、画像の後の region になります（§5.3 の手順 4）。§10.3 の窓に収まらないものは `FND_E_ACCESS`、R（1）と RW（3）以外の perm は `FND_E_BAD_ARG` です。VRAM と PCMRAM は 1 プロセスにしか付与できず、動いている別のプロセスが持っていれば `FND_E_BUSY` です（§10.3 は誤りのコードを定めていないので、カーネルのコードから選んだ）。付与した範囲は §5.4 のポインタ検証の対象外で、終了時にゼロにもしません。
 - 起動は原子的です。検証、依存解決、配置、領域とシンボルの確認がすべて通るまで、メモリにもプロセス表にも書きません。
 - 入口の状態は §9.2 のとおりです（`USP = user_stack_top`、`UGP = base_addr`、他のレジスタは 0、`IE = 1`、スタックはゼロクリア）。終了時は、付与した範囲をすべてゼロにします。
 - `wax.c` はカーネルの状態にもデバイスにも触れない C11 なので、ホストの C コンパイラでもビルドできます。
 
 `proc_spawn` システムコールは、ハンドル（`PROCESS`）が実装されるフェーズ2以降に、この関数の上に作ります。そのときは §9.2 のとおり、イメージを先に staging へ複製してから検証します（現在の関数は、渡されたイメージが呼び出し中に変わらないことを前提にしています）。ライブラリ一覧をどこから得るかは未決です（§9.5）。
+
+## シェル
+
+`shell/shell.c` は [シェル仕様](../doc/spec_Foundation_shell.md) のうち、いまのカーネル（IPC、ハンドル、fs がない）で動く部分です。PROTECTED WAX v2 としてスロット 4（`0x600000`）に置き、APP 優先度で動きます。
+
+- **できること**：字句と構文（§3、§4。引用、`;`、`&&`、`||`、コメント、予約記号のエラー、構文エラーの行は何も実行しない）、変数（§5.1。`SET`、`$NAME`、`${NAME}`、`$?`、`$0`、`$#`、`$1`〜`$9`、既定の `PATH`）、行編集（§9.2。←→、Home、End、Backspace、Delete、16 行の履歴、Ctrl+C）、エラーメッセージ（§11.1）、組み込みコマンド `CLS`、`ECHO`、`SET`、`VER`、`MEM`、`PS`、`HELP`、`EXIT`、引数なしの `CD`。プロンプトは `/> ` です。
+- **まだできないこと**：fs サービスがないので、ファイルへのリダイレクト（`2>&1` は使える）、ワイルドカード、`CD path`、`DIR`、`TYPE`、`COPY`、`DEL`、`REN`、`MD`、`RD` は `FND_E_UNSUPPORTED`、外部コマンドとパスでの指定は `command not found`（`FND_E_NOT_FOUND`）になります。スクリプト、`-c`、`/etc/profile.fsh` もありません。`proc_spawn` がないので外部プログラムを起動できず、`thread_create` と `CON_BREAK_WAIT` がないので、Ctrl+C は行編集中の入力を捨てるだけです。
+- **暫定の部分**：console サービス（フェーズ 2 の IPC が必要）の代わりに、`lib/fnd/con_pcg.c` をシェルにリンクしています。これが PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で直接扱い、出力は [API 仕様 §8.1](../doc/spec_Foundation_API.md)、キーは §8.3 のキーコードに従います。キー入力は `irq_bind` がないので、FIFO を 4 tick ごとに見ます。`fnd_init` は起動ブロックを読めない（`proc_startup` が未実装）ので argc = 0 とし、STDIN、STDOUT、STDERR、CONSOLE の役割をすべてこのコンソール（ハンドル 1）にします。シェル仕様ではシェルは `caps = 0` で MMIO を持ちませんが、これを入れ替えるまでは、起動イメージが VDP の窓、PCG のテキスト面と属性面（VRAM `0x10000000–0x10002FFF`）、PeC の入力窓を付与します。
+- **起動イメージ**：`boot/main.c` はカーネルとシェルの画像（`boot/build.py` が生成する `shell_image.h`）をリンクしたものです。シェルが終了すると、次の 100 tick 境界で起動し直します（init の代わり）。
+- `VER`、`MEM`、`PS` は `sys_info` を使います。`ram_bytes` は §5.1 の前提の 16 MiB、`free_bytes` は動いているプロセスが占めていないユーザースロットの合計、`parent` と `boot_drive` は 0 です（`proc_spawn` と stage1 がまだない）。
+
+```sh
+python foundation/boot/build.py target/foundation-boot
+cargo run --release --bin cpt32 -- target/foundation-boot/foundation.wax
+```
+
+PCG のフォントはエミュレーターの設定（`config.yaml` の `pcg.font`、例 `assets/UNSCII.F08`）で読み込みます。設定がないと文字が表示されません。
+
+`tests/shell/test_shell.py` は、`--stop-ticks 3000` でビルドした起動イメージを `src32_testbench` で 260 frame 動かします。`--type FRAME=TEXT` でその frame にキーを送り（`\n` Enter、`\b` Backspace、`\L` `\R` `\U` `\D` 矢印、`\H` Home、`\E` End、`\X` Delete、`\C` Ctrl+C、`\\` バックスラッシュ）、`--dump-pcg` で最後の画面（SCROLL_Y を反映した 30 行）を出力させて比べます。GUI は Xvfb の下では黒い画面になるので、画面の確認はこの方法で行います。
+
+```sh
+python -m unittest discover -s foundation/tests/shell -v
+```
 
 ## ビルドと実行
 
@@ -113,5 +141,6 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 - `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が出力したりすると、カーネル内でバスエラーになります。エミュレーター本体では UART に出力されます。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
 - 1プロセス1スレッドです。`thread_create`、IPC、ハンドル、`proc_spawn` システムコール、`mem_grow`、`irq_bind` などはフェーズ2以降で実装します。
+- `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 220 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。

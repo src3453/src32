@@ -28,12 +28,14 @@ void sched_tick(void);
 void sched_yield(void);
 void sched_sleep(uint32_t ticks);
 void sched_kill_proc(struct fnd_proc *proc);
+int sched_proc_runnable(const struct fnd_proc *proc);
 cpt32_ctx_frame *sched_next(void);
 
 /* proc.c */
 void proc_activate(struct fnd_proc *proc);
 int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm);
 void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc);
+int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf, uint32_t cap);
 
 /* MMIO (doc/spec_PeC.md, doc/spec_IRQC.md). */
 #define FND_REG32(address) (*(volatile uint32_t *)(uintptr_t)(address))
