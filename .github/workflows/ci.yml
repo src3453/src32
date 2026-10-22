@@ -63,11 +63,11 @@ jobs:
           cargo test --no-fail-fast "${args[@]}" -- \
             --skip dos_hex_returns_to_shell_at_800_cycles_per_frame
 
-  # 失敗が既知のテスト。結果は見えるようにするが CI 全体は落とさない。
+  # 失敗が既知のテスト。ステップ単位の continue-on-error なので PR のチェックは緑のまま、
+  # 結果はこのジョブのログ (Known-failing tests ステップ) で確認できる。
   known-failures:
     name: Rust known failures (non-blocking)
     runs-on: ubuntu-24.04
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v5
       - name: Install system packages
@@ -86,6 +86,7 @@ jobs:
           python3 tools/solc/solc.py compile tinybasic.sol -o target/guests/tinybasic.a
           python3 tools/asm/asm.py target/guests/tinybasic.a -o tinybasic.bin
       - name: Known-failing tests
+        continue-on-error: true
         run: |
           cargo test --no-fail-fast --test strek_micro --test strek_smoke --test tb_load_live
           cargo test --test dos_smoke dos_hex_returns_to_shell_at_800_cycles_per_frame
@@ -127,9 +128,10 @@ jobs:
           "$CLANG" --version
           python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
 
-  # sol コンパイラ / VM / LSP。Foundation の実行テストは testbench を使う。
+  # sol コンパイラ / VM / LSP、WAX ツール、Foundation WAX ローダのホストテスト。
+  # sol の Foundation 実行テストは testbench を使う。
   solc:
-    name: sol compiler tests
+    name: sol compiler + WAX tests
     needs: rust
     runs-on: ubuntu-24.04
     steps:
@@ -147,7 +149,9 @@ jobs:
           chmod +x target/debug/src32_testbench
           echo "SRC32_TESTBENCH=$PWD/target/debug/src32_testbench" >> "$GITHUB_ENV"
       - name: pytest
-        run: python -m pytest tools/solc -q
+        run: python -m pytest tools/solc tools/wax -q
+      - name: Foundation WAX loader (host)
+        run: python -m unittest discover -s foundation/tests/wax -v
 
   wasm-sdk:
     name: WASM expansion card SDK
