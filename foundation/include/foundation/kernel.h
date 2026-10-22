@@ -36,6 +36,7 @@ struct fnd_proc {
     uint32_t threads; /* live threads */
     int32_t exit_code;
     uint32_t fault_epc; /* EPC of the fault that ended it, else 0 */
+    uint32_t cpu_cycles; /* elapsed user-context cycles, modulo 2^32 */
     uint32_t region_count;
     struct fnd_region regions[FND_REGIONS];
     char name[16];

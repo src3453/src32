@@ -22,6 +22,37 @@ static uint32_t idle_stack[64] __attribute__((aligned(8)));
 static struct fnd_thread *queue_head[PRIORITIES], *queue_tail[PRIORITIES];
 static uint32_t ticks, switches, need_resched;
 
+/* ch1 is a free-running 48 MHz accounting clock. C trap boundaries leave
+ * the assembly save/restore cost charged to the resumed context. */
+#define CPU_CLOCK_CTRL 0x80040440u
+#define CPU_CLOCK_LO 0x80040448u
+#define CPU_CLOCK_PRESCALER 0x80040460u
+static uint32_t cpu_last, cpu_origin, cpu_kernel, cpu_idle;
+
+void sched_cpu_enter(void) {
+    uint32_t now = FND_REG32(CPU_CLOCK_LO);
+    uint32_t elapsed = now - cpu_last;
+    if (fnd_current == &idle)
+        cpu_idle += elapsed;
+    else
+        fnd_current->proc->cpu_cycles += elapsed;
+    cpu_last = now;
+}
+
+void sched_cpu_leave(void) {
+    uint32_t now = FND_REG32(CPU_CLOCK_LO);
+    cpu_kernel += now - cpu_last;
+    cpu_last = now;
+}
+
+void sched_cpu_snapshot(uint32_t info[4]) {
+    sched_cpu_leave(); /* include this syscall up to the snapshot */
+    info[0] = cpu_last - cpu_origin;
+    info[1] = cpu_kernel;
+    info[2] = cpu_idle;
+    info[3] = 48000000u;
+}
+
 uint32_t fnd_ticks(void) { return ticks; }
 uint32_t fnd_context_switches(void) { return switches; }
 
@@ -120,7 +151,11 @@ void sched_timer_start(void) {
     FND_REG32(TIMER0_RELOAD_LO) = FND_TICK_CYCLES;
     FND_REG32(TIMER_ACK) = 1u;
     FND_REG32(TIMER0_CTRL) = TIMER_PERIODIC_IRQ;
-    FND_REG32(TIMER_ENABLE) = 1u;
+    FND_REG32(CPU_CLOCK_CTRL) = TIMER_RESET;
+    FND_REG32(CPU_CLOCK_PRESCALER) = 0;
+    FND_REG32(CPU_CLOCK_CTRL) = 6u; /* free-running, enabled, no IRQ */
+    FND_REG32(TIMER_ENABLE) = 3u;
+    cpu_last = cpu_origin = FND_REG32(CPU_CLOCK_LO);
     FND_REG16(FND_IRQC_PENDING) = 1u << FND_IRQ_TIMER;
     FND_REG16(FND_IRQC_ENABLE) = 1u << FND_IRQ_TIMER;
 }

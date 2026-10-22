@@ -62,6 +62,12 @@ fnd_status fnd_con_clear(void) {
     return FND_OK;
 }
 
+fnd_status fnd_con_pollkey(fnd_key_t *key) {
+    if (!fnd_console())
+        return FND_E_BAD_HANDLE;
+    return con_pcg_poll_key(key) ? FND_OK : FND_END;
+}
+
 fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows) {
     if (!fnd_console())
         return FND_E_BAD_HANDLE;

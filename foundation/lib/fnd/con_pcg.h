@@ -26,5 +26,6 @@ void con_pcg_write(const uint8_t *text, uint32_t len);
 void con_pcg_clear(void);
 /* Waits for the next key press. */
 void con_pcg_read_key(fnd_key_t *key);
+int con_pcg_poll_key(fnd_key_t *key);
 
 #endif

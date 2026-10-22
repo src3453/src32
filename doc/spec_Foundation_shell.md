@@ -291,6 +291,7 @@ WAX v3 の WAL を必要とするプログラムで、どのライブラリ一�
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）と `Foundation shell 1.0` を 1 行ずつ表示する |
 | `free` | `free` | RAM 容量と空き容量を KiB で表示する（`sys_info` sel 0） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |
+| `top` | `top [-n count]` | 1 秒ごとの差分から user / kernel（概算）/ idle の CPU 使用率、メモリ容量、CPU 使用率順のプロセス一覧を表示する（`sys_info` sel 0, 1, 2）。引数なしでは画面を更新し、q または Ctrl+C で終了。`-n` は正の整数で、指定回数を通常出力して終了する |
 | `help` | `help [command]` | 組み込みコマンドの一覧と 1 行説明、または指定したコマンドの書式を表示する |
 | `exit` | `exit [code]` | §2.3、§8。`code` は 10 進の `i32` |
 

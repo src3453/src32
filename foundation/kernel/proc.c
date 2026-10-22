@@ -149,6 +149,7 @@ static int32_t start_proc(struct fnd_proc *proc, struct fnd_thread *thread, cons
     proc->threads = 1;
     proc->exit_code = 0;
     proc->fault_epc = 0;
+    proc->cpu_cycles = 0;
     unsigned n = 0;
     for (; name && name[n] && n < sizeof proc->name - 1u; ++n)
         proc->name[n] = name[n];
@@ -326,8 +327,8 @@ int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *imag
     return start_proc(proc, thread, name, slot, priority, launch.entry, launch.stack_top, base);
 }
 
-/* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list. Copies up to
- * cap bytes to buf and returns the size of the whole answer. */
+/* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list, sel 2 CPU
+ * accounting. Copies up to cap bytes and returns the whole answer's size. */
 #define SYSINFO_BYTES 32u
 #define PROCINFO_BYTES 48u
 #define RAM_BYTES 0x01000000u /* §5.1: v1 assumes the default 16 MiB */
@@ -361,6 +362,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         size = SYSINFO_BYTES;
     else if (sel == 1)
         size = records * PROCINFO_BYTES;
+    else if (sel == 2)
+        size = 16u + records * 8u;
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -369,6 +372,21 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         return FND_E_BAD_ARG;
     if (!proc_user_range_ok(caller, buf, cap, CPT32_PERM_W))
         return FND_E_ACCESS;
+    if (sel == 2) {
+        uint32_t info[4];
+        sched_cpu_snapshot(info);
+        for (uint32_t w = 0; w < 4u; ++w)
+            put_word(buf, cap, 4u * w, info[w]);
+        uint32_t offset = 16u;
+        for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
+            if (procs[i].state == FND_PROC_FREE)
+                continue;
+            put_word(buf, cap, offset, procs[i].pid);
+            put_word(buf, cap, offset + 4u, procs[i].cpu_cycles);
+            offset += 8u;
+        }
+        return (int32_t)size;
+    }
     if (sel == 0) {
         uint32_t user = slot_bounds[FND_SLOTS] - slot_bounds[0];
         uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, RAM_BYTES, user - used, live,
