@@ -77,7 +77,7 @@ BOOT_BLOCKS = fndboot.MAX_SIZE // fs2.BLOCK
 DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
-COMMANDS = ["clear", "echo", "free", "hex", "ls", "ps", "pwd", "top", "uname"]
+COMMANDS = ["clear", "echo", "free", "hex", "ls", "ps", "pwd", "top", "uname", "tinybasic"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]

@@ -26,7 +26,7 @@ ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fs2  # noqa: E402
 STOP_TICKS = 6000
-# FND_MM=slot builds the kernel without virtual memory (foundation/boot/build.py).
+# FND_MM=slot forces slots; otherwise CPUID decides the actual backend.
 SLOT_MM = os.environ.get('FND_MM') == 'slot'
 FRAMES = 600
 # Keys typed before the shell is up (about frame 120: fs checks the boot
@@ -53,6 +53,14 @@ class ShellTests(unittest.TestCase):
         cls.harness = find_testbench()
         cls.temp = tempfile.TemporaryDirectory(prefix='foundation-shell-')
         cls.work = Path(cls.temp.name)
+        cls.cpu_features = cls.work / 'cpu_features.wax'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'tools/asm/asm.py'),
+             str(HERE / 'cpu_features.a'), '-o', str(cls.cpu_features)],
+            capture_output=True, text=True, encoding='utf-8', timeout=60)
+        if result.returncode != 0:
+            raise RuntimeError(result.stdout + result.stderr)
+        cls.cpu_vm = {}
         command = [sys.executable, str(ROOT / 'foundation/boot/build.py'), str(cls.work),
                    '--stop-ticks', str(STOP_TICKS)]
         clang = os.environ.get('CLANG') or shutil.which('clang')
@@ -70,28 +78,26 @@ class ShellTests(unittest.TestCase):
         cls.temp.cleanup()
 
     def free_kib(self, rows):
-        """With virtual memory the free memory depends on how big the images
-        are, so check it is plausible and pin it to 0 in the rows."""
+        """VM free memory depends on image sizes: require a positive value
+        and normalize it to N. Slots retain their exact expectations."""
         out = []
         for row in rows:
             match = re.match(r'^( +)(\d+)( KiB free)$', row)
-            if match and not SLOT_MM:
+            if match and not self.slot_mm:
                 self.assertGreater(int(match.group(2)), 0, row)
                 row = ' ' * (len(match.group(1)) + len(match.group(2)) - 1) + 'N' + match.group(3)
             match = re.match(r'^(Mem: \d+K total, )(\d+)(K free)$', row)
-            if match and not SLOT_MM:
+            if match and not self.slot_mm:
                 self.assertGreater(int(match.group(2)), 0, row)
                 row = match.group(1) + 'N' + match.group(3)
             out.append(row)
         return out
 
-    @staticmethod
-    def free_line(kib):
-        return '%8s KiB free' % (kib if SLOT_MM else 'N')
+    def free_line(self, kib):
+        return '%8s KiB free' % (kib if self.slot_mm else 'N')
 
-    @staticmethod
-    def mem_line(kib):
-        return 'Mem: 16384K total, %sK free' % (kib if SLOT_MM else 'N')
+    def mem_line(self, kib):
+        return 'Mem: 16384K total, %sK free' % (kib if self.slot_mm else 'N')
 
     def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached'):
         """Types each batch STEP frames after the previous one; returns the
@@ -103,7 +109,19 @@ class ShellTests(unittest.TestCase):
             (config or 'memory:\n  ram_mib: 16\n  vram_mib: 4\n') +
             'disk:\n  - slot: 0\n    type: "hdd"\n    image: "disk.img"\n    read_only: false\n',
             encoding='utf-8')
-        command = [str(self.harness), str(self.image), '42', '--cpu', os.environ.get('FOUNDATION_TEST_CPU', cpu),
+        cpu = os.environ.get('FOUNDATION_TEST_CPU', cpu)
+        if cpu not in self.cpu_vm:
+            probe = subprocess.run(
+                [str(self.harness), str(self.cpu_features), '42', '--cpu', cpu,
+                 '--frames', '1', '--dump-pcg'], cwd=run, capture_output=True,
+                text=True, encoding='utf-8', errors='replace', timeout=60)
+            self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+            lines = probe.stdout.splitlines()
+            rows = lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')]
+            self.assertIn(rows[0], ('0', '1'), probe.stdout)
+            self.cpu_vm[cpu] = rows[0] == '1'
+        self.slot_mm = SLOT_MM or not self.cpu_vm[cpu]
+        command = [str(self.harness), str(self.image), '42', '--cpu', cpu,
                    '--frames', str(FRAMES), '--dump-pcg']
         for i, text in enumerate(batches):
             frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
@@ -139,7 +157,8 @@ class ShellTests(unittest.TestCase):
     def test_free_reports_installed_memory(self):
         # The kernel takes the sizes from the BMC (spec_BMC_DMAC.md §1.5).
         # 12 MiB holds slots 0-5, and the disk service now uses slot 2, so
-        # nothing is left.
+        # nothing is left with the slot backend (forced or CPUID V absent).
+        # A V-capable CPU instead reports its remaining physical frames.
         self.assertEqual(self.screen('free\\n', config='memory:\n  ram_mib: 12\n  vram_mib: 8\n'),
                          BANNER + [
             '/> free',

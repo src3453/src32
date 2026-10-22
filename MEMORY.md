@@ -1216,7 +1216,18 @@
 
 - 2026-10-22 (W^X and MMIO, KAN-49 follow-up): the owner chose the real-OS way. `llvm-src32 --page-align` starts RW data on a 4 KiB boundary and `v3.py` gives the RW block alignment 4096 (only when it already sits on a page); `foundation/boot/build.py` passes it for services, shell, commands and the fnd WAL, so a vm page is never both writable and executable. Images built without it still get the permission union of mm_vm_map. `.rodata` stays inside RW data. MMIO stays page-granular (U-mode accesses inside a mapped page cannot be intercepted); check_grants additionally requires every window the rounded page range reaches to be grantable and, if exclusive, free. The PeC page still exposes timer/RTC to a UART or input grantee. Pipeline CPUID interlock is tracked as KAN-51 (the 3-NOP workaround stays).
 
+<<<<<<< HEAD
 ## /bin/hex (2026-10-23, KAN-56)
 - dos の HEX（`dos.sol` と `examples/dos-c/main.c`、どちらも同じ書式）を `foundation/bin/hex.c` へ移植した。画面は 16 行×16 バイト＋ASCII 欄、コマンドは N/P/G/E/W/Q（DOS の別名 NEXT/PREV/GOTO/SET/SAVE も）、メッセージの文言は DOS のまま。DOS の `HEX NAME` は 8.3 名だったが、こちらは `hex path`。
 - stdin は console の LINE モードで 1 行ずつ `fnd_read` する（RAW にしない）。画面消去は `fnd_con_clear`、保存は `FND_OPEN_WRITE|TRUNC` で開いて全体を書き `fnd_sync`。保存は同サイズで、ファイルは 64 KiB まで、空ファイルは編集不可（DOS と同じ）。Ctrl+D（EOF）も終了扱い。
 - テストは `foundation/tests/shell` の `test_hex`（要 `CLANG=clang-20` と llvmlite 0.46）。エディタは毎回 `fnd_con_clear` するので、画面比較は終了後の最終画面（直前の hex 表示が残る）で見る。
+=======
+- **Foundation C TinyBASIC** (`foundation/bin/tinybasic.c`, `tinybasic_*.h`, `examples/tinybasic-c/main.c`): インタプリタは共用し、`FOUNDATION_GUEST` のときだけ私有ヒープと libfnd の STDIN/STDOUT/fs に切り替える。直接 MMIO・固定物理アドレス・IRQ/HALT を混ぜない。`tinybasic file.bas` はロード→RUN→proc_exit、引数なしは REPL。`LOAD/SAVE "path"` は128KiB以内のテキストファイルで、SAVEは末尾をsector paddingせず、LOADは読込・超過検査完了まで既存プログラムを消さない。入力は console LINE のエコーを使い、ゲスト側で二重エコーしない。テストは `python -m unittest discover -s foundation/tests/tinybasic -v` を既定VMと `FND_MM=slot` で実行し、WAX/WALロード・PCG表示・シェル復帰・ファイル引数と終了コード・FS2上の実ファイルを検証する。Windowsの一時ディレクトリはworkspace配下に設定する。
+- Foundation 起動ランナー `foundation/run.py --root DIR` は boot/build.py の追加ルートを渡す。`examples/tinybasic-c/foundation-root/demo.bas` を入れれば、シェルで `tinybasic demo.bas` を実行できる。TinyBASIC追加時の検証では、専用テストは既定VM/slotで各6件、元のC単体版は5件通過。シェル全18件中、12MiB構成のfree期待値だけが失敗し、TinyBASICをディスクから除去しても再現した（free_kibが0 KiB freeを拒否）。本機能の成否と混同しない。
+
+## Foundation free のバックエンド判定 (2026-10-23, KAN-55)
+- `FND_MM` 未設定は VM の強制ではない。`mm_init` は実行中の CPU の CPUID bit 9 で VM/slot を選ぶ。12 MiB の slot 構成では console/disk/fs/init/shell/実行中コマンドが slot 0〜5 を占め、`free` の 0 KiB は正当。VM の空き容量とは同じ期待値にしない。
+- シェルハーネスは `SRC32_TESTBENCH`、release、debug の順で実行ファイルを選ぶ。本件では古い release が CPUID=0x13F、新しい debug が 0x33F で、release の優先選択が原因だった。ソースの機能値からロード済みバイナリの機能を推測しない。VM 検証時は testbench を再ビルドするか絶対パスで明示する。
+- `foundation/tests/shell/cpu_features.a` を実際の testbench/CPU で走らせて V を確認し、`FND_MM=slot` または V なしでは正確な slot 空き容量、V ありでは正の VM 空き容量を検証する。`FOUNDATION_TEST_CPU` とケース別 CPU 指定を反映し、判定を CPU ごとに保持する。VM の 0 を許すように検査を緩めてはいけない。
+- 検証: 更新した release testbench でシェル全18件が既定VM/強制slotの双方で通過、共用ハーネスの TinyBASIC 6件も通過。さらに Cached の CPUID の V ビットだけを無効化した一時ビルド（CPU ソースは直後に復元・通常 release も再ビルド）で、FND_MM未設定の12MiB free・16MiB banner/free・Pipeline top の3件が通過。1つのハーネス内で Cached=slot/Pipeline=VM を切り替える経路も確認した。
+>>>>>>> origin/main
