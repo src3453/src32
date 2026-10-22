@@ -208,6 +208,13 @@ All results are identical to treating every device as timing-sensitive.
 Never declare it for a device whose reads or writes interact with time, DMA,
 IRQs or CPU state.
 
+The debug GUI `Reset` button resets the CPU to the loaded machine's original
+boot entry and pauses execution. With a BIOS configured this is its ROM entry
+(`0xFF000000` for raw BIOS, the declared entry for WAX BIOS); otherwise it is
+the program entry. Loading another cartridge updates this reset target.
+CPU counters and IRQ-controller state are cleared; guest RAM and bus time
+are preserved.
+
 ## 2. Registers
 
 - General-purpose registers: `R0`-`R31` (32 registers, 32-bit)

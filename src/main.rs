@@ -723,6 +723,7 @@ fn set_mouse_capture(captured: &mut bool, window: &Window, enable: bool) {
 
 struct GuiApp {
     cpu: AnyCpu,
+    boot_pc: u32,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
@@ -790,6 +791,7 @@ impl GuiApp {
             }
         };
         Ok(Self {
+            boot_pc: machine.cpu.pc(),
             cpu: machine.cpu,
             vdp: machine.vdp,
             sgu: machine.sgu,
@@ -837,6 +839,10 @@ impl GuiApp {
         match build_guest_machine(path, self.music_stream.as_deref(), None, self.cpu_kind) {
             Ok(machine) => {
                 self.release_all_inputs();
+                self.boot_pc = machine.cpu.pc();
+                if let Some(gui) = self.debug_gui.as_mut() {
+                    gui.state.reset_pc = self.boot_pc;
+                }
                 self.cpu = machine.cpu;
                 self.vdp = machine.vdp;
                 self.sgu = machine.sgu;
@@ -1150,6 +1156,7 @@ fn runtime_bar_state(runtime_percent: f64) -> (f32, bool) {
 
 struct DebugUiState {
     running: bool,
+    reset_pc: u32,
     show_licenses: bool,
     visible_windows: [bool; DebugWindow::COUNT],
     monitor_input: String,
@@ -1279,9 +1286,10 @@ impl DebugUiState {
     const PERFORMANCE_HISTORY_SAMPLES: usize = 120;
     const RUNTIME_HISTORY_MAX_PERCENT: f32 = 200.0;
 
-    fn new(start_paused: bool) -> Self {
+    fn new(start_paused: bool, reset_pc: u32) -> Self {
         Self {
             running: !start_paused,
+            reset_pc,
             show_licenses: false,
             visible_windows: [false; DebugWindow::COUNT],
             monitor_input: String::new(),
@@ -1355,7 +1363,7 @@ impl DebugUiState {
     }
 
     fn reset_cpu(&mut self, cpu: &mut AnyCpu) {
-        cpu.reset(0);
+        cpu.reset(self.reset_pc);
         self.running = false;
         self.queued_steps = 0;
     }
@@ -2209,6 +2217,7 @@ impl DebugGui {
         presenter: &render::WgpuPresenter,
         start_paused: bool,
         profile_cpu: bool,
+        reset_pc: u32,
     ) -> Self {
         let mut imgui = imgui::Context::create();
         imgui.set_ini_filename(None);
@@ -2224,7 +2233,7 @@ impl DebugGui {
             },
         );
 
-        let mut state = DebugUiState::new(start_paused);
+        let mut state = DebugUiState::new(start_paused, reset_pc);
         if profile_cpu {
             state.visible_windows[DebugWindow::Performance as usize] = true;
         }
@@ -2386,6 +2395,7 @@ impl ApplicationHandler for GuiApp {
                 &presenter,
                 self.start_paused,
                 self.frame_profiler.is_some(),
+                self.boot_pc,
             ))
         } else {
             None
@@ -2971,6 +2981,43 @@ mod input_tests {
     }
 
     #[test]
+    fn debug_reset_returns_to_boot_entry_for_each_cpu_kind() {
+        use cpt32::devices::bios::{BIOS_BASE, BiosRom};
+
+        for kind in [
+            CpuKind::Scalar,
+            CpuKind::Cached,
+            CpuKind::CachedRelaxed,
+            CpuKind::Pipelined,
+        ] {
+            // Raw BIOS, WAX BIOS with a non-base entry, and BIOS-free programs.
+            for entry in [BIOS_BASE, BIOS_BASE + 0x100, 0, 0x1000] {
+                let mut bus = Bus::new();
+                connect_ram(&mut bus);
+                bus.add_device(
+                    BIOS_BASE,
+                    "BIOS",
+                    Box::new(BiosRom::from_raw(&[0; 0x104]).unwrap()),
+                );
+                let mut cpu = AnyCpu::new(kind, bus);
+                cpu.set_pc(entry);
+                let mut state = DebugUiState::new(false, cpu.pc());
+                cpu.set_pc(0x40);
+                cpu.run(12);
+                state.queued_steps = 7;
+
+                state.reset_cpu(&mut cpu);
+
+                assert_eq!(cpu.pc(), entry, "{kind:?}");
+                assert_eq!(cpu.cycles(), 0);
+                assert!(!state.running);
+                assert_eq!(state.queued_steps, 0);
+                assert_eq!(cpu.read_mem_u8(BIOS_BASE), 0);
+            }
+        }
+    }
+
+    #[test]
     fn debug_reset_restarts_cpu_paused_without_clearing_ram() {
         let mut bus = Bus::new();
         connect_ram(&mut bus);
@@ -2980,7 +3027,7 @@ mod input_tests {
         cpu.run(12);
         assert!(cpu.cycles() > 0);
         assert!(cpu.instructions_executed() > 0);
-        let mut state = DebugUiState::new(false);
+        let mut state = DebugUiState::new(false, 0);
         state.queued_steps = 7;
 
         state.reset_cpu(&mut cpu);
@@ -3120,7 +3167,7 @@ mod input_tests {
     }
     #[test]
     fn cycle_independent_mode_clears_cycle_budget_history() {
-        let mut state = DebugUiState::new(false);
+        let mut state = DebugUiState::new(false, 0);
         state.cpu_utilization_history.extend([25.0, 50.0]);
 
         state.record_cpu_utilization(None);
@@ -3446,6 +3493,7 @@ mod input_tests {
         let (old_sender, mut old_receiver) = tokio::sync::mpsc::unbounded_channel();
         let mut app = GuiApp {
             cpu: old_cpu,
+            boot_pc: 0x1234,
             vdp: old_vdp,
             sgu: old_sgu,
             idc: None,
@@ -3474,6 +3522,7 @@ mod input_tests {
         };
 
         app.handle_dropped_file(&package_path);
+        assert_eq!(app.boot_pc, app.cpu.pc());
         assert_eq!(app.title, format!("{BUILD_TITLE} — Drop test"));
         assert_eq!(app.cpu.pc(), 0);
         assert_eq!(app.cpu.read_mem_u8(0), 0x12);
