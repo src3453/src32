@@ -11,11 +11,22 @@
  * console itself (foundation/lib/fnd/con_pcg.c) through the MMIO grants in
  * its module entry, and when the last module (the shell standing in for init)
  * exits, the kernel spawns it again from the image, as init would restart
- * it. So the staging area stays in use instead of being released. */
+ * it. So the staging area stays in use instead of being released.
+ *
+ * boot_libs.h holds the WALs the kernel passes to every module (build.py
+ * --fnd-wal: libfnd as the WAL fnd, doc/spec_Foundation.md §9.5). */
 #include <foundation/kernel.h>
 
+#include "boot_libs.h"
 #ifdef FOUNDATION_BOOT_EMBEDDED
 #include "fndboot_image.h"
+#endif
+
+#ifdef FOUNDATION_BOOT_FND_WAL
+static const struct fnd_image libs[] = {{img_fnd, img_fnd_size}};
+#define LIBS libs, 1u
+#else
+#define LIBS 0, 0u
 #endif
 
 #define RESPAWN_TICKS 100u
@@ -28,7 +39,7 @@ static uint32_t on_tick(uint32_t ticks) {
     if (ticks % RESPAWN_TICKS == 0) {
         struct fnd_proc *proc = fnd_proc_get((uint32_t)last_pid);
         if (!proc || proc->state != FND_PROC_LIVE)
-            last_pid = fnd_boot_spawn(boot_image, last_module);
+            last_pid = fnd_boot_spawn(boot_image, last_module, LIBS);
     }
 #ifdef FOUNDATION_BOOT_STOP_TICKS
     /* tests: stop the machine so src32_testbench can read the screen */
@@ -51,7 +62,7 @@ int main(uint32_t drive, uint32_t fndboot) {
     if (count < 0)
         return count;
     for (uint32_t i = 0; i < (uint32_t)count; ++i) {
-        last_pid = fnd_boot_spawn(boot_image, i);
+        last_pid = fnd_boot_spawn(boot_image, i, LIBS);
         if (last_pid < 0)
             return last_pid;
     }

@@ -7,9 +7,10 @@ and MAY are normative. [Japanese translation](ja/spec_WAX_v3.md).
 The existing [v2 specification](spec_WAX.md), parsers, assembler output, C
 toolchain and DOS loader retain their current behavior. The Foundation kernel
 loads v3 (`foundation/kernel/wax.c`; its selection and placement policy is in
-[Foundation §9.5](spec_Foundation.md)). No compiler or linker generates v3
-yet: `tools/wax/wax3.py` lays out a v3 file from prepared blocks and symbol
-tables, which the loader tests use. v3 uses the same magic with `version = 3`;
+[Foundation §9.5](spec_Foundation.md)). `tools/llvm-src32` compiles C to
+v3 WAX and WAL with call ABI 1 (`--wax3`, `--wal`, `--import-wal`; see its
+README). `tools/wax/wax3.py` lays out a v3 file from prepared blocks and
+symbol tables; the compiler and the loader tests use it. v3 uses the same magic with `version = 3`;
 v2 readers must reject it. Changing the version field of a v2 file is not
 conversion.
 

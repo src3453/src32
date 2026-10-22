@@ -2,7 +2,8 @@
 
 Builds the boot image with foundation/boot/build.py, types keys through the
 testbench's PeC input (--type) and compares the PCG text screen (--dump-pcg).
-The kernel stops the machine at STOP_TICKS with R1 = 42.
+The kernel stops the machine at STOP_TICKS with R1 = 42. FndWalShellTests
+runs the same tests with libfnd as the WAL fnd (build.py --fnd-wal).
 
     python -m unittest discover -s foundation/tests/shell -v
 
@@ -37,13 +38,15 @@ def find_testbench():
 
 
 class ShellTests(unittest.TestCase):
+    BUILD_OPTIONS = []
+
     @classmethod
     def setUpClass(cls):
         cls.harness = find_testbench()
         cls.temp = tempfile.TemporaryDirectory(prefix='foundation-shell-')
         cls.work = Path(cls.temp.name)
         command = [sys.executable, str(ROOT / 'foundation/boot/build.py'), str(cls.work),
-                   '--stop-ticks', str(STOP_TICKS)]
+                   '--stop-ticks', str(STOP_TICKS), *cls.BUILD_OPTIONS]
         clang = os.environ.get('CLANG') or shutil.which('clang')
         if clang:
             command += ['--clang', clang]
@@ -217,6 +220,19 @@ class ShellTests(unittest.TestCase):
         ])
         # MEM: the image (its size depends on the build) and the 16 KiB stack.
         self.assertRegex(rows[5], r'^    2      0 RUN      2 +[1-9][0-9]*K shell$')
+
+
+class FndWalShellTests(ShellTests):
+    """The shell as a WAX v3 importing libfnd from the WAL fnd 1.0."""
+    BUILD_OPTIONS = ['--fnd-wal']
+
+    def test_shell_imports_libfnd(self):
+        shell, fnd = (self.work / 'shell.wax').read_bytes(), (self.work / 'fnd.wal').read_bytes()
+        self.assertEqual(shell[4:8], b'\x00\x03\x00\x01')  # v3 WAX
+        self.assertEqual(fnd[4:8], b'\x00\x03\x00\x02')  # v3 WAL
+        self.assertIn(b'fnd_write\x00', shell)  # an import
+        self.assertNotIn(b'needs fsck', shell)  # strerror lives in fnd
+        self.assertIn(b'needs fsck', fnd)
 
 
 if __name__ == '__main__':

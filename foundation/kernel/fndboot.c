@@ -49,12 +49,12 @@ int32_t fnd_boot_check(const void *fndboot) {
     return (int32_t)count;
 }
 
-int32_t fnd_boot_spawn(const void *fndboot, uint32_t index) {
+int32_t fnd_boot_spawn(const void *fndboot, uint32_t index, const struct fnd_image *libs, uint32_t lib_count) {
     const uint8_t *boot = fndboot;
     const uint8_t *entry = entry_at(boot, index);
     const struct fnd_grant *grants = word(entry + 20) ? (const void *)(boot + word(entry + 16)) : 0;
     /* caps (entry + 12) is kept for the capability checks of a later phase:
      * the kernel does not track capabilities yet. */
     return fnd_proc_spawn_wax((const char *)entry + 32, word(entry + 8), boot + word(entry), word(entry + 4),
-                              0, 0, grants, word(entry + 20));
+                              libs, lib_count, grants, word(entry + 20));
 }
