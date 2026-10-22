@@ -28,13 +28,14 @@ static fs2_cache_line *cache_find(fs2_vol *v, uint32_t lba) {
 }
 
 /* Copies with words when both ends share their alignment. The toolchain's
- * memcpy goes byte by byte, and sector and payload copies are most of the
- * CPU time of fs. no_builtin keeps clang from turning the loops back into
- * memcpy. */
+ * memcpy and memset go byte by byte, and sector and payload copies are most
+ * of the CPU time of fs. no_builtin keeps clang from turning the loops back
+ * into library calls; the loops are unrolled because the backend spends
+ * more on the loop than on a word. */
 #ifdef __clang__
 __attribute__((no_builtin("memcpy")))
 #endif
-static void copy(void *dst, const void *src, uint32_t n) {
+void fs_copy(void *dst, const void *src, uint32_t n) {
     uint8_t *d = (uint8_t *)dst;
     const uint8_t *s = (const uint8_t *)src;
     if (!(((uintptr_t)d ^ (uintptr_t)s) & 3u)) {
@@ -42,7 +43,6 @@ static void copy(void *dst, const void *src, uint32_t n) {
             *d++ = *s++;
         uint32_t *dw = (uint32_t *)(void *)d;
         const uint32_t *sw = (const uint32_t *)(const void *)s;
-        /* Unrolled: the backend spends more on the loop than on a word. */
         for (; n >= 32; n -= 32, dw += 8, sw += 8) {
             dw[0] = sw[0], dw[1] = sw[1], dw[2] = sw[2], dw[3] = sw[3];
             dw[4] = sw[4], dw[5] = sw[5], dw[6] = sw[6], dw[7] = sw[7];
@@ -54,6 +54,23 @@ static void copy(void *dst, const void *src, uint32_t n) {
     }
     while (n--)
         *d++ = *s++;
+}
+
+#ifdef __clang__
+__attribute__((no_builtin("memset")))
+#endif
+void fs_zero(void *dst, uint32_t n) {
+    uint8_t *d = (uint8_t *)dst;
+    for (; n && ((uintptr_t)d & 3u); --n)
+        *d++ = 0;
+    uint32_t *w = (uint32_t *)(void *)d;
+    for (; n >= 32; n -= 32, w += 8)
+        w[0] = w[1] = w[2] = w[3] = w[4] = w[5] = w[6] = w[7] = 0;
+    for (; n >= 4; n -= 4)
+        *w++ = 0;
+    d = (uint8_t *)w;
+    while (n--)
+        *d++ = 0;
 }
 
 /* The cached sector lba, valid until the next sec_* call. A miss reads up
@@ -73,7 +90,7 @@ static fnd_status sec_get(fs2_vol *v, uint32_t lba, const uint8_t **data) {
             return st;
         for (uint32_t i = 0; i < n; ++i) {
             fs2_cache_line *line = cache_line(v, lba + i);
-            copy(line->data, v->ahead + i * FS2_BLOCK, FS2_BLOCK);
+            fs_copy(line->data, v->ahead + i * FS2_BLOCK, FS2_BLOCK);
             line->lba = lba + i;
             line->valid = 1;
         }
@@ -87,7 +104,7 @@ static fnd_status sec_read(fs2_vol *v, uint32_t lba, uint8_t *buf) {
     const uint8_t *data;
     fnd_status st = sec_get(v, lba, &data);
     if (st == FND_OK)
-        copy(buf, data, FS2_BLOCK);
+        fs_copy(buf, data, FS2_BLOCK);
     return st;
 }
 
@@ -105,7 +122,7 @@ static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
     }
     if (!c)
         c = cache_line(v, lba);
-    copy(c->data, buf, FS2_BLOCK);
+    fs_copy(c->data, buf, FS2_BLOCK);
     c->lba = lba;
     c->valid = 1;
     return FND_OK;
@@ -306,7 +323,7 @@ fnd_status fs2_read(fs2_vol *v, uint32_t ino, uint64_t off, void *out, uint32_t 
         uint32_t take = FS2_PAYLOAD - in;
         if (take > len - done)
             take = len - done;
-        copy((uint8_t *)out + done, buf + 4 + in, take);
+        fs_copy((uint8_t *)out + done, buf + 4 + in, take);
         done += take;
         in = 0;
         if (done == len)
@@ -343,13 +360,13 @@ static fnd_status chain_extend(fs2_vol *v, uint32_t ino, fs2_inode *n, uint32_t 
             if (st != FND_OK)
                 return st; /* allocated bits leak until fsck (§9.1) */
         }
-        memset(buf, 0, sizeof buf);
+        fs_zero(buf, sizeof buf);
         fs_put32(buf, next);
         uint64_t start = (uint64_t)index * FS2_PAYLOAD, end = start + FS2_PAYLOAD;
         uint64_t s0 = src_off, s1 = src_off + src_len;
         if (src && s0 < end && s1 > start) {
             uint64_t a = s0 > start ? s0 : start, b = s1 < end ? s1 : end;
-            memcpy(buf + 4 + (a - start), src + (a - s0), (size_t)(b - a));
+            fs_copy(buf + 4 + (a - start), src + (a - s0), (uint32_t)(b - a));
         }
         st = sec_write(v, cur, buf);
         if (st != FND_OK)
@@ -407,7 +424,7 @@ static fnd_status write_existing(fs2_vol *v, uint32_t ino, const fs2_inode *n, u
         uint32_t take = FS2_PAYLOAD - in;
         if (take > len - done)
             take = len - done;
-        memcpy(buf + 4 + in, src + done, take);
+        fs_copy(buf + 4 + in, src + done, take);
         st = sec_write(v, lba, buf);
         done += take;
         in = 0;
@@ -860,32 +877,32 @@ fnd_status fs2_format(fs_dev *dev, uint32_t total, uint32_t boot_blocks, uint32_
     if (dev->read_only)
         return FND_E_READ_ONLY;
     fnd_status st;
-    memset(buf, 0, sizeof buf);
+    fs_zero(buf, sizeof buf);
     buf[0x1FE] = 0x55, buf[0x1FF] = 0xAA;
     if ((st = dev->write(dev->ctx, 0, 1, buf)) != FND_OK)
         return st;
-    memset(buf, 0, sizeof buf);
+    fs_zero(buf, sizeof buf);
     for (uint32_t b = 2; b < ds; ++b) {
         if (b >= bms && b < ins) {
-            memset(buf, 0, sizeof buf);
+            fs_zero(buf, sizeof buf);
             uint32_t first = (b - bms) * FS2_BLOCK * 8;
             for (uint32_t i = 0; i < FS2_BLOCK * 8; ++i)
                 if (first + i < ds)
                     bit_set(buf, i, 1);
         } else if (b == ins) {
-            memset(buf, 0, sizeof buf);
+            fs_zero(buf, sizeof buf);
             fs2_inode root;
             memset(&root, 0, sizeof root);
             root.type = FS2_TYPE_DIR, root.mode = root_mode, root.parent = FS2_ROOT;
             root.created = root.modified = root.changed = now;
             inode_encode(buf, &root);
         } else {
-            memset(buf, 0, sizeof buf);
+            fs_zero(buf, sizeof buf);
         }
         if ((st = dev->write(dev->ctx, b, 1, buf)) != FND_OK)
             return st;
     }
-    memset(buf, 0, sizeof buf);
+    fs_zero(buf, sizeof buf);
     buf[0] = 'F', buf[1] = 'S', buf[2] = '2', buf[3] = 0;
     fs_put16(buf + 4, 1);
     fs_put32(buf + 0x08, total);
@@ -1151,7 +1168,7 @@ static void vol_release(fs2_vol *v) {
 }
 
 fnd_status fs2_mount(fs2_vol *v, fs_dev *dev, uint32_t writable) {
-    memset(v, 0, sizeof *v);
+    fs_zero(v, sizeof *v);
     v->dev = dev;
     fnd_status st = read_superblock(v);
     if (st != FND_OK)

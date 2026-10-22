@@ -28,17 +28,10 @@ static uint8_t *tmp_image;
 
 /* ---- platform (fs.h, server.h) ---------------------------------------- */
 
-/* The toolchain's memset goes byte by byte; fnd_mem_alloc gives 8-byte
- * aligned blocks. no_builtin keeps clang from turning this into memset. */
-__attribute__((no_builtin("memset"))) void *fs_alloc(uint32_t size) {
-    uint32_t *p = (uint32_t *)fnd_mem_alloc(size ? size : 1u);
-    if (!p)
-        return 0;
-    uint32_t *w = p, n = (size + 3u) / 4u;
-    for (; n >= 8; n -= 8, w += 8)
-        w[0] = w[1] = w[2] = w[3] = w[4] = w[5] = w[6] = w[7] = 0;
-    while (n--)
-        *w++ = 0;
+void *fs_alloc(uint32_t size) {
+    void *p = fnd_mem_alloc(size ? size : 1u);
+    if (p)
+        fs_zero(p, size);
     return p;
 }
 
@@ -107,12 +100,12 @@ static fnd_status disk_write(void *ctx, uint32_t lba, uint32_t count, const void
 }
 
 static fnd_status ram_read(void *ctx, uint32_t lba, uint32_t count, void *buf) {
-    memcpy(buf, (uint8_t *)ctx + lba * 512u, count * 512u);
+    fs_copy(buf, (uint8_t *)ctx + lba * 512u, count * 512u);
     return FND_OK;
 }
 
 static fnd_status ram_write(void *ctx, uint32_t lba, uint32_t count, const void *buf) {
-    memcpy((uint8_t *)ctx + lba * 512u, buf, count * 512u);
+    fs_copy((uint8_t *)ctx + lba * 512u, buf, count * 512u);
     return FND_OK;
 }
 

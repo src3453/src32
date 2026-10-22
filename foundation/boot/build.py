@@ -206,7 +206,7 @@ def main(argv=None):
             files[path] = (host.read_bytes(), MODE_EXEC if path.startswith(("/bin/", "/lib/")) else None)
     disk = out / "foundation.img"
     temporary = disk.with_name(disk.name + ".tmp")
-    temporary.write_bytes(disk_image(stage1.read_bytes(), boot, disk_files, args.disk_blocks))
+    temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))
     os.replace(temporary, disk)
     print(f"Wrote {disk}")
     return 0

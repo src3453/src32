@@ -28,6 +28,10 @@ typedef struct fs_dev {
 /* Sector buffers: word copies need both ends 4-byte aligned. */
 #define FS_ALIGNED __attribute__((aligned(4)))
 
+/* memcpy and memset with word loops (fs2.c). */
+void fs_copy(void *dst, const void *src, uint32_t n);
+void fs_zero(void *dst, uint32_t n);
+
 /* Platform: the service (main.c) or the host test provides these. */
 void *fs_alloc(uint32_t size); /* zeroed, 8-byte aligned; 0 if out of memory */
 void fs_free(void *p);
