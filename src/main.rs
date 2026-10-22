@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 use cpt32::bus::Bus;
 use cpt32::cpu::InstructionMode;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CpuProfile};
+use cpt32::cpu_privilege::{DebugTranslation, describe_cause};
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::expansion::{
     EXPANSION_SLOT_COUNT, ExpansionCallKind, ExpansionCallStats, ExpansionCardDebugInfo,
@@ -1170,6 +1171,7 @@ struct DebugUiState {
     disasm_count_input: String,
     mem_base_input: String,
     mem_count_input: String,
+    mmu_lookup_input: String,
     performance: Option<PerformanceStats>,
     frame_profile: Option<FrameProfileSummary>,
     cpu_utilization_history: VecDeque<f32>,
@@ -1251,6 +1253,7 @@ enum DebugWindow {
     MonitorConsole,
     AudioMixer,
     ExpansionCards,
+    Mmu,
 }
 
 impl DebugWindow {
@@ -1264,8 +1267,9 @@ impl DebugWindow {
         Self::MonitorConsole,
         Self::AudioMixer,
         Self::ExpansionCards,
+        Self::Mmu,
     ];
-    const COUNT: usize = 9;
+    const COUNT: usize = 10;
 
     fn label(self) -> &'static str {
         match self {
@@ -1278,6 +1282,7 @@ impl DebugWindow {
             Self::MonitorConsole => "src32 Debug Monitor Console",
             Self::AudioMixer => "Audio Mixer",
             Self::ExpansionCards => "WASM Expansion Cards",
+            Self::Mmu => "MMU / TLB (Extension V)",
         }
     }
 }
@@ -1305,6 +1310,7 @@ impl DebugUiState {
             disasm_count_input: "32".to_string(),
             mem_base_input: "0x00000000".to_string(),
             mem_count_input: "256".to_string(),
+            mmu_lookup_input: "0".to_string(),
             performance: None,
             frame_profile: None,
             cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
@@ -1478,6 +1484,9 @@ impl DebugUiState {
         }
         if self.visible_windows[DebugWindow::ExpansionCards as usize] {
             self.draw_expansion_overview(ui, cpu);
+        }
+        if self.visible_windows[DebugWindow::Mmu as usize] {
+            self.draw_mmu(ui, cpu);
         }
         self.draw_expansion_details(ui, cpu);
     }
@@ -2076,6 +2085,56 @@ impl DebugUiState {
                     cpu.instructions_executed()
                 ));
 
+                let system = cpu.system_snapshot();
+                ui.separator();
+                ui.text("System registers (Extension P/V, read only)");
+                ui.text(format!(
+                    "STATUS: 0x{:08X}  IE={} PIE={} U={} PU={} PSM={:?}",
+                    system.status,
+                    u8::from(system.ie),
+                    u8::from(system.pie),
+                    u8::from(system.user),
+                    u8::from(system.pu),
+                    system.psm
+                ));
+                ui.text(format!(
+                    "Protection mode: {}  (previous: {})",
+                    if system.user { "User" } else { "Supervisor" },
+                    if system.pu { "User" } else { "Supervisor" }
+                ));
+                ui.text(format!("EPC: 0x{:08X}", system.epc));
+                ui.text(format!(
+                    "CAUSE: 0x{:08X}  ({})",
+                    system.cause,
+                    describe_cause(system.cause)
+                ));
+                match system.irq_pending {
+                    Some(number) => ui.text(format!("IRQ pending: IRQ{number}")),
+                    None => ui.text("IRQ pending: none"),
+                }
+                ui.text(format!(
+                    "USP: 0x{:08X}   UFP: 0x{:08X}   UGP: 0x{:08X}",
+                    system.user_bank[0], system.user_bank[1], system.user_bank[2]
+                ));
+                ui.text(format!(
+                    "VCTL: 0x{:08X} (EN={})   PTBR: 0x{:08X}   VFAULT: 0x{:08X}",
+                    u32::from(system.mmu.enabled),
+                    u8::from(system.mmu.enabled),
+                    system.mmu.ptbr,
+                    system.mmu.vfault
+                ));
+                for (index, region) in system.regions.iter().enumerate() {
+                    ui.text(format!(
+                        "RGN{index}: 0x{:08X}..0x{:08X} flags={}{}{}",
+                        region.start,
+                        region.end,
+                        if region.flags & 1 != 0 { 'R' } else { '-' },
+                        if region.flags & 2 != 0 { 'W' } else { '-' },
+                        if region.flags & 4 != 0 { 'X' } else { '-' },
+                    ));
+                }
+                ui.separator();
+
                 for base in (0..32).step_by(4) {
                     ui.text(format!(
                         "R{:<2}=0x{:08X}   R{:<2}=0x{:08X}   R{:<2}=0x{:08X}   R{:<2}=0x{:08X}",
@@ -2143,6 +2202,91 @@ impl DebugUiState {
                     }
                     addr = addr.wrapping_add(decoded.size as u32);
                     mode = decoded.next_mode;
+                }
+            });
+    }
+
+    fn draw_mmu(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
+        let snapshot = cpu.mmu_snapshot();
+        let table_flags = TableFlags::BORDERS | TableFlags::ROW_BG;
+        ui.window(DebugWindow::Mmu.label())
+            .size([640.0, 560.0], Condition::FirstUseEver)
+            .build(|| {
+                let state = match (snapshot.enabled, snapshot.translating) {
+                    (false, _) => "disabled (VCTL.EN = 0)",
+                    (true, true) => "enabled, translating (U mode)",
+                    (true, false) => "enabled, idle (S mode is untranslated)",
+                };
+                ui.text(format!("VCTL: {state}"));
+                ui.text(format!("PTBR: 0x{:08X}", snapshot.ptbr));
+                ui.text(format!("VFAULT: 0x{:08X}", snapshot.vfault));
+                ui.text(format!(
+                    "TLB: {}/{} valid, next victim: entry {}",
+                    snapshot.entries.iter().filter(|entry| entry.valid).count(),
+                    snapshot.entries.len(),
+                    snapshot.next_victim
+                ));
+                ui.separator();
+
+                if let Some(_table) = ui.begin_table_with_flags("MmuTlb", 6, table_flags) {
+                    for name in ["#", "Virtual page", "Physical page", "Perm", "U", ""] {
+                        ui.table_setup_column(name);
+                    }
+                    ui.table_headers_row();
+                    for entry in &snapshot.entries {
+                        ui.table_next_row();
+                        ui.table_next_column();
+                        ui.text(format!("{}", entry.index));
+                        if !entry.valid {
+                            ui.table_next_column();
+                            ui.text_disabled("-");
+                            continue;
+                        }
+                        ui.table_next_column();
+                        ui.text(format!("0x{:08X}", entry.virtual_page));
+                        ui.table_next_column();
+                        ui.text(format!("0x{:08X}", entry.physical_page));
+                        ui.table_next_column();
+                        ui.text(format!(
+                            "{}{}{}",
+                            if entry.flags.read { 'R' } else { '-' },
+                            if entry.flags.write { 'W' } else { '-' },
+                            if entry.flags.execute { 'X' } else { '-' },
+                        ));
+                        ui.table_next_column();
+                        ui.text(if entry.flags.user { "U" } else { "-" });
+                        ui.table_next_column();
+                        if entry.index == snapshot.next_victim {
+                            ui.text("<- next");
+                        }
+                    }
+                }
+
+                ui.separator();
+                ui.text("Translate (table walk without touching the TLB)");
+                ui.input_text("Virtual address", &mut self.mmu_lookup_input)
+                    .build();
+                let va = Self::parse_u32(&self.mmu_lookup_input, 0);
+                match cpu.mmu_translate(va) {
+                    DebugTranslation::Mapped {
+                        physical,
+                        flags,
+                        in_tlb,
+                    } => ui.text(format!(
+                        "0x{va:08X} -> 0x{physical:08X} ({}{}{}{}, {})",
+                        if flags.read { 'R' } else { '-' },
+                        if flags.write { 'W' } else { '-' },
+                        if flags.execute { 'X' } else { '-' },
+                        if flags.user { " U" } else { "" },
+                        if in_tlb { "TLB hit" } else { "table walk" },
+                    )),
+                    DebugTranslation::Unmapped => ui.text(format!("0x{va:08X} -> unmapped")),
+                    DebugTranslation::BusError => ui.text(format!(
+                        "0x{va:08X} -> bus error while reading the page table"
+                    )),
+                }
+                if !snapshot.enabled {
+                    ui.text_disabled("Translation is off: U mode currently uses the P regions.");
                 }
             });
     }

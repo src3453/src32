@@ -963,6 +963,30 @@ impl Cpu {
         self.access_allowed(self.pc, len, Access::Fetch, self.pc)
     }
 
+    /// Extension V control registers and TLB for the debugger.
+    pub fn mmu_snapshot(&self) -> crate::cpu_privilege::MmuSnapshot {
+        self.sys.mmu_snapshot()
+    }
+
+    /// Debugger translation of a virtual address (no TLB fill, no faults).
+    pub fn mmu_translate(&mut self, va: u32) -> crate::cpu_privilege::DebugTranslation {
+        let bus = &mut self.bus;
+        self.sys.debug_translate(va, |addr| {
+            let mut word = 0u32;
+            for index in 0..4 {
+                word = (word << 8) | u32::from(bus.read_debug_u8(addr.wrapping_add(index))?);
+            }
+            Some(word)
+        })
+    }
+
+    /// All Extension P/V registers for the debugger (no side effects).
+    pub fn system_snapshot(&self) -> crate::cpu_privilege::SystemSnapshot {
+        let mut snapshot = self.sys.snapshot(&self.reg);
+        snapshot.irq_pending = self.irq_pending.then_some(self.irq_pending_number);
+        snapshot
+    }
+
     pub fn epc(&self) -> u32 {
         self.sys.epc
     }

@@ -267,6 +267,26 @@ static int32_t check_grants(const struct fnd_grant *grants, uint32_t count) {
             return FND_E_ACCESS;
         if (grant_windows[window].exclusive && window_taken((unsigned)window))
             return FND_E_BUSY;
+        if (mm_vm) {
+            /* The hardware maps whole pages (§5.5): every window the page
+             * range reaches must be grantable and, if exclusive, free. The
+             * rest of a shared page (PeC) stays reachable; see the spec. */
+            uint32_t first = g->start & ~MM_PAGE_MASK, last = (g->end + MM_PAGE_MASK) & ~MM_PAGE_MASK;
+            for (uint32_t at = first; at < last;) {
+                int found = -1;
+                for (unsigned w = 0; w < GRANT_WINDOWS; ++w) {
+                    if ((grant_windows[w].start & ~MM_PAGE_MASK) <= at && at < grant_windows[w].end) {
+                        found = (int)w;
+                        break;
+                    }
+                }
+                if (found < 0)
+                    return FND_E_ACCESS;
+                if (grant_windows[found].exclusive && window_taken((unsigned)found))
+                    return FND_E_BUSY;
+                at = (grant_windows[found].end + MM_PAGE_MASK) & ~MM_PAGE_MASK;
+            }
+        }
     }
     return FND_OK;
 }

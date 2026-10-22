@@ -142,6 +142,112 @@ fn read_pte(bus: &mut Bus, addr: u32) -> Option<u32> {
     (!bus.take_bus_error()).then_some(value)
 }
 
+/// One TLB slot as shown by the debugger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct TlbEntryView {
+    pub index: usize,
+    pub valid: bool,
+    /// Page-aligned virtual and physical addresses.
+    pub virtual_page: u32,
+    pub physical_page: u32,
+    pub flags: TlbFlags,
+}
+
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct TlbFlags {
+    pub read: bool,
+    pub write: bool,
+    pub execute: bool,
+    pub user: bool,
+}
+
+impl TlbFlags {
+    fn from_pte(pte: u32) -> Self {
+        Self {
+            read: pte & PTE_R != 0,
+            write: pte & PTE_W != 0,
+            execute: pte & PTE_X != 0,
+            user: pte & PTE_U != 0,
+        }
+    }
+}
+
+/// Extension V state for the debugger.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MmuSnapshot {
+    pub enabled: bool,
+    /// Translation is applied right now (enabled and in U mode).
+    pub translating: bool,
+    pub ptbr: u32,
+    pub vfault: u32,
+    pub next_victim: usize,
+    pub entries: Vec<TlbEntryView>,
+}
+
+/// Result of a side-effect-free translation for the debugger.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DebugTranslation {
+    Mapped {
+        physical: u32,
+        flags: TlbFlags,
+        /// Served by a TLB entry (otherwise by a table walk).
+        in_tlb: bool,
+    },
+    /// No valid leaf (V = 0, malformed PTE or unsupported huge page).
+    Unmapped,
+    /// A PTE could not be read from the bus.
+    BusError,
+}
+
+/// Every Extension P/V CPU register as the debugger sees it (read only).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SystemSnapshot {
+    pub status: u32,
+    pub ie: bool,
+    pub pie: bool,
+    /// Protection mode: true = User, false = Supervisor.
+    pub user: bool,
+    pub pu: bool,
+    pub psm: InstructionMode,
+    pub epc: u32,
+    pub cause: u32,
+    /// User copies of R28..R30 (`USP`, `UFP`, `UGP`).
+    pub user_bank: [u32; BANK_SIZE],
+    pub regions: [Region; REGION_COUNT],
+    pub mmu: MmuSnapshot,
+    /// IRQ number latched but not yet taken. Filled in by the CPU.
+    pub irq_pending: Option<u8>,
+}
+
+/// Human-readable form of a CAUSE value (IRQ number or exception).
+pub fn describe_cause(cause: u32) -> String {
+    if cause & CAUSE_EXCEPTION == 0 {
+        return format!("IRQ{}", cause & 0xF);
+    }
+    let detail = cause & 0xFFFF;
+    let access = |bits: u32| {
+        format!(
+            "{}{}{}",
+            if bits & 1 != 0 { 'R' } else { '-' },
+            if bits & 2 != 0 { 'W' } else { '-' },
+            if bits & 4 != 0 { 'X' } else { '-' },
+        )
+    };
+    match (cause >> 16) & 0xFF {
+        1 => "Illegal instruction".to_string(),
+        2 => "Bus error".to_string(),
+        3 => format!("SYSCALL #{} ctx 0x{:02X}", detail & 0xFF, detail >> 8),
+        4 => "Privileged instruction".to_string(),
+        5 => format!("Protection fault ({})", access(detail)),
+        6 => format!(
+            "Page fault ({}, {})",
+            access(detail),
+            if detail & 8 != 0 { "protection" } else { "not present" }
+        ),
+        code => format!("Unknown exception {code}"),
+    }
+}
+
 /// First banked register; R28 (SP), R29 (FP) and R30 (GP) are banked.
 const BANK_FIRST: usize = 28;
 const BANK_SIZE: usize = 3;
@@ -388,6 +494,73 @@ impl SystemState {
         let offset = usize::from(sr.checked_sub(SR_REGION_BASE)?);
         let (region, field) = (offset / 4, offset % 4);
         (region < REGION_COUNT && field < 3).then_some((region, field))
+    }
+
+    /// Read-only view of all system registers; `reg` is the live register file.
+    pub fn snapshot(&self, reg: &[u32; 32]) -> SystemSnapshot {
+        let mut user_bank = self.other_bank;
+        if self.user {
+            user_bank.copy_from_slice(&reg[BANK_FIRST..BANK_FIRST + BANK_SIZE]);
+        }
+        SystemSnapshot {
+            status: self.status(),
+            ie: self.ie,
+            pie: self.pie,
+            user: self.user,
+            pu: self.pu,
+            psm: self.psm,
+            epc: self.epc,
+            cause: self.cause,
+            user_bank,
+            regions: self.regions,
+            mmu: self.mmu_snapshot(),
+            irq_pending: None,
+        }
+    }
+
+    pub fn mmu_snapshot(&self) -> MmuSnapshot {
+        MmuSnapshot {
+            enabled: self.vm.enabled,
+            translating: self.translating(),
+            ptbr: self.vm.ptbr,
+            vfault: self.vm.vfault,
+            next_victim: self.vm.next_victim,
+            entries: self
+                .vm
+                .tlb
+                .iter()
+                .enumerate()
+                .map(|(index, entry)| TlbEntryView {
+                    index,
+                    valid: entry.valid,
+                    virtual_page: entry.vpn << PAGE_SHIFT,
+                    physical_page: entry.ppn << PAGE_SHIFT,
+                    flags: TlbFlags::from_pte(entry.flags),
+                })
+                .collect(),
+        }
+    }
+
+    /// Translate `va` like the hardware would, without filling the TLB or
+    /// checking permissions. `read_word` reads one physical word.
+    pub fn debug_translate(
+        &self,
+        va: u32,
+        mut read_word: impl FnMut(u32) -> Option<u32>,
+    ) -> DebugTranslation {
+        let (entry, in_tlb) = match self.vm.lookup(va >> PAGE_SHIFT) {
+            Some(entry) => (entry, true),
+            None => match self.vm.walk(va, &mut read_word) {
+                Err(()) => return DebugTranslation::BusError,
+                Ok(None) => return DebugTranslation::Unmapped,
+                Ok(Some(entry)) => (entry, false),
+            },
+        };
+        DebugTranslation::Mapped {
+            physical: (entry.ppn << PAGE_SHIFT) | (va & (PAGE_SIZE - 1)),
+            flags: TlbFlags::from_pte(entry.flags),
+            in_tlb,
+        }
     }
 
     /// Whether U-mode accesses are translated (Extension V).

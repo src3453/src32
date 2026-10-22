@@ -56,6 +56,10 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--protected", action="store_true",
                    help="emit an Extension P user-mode program as a PROTECTED .wax "
                         "(code R/X, data R/W, user stack below --stack-top)")
+    p.add_argument("--page-align", action="store_true",
+                   help="start the data on a 4 KiB boundary after the code, so code (R/X) and data (R/W) "
+                        "never share a page; Foundation on Extension V needs this for W^X (use with "
+                        "--protected, --wax3 or --wal)")
     p.add_argument("--user-stack-size", type=address, default=0x4000,
                    help="user stack bytes below --stack-top with --protected or --wax3 (default 0x4000)")
     v3 = p.add_argument_group("WAX v3 (doc/spec_WAX_v3.md, call ABI 1)")
@@ -377,10 +381,11 @@ def run(args) -> Path:
             assembly = compile_module(linked, origin=0 if args.wal else args.origin, stack_top=args.stack_top,
                                       entry=None if args.wal else args.entry, protected=True,
                                       info=layout_info, pic=args.wal, imports=imports.kinds,
-                                      exit_syscall=V3_OSES[args.os]["exit"])
+                                      exit_syscall=V3_OSES[args.os]["exit"], page_align=args.page_align)
         else:
             assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
-                                      protected=args.protected, info=layout_info, data_origin=args.data_origin)
+                                      protected=args.protected, info=layout_info, data_origin=args.data_origin,
+                                      page_align=args.page_align)
         if args.save_temps:
             (work / "output.a").write_text(assembly, encoding="utf-8")
         if args.S:

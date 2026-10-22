@@ -1203,6 +1203,27 @@
 - Pitfall: the pipelined CPU does not interlock on `CPUID`'s implicit R1/R2 writes (they retire three instructions later). `cpt32_cpu_features` emits three NOPs after `CPUID`; without them the pipeline reads a stale R2 and the kernel silently picks the slot backend. The emulator itself should probably declare R1/R2 as destinations (not done; it is KAN-48's code).
 - Pitfall: tests that read physical slot memory (`tests/phase1`, `tests/wax`, `tests/wal`) are slot-only and are built with `-D FND_MM_SLOT_ONLY` in `test_toolchain.py`. `tests/shell` takes `FND_MM=slot` from the environment to pick free-memory expectations. The vm kernel test is `test_foundation_vm_kernel` (`foundation/tests/vm`), whose poke images keep code and data on different pages for that reason.
 - Local setup gotcha: llvmlite (LLVM major) and clang must match. Ubuntu 24.04 has clang-20, so `pip install "llvmlite>=0.45,<0.46"` and `--clang /usr/bin/clang-20`; the latest llvmlite needs a clang that apt does not offer. `cargo build` through the proxy may need `CARGO_HTTP_MULTIPLEXING=false`.
+- Not done: demand paging/COW/shared WAL pages, more than 7 processes, R-only .rodata block, sub-page MMIO grants (hardware limit), `mm_swap` for CPUs without V (design only, `doc/foundation_vm_plan.md` §9).
+
+## MMU debug window (2026-10-22, KAN-52)
+- `SystemState::mmu_snapshot` / `debug_translate` back the `MMU / TLB (Extension V)` debug window (`AnyCpu::mmu_snapshot`, `mmu_translate`). The translate path must stay side-effect free: it reads PTEs with `read_debug_u8` and never fills the TLB or checks permissions, so opening the window cannot change what the guest sees (`tests/cpu_vm.rs` checks the snapshot is unchanged). The window itself is not covered by tests (Xvfb renders black); only the data API is.
+
+## Debug Controls のシステムレジスタ表示 (2026-10-22, KAN-53)
+- `SystemState::snapshot` / `AnyCpu::system_snapshot` が STATUS、EPC、CAUSE、USP/UFP/UGP、RGN0..7、VCTL/PTBR/VFAULT、保留 IRQ を返す。USP/UFP/UGP は U モード中は生きたレジスタ（R28..R30）、S モード中は退避バンクなので、`MFSR` と同じ規則で解決する（`reg` を渡す理由）。読み取りは副作用なし（`tests/cpu_vm.rs` が連続取得の一致を確認）。
+- 表示しない内部状態: TLB の中身（`MMU / TLB` ウィンドウが担当）、パイプライン段・命令キャッシュ・JIT・スピン検出などの実行機構（アーキテクチャ状態ではない）、IRQC の状態（デバイス側）、割り込みの入力線レベル（保留 IRQ のみ表示）。
+- GUI 描画は目視未確認（Xvfb は黒画面）。データ API のテストのみ。
+
+
+- 2026-10-22 (W^X and MMIO, KAN-49 follow-up): the owner chose the real-OS way. `llvm-src32 --page-align` starts RW data on a 4 KiB boundary and `v3.py` gives the RW block alignment 4096 (only when it already sits on a page); `foundation/boot/build.py` passes it for services, shell, commands and the fnd WAL, so a vm page is never both writable and executable. Images built without it still get the permission union of mm_vm_map. `.rodata` stays inside RW data. MMIO stays page-granular (U-mode accesses inside a mapped page cannot be intercepted); check_grants additionally requires every window the rounded page range reaches to be grantable and, if exclusive, free. The PeC page still exposes timer/RTC to a UART or input grantee. Pipeline CPUID interlock is tracked as KAN-51 (the 3-NOP workaround stays).
+
+- **Foundation C TinyBASIC** (`foundation/bin/tinybasic.c`, `tinybasic_*.h`, `examples/tinybasic-c/main.c`): インタプリタは共用し、`FOUNDATION_GUEST` のときだけ私有ヒープと libfnd の STDIN/STDOUT/fs に切り替える。直接 MMIO・固定物理アドレス・IRQ/HALT を混ぜない。`tinybasic file.bas` はロード→RUN→proc_exit、引数なしは REPL。`LOAD/SAVE "path"` は128KiB以内のテキストファイルで、SAVEは末尾をsector paddingせず、LOADは読込・超過検査完了まで既存プログラムを消さない。入力は console LINE のエコーを使い、ゲスト側で二重エコーしない。テストは `python -m unittest discover -s foundation/tests/tinybasic -v` を既定VMと `FND_MM=slot` で実行し、WAX/WALロード・PCG表示・シェル復帰・ファイル引数と終了コード・FS2上の実ファイルを検証する。Windowsの一時ディレクトリはworkspace配下に設定する。
+- Foundation 起動ランナー `foundation/run.py --root DIR` は boot/build.py の追加ルートを渡す。`examples/tinybasic-c/foundation-root/demo.bas` を入れれば、シェルで `tinybasic demo.bas` を実行できる。TinyBASIC追加時の検証では、専用テストは既定VM/slotで各6件、元のC単体版は5件通過。シェル全18件中、12MiB構成のfree期待値だけが失敗し、TinyBASICをディスクから除去しても再現した（free_kibが0 KiB freeを拒否）。本機能の成否と混同しない。
+
+## Foundation free のバックエンド判定 (2026-10-23, KAN-55)
+- `FND_MM` 未設定は VM の強制ではない。`mm_init` は実行中の CPU の CPUID bit 9 で VM/slot を選ぶ。12 MiB の slot 構成では console/disk/fs/init/shell/実行中コマンドが slot 0〜5 を占め、`free` の 0 KiB は正当。VM の空き容量とは同じ期待値にしない。
+- シェルハーネスは `SRC32_TESTBENCH`、release、debug の順で実行ファイルを選ぶ。本件では古い release が CPUID=0x13F、新しい debug が 0x33F で、release の優先選択が原因だった。ソースの機能値からロード済みバイナリの機能を推測しない。VM 検証時は testbench を再ビルドするか絶対パスで明示する。
+- `foundation/tests/shell/cpu_features.a` を実際の testbench/CPU で走らせて V を確認し、`FND_MM=slot` または V なしでは正確な slot 空き容量、V ありでは正の VM 空き容量を検証する。`FOUNDATION_TEST_CPU` とケース別 CPU 指定を反映し、判定を CPU ごとに保持する。VM の 0 を許すように検査を緩めてはいけない。
+- 検証: 更新した release testbench でシェル全18件が既定VM/強制slotの双方で通過、共用ハーネスの TinyBASIC 6件も通過。さらに Cached の CPUID の V ビットだけを無効化した一時ビルド（CPU ソースは直後に復元・通常 release も再ビルド）で、FND_MM未設定の12MiB free・16MiB banner/free・Pipeline top の3件が通過。1つのハーネス内で Cached=slot/Pipeline=VM を切り替える経路も確認した。
 - Not done: demand paging/COW/shared WAL pages, more than 7 processes, W^X for blocks sharing a page, sub-page MMIO grants, `mm_swap` for CPUs without V (design only, `doc/foundation_vm_plan.md` §9).
 
 ## Foundation file commands (2026-10-23, KAN-17)
