@@ -1335,8 +1335,9 @@ class _Function:
 
 class _Module:
     def __init__(self, module, origin, stack_top, entry, protected=False, data_origin=None,
-                 pic=False, imports=None, exit_syscall=0):
+                 pic=False, imports=None, exit_syscall=0, page_align=False):
         self.module = module
+        self.page_align = page_align
         self.layout = Layout(module)
         self.image = DataImage(module)
         self.code = _Code(origin, pic)
@@ -1641,7 +1642,10 @@ class _Module:
         c = self.code
         if functions is None:
             functions = {name: c.labels[symbol(name)] for name in self.definitions}
-        base = _round(c.pc, 8)
+        # With page_align the writable data starts on a 4 KiB boundary, so a
+        # paged address space (Extension V) can give code and data different
+        # permissions.
+        base = _round(c.pc, 4096 if self.page_align else 8)
         self.data_start = base
         self.image.assign(base, functions, self.data_origin)
         # Import descriptors: 8 zero bytes each, in RW data after the globals.
@@ -1689,7 +1693,7 @@ class _Module:
 
 
 def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None,
-                   data_origin=None, pic=False, imports=None, exit_syscall=0):
+                   data_origin=None, pic=False, imports=None, exit_syscall=0, page_align=False):
     """Lower an official llvmlite ModuleRef into standalone SRC32 assembly.
 
     The module is verified by LLVM, keeps its big-endian 32-bit target layout,
@@ -1708,7 +1712,8 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
     through it with R30 set to the provider's origin. `pic` emits a library:
     origin must be 0, every address is formed from R30, and `entry=None`
     leaves out the startup code. `exit_syscall` is the SYSCALL number the
-    protected startup code uses to exit. `info` also receives `extents`
+    protected startup code uses to exit. `page_align` starts the data on a 4 KiB
+    boundary (code R/X and data R/W then never share a page). `info` also receives `extents`
     (function name -> [start, end)) and `symbols` (global name -> address).
     """
     if not 0 <= origin <= 0xFFFFFFFC or origin % 4:
@@ -1729,7 +1734,7 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
         raise CompileError(f"LLVM verification failed: {exc}") from exc
     try:
         compiled = _Module(module, origin, stack_top, entry, protected, data_origin, pic, imports,
-                           exit_syscall)
+                           exit_syscall, page_align)
         assembly = compiled.compile()
         if info is not None:
             info["data_start"] = compiled.data_start
