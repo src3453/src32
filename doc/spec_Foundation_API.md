@@ -46,6 +46,7 @@ Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確
 | `0x0200–0x02FF` | ディレクトリ操作（§7） |
 | `0x0300–0x03FF` | デバイスサービスの操作（§9） |
 | `0x1000–0x10FF` | コンソール操作（§8） |
+| `0x1100–0x11FF` | VDPビットマップ／CLUT操作（§9.1） |
 | `0x8000–0xFFFEFFFF` | 各サービスの独自操作 |
 | `0xFFFF0000–` | カーネルの通知（[Foundation §8.5](spec_Foundation.md)） |
 
@@ -73,7 +74,7 @@ Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確
 
 ### 4.1 種類
 
-サービスがクライアントに渡すオブジェクトは、すべてカーネルの CHANNEL です。サービスは自分の PORT から `chan_create` で CHANNEL を作り、badge でオブジェクトを区別します。
+サービスがクライアントに渡すオブジェクトは、すべてカーネルの CHANNEL です。ユーザーサービスは自分の PORT から `chan_create` で CHANNEL を作り、badge でオブジェクトを区別します。カーネルドライバの CHANNEL は PORT を持たず、`ipc_call` 内で同期実行します（§9.1）。複製・転送・プロセス終了時の close は通常の CHANNEL と同じです。
 
 | オブジェクト | 作る操作 | 使える操作 |
 |---|---|---|
@@ -264,6 +265,34 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 
 - `DEV_OPEN` を呼べるのは fs だけにすべきですが、v1 のカーネル ABI には呼び出し元を確かめる手段がありません。そのため v1 では、デバイスサービスは誰からの `DEV_OPEN` も受け付けます。権限の検査は `/dev` の mode に頼ることになり、`svc_lookup("dev.<name>")` を直接使えば回避できます（§14）。
 
+### 9.1 カーネル VDP ビットマップドライバ `/dev/fb0`
+
+`/dev/fb0`（UID 0、mode `0x0036`）は `foundation/kernel/fb.c` のカーネルドライバです。fs は `svc_lookup("dev.fb0")` → `DEV_OPEN` で作った CHANNEL をクライアントに転送します。`dev.fb0` はカーネル予約名で、`svc_register` は EXISTS を返します。新しい SYSCALL、ユーザードライバプロセス、クライアントへの MMIO grant は不要です。通常の IPC と同じメモリ検証後、`mm_copy_*` でバッファにアクセスします。入力ハンドルの転送は BAD_ARG です。
+
+初版はビットマップと CLUT だけを扱います。PCG、SGC、VPU、GP合成設定、DMA、mmap、VSync待ちは公開しません。
+
+- `DEV_OPEN` は READ／WRITE の少なくとも一方を指定し、他のbitは BAD_ARG。同時に開けるストリームは1個で、2個目は BUSY。複製・転送は同じストリームと位置を共有します。fs経由の flags 処理は §6.4 のとおりです。
+- 新規ストリームは INDEX8、位置0です。WRITE付きopenは Graphics表示・bitmap INDEX8・PCG overlay無効・display enable に切り替えます。READだけのopenは INDEX8領域とCLUTを読み、表示設定は変更しません。
+- WRITE付きopenで、表示設定（enable、display mode、bitmap format、PCG overlay）、全256色のCLUT、INDEX8と重なるPCG文字・属性領域（VRAM `0x00000..0x02FFF`）を保存します。最後の参照を閉じると復元します。正常終了・fault・killによる破棄や、open後のハンドル確保失敗でも復元します。それ以外のビットマップ内容は保持します。
+- 保存はスナップショットです。open中に他プロセスが行ったPCG文字・属性・CLUTへの変更はcloseで元に戻ります。初版はコンソールとの描画調停を行わないため、描画中のコンソール出力を避けてください。既存の特権MMIO利用者との競合も調停しません。
+- `ST_READ`／`ST_WRITE` は選択形式の生画素byte列を操作します。libfndは4096 bytesずつ転送します。読み取りは末尾で短い応答、EOFは0 bytes。末尾を超える書き込みは、その要求全体を変更せず NO_SPACE。位置は成功したbyte数だけ進みます。
+- `ST_SEEK` は SET／CUR／END、i64 offset。位置は `0..size` に限定し、範囲外は BAD_ARG。`ST_STAT` は DEVICE、mode `0x0036`、SEEKABLE、選択形式のsize（READだけなら READ_ONLY）。`ST_TRUNCATE` は WRITEなしなら ACCESS、WRITEありでも UNSUPPORTED。`ST_SYNC` は即時成功で、表示完了・VSyncを保証しません。
+
+| op | 名前 | 要求 | 応答 |
+|---|---|---|---|
+| `0x1100` | `FB_GET_INFO` | — | データ = `fnd_fb_info`（24 bytes） |
+| `0x1101` | `FB_SET_FORMAT` | `a0` = 0 INDEX8／1 RGB555／2 RGB888 | 位置を0へ戻す。画素は消去しない |
+| `0x1102` | `FB_CLUT_READ` | `a0` = 先頭エントリ、`a1` = 件数 | RGB888列（件数×3 bytes） |
+| `0x1103` | `FB_CLUT_WRITE` | `a0` = 先頭エントリ、`a1` = 件数、データ = RGB888列 | `a0` = 書いたbyte数 |
+
+`fnd_fb_info` は big-endian u32 の `{width, height, stride, size, format, clut_entries}`。幅320、高さ240、CLUT256色です。strideは320／640／960、sizeは76800／153600／230400。画素byte順とVRAM配置は [VDP §2.2](spec_VDP.md#22-ビットマップgp) に従い、RGB555はbig-endian、RGB888はR,G,B順です。
+
+CLUT操作はどの形式でも可能で、範囲は `first <= 256 && count <= 256-first`、件数0も許します。WRITEのデータ長は厳密一致（不一致・範囲外は BAD_ARG）。READの受信容量不足は LIMIT で、部分転送しません。先頭64色も操作でき、closeで復元します。
+
+`FB_SET_FORMAT`／`FB_CLUT_WRITE`／`ST_WRITE` は WRITE、`FB_CLUT_READ`／`ST_READ` は READ が必要で、権限不足は ACCESS。未知の操作は UNSUPPORTED、未知の形式は BAD_ARG、応答容量不足は LIMIT。BMCの実VRAM容量に必要領域が収まらない形式は NO_MEDIA で形式・位置を変えません。容量未報告（0）も NO_MEDIA です。
+
+C API は `<foundation/fb.h>` の `fnd_fb_get_info`、`fnd_fb_set_format`、`fnd_fb_seek`、`fnd_fb_clut_read`、`fnd_fb_clut_write`。既存 `fnd_call` を使うheader helperで、WAL ABIは追加しません。open/read/write/closeは既存libfnd APIです。実行例は [examples/foundation-fb](../examples/foundation-fb/README.md)。
+
 ## 10. 構造体
 
 ### 10.1 `fnd_stat`（64 bytes）
@@ -283,7 +312,7 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 | 56 | `changed_ms` | |
 | 60 | — | 予約。0 |
 
-- デバイスとコンソールの大きさと時刻は 0 です。
+- デバイスとコンソールの大きさと時刻は原則0です。`fb0` のストリームstatは選択形式のビットマップbyte数を返します（パスstatの大きさは0）。
 - `ST_STAT` と `FS_STAT` は同じ形式を返します。
 
 ### 10.2 ディレクトリのエントリ

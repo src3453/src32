@@ -127,7 +127,7 @@ class GuestTests(unittest.TestCase):
                         lines += [f"#define img_{name}_size {len(data)}u", f"static const uint32_t img_{name}[] = {{{text}}};"]
                     (out / "images.h").write_text("\n".join(lines), encoding="utf-8")
                     run([*driver, HERE / "kernel.c", *(ROOT / "foundation/kernel" / name for name in
-                         ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "blk.c", "wax.c")),
+                         ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "blk.c", "wax.c")),
                          "-I", ROOT / "foundation/include", "-I", ROOT / "sdk/cpt32/include", "-I", out,
                          "-O1", "--origin", "0x10000", "--stack-top", "0x100000", "-o", out / "kernel.wax"])
                     for cpu in ("scalar", "pipeline"):

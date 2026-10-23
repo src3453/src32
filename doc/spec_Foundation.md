@@ -191,6 +191,7 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
   - その PORT を指す全 CHANNEL を無効にする（以後の `call` は `FND_E_PEER_GONE`）。
   - サービス登録と IRQ の割り当てを解除する。
 - **CHANNEL の破棄**：その CHANNEL の最後のハンドルが閉じられると、相手の PORT に `CLIENT_GONE` 通知（§8.5）を 1 回だけ届けます。
+- カーネルドライバの CHANNEL（API仕様 §9.1 の `dev.fb0`）は PORT を持ちません。`ipc_call` は通常のメモリ検証後、カーネル内で同期実行します。最後のcloseは `CLIENT_GONE` の代わりにドライバの解放処理を呼びます。複製・転送・起動時の継承は同じ参照を共有し、プロセス終了時も通常のハンドル破棄で解放します。`svc_lookup("dev.fb0")` はopen用CHANNELを返し、この名前の `svc_register` は EXISTS です。
 
 ## 7. システムコール規約
 

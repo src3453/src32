@@ -389,7 +389,7 @@ class DirectoryTests(FsTestBase):
         self.assertEqual(names, ["dd", "dev", "home", "os"])  # no RAM volume: no /tmp
         self.assertEqual(sorted(n for n, _, _ in fs.list("/dd/0")), ["DEV", "home"])
         self.assertEqual([n for n, _, _ in fs.list("/dd")], ["0"])
-        self.assertEqual(sorted(n for n, _, _ in fs.list("/dev")), ["con", "null"])
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/dev")), ["con", "fb0", "null"])
         self.assertEqual(fs.list("/os"), [])
         st = stat_of(fs.ok(SESSION, FS_STAT, data="/DD").data)
         self.assertEqual((st["type"], st["mode"], st["flags"]), (2, 0x2D, 1))
@@ -501,6 +501,9 @@ class DeviceTests(FsTestBase):
         r = fs.ok(SESSION, FS_OPEN, READ | WRITE, data="/dev/con")
         self.assertEqual((r.a[0], r.fwd, r.new_badge), (4, 77, 0))
         self.assertEqual(fs.lib.host_dev_open_flags(), READ | WRITE)
+        fb = fs.ok(SESSION, FS_OPEN, READ | WRITE, data="/dev/fb0")
+        self.assertEqual((fb.a[0], fb.fwd, fb.new_badge), (3, 77, 0))
+        self.assertEqual(stat_of(fs.ok(SESSION, FS_STAT, data="/dev/fb0").data)["type"], 3)
         # TRUNC and APPEND are ignored for devices ("> /dev/null"); EXEC is not.
         fs.ok(SESSION, FS_OPEN, WRITE | CREATE | TRUNC, DEFAULT, data="/dev/con")
         self.assertEqual(fs.lib.host_dev_open_flags(), WRITE)

@@ -45,6 +45,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
 | `kernel/ipc.c`, `include/foundation/ipc.h` | ハンドル、IPC、サービス名、`wait`、`proc_kill`（§6〜§9） |
 | `kernel/blk.c` | `blk_io`（§10.4）。IDC と DMAC ch0、IDC 割り込み（IRQ2）で要求を 1 つずつ FIFO で処理 |
+| `kernel/fb.c`, `include/foundation/fb.h` | カーネル `/dev/fb0` ドライバとC helper（API §9.1）。ビットマップとCLUT |
 | `kernel/fndboot.c` | FNDBOOT のモジュール表の検査と、同梱モジュールの起動（§11） |
 | `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.1（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/syncを追加 |
 | `services/console/` | console サービス（API 仕様 §8、PCG と PeC キーボード） |
@@ -155,7 +156,7 @@ python -m unittest discover -s foundation/tests/disk -v
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -211,7 +212,7 @@ python -m unittest discover -s foundation/tests/wax -v
 ```sh
 python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
   --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
@@ -229,7 +230,7 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 ```sh
 python foundation/tests/wal/build.py target/foundation-wal
 python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
   --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wal/test.wax
 src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120
@@ -257,7 +258,8 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 
 `fs/`（スロット 3）は FS2（[仕様](../doc/spec_FS2.md)）を `/` として見せる fs サービスです。disk サービス（`services/disk/`、スロット 2）の IPC を通して、カーネルの `blk_io`（IDC + DMAC）でディスクを読み書きします。
 
-- **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
+- **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`、`/dev/fb0`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
+- **VDP bitmap**：`/dev/fb0` はカーネルドライバです。通常のopen/read/writeと `<foundation/fb.h>` で、320×240のINDEX8／RGB555／RGB888と全256色のCLUTを操作できます。openは排他で、最後のclose・プロセス終了時に表示設定・CLUT・重なったPCG文字領域を復元します。[実行例](../examples/foundation-fb/README.md)、[API仕様 §9.1](../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0)。
 - **マウント**：KAN-38 の暫定対策で、fsサービスの全チェーン・ディレクトリ・参照整合性検査を省略します。署名・レイアウト・DIRTY拒否とbitmap/inodeの基本検査は残します。clean媒体の破損を見逃すため、事前に `python tools/fs2/fs2.py check IMAGE` で検査してください。`foundation/boot/build.py` の `FS2_FULL_MOUNT_CHECK` を1に戻して再ビルドすると、§10の完全検査を復元できます（[仕様の暫定例外](../doc/spec_FS2.md#101-foundation-の一時的な起動対策kan-38)）。disk サービスは128 sector、fsは8 sectorの先読みと32ラインのキャッシュを使います。
 - **DIRTY**：最初の書き込みで DIRTY を立てます。シャットダウン時にはアンマウントしないので、書き込んだ後は fsck が要ります（ホスト側の `tools/fs2` は `allow_dirty` で読めます）。
 - **起動時間**：完全検査時はPipelineの直接WAX起動＋IDC上のFS2で初回プロンプトまで約100 frameでした。この値はKAN-38の全走査省略前の値です。[KAN-36 の計測](../doc/kan36_performance.md)を参照してください。

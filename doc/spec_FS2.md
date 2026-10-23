@@ -329,7 +329,7 @@ libfnd / アプリ
 | パス | backend |
 |---|---|
 | `/`（`/bin`, `/lib`, `/etc`, `/home` を含む） | 起動ディスクのFS2 |
-| `/dev` | デバイスサービスの仮想ノード |
+| `/dev` | デバイスサービス／カーネルドライバの仮想ノード（con、null、fb0） |
 | `/dd/<n>`（n=0〜3） | IDC slot n のFSルート |
 | `/os` | プロセス・カーネル・サービス情報、read-only |
 | `/tmp` | RAM FS |

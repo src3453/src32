@@ -88,7 +88,7 @@ LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerr
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 # Only the WAL exports it; static users (fs, whose slot is nearly full) leave it out.
 LIBFND_RENAME = FOUNDATION / "lib/fnd/rename.c"
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "blk.c", "wax.c",
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.

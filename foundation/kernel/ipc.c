@@ -7,6 +7,7 @@
  * scanning the thread table, which is small: the queue of a port is its
  * callers in SEND ordered by seq. */
 #include "internal.h"
+#include <foundation/api.h>
 
 #define MAX_PORTS 32u
 #define MAX_CHANNELS 128u
@@ -25,6 +26,7 @@ struct fnd_chan {
     struct fnd_port *port; /* NULL once the port is gone */
     uint32_t badge;
     struct fnd_chan *gone_next; /* on its port's pending list when refs = 0 */
+    uint32_t kernel; /* 0: user service, 1: dev.fb0 factory, 2: fb0 stream */
 };
 
 static struct fnd_port ports[MAX_PORTS];
@@ -80,6 +82,11 @@ static void port_destroy(struct fnd_port *port) {
 }
 
 static void chan_last_closed(struct fnd_chan *chan) {
+    if (chan->kernel) {
+        if (chan->kernel == 2u) fb_close();
+        chan->used = 0;
+        return;
+    }
     struct fnd_port *port = chan->port;
     if (!port) {
         chan->used = 0;
@@ -190,13 +197,19 @@ static int32_t new_channel(struct fnd_proc *proc, struct fnd_port *port, uint32_
         struct fnd_chan *chan = &channels[i];
         if (chan->used)
             continue;
-        *chan = (struct fnd_chan){1u, 0, port, badge, 0};
+        *chan = (struct fnd_chan){1u, 0, port, badge, 0, 0};
         int32_t h = handle_add(proc, FND_OBJ_CHANNEL, chan);
         if (h < 0)
             chan->used = 0;
         return h;
     }
     return FND_E_LIMIT;
+}
+
+static int32_t kernel_channel(struct fnd_proc *proc, uint32_t kind) {
+    int32_t h = new_channel(proc, 0, 0);
+    if (h > 0) ((struct fnd_chan *)proc->handles[h - 1u].object)->kernel = kind;
+    return h;
 }
 
 int32_t sys_chan_create(struct fnd_proc *proc, uint32_t h, uint32_t badge) {
@@ -330,6 +343,29 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
         return FND_E_ACCESS;
     if ((msg.flags & FND_MSG_XFER_HANDLE) && !entry(proc, msg.a3))
         return FND_E_BAD_HANDLE;
+    if (chan->kernel) {
+        if (msg.flags) return FND_E_BAD_ARG; /* kernel devices accept no handles */
+        uint32_t cap = r.len;
+        r = (fnd_msg){0, 0, 0, 0, 0, 0, r.buf, 0};
+        if (chan->kernel == 1u) {
+            status = msg.op == FND_DEV_OPEN ? fb_open(msg.a0) : FND_E_UNSUPPORTED;
+            if (status == FND_OK) {
+                int32_t h = kernel_channel(proc, 2u);
+                if (h < 0) {
+                    fb_close();
+                    status = h;
+                } else {
+                    r.flags = FND_MSG_XFER_HANDLE;
+                    r.a3 = (uint32_t)h;
+                }
+            }
+        } else {
+            status = fb_call(proc, &msg, &r, cap);
+        }
+        r.op = (uint32_t)status;
+        mm_copy_to_user(proc, rep, &r, sizeof r);
+        return FND_OK;
+    }
     if (!chan->port)
         return FND_E_PEER_GONE;
     thread->req = msg;
@@ -461,6 +497,7 @@ int32_t sys_svc_register(struct fnd_proc *proc, uint32_t name_addr, uint32_t h) 
     int32_t status = read_name(proc, name_addr, name);
     if (status != FND_OK)
         return status;
+    if (name_equal(name, "dev.fb0")) return FND_E_EXISTS;
     struct fnd_handle_entry *e = entry(proc, h);
     if (!e || e->kind != FND_OBJ_PORT)
         return FND_E_BAD_HANDLE;
@@ -486,6 +523,7 @@ int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name_addr) {
     int32_t status = read_name(proc, name_addr, name);
     if (status != FND_OK)
         return status;
+    if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
     for (unsigned i = 0; i < MAX_SERVICES; ++i) {
         if (services[i].port && name_equal(services[i].name, name)) {
             next_lookup_badge = (next_lookup_badge + 1u) & 0x7FFFFFFFu;
