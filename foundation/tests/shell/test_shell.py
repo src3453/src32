@@ -266,6 +266,17 @@ class ShellTests(unittest.TestCase):
         self.assertIn('ls: /nope: not found (-10)', rows)
         self.assertIn('usage: ls [-l] [path...]', rows)
 
+    def test_hex(self):
+        # §10.3: the DOS hex editor as /bin/hex. E edits, W writes back with
+        # the same size, errors keep the DOS wording.
+        rows = self.screen('echo 0123456789ABCD > h.txt\\n', 'hex h.txt\\n', 'e 0 58 58\\n', 'g zz\\n',
+                           'w\\n', 'q\\n', 'hex nope\\n', 'hex\\n')
+        text = '\\n'.join(rows)
+        self.assertIn('0000: 58 58 32 33 34 35 36 37 38 39 41 42 43 44 0A', text)
+        self.assertIn('|XX23456789ABCD.', text)
+        self.assertIn('hex: nope: not found (-10)', rows)
+        self.assertIn('usage: hex path', rows)
+
     def test_ls_long(self):
         rows = self.screen('ls -l /bin\\n')
         self.assertTrue(any(r.endswith('  ls.wax') and '  <DIR>' not in r for r in rows), rows)

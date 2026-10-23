@@ -313,6 +313,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `mv` | `mv old new` | 名前を変える、または移動する。同じ mount の中だけ（§10.5） |
 | `mkdir` | `mkdir path...` | ディレクトリを作る（mode は既定 `0x003D`）。途中のディレクトリは作らない |
 | `rmdir` | `rmdir path...` | 空のディレクトリを削除する |
+| `hex` | `hex path` | ファイルの16進エディタ（DOS の `HEX` と同じ書式）。256 バイトずつ（16 行 × 16 バイト＋ASCII 欄）表示し、STDIN から 1 行ずつコマンド `N`/`P`/`G addr`/`E addr v..`/`W`/`Q` を読む（大文字小文字は区別しない）。ファイルは 64 KiB まで、空ファイルは編集できない。`W` は同じ大きさで書き戻し、`Q` や EOF（Ctrl+D）で終わる。未保存の変更があれば `UNSAVED CHANGES DISCARDED (W TO SAVE)` を出す |
 | `clear` | `clear` | 画面を消す（CONSOLE の役割を使う。STDOUT がリダイレクトされていても画面を消す）。CONSOLE がなければ `FND_E_BAD_HANDLE` |
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |
