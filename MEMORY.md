@@ -1342,5 +1342,5 @@
 
 - 課題管理は Jira (KAN) をやめ、GitHub Issues とマイルストーンに移した（Projects は使わない）。手順は AGENTS.md「GitHub Issues とマイルストーン」、KAN-n と Issue 番号の対応は `doc/jira_to_github_issues.md`。過去の節にある `KAN-n` はこの表で読み替える。
 - Issue 番号は PR と共通の連番なので、KAN-n と数字は一致しない（例: KAN-6 は #64）。
-- エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分類は `epic:*` ラベル、まとまりはマイルストーンで行う。ラベル名の `epic:` 接頭辞は移行時の名残で、必要なら UI から改名できる（付与済みの Issue は引き継がれる）。
+- エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分野の分類は `epic:*` ラベルをやめてマイルストーン（Foundation OS／開発基盤 (ツールチェーン、CI/CD)／エミュレータ・UI/UX／SRC32 CPU）に一本化した。移行済みの Issue はすべて割り当て済み。
 - GitHub MCP にはマイルストーンを作成するツールがなく（Issue への割り当てだけ可能）、マイルストーン自体はリポジトリ所有者が UI で作成する必要がある。
