@@ -23,6 +23,7 @@ fnd_dir_rewind fn(u32)->i32
 fnd_exit fn(i32)->void
 fnd_file_delete fn(ptr)->i32
 fnd_file_open fn(ptr,u32,u32,ptr)->i32
+fnd_file_rename fn(ptr,ptr)->i32
 fnd_fs fn()->u32
 fnd_init fn()->i32
 fnd_mem_alloc fn(u32)->ptr

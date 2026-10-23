@@ -77,7 +77,8 @@ BOOT_BLOCKS = fndboot.MAX_SIZE // fs2.BLOCK
 DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
-COMMANDS = ["clear", "echo", "free", "hex", "ls", "ps", "pwd", "top", "uname", "tinybasic"]
+COMMANDS = ["cat", "clear", "cp", "echo", "free", "hex", "ls", "mkdir", "mv", "ps", "pwd", "rm", "rmdir", "top",
+            "uname", "tinybasic"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
@@ -85,6 +86,8 @@ INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "inclu
 # that start no others leave out proc.c.
 LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerror.c")]
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
+# Only the WAL exports it; static users (fs, whose slot is nearly full) leave it out.
+LIBFND_RENAME = FOUNDATION / "lib/fnd/rename.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
@@ -170,7 +173,8 @@ def main(argv=None):
     (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
 
-    fnd = driver([*LIBFND, LIBFND_PROC], root / "lib/fnd.1.wal", args, "--wal", "--page-align", "--image-id", "fnd",
+    fnd = driver([*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal", "--page-align",
+                 "--image-id", "fnd",
                  "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:

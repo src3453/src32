@@ -381,7 +381,7 @@ fnd_status fnd_cwd_get(char *buf, uint32_t cap, uint32_t *len);
 ```
 
 - `fnd_dirent_t` は `fnd_stat_t stat`、`name_bytes`、`name_chars`、`char name[1025]`（NUL 終端）を持ちます。`fnd_dir_next` は `DIR_NEXT` の応答を内部にためて、1 件ずつ返します。
-- C ABIでは長さ2欄はu32です。配置はstat=0、name_bytes=64、name_chars=68、name=72、全体1100 bytesです（§10.2のwire recordとは異なります）。`fnd_dir_rewind` は応答キャッシュも破棄し、`fnd_close` は確保したキャッシュを解放します。`FND_END` とエラー時には出力エントリを変更しません。これらはWAL `fnd` 1.1の追加APIです。1.0の既存exportのシグネチャは変わりません。
+- C ABIでは長さ2欄はu32です。配置はstat=0、name_bytes=64、name_chars=68、name=72、全体1100 bytesです（§10.2のwire recordとは異なります）。`fnd_dir_rewind` は応答キャッシュも破棄し、`fnd_close` は確保したキャッシュを解放します。`FND_END` とエラー時には出力エントリを変更しません。これらと `fnd_file_rename` はWAL `fnd` 1.1の追加APIです。1.0の既存exportのシグネチャは変わりません。
 - `fnd_cwd_get` の `cap` が足りなければ `FND_E_LIMIT` で、`*len` に必要な byte 数（NUL を含む）を入れます。
 
 ### 11.5 コンソール

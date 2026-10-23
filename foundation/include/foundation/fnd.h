@@ -69,6 +69,8 @@ fnd_status fnd_sync(fnd_handle h);
 fnd_status fnd_path_stat(const char *path, fnd_stat_t *st);
 /* パスで指定したファイルを削除する。 */
 fnd_status fnd_file_delete(const char *path);
+/* 同じ mount の中で名前を変える（移動を含む）。new_path がすでにあれば FND_E_EXISTS。 */
+fnd_status fnd_file_rename(const char *old_path, const char *new_path);
 /* ディレクトリを作る。mode は FND_MODE_DEFAULT を使える。 */
 fnd_status fnd_dir_make(const char *path, uint32_t mode);
 /* 空のディレクトリを削除する。 */
