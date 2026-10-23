@@ -1373,3 +1373,13 @@
 - Issue 番号は PR と共通の連番なので、KAN-n と数字は一致しない（例: KAN-6 は #64）。
 - エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分野の分類は `epic:*` ラベルをやめてマイルストーン（Foundation OS／開発基盤 (ツールチェーン、CI/CD)／エミュレータ・UI/UX／SRC32 CPU）に一本化した。移行済みの Issue はすべて割り当て済み。
 - GitHub MCP にはマイルストーンを作成するツールがなく（Issue への割り当てだけ可能）、マイルストーン自体はリポジトリ所有者が UI で作成する必要がある。
+
+## /dev/sgc カーネルドライバと CHIP-8 の SGC 描画 (2026-10-23, Issue #123)
+
+- `kernel/sgc.c` は `/dev/fb0`・`/dev/sgu` と同じ方式（予約サービス名 `dev.sgc`、kernel channel kind 5=ディレクトリ側、6=ストリーム）。API は doc/spec_Foundation_API.md §9.3、C ヘッダは `<foundation/sgc.h>`。コマンド FIFO だけを公開し、スプライトは扱わない。
+- SGC の FIFO は VDP の1フレームに1回しか消費されず（256 word）、カーネルは待てない（IRQ 無効のまま ipc_call 内で同期実行）。そのため `ST_WRITE` は空きに入る word だけを書く短い書き込みで、空きゼロは WOULD_BLOCK。`fnd_write` は短い書き込みを IO にするので、必ず `fnd_sgc_submit` を使う。
+- close／プロセス死では soft reset（FIFO と描画面を捨てる）をしてからレジスタを戻す。open では reset してから enable する（reset は enable を 0 にするので、enable の書き込みを忘れない）。
+- SGC の描画面は GP1 でビットマップ（GP0）の上に重なる。表示有効化と CLUT は fb0 が担当し、CHIP-8 は fb0 と sgc の両方を開く。fb の VRAM を見る旧テスト（`--expect-final-mem-u8 0x10000000+…`）は無効になったので、描画の検証は `--expect-pixel`（合成後の表示色）で行う。
+- CHIP-8 は SCREEN_FILL で黒にした後、前回表示との差分を横方向の連続区間ごとに RECT で送る。キューは最悪1024区間×6 word で 8192 word。キューが空のときだけ差分を作り、FIFO が満杯なら次のループへ回す（`vm.dirty` は差分生成時に落とす）。
+- テスト環境: Ubuntu の clang は 18 で pip の llvmlite は 22 だと合わない。`pip install 'llvmlite==0.45.*'` と `apt-get install clang-20`、`CLANG=/usr/bin/clang-20` で通る。
+- 検証: foundation/tests/sgc 3/3（通常と FND_MM=slot）、chip8 15（1 skip）、fs 28、fb 4。
