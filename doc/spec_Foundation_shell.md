@@ -316,7 +316,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `hex` | `hex path` | ファイルの16進エディタ（DOS の `HEX` と同じ書式）。256 バイトずつ（16 行 × 16 バイト＋ASCII 欄）表示し、STDIN から 1 行ずつコマンド `N`/`P`/`G addr`/`E addr v..`/`W`/`Q` を読む（大文字小文字は区別しない）。ファイルは 64 KiB まで、空ファイルは編集できない。`W` は同じ大きさで書き戻し、`Q` や EOF（Ctrl+D）で終わる。未保存の変更があれば `UNSAVED CHANGES DISCARDED (W TO SAVE)` を出す |
 | `clear` | `clear` | 画面を消す（CONSOLE の役割を使う。STDOUT がリダイレクトされていても画面を消す）。CONSOLE がなければ `FND_E_BAD_HANDLE` |
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
-| `chip8` | `chip8 ROM.ch8` | オリジナル CHIP-8 を /dev/fb0 と /dev/sgu で実行。1234/QWER/ASDF/ZXCV、Esc で終了。[詳細](spec_Foundation_chip8.md) |
+| `chip8` | `chip8 [-c N\|--cycles N] ROM.ch8` | オリジナル CHIP-8 を /dev/fb0 と /dev/sgu で実行。Nは60 Hz換算の1 VSyncあたりの命令数（1〜10000）、省略時700命令/秒。1234/QWER/ASDF/ZXCV、Esc で終了。[詳細](spec_Foundation_chip8.md) |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |
 | `free` | `free` | Main RAM の容量と空き容量、VRAM と PCMRAM の容量を KiB で表示する（`sys_info` sel 0, 3） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |
