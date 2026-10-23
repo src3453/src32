@@ -35,6 +35,11 @@ class GuestTests(unittest.TestCase):
         vol.put('/bad.ch8', bytes.fromhex('0123'), mode=0x24)
         vol.put('/empty.ch8', b'', mode=0x24)
         vol.put('/big.ch8', bytes(3585), mode=0x24)
+        # ~3,080 arithmetic/branch instructions before drawing digit 1.
+        # Delay timer remains 60 Hz, including at high instruction budgets.
+        vol.put('/speed.ch8', bytes.fromhex(
+            '6004 f015 6000 6100 7001 3000 1208 7101 3104 1208 '
+            'f007 3000 1214 6001 f029 6100 6200 d125 f00a 1224'), mode=0x24)
         sample = cls.work / 'sample.ch8'
         subprocess.run([sys.executable, str(ROOT / 'examples/foundation-chip8/demo.py'), str(sample)],
                        check=True, capture_output=True, text=True)
@@ -101,11 +106,27 @@ class GuestTests(unittest.TestCase):
                               (320, 'echo escaped=$?\\n')], final=[(0x80020803, 0)])
         self.assertIn('escaped=0', text)
 
+    def test_cycles_slow_budget(self):
+        self.run_guest([(30, 'chip8 -c 1 /speed.ch8\\n')], frames=260, running=True,
+                       pixels=[(10,40,0)], final=[(0x80000000,1)])
+
+    def test_cycles_fast_budget_and_option_after_rom(self):
+        self.run_guest([(30, 'chip8 /speed.ch8 --cycles 100\\n')], frames=260, running=True,
+                       pixels=[(10,40,0xFFFFFF),(0,40,0)], final=[(0x80000000,1)])
+
+    def test_cycles_invalid_arguments(self):
+        text = self.run_guest([(30, 'chip8 -c 0 /demo.ch8\\necho zero=$?\\n'),
+                              (95, 'chip8 -c 10001 /demo.ch8\\necho high=$?\\n'),
+                              (160, 'chip8 --cycles abc /demo.ch8\\necho text=$?\\n'),
+                              (225, 'chip8 /demo.ch8 -c\\necho missing=$?\\n'),
+                              (290, 'chip8 --bogus /demo.ch8\\necho unknown=$?\\n')])
+        for name in ('zero','high','text','missing','unknown'):
+            self.assertIn(name + '=-2', text)
+
     def test_rom_errors(self):
         text = self.run_guest([(30, 'chip8 /empty.ch8\\necho empty=$?\\n'),
                               (120, 'chip8 /big.ch8\\necho big=$?\\n'),
-                              (210, 'chip8 /bad.ch8\\n'),
-                              (270, 'echo bad=$?\\n'),
+                              (210, 'chip8 /bad.ch8; echo bad=$?\\n'),
                               (330, 'chip8 /absent.ch8\\necho missing=$?\\n')])
         for expected in ('empty=-12', 'big=-6', 'bad=-12', 'missing=-10'):
             self.assertIn(expected, text)

@@ -27,7 +27,7 @@ CPT32 用 OS。契約は `doc/spec_Foundation.md`（カーネル ABI）、`doc/s
 - 起動経路: ディスク起動は BIOS → `boot/stage1.a`（510 byte 以内）→ FNDBOOT（`boot/fndboot.py` が作るモジュール表付きイメージ）→ カーネル。直接ロードの `foundation.wax` も同じモジュール表のコードを通ります。カーネルは console（slot 1）、fs（slot 3）、init（slot 0）を起動し、init が `/bin/shell.wax`（slot 4）を起動します。
 - シェルはディスパッチャで、組み込みは `cd`/`set`/`exit`/`help` だけ。他のコマンドは `foundation/bin` の `/bin/<name>.wax`（slot 5）で、シェルとコマンドは WAL「fnd」1.0（`/lib/fnd.1.wal`、export は `lib/fnd/fnd.exports`）を import する WAX v3。init と各サービスは libfnd を静的リンクした WAX v2。
 - `services/bootfs` は埋め込みの `/bin`・`/lib` を返す暫定の読み取り専用 fs で、本物の fs サービス（FS2 ドライバ）で置き換える予定。
-- ビルドと実行: `python foundation/boot/build.py`、`python foundation/run.py [--disk] [--build-only] [--clang PATH]`（リポジトリルートで）。
+- ビルドと実行: `python foundation/boot/build.py`、`python foundation/run.py [--disk] [--build-only] [--clang PATH] [-j N]`（リポジトリルートで）。
 - llvm-src32 の生成コードはバイト単位ループが非常に遅い（約 25 命令/byte）。カーネルのコピー・ゼロ埋めはワード単位で書きます。
 
 ## 開発環境の注意

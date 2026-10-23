@@ -1324,3 +1324,23 @@
 - シェルの break スレッド（`shell.c`）は `CON_BREAK_WAIT` で待ち、通知で `break_hit` を立てて `child_proc` を `proc_kill` する。`run_program` は起動前に `break_hit` を 0 にし、`child_proc` を設定した直後にも `break_hit` を確認する（起動中の Ctrl+C を取りこぼさない）。待ちの後は `child_proc = 0` にしてからハンドルを閉じる。残る隙間（読んだ直後にハンドル番号が再利用される）は極小で、現状は許容。スレッドは libfnd の malloc を使わないこと（非スレッドセーフ）。
 - 行編集中の Ctrl+C はキーとして届かず、`fnd_con_getkey` が `FND_E_INTERRUPTED` を返す。シェルはそれを `^C` と改行として扱う。console は通知時にタイプアヘッドも捨てる。組み込みコマンドとスクリプトの中断は未実装（スクリプトは KAN-19）。`top` の Ctrl+C はシェルが先に kill するため、`top` 側の処理には届かない。
 - テスト環境の落とし穴: llvmlite のメジャー版と Clang を合わせる。この環境では `pip install llvmlite==0.46.0`（LLVM 20）＋ `apt-get install clang-20`、`CLANG=/usr/bin/clang-20`。apt.llvm.org は届かない。`apt-get update` 後に `libasound2-dev libudev-dev` を入れて `cargo build --release --bin src32_testbench`。phase1 の「未実装 syscall」プローブは thread_create から irq_bind に変えた。
+
+## CHIP-8 cycles-per-frame command-line option (2026-10-24, KAN-63)
+
+- `chip8 [-c N|--cycles N] ROM.ch8` accepts decimal N=1..10000 before or after the ROM. `--` terminates option parsing. A cycle means one CHIP-8 instruction; it does not mean an SRC32/1802 hardware cycle. No option preserves the existing 700 instructions/second rate. Bad/empty/overflow/zero/duplicate option values, unknown switches and extra/missing ROMs fail with BAD_ARG before opening the ROM or devices. Error reporting uses the parsed ROM path, not argv[1].
+- `foundation/bin/chip8_options.h` contains the actual shared parser and CPU-budget helper. In explicit mode, the helper accumulates 60 Hz boundaries from Foundation ticks and grants N instructions per boundary. This is 60 Hz VSync-equivalent budgeting, not a wait on host IRQ0. In default mode it retains the old 700/Hz fractional budget. CPU catch-up remains capped at 250 ms; key/draw waits discard unused credit and delay/sound continue at 60 Hz independently. Multiplying elapsed ticks by 60/700 before multiplying whole frames by N keeps u32 intermediates bounded for the validated tick-rate range.
+- The SRC32 freestanding string.h provides memory functions and strlen, but not strcmp. Argument parsing uses a small local equality helper; a host build alone would incorrectly accept strcmp via the host libc. Always compile and execute the guest argument path too.
+- Host tests check parsing, overflow/ranges, 60 frame budgets and 60 timer decrements across multiple scheduler rates, legacy 700 instructions/second, and bounded catch-up. Guest tests run a ROM that needs about 3,080 instructions before drawing: -c 1 stays black during the observation window, while a trailing --cycles 100 reaches the expected white glyph. They also check usage/status errors through the shell.
+- Rebuilt the installed WAX with the normal WAL, origin, stack and image ID; updated only /bin/chip8.wax in the existing Foundation disk and ran fs2.check_image before/after, preserving the other files. The old disk is saved as target/foundation-boot/foundation-before-cycles.img.
+- Validation: host parser/budget/timer tests 4/4; new guest CLI/slow/fast tests 3/3 in normal and forced-slot configurations. The normal suite also passed existing display, input, cleanup and sample checks. One pre-existing ROM-status test consumed its queued echo; changed it to `chip8 /bad.ch8; echo bad=$?` so the shell owns the continuation, then re-ran that test successfully (1/1). The earlier full run had 13 passes, that one failure and one optional external-ROM skip; it was not rerun in full after the test-only correction. Installed WAX build, read-back equality, FS2 checks and git diff --check passed.
+
+## foundation/run.py -j (2026-10-24, KAN-65)
+
+- `run.py -j N` は `boot/build.py -j N` へ渡す。既定は物理コア数（Linux は /proc/cpuinfo の (physical id, core id)、macOS は sysctl hw.physicalcpu、Windows は PowerShell の Win32_Processor.NumberOfCores、取れなければ論理コア数）。`build.py` 単体の既定は論理コア数のまま。
+
+## Jira から GitHub Issues へ移行 (2026-10-23)
+
+- 課題管理は Jira (KAN) をやめ、GitHub Issues とマイルストーンに移した（Projects は使わない）。手順は AGENTS.md「GitHub Issues とマイルストーン」、KAN-n と Issue 番号の対応は `doc/jira_to_github_issues.md`。過去の節にある `KAN-n` はこの表で読み替える。
+- Issue 番号は PR と共通の連番なので、KAN-n と数字は一致しない（例: KAN-6 は #64）。
+- エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分類は `epic:*` ラベル、まとまりはマイルストーンで行う。ラベル名の `epic:` 接頭辞は移行時の名残で、必要なら UI から改名できる（付与済みの Issue は引き継がれる）。
+- GitHub MCP にはマイルストーンを作成するツールがなく（Issue への割り当てだけ可能）、マイルストーン自体はリポジトリ所有者が UI で作成する必要がある。
