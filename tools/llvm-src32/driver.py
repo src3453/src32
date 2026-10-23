@@ -18,6 +18,11 @@ CXX_SUFFIXES = (".cpp", ".cc", ".cxx")
 # and the SYSCALL number the startup code exits with (spec_Foundation.md §12).
 V3_OSES = {"foundation": {"version": (1, 0), "exit": 0x11}}
 SOURCE_SUFFIXES = (".c", *CXX_SUFFIXES)
+# Berkeley SoftFloat plus the compiler-rt compatible routines (rt.c) that
+# floating-point instructions call; see fp.py.
+SOFTFLOAT = ROOT / "runtime" / "softfloat"
+SOFTFLOAT_INCLUDES = ("port", "source/8086", "source/include")
+SOFTFLOAT_DEFINES = ("INLINE_LEVEL=0", "SOFTFLOAT_ROUND_ODD")
 
 
 class DriverError(Exception):
@@ -105,11 +110,12 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     # The bundled string loops are hot in every guest, including -O0 guests.
     # Keep the optional external Newlib profile's compilation policy separate.
     optimization = "-O0" if runtime else args.optimization
-    if runtime and source == ROOT / "runtime" / "string.c":
+    softfloat = runtime and source.is_relative_to(SOFTFLOAT)
+    if runtime and (source == ROOT / "runtime" / "string.c" or softfloat):
         optimization = "-O2"
     cxx = source.suffix.lower() in CXX_SUFFIXES
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
-               "-ffreestanding", "-fno-builtin", "-fno-stack-protector", "-fno-pic", "-fno-pie",
+               "-ffreestanding", "-fno-builtin", "-ffp-contract=off", "-fno-stack-protector", "-fno-pic", "-fno-pie",
                "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
                "-std=c++17" if cxx else "-std=c11",
                optimization, "-S", "-emit-llvm"]
@@ -131,6 +137,10 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
             command.extend(["-I", include])
         for define in args.defines:
             command.extend(["-D", define])
+    if softfloat:
+        for include in SOFTFLOAT_INCLUDES:
+            command.extend(["-I", str(SOFTFLOAT / include)])
+        defines = (*defines, *SOFTFLOAT_DEFINES)
     command.extend(f"-D{name}" for name in defines)
     if depfile is not None:
         command.extend(["-MD", "-MF", str(depfile.resolve()), "-MT", "src32_dependency_target"])
@@ -352,6 +362,7 @@ def run(args) -> Path:
                 linked.verify()
             except RuntimeError as exc:
                 raise DriverError(f"linking freestanding runtime: {exc}") from exc
+        prunable = link_softfloat(linked, args, clang, work, dependencies, parse_module, check_link_layout)
         ir_text = str(linked)
         if args.save_temps:
             (work / "linked.ll").write_text(ir_text, encoding="utf-8")
@@ -381,11 +392,12 @@ def run(args) -> Path:
             assembly = compile_module(linked, origin=0 if args.wal else args.origin, stack_top=args.stack_top,
                                       entry=None if args.wal else args.entry, protected=True,
                                       info=layout_info, pic=args.wal, imports=imports.kinds,
-                                      exit_syscall=V3_OSES[args.os]["exit"], page_align=args.page_align)
+                                      exit_syscall=V3_OSES[args.os]["exit"], page_align=args.page_align,
+                                      prunable=prunable)
         else:
             assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
                                       protected=args.protected, info=layout_info, data_origin=args.data_origin,
-                                      page_align=args.page_align)
+                                      page_align=args.page_align, prunable=prunable)
         if args.save_temps:
             (work / "output.a").write_text(assembly, encoding="utf-8")
         if args.S:
@@ -418,6 +430,60 @@ def run(args) -> Path:
             output.write_bytes(binary)
         emit_dependencies()
     return output
+
+
+def link_softfloat(linked, args, clang, work, dependencies, parse_module, check_link_layout):
+    """Link the floating-point runtime when the program needs it.
+
+    Needed are the routines its fp instructions call (fp.py) and any compiler-rt
+    / libm routine it declares without defining. Translation units that clash
+    with a definition of the program are left out (the program brings its own
+    SoftFloat). Returns the names of the runtime functions, which the backend
+    emits only when reachable."""
+    import fp
+    from concurrent.futures import ThreadPoolExecutor
+
+    defined = {f.name for f in linked.functions if not f.is_declaration}
+    entries = fp.entry_points()
+    needed = (fp.module_routines(linked) | ({f.name for f in linked.functions} & entries)) - defined
+    if not needed:
+        return set()
+    clang = clang or find_clang(args.clang)
+    owned = defined | {g.name for g in linked.global_variables if not g.is_declaration}
+    have = [f"SRC32_HAVE_{name}" for name in sorted(defined & entries)]
+    sources = [SOFTFLOAT / "rt.c", *sorted((SOFTFLOAT / "source").glob("*.c")),
+               *sorted((SOFTFLOAT / "source" / "8086").glob("*.c"))]
+
+    def build(source):
+        ir = work / f"softfloat-{source.stem}.ll"
+        dep = ir.with_suffix(".d") if args.depfile else None
+        compile_c(clang, source, ir, args, defines=have if source.name == "rt.c" else [], runtime=True, depfile=dep)
+        return source, ir, dep
+
+    with ThreadPoolExecutor() as pool:
+        built = list(pool.map(build, sources))
+    prunable = set()
+    for source, ir, dep in built:
+        dependencies.add(source.resolve())
+        if dep:
+            dependencies.update(read_dependencies(dep))
+        module = parse_module(ir)
+        functions = {f.name for f in module.functions if not f.is_declaration}
+        names = functions | {g.name for g in module.global_variables if not g.is_declaration}
+        if names & owned:
+            continue
+        check_link_layout(linked, module, source)
+        try:
+            linked.link_in(module)
+            linked.verify()
+        except RuntimeError as exc:
+            raise DriverError(f"linking floating-point runtime {source.name}: {exc}") from exc
+        prunable |= functions
+        owned |= names
+    missing = needed - {f.name for f in linked.functions if not f.is_declaration}
+    if missing:
+        raise DriverError("floating-point runtime routine(s) not found: " + ", ".join(sorted(missing)))
+    return prunable
 
 
 def protected_blocks(blocks, data_start):

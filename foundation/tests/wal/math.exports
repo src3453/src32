@@ -3,3 +3,5 @@ math_apply fn(u32,u32)->u32
 math_base_calls fn()->u32
 math_origin fn()->u32
 math_total fn()->u32
+math_sum3 fn(u32,u32,u32)->u32
+math_float fn(u32,u32,u32)->u32
