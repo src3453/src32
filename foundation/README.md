@@ -23,7 +23,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 
 [`kernel_trap` トラップスタブ](../tools/llvm-src32/README.md)（フェーズ0）の上に、次のものを実装しています。
 
-- **トラップ**（§3.4）: IRQ、SYSCALL、U モードの例外を `kernel_trap` で振り分けます。カーネルは割り込み禁止のまま、カーネルスタック1本で動きます。U モードで fault が起きたら、そのプロセスを終了させます。終了コードは CAUSE を i32 として扱った値で、fault の EPC も記録します。idle で例外が起きた場合は `kernel_panic` になります。
+- **トラップ**（§3.4）: IRQ、SYSCALL、U モードの例外を `kernel_trap` で振り分けます。カーネルは割り込み禁止のまま、カーネルスタック1本で動きます。U モードで fault が起きたら、そのプロセスを終了させます。終了コードは CAUSE を i32 として扱った値で、fault の EPC も記録します。idle で例外が起きた場合、およびカーネル内で例外が起きた場合は `kernel_panic` になります。`kernel_panic` は PCG の文字面へ直接、原因・EPC・tick・実行中のプロセス・最後に保存したレジスタを描いてから UART へ出力し、停止します（[仕様 §3.4](../doc/spec_Foundation.md)）。
 - **スケジューラ**（§10.1）: 優先度は DRIVER / SERVICE / APP / IDLE の4段で、同じ優先度の中は FIFO のラウンドロビンです。tick は PeC timer ch0 の 100 Hz（IRQ4、1 tick = 10 ms）、タイムスライス（クオンタム）は 1 tick（10 ms）です。より高い優先度のスレッドが起きたら、カーネルからユーザーへ戻る時点で切り替えます。idle は S モードのスレッドで、`HALT` を繰り返します。
 - **プロセスと保護**（§5）: 7つのユーザースロットを使います。別プロセスへ切り替えるときは、§5.3 の順（全 FLAGS=0 → START/END → FLAGS）で8領域を書き換えます。終了時は全スレッドを DEAD にし、付与した RAM をゼロにします。ユーザーポインタは §5.4 の手順で検証します。
 - **システムコール**（§7, §9）: `sys_info`（sel 0〜3。sel 3 は Main RAM・VRAM・PCMRAM の容量）、`yield`、`sleep`（`FND_FOREVER` を含む）、`thread_exit`、`proc_exit`、`time_get`、`debug_write` を実装しています。ABI で定義済みでも未実装のものは `FND_E_UNSUPPORTED`、未定義の番号と context byte が 0 でない呼び出しは `FND_E_BAD_CALL` を返します。フェーズ2の部分は次の節です。
@@ -66,6 +66,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `tests/vm/` | 仮想記憶のテスト（同じアドレスのイメージの同時実行、ページフォルト、フレームの返却。testbench） |
 | `tests/wal/` | C から作った WAL と WAX v3 を、カーネルで実行するテスト |
 | `tests/shell/` | シェルのテスト（testbench にキー入力を送り、PCG の画面を比べる） |
+| `tests/panic/` | `kernel_panic` の PCG 画面（カーネル内のバスエラーで原因・EPC・レジスタが描かれる） |
 | `tests/disk/` | ディスク起動のテスト（BIOS → stage1 → FNDBOOT → シェル、stage1 とカーネルの拒否ケース） |
 
 ## WAX ローダ
@@ -272,7 +273,7 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 
 ## 注意と未決事項
 
-- `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が出力したりすると、カーネル内でバスエラーになります。エミュレーター本体では UART に出力されます。
+- `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が UART へ出力したりすると、カーネル内でバスエラーになります（`kernel_panic` は PCG へ先に描くので画面には残り、再入は黙って停止します）。エミュレーター本体では UART に出力されます。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
 - 仮想記憶では、権限はページ単位です。Foundation のイメージは `--page-align` でコード（RX）とデータ（RW）を別ページに置くので W^X です（`.rodata` は RW データの中で、R 専用ではありません）。MMIO の付与はページ単位で、窓の検査は byte 単位に加えてページ範囲が届く先も検査しますが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
 - 仮想記憶でもプロセスは 7 個、スレッドは 8 個までです。スロットの数に縛られなくなったので、`FND_MAX_PROCS` を増やせます。

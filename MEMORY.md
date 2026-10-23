@@ -1383,3 +1383,9 @@
 - CHIP-8 は SCREEN_FILL で黒にした後、前回表示との差分を横方向の連続区間ごとに RECT で送る。キューは最悪1024区間×6 word で 8192 word。キューが空のときだけ差分を作り、FIFO が満杯なら次のループへ回す（`vm.dirty` は差分生成時に落とす）。
 - テスト環境: Ubuntu の clang は 18 で pip の llvmlite は 22 だと合わない。`pip install 'llvmlite==0.45.*'` と `apt-get install clang-20`、`CLANG=/usr/bin/clang-20` で通る。
 - 検証: foundation/tests/sgc 3/3（通常と FND_MM=slot）、chip8 15（1 skip）、fs 28、fb 4。
+
+## 2026-10-23 カーネルパニックのコンソール表示（Issue #130）
+- `kernel_panic`（foundation/kernel/trap.c）は、サービスや IPC を使わず、PCG の文字面（VRAM 0x10000000、文字/前景/背景の各面）へ直接書く。表示レジスタ（ENABLE・DISPLAY_MODE・FORMAT・OVERLAY・PCG）を戻してから全面を消すので、fb0 の貸し出し中でも見える。UART への出力はその後。
+- 再入ガード `panic_entered` が契約: testbench には UART がなく、パニック後の UART 書き込みでバスエラー → スタブが再び `kernel_panic` を呼ぶ。ガードがないと画面を描き直して無限に繰り返す。停止時の R1 は `0x200 | 例外コード`（バスエラーなら 0x202）。
+- `cpt32_ctx_current` はスタブが最後に保存した文脈。idle の例外では正しいが、カーネル内の例外では中断されたスレッドのもの（カーネルのレジスタではない）。NULL の可能性（最初の resume 前）があるので確認してから読む。
+- テスト: `python3 -m unittest discover -s foundation/tests/panic`。tick フックで未マップ番地を読ませ、カーネル内バスエラーでパニック画面を出す。`kernel_panic(uint32_t, uint32_t)` のシグネチャは backend.py のスタブが要求するので変えない。
