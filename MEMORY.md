@@ -1312,7 +1312,7 @@
 
 - AGENTS.md now exempts minor changes without functional impact from Jira creation/updates: ordinary Git operations, mechanical merges/conflict resolution, commit/rebase cleanup, typos and minor development-guide edits. Do not create separate Git-operation issues alongside an implementation/bug issue. Conflict resolutions that decide or change behavior remain tracked under the relevant implementation/bug issue. This rule was explicitly requested by the user to avoid tracking overhead.
 
-## bmpview（BMP を /dev/fb0 に表示, 2026-10-24, KAN-66）
+## bmpview（BMP を /dev/fb0 に表示, 2026-10-24, #127。旧 Jira KAN-66）
 
 - `/bin/bmpview`（`foundation/bin/bmpview.c`、`build.py` の COMMANDS に追加）。非圧縮 BMP の 8／24／32 bit。8 bit は BMP パレットを CLUT に書いて INDEX8、それ以外は RGB888（BMP は B,G,R の順なので入れ替える）。320×240 より大きければ中央を切り出し、小さければ中央に置く。行は `ST_SEEK` で読み、全体をメモリに載せない。
 - BMP のパレット項目は B,G,R,0 の順。サンプル生成の `examples/foundation-bmp/make_bmp.py` が最初 R,G,B で書いていて 8 bit のテストが赤青反転で落ちた。テストは画素値で見ているのでこの種の誤りに気付ける。
