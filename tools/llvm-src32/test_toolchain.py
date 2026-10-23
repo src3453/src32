@@ -269,6 +269,266 @@ define i32 @main() {
                 for cpu in ('scalar', 'pipeline'):
                     self.execute(image, 42, cpu)
 
+    def run_c(self, source, expected=42, opts=('-O0', '-O1', '-O2'), cpus=('scalar', 'pipeline'),
+              frames=None, name='case'):
+        """Compile C text at each optimization level and run it on each CPU."""
+        path = self.work / (name + '.c')
+        path.write_text(source, encoding='utf-8')
+        for opt in opts:
+            image = self.work / (name + opt[1:] + '.wax')
+            self.driver(path, opt, '-o', image)
+            for cpu in cpus:
+                with self.subTest(optimization=opt, cpu=cpu):
+                    if frames is None:
+                        self.execute(image, expected, cpu)
+                        continue
+                    result = subprocess.run(
+                        [str(self.harness), str(image), str(expected), '--cpu', cpu, '--frames', str(frames)],
+                        cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                        errors='replace', timeout=300)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('PASS:', result.stdout)
+
+    def test_variadic_functions_and_printf_style_calls(self):
+        # va_list is MIPS o32's char pointer: extra arguments follow the named
+        # ones on the stack, 8-byte types at 8-byte alignment.
+        self.run_c(r"""
+#include <stdarg.h>
+#include <stdint.h>
+static char *digits(char *out, uint64_t v, unsigned base) {
+    char tmp[24]; int n = 0;
+    do { tmp[n++] = "0123456789abcdef"[v % base]; v /= base; } while (v);
+    while (n) *out++ = tmp[--n];
+    return out;
+}
+static int vformat(char *out, const char *fmt, va_list ap) {
+    char *start = out;
+    for (; *fmt; ++fmt) {
+        if (*fmt != '%') { *out++ = *fmt; continue; }
+        int wide = 0;
+        ++fmt;
+        while (*fmt == 'l') { wide++; ++fmt; }
+        switch (*fmt) {
+        case 'd': {
+            int64_t v = wide ? va_arg(ap, int64_t) : va_arg(ap, int);
+            if (v < 0) { *out++ = '-'; v = -v; }
+            out = digits(out, (uint64_t)v, 10);
+            break; }
+        case 'u': out = digits(out, wide ? va_arg(ap, uint64_t) : va_arg(ap, unsigned), 10); break;
+        case 'x': out = digits(out, wide ? va_arg(ap, uint64_t) : va_arg(ap, unsigned), 16); break;
+        case 'c': *out++ = (char)va_arg(ap, int); break;
+        case 's': for (const char *t = va_arg(ap, const char *); *t; ) *out++ = *t++; break;
+        case 'f': {
+            double d = va_arg(ap, double);
+            if (d < 0) { *out++ = '-'; d = -d; }
+            int64_t whole = (int64_t)d;
+            int milli = (int)((d - (double)whole) * 1000.0 + 0.5);
+            if (milli == 1000) { ++whole; milli = 0; }
+            out = digits(out, (uint64_t)whole, 10);
+            *out++ = '.';
+            *out++ = (char)('0' + milli / 100); *out++ = (char)('0' + milli / 10 % 10); *out++ = (char)('0' + milli % 10);
+            break; }
+        default: *out++ = *fmt; break;
+        }
+    }
+    *out = 0;
+    return (int)(out - start);
+}
+static int format(char *out, const char *fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int n = vformat(out, fmt, ap);
+    va_end(ap);
+    return n;
+}
+static int same(const char *a, const char *b) { while (*a && *a == *b) { ++a; ++b; } return *a == *b; }
+static int sum(int n, ...) { va_list ap; va_start(ap, n); int s = 0; while (n--) s += va_arg(ap, int); va_end(ap); return s; }
+static long long second_wide(int n, ...) {
+    va_list ap; va_start(ap, n);
+    int a = va_arg(ap, int); long long w = va_arg(ap, long long); int b = va_arg(ap, int);
+    va_end(ap); return w + a + b;
+}
+struct S { int a, b, c; };
+static int third(int n, ...) { va_list ap; va_start(ap, n); struct S s = va_arg(ap, struct S); va_end(ap); return s.c; }
+static int twice(int n, ...) {
+    va_list ap, copy; va_start(ap, n); va_copy(copy, ap);
+    int total = 0;
+    for (int i = 0; i < n; ++i) total += va_arg(ap, int);
+    for (int i = 0; i < n; ++i) total += va_arg(copy, int);
+    va_end(ap); va_end(copy); return total;
+}
+static double average(int n, ...) {
+    va_list ap; va_start(ap, n); double s = 0;
+    for (int i = 0; i < n; ++i) s += va_arg(ap, double);
+    va_end(ap); return s / n;
+}
+int (*volatile through_pointer)(char *, const char *, ...) = format;
+int (*volatile sum_pointer)(int, ...) = sum;
+int main(void) {
+    char buf[128];
+    format(buf, "%d|%u|%x|%c|%s|%%", -42, 4000000000u, 0xBEEF, 'Z', "hi");
+    if (!same(buf, "-42|4000000000|beef|Z|hi|%")) return 1;
+    format(buf, "%d %lld %d %llx", 1, 5000000000LL, 2, 0x123456789ABCull);
+    if (!same(buf, "1 5000000000 2 123456789abc")) return 2;
+    format(buf, "%d %f %s %f", 7, 3.25, "x", -0.5);
+    if (!same(buf, "7 3.250 x -0.500")) return 3;
+    if (through_pointer(buf, "%s=%d", "n", 9) != 3 || !same(buf, "n=9")) return 4;
+    if (sum(10, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10) != 55 || sum(0) != 0) return 5;
+    if (sum_pointer(3, 100, 20, 3) != 123) return 6;
+    if (second_wide(0, 7, 5000000000LL, 9) != 5000000016LL) return 7;
+    struct S s = {1, 2, 3};
+    if (third(0, s) != 3) return 8;
+    if (twice(3, 10, 20, 30) != 120) return 9;
+    if (average(3, 1.0, 2.0, 6.0) != 3.0) return 10;
+    return 42;
+}
+""", name='variadic')
+
+    def test_variadic_diagnostics(self):
+        # Extra arguments are positional stack words: a by-value aggregate
+        # (byval) cannot be one, and imported (WAL) functions are never variadic.
+        source = self.ir('''
+%big = type { [9 x i32] }
+define i32 @f(i32 %n, ...) {
+  ret i32 %n
+}
+define i32 @main() {
+  %v = alloca %big
+  %r = call i32 (i32, ...) @f(i32 1, ptr byval(%big) %v)
+  ret i32 %r
+}
+''', 'byval.ll')
+        result = self.driver(source, '-o', self.work / 'x.wax', success=False)
+        self.assertIn('variadic', result.stderr)
+        (self.work / 'lib.exports').write_text('lib_f fn(u32)->u32\n', encoding='utf-8')
+        (self.work / 'lib.c').write_text('unsigned lib_f(unsigned a) { return a; }\n', encoding='utf-8')
+        self.driver('lib.c', '--wal', '--exports', 'lib.exports', '-o', 'lib.wal')
+        (self.work / 'app.c').write_text(
+            'unsigned lib_f(unsigned, ...);\n'
+            'int main(void) { return (int)lib_f(1, 2); }\n', encoding='utf-8')
+        result = self.driver('app.c', '--wax3', '--import-wal', 'lib.wal', '--origin', '0x800000',
+                             '--stack-top', '0xC00000', '-o', 'app.wax', success=False)
+        self.assertIn('variadic', result.stderr)
+
+    def test_float_instructions_against_ieee_vectors(self):
+        # float/double are carried as bit patterns and every instruction calls
+        # a compiler-rt compatible routine built on Berkeley SoftFloat. The
+        # vectors (tools/llvm-src32/fp_vectors.py) come from the host's IEEE
+        # arithmetic: + - * / fmod sqrt copysign fabs fneg, all comparison
+        # predicates with NaN, and conversions in both directions.
+        sys.path.insert(0, str(HERE))
+        try:
+            import fp_vectors
+        finally:
+            sys.path.pop(0)
+        self.run_c(fp_vectors.program(), opts=('-O0', '-O2'), cpus=('scalar',), frames=400, name='vectors')
+
+    def test_float_language_features(self):
+        self.run_c(r"""
+#include <stdint.h>
+struct Vec { float x, y; };
+struct Mixed { int tag; double weight; float scale; };
+static const struct Mixed table[] = {{1, 0.5, 2.0f}, {2, 1.25, -1.5f}, {3, 1e10, 3.0e-3f}};
+static const double constants[] = {0.1, -0.0, 1.0 / 3.0, 3.141592653589793};
+static float scale(float v, float k) { return v * k; }
+static struct Vec make(float a, float b) { struct Vec v = {a, b}; return v; }
+static double mixed(int a, double b, float c, long long d, double e, char f) { return a + b + c + (double)d + e + f; }
+static float pick(int sel, float a, float b) { return sel ? a : b; }
+static float apply(float (*f)(float, float), float a, float b) { return f(a, b); }
+static float add(float a, float b) { return a + b; }
+static float fsum(const float *v, int n) { float s = 0; for (int i = 0; i < n; ++i) s += v[i]; return s; }
+static double newton_sqrt(double x) { double g = x; for (int i = 0; i < 30; ++i) g = (g + x / g) / 2; return g; }
+double sqrt(double);
+volatile float vf = 1.5f;
+volatile double vd = -2.5;
+float global_f = 0.25f;
+int main(void) {
+    union { float f; uint32_t u; } bits;
+    bits.f = 1.0f; if (bits.u != 0x3F800000u) return 1;
+    struct Vec v = make(1.5f, 2.5f);
+    if (v.x + v.y != 4.0f) return 2;
+    if (table[1].weight * table[1].scale != -1.875) return 3;
+    if (table[2].weight != 1e10 || table[2].scale != 3.0e-3f) return 4;
+    if (constants[0] != 0.1 || constants[2] * 3.0 != 1.0 || constants[3] < 3.14159 || constants[3] > 3.1416) return 5;
+    union { double d; uint64_t u; } negzero; negzero.d = constants[1];
+    if (negzero.u != 0x8000000000000000ull) return 6;
+    if (mixed(1, 2.0, 3.0f, 4, 5.5, 6) != 21.5) return 7;
+    if (pick(1, vf, 9.0f) != 1.5f || pick(0, 9.0f, vf) != 1.5f) return 8;
+    if (apply(add, 0.5f, 0.25f) != 0.75f || apply(scale, 3.0f, 0.5f) != 1.5f) return 9;
+    float vec[4] = {0.5f, 1.5f, 2.0f, 4.0f};
+    if (fsum(vec, 4) != 8.0f) return 10;
+    if (newton_sqrt(2.0) * newton_sqrt(2.0) < 1.9999999 || sqrt(vd * vd) != 2.5) return 11;
+    global_f += vf; if (global_f != 1.75f) return 12;
+    int i = 0; float acc = 0;
+    while (acc < 10.0f) { acc += 0.75f; ++i; }
+    if (i != 14) return 13;
+    if ((int)(vd * 3.0) != -7 || (unsigned)(vf * 100.0f) != 150) return 14;
+    float nan = vf - vf; nan = nan / nan;
+    if (nan == nan || !(nan != nan) || nan < 0.0f || nan >= 0.0f) return 15;
+    return 42;
+}
+""", name='language')
+
+    def test_float_runtime_is_linked_on_demand_and_overridable(self):
+        symbol = lambda name: 'llvm_' + name.encode().hex() + ':'
+        (self.work / 'plain.c').write_text('int main(void) { return 42; }\n', encoding='utf-8')
+        self.driver('plain.c', '-S', '-o', 'plain.a')
+        plain = (self.work / 'plain.a').read_text(encoding='utf-8')
+        self.assertNotIn(symbol('__addsf3'), plain)
+        self.assertNotIn(symbol('softfloat_roundPackToF32'), plain)
+        (self.work / 'one.c').write_text(
+            'volatile float a = 1.0f, b = 2.0f;\nint main(void) { return a + b == 3.0f ? 42 : 1; }\n',
+            encoding='utf-8')
+        self.driver('one.c', '-S', '-O1', '-o', 'one.a')
+        text = (self.work / 'one.a').read_text(encoding='utf-8')
+        # Only the routines the program reaches are emitted.
+        for name in ('__addsf3', '__eqsf2', 'f32_add'):
+            self.assertIn(symbol(name), text)
+        for name in ('__mulsf3', '__adddf3', 'f64_add', 'fmodf', 'f32_sqrt'):
+            self.assertNotIn(symbol(name), text)
+        # A program that defines a routine itself keeps its own.
+        (self.work / 'own.c').write_text(
+            'unsigned __addsf3(unsigned a, unsigned b) { return 0x40E00000u; }\n'
+            'volatile float a = 1.0f, b = 2.0f;\nint main(void) { return a + b == 7.0f ? 42 : 1; }\n',
+            encoding='utf-8')
+        self.driver('own.c', '-O1', '-o', 'own.wax')
+        self.execute(self.work / 'own.wax', 42)
+
+    def test_float_ir_intrinsics_and_diagnostics(self):
+        source = self.ir('''
+declare double @llvm.fmuladd.f64(double, double, double)
+declare float @llvm.sqrt.f32(float)
+declare float @llvm.fabs.f32(float)
+declare float @llvm.copysign.f32(float, float)
+define i32 @main() {
+  %a = call double @llvm.fmuladd.f64(double 3.0, double 4.0, double 0.5)
+  %s = call float @llvm.sqrt.f32(float 16.0)
+  %m = call float @llvm.fabs.f32(float -2.5)
+  %c = call float @llvm.copysign.f32(float 2.0, float -1.0)
+  %n = fneg float %m
+  %ai = fptosi double %a to i32
+  %si = fptosi float %s to i32
+  %ci = fptosi float %c to i32
+  %ni = fptoui float %m to i32
+  %eq = fcmp ueq float %n, %c
+  %ez = zext i1 %eq to i32
+  %t0 = add i32 %ai, %si
+  %t1 = add i32 %t0, %ci
+  %t2 = add i32 %t1, %ni
+  %t3 = add i32 %t2, %ez
+  %r = add i32 %t3, 26
+  ret i32 %r
+}
+''', 'fp.ll')
+        # 12 + 4 - 2 + 2 + (-2.5 ueq -2.0: false = 0) + 26 = 42
+        image = self.work / 'fp.wax'
+        self.driver(source, '-o', image)
+        self.execute(image, 42)
+        for text, message in (
+                ('define i32 @main() {\n  %x = fadd half 1.0, 2.0\n  ret i32 0\n}\n', 'half'),
+                ('define i32 @main() {\n  %x = fadd <2 x float> zeroinitializer, zeroinitializer\n  ret i32 0\n}\n', 'vector')):
+            bad = self.ir(text, 'bad.ll')
+            self.assertIn(message, self.driver(bad, '-o', self.work / 'bad.wax', success=False).stderr)
+
     def test_cpp_example_with_c_sdk(self):
         example = ROOT / 'examples/hello-cpp'
         # Exercise each C++ extension, constructor/method mangling across TUs,

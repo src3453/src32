@@ -136,7 +136,7 @@ python tools/llvm-src32/driver.py app.c --wax3 --import-wal lib.wal --origin 0x8
 ```
 
 - `--exports FILE` は WAL が公開する記号の一覧です。1 行に 1 つ、関数は名前と [§6](../../doc/spec_WAX_v3.md) の signature（例：`fnd_write fn(u32,ptr,u32,ptr)->i32`）、オブジェクトは `名前 object` と書きます。`#` 以降と空行は無視します。一覧にない関数は外から見えません。
-- signature の型は C の型と対応していなければなりません。`u32`/`i32` は 32-bit 整数、`u64`/`i64` は 64-bit 整数、`ptr` はポインタ、戻り値の `void` です（符号は LLVM IR に残らないので、`u32` と `i32` の区別は一覧の記述に従います）。`char`、`short`、`bool` の引数や戻り値、構造体の値渡し、可変長引数は境界を越えられないのでエラーです。`fnptr`（関数記述子）はまだ対応していません。
+- signature の型は C の型と対応していなければなりません。`u32`/`i32` は 32-bit 整数、`u64`/`i64` は 64-bit 整数、`ptr` はポインタ、戻り値の `void` です（符号は LLVM IR に残らないので、`u32` と `i32` の区別は一覧の記述に従います）。`char`、`short`、`bool`、`float`、`double` の引数や戻り値、構造体の値渡し、可変長引数は境界を越えられないのでエラーです（浮動小数点はビット列を `u32`／`u64` で渡します）。`fnptr`（関数記述子）はまだ対応していません。
 - `--import-wal WAL`（複数可）を指定すると、定義のない関数とグローバル変数のうち、その WAL が export しているものを import にします。使わなかった WAL は依存表に入りません。依存の `min_minor` は指定した WAL の `abi_minor` です。C 側は普通に `extern` で宣言して呼びます。
 - import した関数の呼び出しは、記述子（8 bytes、RW データの末尾に置く）の 2 語を読み、呼び出し側の R30 をフレームに保存して、R30 を提供側の origin にしてから `JALR` し、戻ったら R30 を戻します。import した関数のアドレスを取ることはできません（記述子は値でなければならないため）。import したオブジェクトは、記述子の 1 語目のアドレスで読み書きします。
 - WAL のコードは位置独立です。アドレスはすべて「オフセット + R30」で作り、分岐は相対か R30 から計算します。**WAL の静的データにアドレスを入れることはできません**（v3 にはロード時の再配置がないため。例：`static int *p = &x;`、文字列へのポインタの表、関数ポインタの表）。そうした初期値はエラーになるので、実行時に計算してください。コード中の文字列定数や関数のアドレスは使えます。
@@ -163,7 +163,17 @@ C++ の起動関数は `extern "C" int main()` とし、C SDK ヘッダーも `e
 | 制御フロー | 分岐、ループ、switch、select、並列コピーによる phi |
 | スタック | 固定／動的 alloca、VLA、stacksave/stackrestore。最大アラインメント8 byte |
 | ランタイム | memcpy、memmove、memset、memcmp、strlen。未解決のものだけ同梱実装をリンク。ユーザー実装を優先 |
+| 可変長引数 | `<stdarg.h>`（`va_list`/`va_start`/`va_arg`/`va_copy`/`va_end`）と可変長関数の直接・間接呼出。Clang の MIPS o32 規約（`va_list` は `char *`）に従い、`va_arg` は Clang がインライン展開し、バックエンドは `llvm.va_start`/`va_copy`/`va_end` と `llvm.ptrmask` を実装。可変部の引数は型のアラインメント（最大8 byte）に揃えて積む。`printf` 系のようなユーザー実装の整形関数や `vprintf` へ `va_list` を渡す呼出に使える（`printf` 自体は付属しない） |
+| 浮動小数点 | `float`/`double` を IEEE-754 のビット列として整数と同じスロット・引数 word・戻り値で運ぶ（double は上位 word が先）。算術・比較・変換・`fneg`/`fabs`/`copysign`/`sqrt`/`fma`/`fmuladd` は FPU を使わず、compiler-rt 互換ルーチン（`__addsf3` など）の呼出に変換する。実体は Berkeley SoftFloat（`runtime/softfloat`）で、必要なときだけリンクし、到達できる関数だけを出力 |
 | LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、符号なし飽和減算 `llvm.usub.sat`（i1–i32/i64）、`llvm.umul.with.overflow.i32`、32-bit三方向比較 scmp/ucmp、expect/assume、lifetime/debug 等の対応部分 |
+
+### 浮動小数点ランタイム
+
+浮動小数点命令または `__addsf3`/`__ltdf2`/`__fixdfdi`/`fmod`/`sqrt`/`fma` 等の未定義宣言があるときだけ、ドライバが `runtime/softfloat` を `-O2` でコンパイルしてリンクします（`-ffp-contract=off` で `fmuladd` を避けますが、IR 入力の `llvm.fmuladd` は乗算→加算の2回丸めで処理します）。
+`rt.c` が compiler-rt 互換ルーチン（四則 `__{add,sub,mul,div}{sf3,df3}`、比較 `__{eq,ne,lt,le,gt,ge,unord}{sf2,df2}`、変換 `__extendsfdf2`・`__truncdfsf2`・`__fix[uns]{sf,df}{si,di}`・`__float[un]{si,di}{sf,df}`）と `fmod[f]`/`sqrt[f]`/`fma[f]` を Berkeley SoftFloat 3e（`source/` は無改変、BSD-3-Clause、`UPSTREAM.md` 参照）の上に実装します。丸めは最近接偶数、例外フラグは `softfloat_exceptionFlags` に記録するだけで（トラップなし）、NaN の伝播規則は SoftFloat の `8086` 特化です。
+ユーザーのコードが同名の関数を定義していればそちらを優先し（`SRC32_HAVE_<名前>`）、SoftFloat を自前で持つプログラムとは名前が衝突する翻訳単位を省きます。使われない関数・ルーチンはコードに出力しません。
+FP 環境（丸めモード変更）、`half`/`bfloat`/`fp128`/`x86_fp80`、ベクトル、`llvm.minnum` 等の未列挙 intrinsic、`math.h` の他の関数は未対応です。
+テスト: `fp_vectors.py` がホストの IEEE 演算から作る数千件のビット列ベクトル（`test_float_instructions_against_ieee_vectors`）、言語機能（`test_float_language_features`）、可変長引数（`test_variadic_*`）、WAL 内での利用（`foundation/tests/wal`）。
 
 同梱 string ランタイムはゲストの `-O0`/`-O1`/`-O2` 指定によらず `-O2` で生成します。
 `memcpy` は両端の 4 byte 境界が一致するとき、`memset` は先頭を整列させてから、範囲内の 32-bit ワードを処理します。
@@ -177,20 +187,20 @@ LLVM の `ccc` / `fastcc` と元ターゲット ABI ヒント `inreg` は、直�
 
 ### 明示的に非対応
 
-浮動小数点、SIMD、atomic、可変長引数、例外、inline asm、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、`ccc` / `fastcc` 以外の calling convention、`musttail`、i33–i63/i65以上。
+SIMD・ベクトル、`half`/`fp128`、atomic、例外、inline asm、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、`ccc` / `fastcc` 以外の calling convention、`musttail`、i33–i63/i65以上。
 未対応命令・intrinsic・定数は位置情報を含むエラーにし、不正な命令へ置換しません。
 LLVM IR 全仕様／C11 全仕様を実装したという意味ではありません。
 
-既定ではstdio、malloc、ファイル、OS API は付属しません。標準ヘッダーも `stddef.h/stdint.h/stdbool.h/limits.h/string.h` の freestanding 用です。
+既定ではstdio、malloc、ファイル、OS API は付属しません。標準ヘッダーも `stddef.h/stdint.h/stdbool.h/stdarg.h/limits.h/string.h` の freestanding 用です。
 `--newlib-source PATH`（CMake: `NEWLIB_SOURCE PATH`）を明示すると、別途用意したNewlibのヘッダーとportable Cソースを使用し、文字列・整数・ソート・nano allocatorを利用できます。Newlib本体は同梱・自動取得しません。対応API、ヒープ設定、取得方法、配布上の注意は[外部Newlibサンプル](../../examples/newlib-c/README.md)を参照してください。printf/stdio、ファイルI/O、locale、libmなどのNewlib全体は未対応です。
 追加の API はCで実装して一緒にリンクするか、同じ ABI を守る SRC32 ランタイムとして用意してください。
-外部 C ライブラリの組み込み例は [`Berkeley SoftFloat デモ`](../../examples/softfloat-c/README.md)。Release 3e のソースを同梱し、整数演算で binary32 を実装するライブラリを `-O2` でリンクします。
+外部 C ライブラリの組み込み例は [`Berkeley SoftFloat デモ`](../../examples/softfloat-c/README.md)。Release 3e のソースを同梱し、整数演算で binary32 を実装するライブラリを `-O2` でリンクします（C の `float` 演算そのものはコンパイラが同じ SoftFloat へ変換するので、このデモのようにビット列を直接扱う必要はありません）。
 既存 sol / csc の関数呼出 ABI とはバイナリ互換ではありません。
 
 ## SRC32 ABI とメモリ配置
 
 - R0 はゼロ、R28 は SP、R29 は FP、R31 は LR。IRQライブラリ使用時はR30がベクタの分岐先用に予約されます。その他のレジスタは caller-saved。拡張Pでは R28〜R30 がS/Uでバンクされます。
-- スタックは下向き、呼出境界は8-byte整列。引数は呼出時 SP から順に4-byte単位で格納。i64 と aggregate は big-endian の連続 word。
+- スタックは下向き、呼出境界は8-byte整列。引数は呼出時 SP から順に4-byte単位で格納。i64・double と aggregate は big-endian の連続 word（`float` は1 word）。可変長関数では、名前付き引数に続く可変部の各引数を型のアラインメント（最大8）に揃える。`va_start` は FP+8+名前付き引数の大きさ（`va_arg` が必要に応じて再整列する）を指す。
 - callee は旧 FP、LR を8 byte保存し、その位置を FP とする。第1引数は FP+8。SSA 値・ローカルは FP より下の独立スロット。
 - 32-bit戻り値は R1。64-bit戻り値は low=R1、high=R2。8 byte超の aggregate 戻り値は LLVM の sret ポインタを使用。
 - 既定 origin=0、stack top=0x100000。コードに続けて整列済み静的データを配置。ゼロ初期化領域も WAX に含む。
