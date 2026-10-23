@@ -10,19 +10,23 @@
  * CON_READ_KEY codes of §8.3. The service needs MMIO grants for the ranges
  * below. */
 
-#define CON_PCG_COLS 80u
 #define CON_PCG_ROWS 30u
 
 /* MMIO the console touches: the VDP window (display and PCG registers), the
- * PCG text and attribute planes in VRAM, and the PeC input window. */
+ * PCG text/attribute planes and dedicated 8x16 font in VRAM, and PeC input. */
 #define CON_PCG_VDP_START 0x80000000u
 #define CON_PCG_VDP_END 0x80010000u
 #define CON_PCG_TEXT_START 0x10000000u
 #define CON_PCG_TEXT_END 0x10003000u
+#define CON_PCG_FONT_START 0x10021000u
+#define CON_PCG_FONT_END 0x10022000u
 #define CON_PCG_INPUT_START 0x80040030u
 #define CON_PCG_INPUT_END 0x80040180u
 
 fnd_status con_pcg_init(void);
+uint32_t con_pcg_columns(void);
+uint32_t con_pcg_display(void);
+fnd_status con_pcg_set_display(uint32_t mode);
 void con_pcg_write(const uint8_t *text, uint32_t len);
 void con_pcg_clear(void);
 int con_pcg_poll_key(fnd_key_t *key);

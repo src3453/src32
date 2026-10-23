@@ -1,6 +1,6 @@
 # Foundation API 仕様 v1
 
-Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd は起動、ストリーム、ファイル・cwd、ディレクトリ列挙、プロセス、コンソールの一部を実装し、fs／consoleサービスをIPCで呼びます。現在の提供範囲は [`foundation/include/foundation/fnd.h`](../foundation/include/foundation/fnd.h) と [sol API](../sol/foundation/README.md) を参照してください。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
+Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd は起動、ストリーム、ファイル・cwd、ディレクトリ列挙、プロセス、コンソールの一部を実装し、fs／consoleサービスをIPCで呼びます。現在の提供範囲は [`foundation/include/foundation/fnd.h`](../foundation/include/foundation/fnd.h) と [sol API](../sol/foundation/README.md) を参照してください。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -230,6 +230,20 @@ SGR は `0`（属性初期化）、`1`／`22`（前景の高輝度化／解除�
 
 シーケンスの意味は [XTerm Control Sequences](https://invisible-island.net/xterm/ctlseqs/ctlseqs.html) を参照し、対応範囲・制限は本節を優先します。従来の LF の行頭復帰、TAB の空白書き込み、右端での即時折り返しは維持します。
 
+#### 8.1.2 コンソール表示モード
+
+表示モードは入力の `LINE`／`RAW` とは独立です。起動時は80列×30行、8×8字形です。すべてのコンソールストリームは同じ表示モードを共有します。
+
+| `CON_SET_DISPLAY` の `a0` | 定数 | 列×行 | 字形 | 解像度 |
+|---:|---|---|---|---|
+| 0 | `FND_CON_DISPLAY_40` | 40×30 | 8×8 | 320×240 |
+| 1 | `FND_CON_DISPLAY_80` | 80×30 | 8×8 | 640×240 |
+| 3 | `FND_CON_DISPLAY_8X16` | 80×30 | 8×16 | 640×480 |
+
+定義済み以外の値（2を含む）は `FND_E_BAD_ARG` とし、画面も状態も変更しません。成功時は同じモードの再指定でも画面を現在色で消去し、カーソル・スクロール・保存カーソルを左上へ戻し、解析途中のANSIシーケンスを中止します。色・高輝度化・反転・カーソル可視性・入力モード・入力キューは保持します。`CON_GET_SIZE` と `CON_SET_CURSOR` の範囲検査、ANSIの移動・消去・折返し、BS／TABとスクロールは選択後の列数とセル高に従います。mode 3のスクロールは1行16 pixelです。
+
+8×16は専用VRAM `0x10021000`–`0x10021FFF` を使います。切替ごとに同梱のGNU Unifont 18.0.01からASCII 32–126の8×16字形を書き込み、他のglyphを0で埋めます。既存8×8フォントの2バンクには触れません。UTF-8の表示範囲は従来と同じASCIIで、それ以外の表示対象文字は `?` です。フォントはOFL-1.1で配布し、生成元の記録・著作権表示・ライセンスは起動ディスクの `/share/licenses/console/` に置きます。
+
 ### 8.2 入力モード
 
 コンソールのストリームは、入力モードを持ちます。モードはストリームのオブジェクトの状態で、そのストリームを指すすべてのハンドルで共有します。
@@ -257,6 +271,8 @@ SGR は `0`（属性初期化）、`1`／`22`（前景の高輝度化／解除�
 | `0x1006` | `CON_GET_CURSOR` | — | `a0` = 桁、`a1` = 行 |
 | `0x1007` | `CON_SET_COLOR` | `a0` = 前景、`a1` = 背景（0〜15） | — |
 | `0x1008` | `CON_KEY_STATE` | — | `fnd_keyboard`（96 bytes）。READ 権限が必要 |
+| `0x1009` | `CON_SET_DISPLAY` | `a0` = 表示モード（§8.1.2） | — |
+| `0x100A` | `CON_GET_DISPLAY` | — | `a0` = 現在の表示モード（0／1／3） |
 
 キーコード：
 

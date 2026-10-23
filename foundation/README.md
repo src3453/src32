@@ -12,6 +12,21 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
 追加ファイルをfsの実行イメージへ埋め込む必要はありません。
 
+## 表示モードの切替
+
+シェルから次のコマンドを使えます。切替時は画面を消去して左上へ戻ります。
+
+| コマンド | 表示 |
+|---|---|
+| `mode 40` | 40列×30行、8×8字形（320×240） |
+| `mode 80` | 80列×30行、8×8字形（640×240、起動時の既定） |
+| `mode 8x16` | 80列×30行、8×16字形（640×480） |
+| `mode` | 現在の設定を表示 |
+
+8×16は同梱GNU UnifontのASCII字形を専用VRAMへ読み込みます。8×8用フォントは保持され、`mode 80`／`mode 40`で元へ戻せます。40列と8×16の組合せはPCGにないため、独立した3つの表示設定として切り替えます。LINE／RAW入力モードや現在の色は切替で変わりません。詳細は [API §8.1.2](../doc/spec_Foundation_API.md#812-コンソール表示モード) を参照してください。
+
+フォントのbitmapデータにはOFL-1.1を適用します（OSのコードとは別です）。`boot/build.py` は既存の `assets/unifont-bmp.chr` からASCII部分を生成し、元データの記録・著作権表示・OFL本文をディスクの `/share/licenses/console/` に同梱します。新しい外部フォントのダウンロードは不要です。
+
 ## ANSI コンソール出力
 
 標準出力（`fnd_con_write`／`fnd_write`）へ ANSI のサブセットを送れます。例えば C で `fnd_con_write("\033[31m赤色\033[0m\n");` と書くと赤の前景色に切り替えてから既定色へ戻します（PCG の表示できない文字は従来どおり `?` になります）。ASCII の動作例:
@@ -72,7 +87,7 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 | `fs/` | fs サービス（FS2 と DSFS、VFS、API 仕様 §5〜§7 のプロトコル）。次の節 |
 | `services/init/` | init（API 仕様 §12）。`/bin/shell.wax` を起動し、終了したら起動し直す |
 | `shell/` | シェル（[シェル仕様](../doc/spec_Foundation_shell.md)）。ディスパッチャで、組み込みは `cd`、`set`、`exit`、`help` |
-| `bin/` | 標準コマンド（シェル仕様 §10.3）のうち今あるもの：`clear`、`echo`、`free`、`ps`、`pwd`、`top`、`uname` |
+| `bin/` | 標準コマンド（シェル仕様 §10.3）のうち今あるもの：`clear`、`echo`、`free`、`mode`、`ps`、`pwd`、`top`、`uname` |
 | `boot/` | カーネルの入口（`main.c`）、stage1（`stage1.a`）、FNDBOOT の packer（`fndboot.py`）、起動イメージとディスクイメージのビルドスクリプト（`build.py`） |
 | `demo/` | 画面に各プロセスの状態を表示するデモ |
 | `tests/phase1/` | フェーズ1の受け入れテスト |
@@ -105,7 +120,7 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 - **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir`、`ls`、`hex` は `/bin` にあります（`cp` の同一ファイル検出はパス文字列の比較だけです）。Ctrl+C はシェルの専用スレッドが `CON_BREAK_WAIT` で受け取り、実行中の外部プログラムを `proc_kill` で止めます（`$?` は `FND_E_KILLED`、STDERR に `^C`）。行編集中は保留中の `CON_READ_KEY` が `FND_E_INTERRUPTED` になり、入力中の行を捨てます。組み込みコマンドの中断とスクリプトの入れ子中断は、スクリプト（KAN-19）とともに未実装です。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
-- **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
+- **console**：`services/console` が PCG（既定はSCREEN_MODE 1、80×30、8×8。`mode`で切替可能）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
 - `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、スロット方式では実在するユーザースロットのうち動いているプロセスが占めていないものの合計です。12 MiB のスロット方式では、サービス・init・シェル・実行中のコマンドで全スロットを使うため、`free` の `0 KiB free` は正常です。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh

@@ -1,6 +1,7 @@
 /* Provisional console on the PCG (doc/spec_VDP.md) and the PeC keyboard
- * (doc/spec_PeC.md), see con_pcg.h. The screen is SCREEN_MODE 1, 80x30
- * cells of 8x8. Scrolling moves SCROLL_Y by one cell row and clears only the
+ * (doc/spec_PeC.md), see con_pcg.h. The default is SCREEN_MODE 1, 80x30
+ * cells of 8x8; modes 0 and 3 provide 40 columns and 8x16 glyphs.
+ * Scrolling moves SCROLL_Y by one cell row and clears only the
  * ring row that comes back at the bottom; the cursor keeps its screen row
  * apart from the physical ring row. */
 #include "con_pcg.h"
@@ -25,7 +26,6 @@
 #define PCG_SCROLL_Y_HI 0x8000F00Fu
 #define PCG_FG 0x1000u
 #define PCG_BG 0x2000u
-#define CELL_HEIGHT 8u
 
 #define PEC_EVENT_DATA 0x80040030u
 #define PEC_EVENT_STATUS 0x80040034u
@@ -34,6 +34,12 @@
 #define SUBSTITUTE '?'
 
 static uint32_t col, row, top; /* cursor cell; ring row shown at screen row 0 */
+static uint32_t columns = 80, cell_height = 8, display = FND_CON_DISPLAY_80;
+/* Generated from bundled Unifont by boot/build.py, ASCII 32..126, OFL-1.1. */
+extern const uint8_t con_font8x16[95 * 16];
+
+uint32_t con_pcg_columns(void) { return columns; }
+uint32_t con_pcg_display(void) { return display; }
 /* ANSI RGB order mapped onto the existing RGB222 CLUT; never rewrite it. */
 static const uint8_t colors[16] = {0, 32, 8, 40, 2, 34, 10, 42,
                                  21, 53, 29, 61, 23, 55, 31, 63};
@@ -48,7 +54,7 @@ static uint32_t params[ANSI_PARAMS], param_count, private_mode, invalid, param_s
 static uint32_t ring_row(uint32_t screen_row) { return (top + screen_row) % CON_PCG_ROWS; }
 
 static void put_cell(uint32_t x, uint32_t y, uint32_t ch) {
-    uint32_t cell = CON_PCG_TEXT_START + ring_row(y) * CON_PCG_COLS + x;
+    uint32_t cell = CON_PCG_TEXT_START + ring_row(y) * columns + x;
     MMIO8(cell) = (uint8_t)ch;
     uint8_t front = colors[fg < 8u && bold ? fg + 8u : fg], back = colors[bg];
     MMIO8(cell + PCG_FG) = inverse ? back : front;
@@ -56,13 +62,13 @@ static void put_cell(uint32_t x, uint32_t y, uint32_t ch) {
 }
 
 static void clear_row(uint32_t y) {
-    for (uint32_t x = 0; x < CON_PCG_COLS; ++x)
+    for (uint32_t x = 0; x < columns; ++x)
         put_cell(x, y, ' ');
 }
 
 /* SCROLL_Y is a 16-bit pixel offset written low byte first. */
 static void set_scroll(void) {
-    uint32_t y = top * CELL_HEIGHT;
+    uint32_t y = top * cell_height;
     MMIO8(PCG_SCROLL_Y_LO) = (uint8_t)y;
     MMIO8(PCG_SCROLL_Y_HI) = (uint8_t)(y >> 8);
 }
@@ -84,7 +90,7 @@ static void newline(void) {
 }
 
 static void advance(void) {
-    if (++col == CON_PCG_COLS)
+    if (++col == columns)
         newline();
 }
 
@@ -94,7 +100,7 @@ static uint32_t clamp(uint32_t value, uint32_t size) {
 
 static void erase_cells(uint32_t first, uint32_t end) {
     for (; first < end; ++first)
-        put_cell(first % CON_PCG_COLS, first / CON_PCG_COLS, ' ');
+        put_cell(first % columns, first / columns, ' ');
 }
 
 void con_pcg_set_color(uint32_t front, uint32_t back) {
@@ -140,31 +146,31 @@ static void csi_final(uint32_t ch) {
     if (ch == 'H' || ch == 'f') {
         if (param_count > 2) return;
         row = clamp(n - 1u, CON_PCG_ROWS);
-        col = clamp(params[1] ? params[1] - 1u : 0, CON_PCG_COLS);
+        col = clamp(params[1] ? params[1] - 1u : 0, columns);
         return;
     }
     if (param_count != 1) return;
     switch (ch) {
     case 'A': row = n > row ? 0 : row - n; break;
     case 'B': row = clamp(row + n, CON_PCG_ROWS); break;
-    case 'C': col = clamp(col + n, CON_PCG_COLS); break;
+    case 'C': col = clamp(col + n, columns); break;
     case 'D': col = n > col ? 0 : col - n; break;
     case 'E': row = clamp(row + n, CON_PCG_ROWS); col = 0; break;
     case 'F': row = n > row ? 0 : row - n; col = 0; break;
-    case 'G': col = clamp(n - 1u, CON_PCG_COLS); break;
+    case 'G': col = clamp(n - 1u, columns); break;
     case 'd': row = clamp(n - 1u, CON_PCG_ROWS); break;
     case 'J': {
-        uint32_t pos = row * CON_PCG_COLS + col, end = CON_PCG_ROWS * CON_PCG_COLS;
+        uint32_t pos = row * columns + col, end = CON_PCG_ROWS * columns;
         if (p == 0) erase_cells(pos, end);
         else if (p == 1) erase_cells(0, pos + 1u);
         else if (p == 2) erase_cells(0, end);
         break;
     }
     case 'K': {
-        uint32_t start = row * CON_PCG_COLS, pos = start + col;
-        if (p == 0) erase_cells(pos, start + CON_PCG_COLS);
+        uint32_t start = row * columns, pos = start + col;
+        if (p == 0) erase_cells(pos, start + columns);
         else if (p == 1) erase_cells(start, pos + 1u);
-        else if (p == 2) erase_cells(start, start + CON_PCG_COLS);
+        else if (p == 2) erase_cells(start, start + columns);
         break;
     }
     case 's': if (!p) { saved_col = col; saved_row = row; } break;
@@ -237,7 +243,7 @@ static void put_scalar(uint32_t cp) {
             --col;
         } else if (row) {
             --row;
-            col = CON_PCG_COLS - 1u;
+            col = columns - 1u;
         }
         return;
     case '\t':
@@ -294,14 +300,31 @@ void con_pcg_clear(void) {
 
 fnd_status con_pcg_init(void) {
     con_pcg_set_color(15, 0);
-    saved_col = saved_row = 0;
     MMIO8(VDP_DISPLAY_MODE) = 1;
     MMIO8(PCG_DISABLE) = 0;
-    MMIO8(PCG_SCREEN_MODE) = 1;
     MMIO8(PCG_SCROLL_X_LO) = 0;
     MMIO8(PCG_SCROLL_X_HI) = 0;
     MMIO8(PCG_CURSOR_ENABLE) = 1;
     MMIO8(PCG_CURSOR_BLINK) = 10;
+    return con_pcg_set_display(FND_CON_DISPLAY_80);
+}
+
+fnd_status con_pcg_set_display(uint32_t mode) {
+    if (mode != FND_CON_DISPLAY_40 && mode != FND_CON_DISPLAY_80 && mode != FND_CON_DISPLAY_8X16)
+        return FND_E_BAD_ARG;
+    if (mode == FND_CON_DISPLAY_8X16) {
+        /* Dedicated 4 KiB bank: never overwrite either 8x8 font bank. */
+        for (uint32_t i = 0; i < 256u * 16u; ++i)
+            MMIO8(CON_PCG_FONT_START + i) = i >= 32u * 16u && i < 127u * 16u
+                ? con_font8x16[i - 32u * 16u] : 0;
+    }
+    display = mode;
+    columns = mode == FND_CON_DISPLAY_40 ? 40u : 80u;
+    cell_height = mode == FND_CON_DISPLAY_8X16 ? 16u : 8u;
+    saved_col = saved_row = 0;
+    MMIO8(PCG_SCREEN_MODE) = (uint8_t)mode;
+    MMIO8(PCG_SCROLL_X_LO) = 0;
+    MMIO8(PCG_SCROLL_X_HI) = 0;
     con_pcg_clear();
     return FND_OK;
 }

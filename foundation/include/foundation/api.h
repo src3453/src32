@@ -94,6 +94,12 @@
 #define FND_CON_SET_CURSOR 0x1005u
 #define FND_CON_GET_CURSOR 0x1006u
 #define FND_CON_SET_COLOR 0x1007u
+/* Display geometry, separate from CON_SET_MODE (LINE/RAW input). */
+#define FND_CON_SET_DISPLAY 0x1009u
+#define FND_CON_GET_DISPLAY 0x100Au
+#define FND_CON_DISPLAY_40 0u   /* 40x30, 8x8 */
+#define FND_CON_DISPLAY_80 1u   /* 80x30, 8x8 (default) */
+#define FND_CON_DISPLAY_8X16 3u /* 80x30, 8x16 */
 
 /* §11.6 */
 #define FND_EXEC_IMAGE_MAX 0x100000u

@@ -1,6 +1,6 @@
 # Foundation シェル仕様 v1
 
-Revision 0.2、2026-10-22。Status: **ドラフト（主要な設計判断は確定、一部実装）**。fs、`proc_spawn`、console サービスがなくても動く部分を [`foundation/shell`](../foundation/README.md#シェル) に実装しています（実装済みの範囲と暫定の扱いは README）。0.2 でシェルをディスパッチャにし、`cd`、`set`、`exit`、`help` 以外のコマンドを `/bin` の標準コマンドに分けました（§10）。 本書は Foundation OS の標準シェル `/bin/shell.wax` の起動、構文、展開、コマンドの解決と実行、リダイレクト、組み込みコマンド、`/bin` の標準コマンド、スクリプト、対話入力を定めます。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ファイルシステムと VFS は [spec_FS2.md](spec_FS2.md)、背景は [実装案 §7](foundation_os_plan.md) を参照してください。本書と実装案が異なる場合は本書が優先します。
+Revision 0.2、2026-10-24。Status: **ドラフト（主要な設計判断は確定、一部実装）**。fs、`proc_spawn`、console サービスがなくても動く部分を [`foundation/shell`](../foundation/README.md#シェル) に実装しています（実装済みの範囲と暫定の扱いは README）。0.2 でシェルをディスパッチャにし、`cd`、`set`、`exit`、`help` 以外のコマンドを `/bin` の標準コマンドに分けました（§10）。 本書は Foundation OS の標準シェル `/bin/shell.wax` の起動、構文、展開、コマンドの解決と実行、リダイレクト、組み込みコマンド、`/bin` の標準コマンド、スクリプト、対話入力を定めます。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ファイルシステムと VFS は [spec_FS2.md](spec_FS2.md)、背景は [実装案 §7](foundation_os_plan.md) を参照してください。本書と実装案が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
 
@@ -315,6 +315,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `rmdir` | `rmdir path...` | 空のディレクトリを削除する |
 | `hex` | `hex path` | ファイルの16進エディタ（DOS の `HEX` と同じ書式）。256 バイトずつ（16 行 × 16 バイト＋ASCII 欄）表示し、STDIN から 1 行ずつコマンド `N`/`P`/`G addr`/`E addr v..`/`W`/`Q` を読む（大文字小文字は区別しない）。ファイルは 64 KiB まで、空ファイルは編集できない。`W` は同じ大きさで書き戻し、`Q` や EOF（Ctrl+D）で終わる。未保存の変更があれば `UNSAVED CHANGES DISCARDED (W TO SAVE)` を出す |
 | `clear` | `clear` | 画面を消す（CONSOLE の役割を使う。STDOUT がリダイレクトされていても画面を消す）。CONSOLE がなければ `FND_E_BAD_HANDLE` |
+| `mode` | `mode [40\|80\|8x16]` | 引数なしは現在の表示を `40x30, 8x8`／`80x30, 8x8`／`80x30, 8x16` の1行でSTDOUTへ表示。引数ありはCONSOLEの役割を使い40列8×8／80列8×8／80列8×16へ切替（API §8.1.2）。切替は画面消去とカーソル・スクロール・保存位置・ANSI解析の初期化を伴う。同じモードの再指定も消去。STDOUTリダイレクト時も切り替わる。その他の引数・余分な引数はusageをSTDERRへ出し `FND_E_BAD_ARG`、CONSOLEがなければ `FND_E_BAD_HANDLE` |
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
 | `chip8` | `chip8 [-c N\|--cycles N] ROM.ch8` | オリジナル CHIP-8 を /dev/fb0 と /dev/sgu で実行。Nは60 Hz換算の1 VSyncあたりの命令数（1〜10000）、省略時700命令/秒。1234/QWER/ASDF/ZXCV、Esc で終了。[詳細](spec_Foundation_chip8.md) |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |

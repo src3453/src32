@@ -7,8 +7,34 @@ static void cursor(uint32_t x, uint32_t y) {
     CHECK(fnd_call(fnd_console(), FND_CON_GET_CURSOR, 0, 0, 0, 0, 0, &reply) == FND_OK);
     CHECK(reply.a0 == x && reply.a1 == y);
 }
+static void display(uint32_t mode, uint32_t width) {
+    uint32_t args[4] = {mode, 0, 0, 0};
+    fnd_msg reply;
+    CHECK(fnd_call(fnd_console(), FND_CON_SET_DISPLAY, args, 0, 0, 0, 0, &reply) == FND_OK);
+    CHECK(fnd_call(fnd_console(), FND_CON_GET_DISPLAY, 0, 0, 0, 0, 0, &reply) == FND_OK);
+    CHECK(reply.a0 == mode);
+    CHECK(fnd_call(fnd_console(), FND_CON_GET_SIZE, 0, 0, 0, 0, 0, &reply) == FND_OK);
+    CHECK(reply.a0 == width && reply.a1 == 30);
+    cursor(0, 0);
+}
 int main(void) {
     fnd_init();
+    display(FND_CON_DISPLAY_40, 40);
+    out("1234567890123456789012345678901234567890"); cursor(0, 1);
+    out("\b"); cursor(39, 0);
+    out("\t"); cursor(0, 1);
+    out("\033[9999;9999H\033[s"); cursor(39, 29);
+    uint32_t bad[4] = {40, 0, 0, 0};
+    CHECK(fnd_call(fnd_console(), FND_CON_SET_CURSOR, bad, 0, 0, 0, 0, 0) == FND_E_BAD_ARG);
+    bad[0] = 2;
+    CHECK(fnd_call(fnd_console(), FND_CON_SET_DISPLAY, bad, 0, 0, 0, 0, 0) == FND_E_BAD_ARG);
+    cursor(39, 29);
+    display(FND_CON_DISPLAY_8X16, 80);
+    out("\033[u"); cursor(0, 0);
+    for (uint32_t i = 0; i < 46; ++i) out("row\n");
+    cursor(0, 29);
+    out("\033[H\033[2J8x16\033[K"); cursor(4, 0);
+    display(FND_CON_DISPLAY_80, 80);
     CHECK(fnd_con_clear() == FND_OK);
     /* Two separately opened streams share the screen's parsing state. */
     fnd_handle other;

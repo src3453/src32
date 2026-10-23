@@ -4,9 +4,12 @@
 #include <string.h>
 #include <stdint.h>
 static uint8_t vram[0x3000], vdp[0x10000];
+static uint8_t font[4096];
+const uint8_t con_font8x16[95 * 16] = {0x81, 0x42, 0x24, 0x18};
 static uint32_t input;
 static uint8_t *mmio8(uint32_t a) {
     if (a >= 0x10000000u && a < 0x10003000u) return &vram[a - 0x10000000u];
+    if (a >= 0x10021000u && a < 0x10022000u) return &font[a - 0x10021000u];
     assert(a >= 0x80000000u && a < 0x80010000u);
     return &vdp[a - 0x80000000u];
 }
@@ -21,7 +24,7 @@ static void cursor(uint32_t x, uint32_t y) {
     assert(vdp[0xF005] == x && vdp[0xF006] == ring_row(y));
 }
 static uint8_t cell(uint32_t x, uint32_t y, uint32_t plane) {
-    return vram[plane + ring_row(y) * 80 + x];
+    return vram[plane + ring_row(y) * columns + x];
 }
 int main(void) {
     con_pcg_init();
@@ -96,6 +99,36 @@ int main(void) {
     for (uint32_t i = 0; i < 60; ++i) write_text("x\n");
     assert(top < 30 && vdp[0xF00F] == 0);
     assert(cell(0, 29, 0) == ' ');
+    /* Switches reset saved cursor/parser and clear using the new stride. */
+    con_pcg_init();
+    write_text("\033[30;80H\033[s\033[31;44m\033[?25l\033[");
+    assert(con_pcg_set_display(FND_CON_DISPLAY_40) == FND_OK);
+    assert(con_pcg_columns() == 40 && con_pcg_display() == FND_CON_DISPLAY_40);
+    assert(vdp[0xF003] == 0 && fg == 1 && bg == 4 && !vdp[0xF007]);
+    write_text("\033[u"); cursor(0, 0);
+    write_text("1234567890123456789012345678901234567890"); cursor(0, 1);
+    assert(cell(39, 0, 0) == '0');
+    write_text("\b"); cursor(39, 0);
+    write_text("\t"); cursor(0, 1);
+    write_text("\033[9999;9999H"); cursor(39, 29);
+    write_text("\033[2K"); cursor(39, 29);
+    for (uint32_t i = 0; i < 40; ++i) assert(cell(i, 29, 0) == ' ');
+    write_text("\r");
+    for (uint32_t i = 0; i < 33; ++i) write_text("x\n");
+    assert(top == 3 && vdp[0xF00E] == 24 && vdp[0xF00F] == 0);
+    assert(con_pcg_set_display(2) == FND_E_BAD_ARG);
+    assert(con_pcg_display() == 0 && top == 3); cursor(0, 29);
+    assert(con_pcg_set_display(FND_CON_DISPLAY_8X16) == FND_OK);
+    assert(con_pcg_columns() == 80 && vdp[0xF003] == 3);
+    assert(memcmp(font + 32*16, con_font8x16, sizeof con_font8x16) == 0);
+    assert(font[0] == 0 && font[4095] == 0);
+    for (uint32_t i = 0; i < 46; ++i) write_text("row\n");
+    assert(top == 17 && vdp[0xF00E] == 16 && vdp[0xF00F] == 1);
+    write_text("\033[2;3H\033[K"); cursor(2, 1);
+    assert(cell(0, 1, 0) == 'r' && cell(2, 1, 0) == ' ');
+    assert(con_pcg_set_display(FND_CON_DISPLAY_80) == FND_OK);
+    assert(con_pcg_columns() == 80 && cell_height == 8 && vdp[0xF003] == 1);
+    cursor(0, 0); assert(top == 0);
     puts("console host passed");
     return 0;
 }

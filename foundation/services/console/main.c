@@ -322,11 +322,11 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
         con_pcg_clear();
         return 0;
     case FND_CON_GET_SIZE:
-        a[0] = CON_PCG_COLS;
+        a[0] = con_pcg_columns();
         a[1] = CON_PCG_ROWS;
         return 0;
     case FND_CON_SET_CURSOR:
-        if (m->a0 >= CON_PCG_COLS || m->a1 >= CON_PCG_ROWS)
+        if (m->a0 >= con_pcg_columns() || m->a1 >= CON_PCG_ROWS)
             *result = FND_E_BAD_ARG;
         else
             con_pcg_set_cursor(m->a0, m->a1);
@@ -339,6 +339,12 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
             *result = FND_E_BAD_ARG;
         else
             con_pcg_set_color(m->a0, m->a1);
+        return 0;
+    case FND_CON_SET_DISPLAY:
+        *result = con_pcg_set_display(m->a0);
+        return 0;
+    case FND_CON_GET_DISPLAY:
+        a[0] = con_pcg_display();
         return 0;
     default:
         *result = FND_E_UNSUPPORTED; /* ST_SEEK, ST_TRUNCATE */
