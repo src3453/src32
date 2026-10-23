@@ -44,6 +44,7 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+from concurrent.futures import ThreadPoolExecutor
 import sys
 
 HERE = Path(__file__).resolve().parent
@@ -100,8 +101,9 @@ ASSEMBLER = ROOT / "tools/asm/asm.py"
 
 
 def driver(sources, output, args, *extra):
+    # Parallelism is across driver processes (main), so each one compiles serially.
     command = [sys.executable, str(DRIVER), *map(str, sources), *INCLUDES, args.optimization,
-               *extra, "-o", str(output)]
+               "-j", "1", *extra, "-o", str(output)]
     if args.clang:
         command[2:2] = ["--clang", args.clang]
     subprocess.run(command, check=True)
@@ -162,6 +164,8 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
     parser.add_argument("--clang")
+    parser.add_argument("-j", "--jobs", type=int, default=0, metavar="N",
+                        help="parallel driver processes (default: CPU count; the images do not depend on N)")
     parser.add_argument("--stop-ticks", type=int)
     parser.add_argument("--root", type=Path, help="host directory copied into the disk root (e.g. root/bin/*.wax)")
     parser.add_argument("--disk-blocks", type=int, default=DISK_BLOCKS, help=f"disk size in blocks (default {DISK_BLOCKS})")
@@ -176,37 +180,18 @@ def main(argv=None):
     (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
 
-    fnd = driver([*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal", "--page-align",
-                 "--image-id", "fnd",
-                 "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+    jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 1)
+    pool = ThreadPoolExecutor(max_workers=jobs)
+    # Every image below is an independent driver run, except that /bin programs import the fnd WAL.
+    fnd_job = pool.submit(driver, [*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal",
+                          "--page-align", "--image-id", "fnd",
+                          "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     # /lib/lzma.1.wal: the LZMA SDK adapter (lib/lzma, WAL "lzma" 1.0). Self-contained: it needs
     # no libfnd and no heap, so it adds nothing to the fs heap; programs that import it pass an arena.
     lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
     lzma_build = importlib.util.module_from_spec(lzma_spec)
     lzma_spec.loader.exec_module(lzma_build)
-    lzma = lzma_build.build(out / "lzma", args.clang, args.optimization)
-    shutil.copyfile(lzma, root / "lib/lzma.1.wal")
-    program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
-    for name in COMMANDS:
-        program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",
-                args, SLOT5, f"foundation.{name}", fnd)
-
-    # §11: spawned in this order, init last.
-    modules = [
-        dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
-             image=static([services / "console/main.c", services / "console/con_pcg.c"], out / "console.wax",
-                        args, SLOT1, "-I", str(services / "console"))),
-        dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
-             image=static([services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
-        dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
-             image=static([*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
-                        f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
-                        "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
-        dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
-             image=static([services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
-    ]
-    for module in modules:
-        module["image"] = module["image"].read_bytes()
+    lzma_job = pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
@@ -215,8 +200,38 @@ def main(argv=None):
         # Ignore Extension V and run on fixed slots even on a CPU that has it
         # (doc/foundation_vm_plan.md); the tests use this to check both backends.
         kernel_args += ["-D", "FND_MM_SLOT_ONLY"]
-    image = driver([HERE / "main.c", *KERNEL], out / "foundation.wax", args,
-                   "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
+    image_job = pool.submit(driver, [HERE / "main.c", *KERNEL], out / "foundation.wax", args,
+                            "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
+    kernel_job = pool.submit(driver, [HERE / "main.c", *KERNEL], out / "kernel.bin", args, *kernel_args)
+
+    # §11: spawned in this order, init last.
+    specs = [
+        dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
+             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c"],
+                               out / "console.wax", args, SLOT1, "-I", str(services / "console"))),
+        dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
+             image=pool.submit(static, [services / "disk/main.c"], out / "disk.wax", args, SLOT2)),
+        dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             image=pool.submit(static, [*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
+                               f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
+                               "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
+        dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
+             image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
+    ]
+
+    fnd = fnd_job.result()
+    program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4,
+                                "foundation.shell", fnd)]
+    for name in COMMANDS:
+        program_jobs.append(pool.submit(program, [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"],
+                                        root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd))
+    shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
+    for job in program_jobs:
+        job.result()
+    modules = [dict(spec, image=spec["image"].result().read_bytes()) for spec in specs]
+    pool.shutdown()
+
+    image = image_job.result()
     # The module-only FNDBOOT goes where stage1 stages it (§11).
     parsed = wax.parse(image.read_bytes())
     blocks = [(b["load_address"], b["data"]) for b in parsed["blocks"]]
@@ -224,7 +239,7 @@ def main(argv=None):
     image.write_bytes(wax.pack(parsed["base"], parsed["entry_offset"], blocks))
     print(f"Wrote {image}")
 
-    kernel = driver([HERE / "main.c", *KERNEL], out / "kernel.bin", args, *kernel_args).read_bytes()
+    kernel = kernel_job.result().read_bytes()
     boot = fndboot.pack(kernel, modules)
     (out / "fndboot.bin").write_bytes(boot)
     stage1 = out / "stage1.bin"

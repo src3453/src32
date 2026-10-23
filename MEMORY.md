@@ -1312,6 +1312,12 @@
 
 - AGENTS.md now exempts minor changes without functional impact from Jira creation/updates: ordinary Git operations, mechanical merges/conflict resolution, commit/rebase cleanup, typos and minor development-guide edits. Do not create separate Git-operation issues alongside an implementation/bug issue. Conflict resolutions that decide or change behavior remain tracked under the relevant implementation/bug issue. This rule was explicitly requested by the user to avoid tracking overhead.
 
+## llvm-src32 コンパイル並列化 (2026-10-24, KAN-64)
+
+- `driver.py -j N`（既定 CPU 数）は Clang 呼び出し（入力ファイル、Newlib の pending バッチ、SoftFloat）だけをスレッドプールで並列化する。パース・`link_in`・依存関係収集は入力順の直列のまま。LLVM のモジュールマージ順が出力を決めるので、ここを並列化・順不同にしないこと（`--emit-llvm` が -j1 と -j4 でバイト一致することを確認済み）。
+- `foundation/boot/build.py` は独立したドライバ実行（fnd WAL、lzma、4 サービス、カーネル 2 種、シェルと /bin コマンド）をプールで同時実行する。/bin プログラムだけは fnd WAL の完成を待つ。各ドライバには `-j 1` を渡し、プロセス単位で並列化する（二重の並列で過剰購読しない）。フルビルドは 4 コアで約 41s → 12s。
+- `foundation.img` は元から実行ごとに数百バイト違う（時刻らしい）。決定性の確認は `foundation.wax`、`kernel.bin`、`fndboot.bin`、`root/` 配下の WAX/WAL を直接 cmp する。
+
 ## CHIP-8 cycles-per-frame command-line option (2026-10-24, KAN-63)
 
 - `chip8 [-c N|--cycles N] ROM.ch8` accepts decimal N=1..10000 before or after the ROM. `--` terminates option parsing. A cycle means one CHIP-8 instruction; it does not mean an SRC32/1802 hardware cycle. No option preserves the existing 700 instructions/second rate. Bad/empty/overflow/zero/duplicate option values, unknown switches and extra/missing ROMs fail with BAD_ARG before opening the ROM or devices. Error reporting uses the parsed ROM path, not argv[1].

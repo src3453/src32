@@ -70,6 +70,7 @@ python tools/llvm-src32/driver.py game.ll -o game.wax
 
 入力は `.c`、`.cpp`、`.cc`、`.cxx`、`.ll`、`.bc` の組合せ。C は C11、C++ は C++17 としてコンパイルします。`-O0`（既定）、`-O1`、`-O2` は C/C++ 入力に適用。IR 入力を再最適化する指定ではありません。
 `--origin`、`--stack-top`、`--entry` で配置・起動関数を指定。
+`-j N`／`--jobs N`（既定は CPU 数）は複数入力・Newlib・SoftFloat の Clang 呼び出しを並列化します。パース／リンクは入力順のままなので、出力は `-j` に依存しません。
 `--save-temps DIR` は各入力の IR、リンク済み `linked.ll`、`output.a` を保存。
 `--depfile PATH` は出力生成成功後に Make 形式の依存ルールを書き出します。
 `.bin` 出力は raw バイト列で配置・エントリ情報を持ちません。非ゼロ origin では WAX を使ってください（ROM image のように読み込む側が配置を知っている場合を除く）。

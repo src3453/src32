@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 import importlib.util
 import os
 from pathlib import Path
@@ -84,6 +85,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--save-temps", type=Path, metavar="DIR")
     p.add_argument("--depfile", type=Path, metavar="PATH", help="write Make-style dependencies after successful compilation")
     p.add_argument("--clang", help="Clang executable path; otherwise use CLANG or PATH")
+    p.add_argument("-j", "--jobs", type=int, default=0, metavar="N",
+                   help="parallel Clang invocations (default: CPU count; output does not depend on N)")
     p.add_argument("--newlib-source", type=Path, help="external Newlib source root (optional portable integer/string/allocator profile)")
     p.add_argument("--newlib-heap-size", type=address, default=65536, help="reserved Newlib heap bytes (default 65536; multiple of 8)")
     return p
@@ -303,14 +306,26 @@ def run(args) -> Path:
             clang = clang or find_clang(args.clang)
             args.newlib = Newlib(args.newlib_source, clang, args.newlib_heap_size)
             dependencies.add(args.newlib.root / "COPYING.NEWLIB")
-        for index, source in enumerate(args.inputs):
+        jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 1)
+        args.jobs = jobs
+
+        def compile_input(item):
+            index, source = item
             parsed_source = source
+            dependency_path = None
             if source.suffix.lower() in SOURCE_SUFFIXES:
                 parsed_source = work / f"{index:03d}-{source.stem}.ll"
                 dependency_path = parsed_source.with_suffix(".d") if args.depfile else None
                 compile_c(clang, source, parsed_source, args, depfile=dependency_path)
-                if dependency_path:
-                    dependencies.update(read_dependencies(dependency_path))
+            return parsed_source, dependency_path
+
+        # Clang runs in separate processes; only the Clang step is parallel.
+        # Parsing and linking below stay in input order so the output is identical for any -j.
+        with ThreadPoolExecutor(max_workers=jobs) as pool:
+            compiled = list(pool.map(compile_input, enumerate(args.inputs)))
+        for source, (parsed_source, dependency_path) in zip(args.inputs, compiled):
+            if dependency_path:
+                dependencies.update(read_dependencies(dependency_path))
             try:
                 module = parse_module(parsed_source)
             except DriverError as exc:
@@ -331,11 +346,18 @@ def run(args) -> Path:
                 pending = args.newlib.pending(missing, defined)
                 if not pending:
                     break
-                for name, source, defines in pending:
+
+                def build_newlib(item):
+                    name, source, defines = item
                     ir = work / f"newlib-{name}.ll"
                     dep = ir.with_suffix(".d") if args.depfile else None
                     # Do not leak application defines/includes into upstream libc.
                     compile_c(clang, source, ir, args, defines=defines, runtime=True, depfile=dep)
+                    return source, ir, dep
+
+                with ThreadPoolExecutor(max_workers=args.jobs) as pool:
+                    built_newlib = list(pool.map(build_newlib, pending))
+                for source, ir, dep in built_newlib:
                     dependencies.add(source.resolve())
                     if dep:
                         dependencies.update(read_dependencies(dep))
@@ -441,8 +463,6 @@ def link_softfloat(linked, args, clang, work, dependencies, parse_module, check_
     SoftFloat). Returns the names of the runtime functions, which the backend
     emits only when reachable."""
     import fp
-    from concurrent.futures import ThreadPoolExecutor
-
     defined = {f.name for f in linked.functions if not f.is_declaration}
     entries = fp.entry_points()
     needed = (fp.module_routines(linked) | ({f.name for f in linked.functions} & entries)) - defined
@@ -460,7 +480,7 @@ def link_softfloat(linked, args, clang, work, dependencies, parse_module, check_
         compile_c(clang, source, ir, args, defines=have if source.name == "rt.c" else [], runtime=True, depfile=dep)
         return source, ir, dep
 
-    with ThreadPoolExecutor() as pool:
+    with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         built = list(pool.map(build, sources))
     prunable = set()
     for source, ir, dep in built:
