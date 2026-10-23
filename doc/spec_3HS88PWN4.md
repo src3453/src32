@@ -1,8 +1,8 @@
-# 3WS88PWN4 WASM音源カード仕様
+# 3HS88PWN4 WASM音源カード仕様
 
 ## 資料と互換性
 
-本カードの名前は3WS88PWN4とする。参照元はFurnaceの `src/engine/platform/sound/s3hs88pwn4/` にある3HS88PWN4実装 (`sound.cpp`, `envelove.cpp`, `ram.cpp`, `lib/`) と、ユーザー提供の `3HS88PWN4 Register Sheet 2.xlsx` の第1シート。シートはレジスタ配置の資料として扱う。
+本カードの名前は3HS88PWN4とする。参照元はFurnaceの `src/engine/platform/sound/s3hs88pwn4/` にある3HS88PWN4実装 (`sound.cpp`, `envelove.cpp`, `ram.cpp`, `lib/`) と、ユーザー提供の `3HS88PWN4 Register Sheet 2.xlsx` の第1シート。シートはレジスタ配置の資料として扱う。
 
 2026-10-19に確認したSHA-256:
 
