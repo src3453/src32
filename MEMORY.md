@@ -1,5 +1,17 @@
 ## 作業で得た知識・注意点
 
+- Issue #106 の修正: disk の単一128-sector先読み窓は metadata→echo→metadata→WAL の
+  読み込みで相互に追い出されていた。`services/disk/cache.c` は4窓LRU（256 KiB、従来比+192 KiB）。
+  `boot/build.py` の disk build には main.c と cache.c の両方が必要。fs の容量は増やさない。
+  書込前は重なる全窓、IDENTIFYでは当該drive全窓、read/writeエラーでは全窓を無効化する。
+  先読み失敗時のexact retryは成功しても未キャッシュ。LRU順位は無効化時にも詰め、wrapしない。
+  キャッシュ単体検証は `python -m unittest discover -s foundation/tests/disk_cache -v`。
+- 修正後の2回目echo: cached/VM 約7.27 Mcycle（同プローブ変更前15.29）、pipeline/VM 約8.63
+  （17.04）、cached/slot 約6.86（初期調査12.44）。IDC READは5回→0回。4窓を超える
+  ワーキングセットやcold access全般の無I/Oは保証しない。VMは追加バッファの物理ページも消費する。
+  更新確認には `tests/shell/test_shell.py::test_exec_after_image_replacement` を使う。
+  `cp` で既存イメージを差し替えるときは `-f` が必要（既定はEXCL）。
+
 - Issue #106 の spawn 初期計測は `foundation/tests/perf/profile_spawn.py`、結果と範囲は
   `doc/foundation_spawn_profile.md`。通常ソースを変更せずコピーにプローブを挿入する。
   診断 selector 106..111/120 は通常の sys_info ABI ではない。`--reuse` は同じスクリプトの

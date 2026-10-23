@@ -59,6 +59,7 @@ DMAC 自体の転送コストは残る。
 終了時 cleanup は `sched_kill_proc` から handle close、`mm_release`、slot zero までで、
 後続の `ipc_proc_exited` と record 解放は含まない。これらは区間の内数で、合計へ足さない。
 `io` はその起動から終了待ちまでの IDC READ/WRITE 開始回数とセクタ数。
+`lbas` は最初の6転送のLBAで、残りは0。転送数が6を超える場合も `io` は総数を数える。
 
 ## 結果
 
@@ -111,3 +112,56 @@ cached / slot **7.521 Mcycle**、cached / VM **10.393 Mcycle** に下がった�
 
 今回は性能の挙動変更をしていない。fs の 512 KiB スロットを拡張する計測コードも加えていない。
 cached の VM/slot、pipeline の VM と高速ディスク対照の計 5 条件で、両 echo と停止を確認した。
+
+## 修正：disk の先読み窓を4つ保持する
+
+READ の開始LBAを追加計測すると、変更前は `4166, 4556, 4166, 5671, 5799` だった。
+`4166` は inode 領域を含むメタデータで、コマンド本体を読むと追い出され、WAL の open 時に
+同じ領域を読み直していた。さらに WAL 本体が2つの先読み窓に分かれる。
+
+`services/disk/cache.c` に固定4窓の LRU を実装し、各128セクタを保持する。
+キャッシュ本体は合計256 KiB、従来からの増加は192 KiB。disk サービスの
+512 KiB スロット内に収まり、fs の容量は増やさない。
+WAX/WAL は毎回通常の open/stat/read を通るので、パス・権限・ファイル更新の確認を省かない。
+WAL のプロセス間共有や libfnd 内の永続キャッシュは追加していない。
+
+書込前に重なる全窓を無効化し、IDENTIFY で該当 drive の全窓を無効化する。
+read/write エラー時は全窓を捨てる。先読み失敗後の要求範囲だけの再読込を維持し、
+失敗時にバッファへ書かれた部分データをヒットとして返さない。
+LRU は有効な窓の順位で管理し、長期稼働で age カウンタが wrap する問題を避ける。
+
+同じ計測プローブ、`-O1`、標準 HDD、同じ testbench での2回目の結果：
+
+| 条件 | 変更前 Mcycle | 変更後 Mcycle | 短縮率 | READ回数 |
+| --- | ---: | ---: | ---: | ---: |
+| cached / VM | 15.290 | 7.269 | 52.5% | 5 → 0 |
+| pipeline / VM | 17.040 | 8.629 | 49.4% | 5 → 0 |
+| cached / slot | 12.440 | 6.863 | 44.8% | 5 → 0 |
+
+VM の変更前は `f27ac63` の disk 実装へ LBA プローブを追加した `target/spawn-before`、
+変更後は `target/spawn-after`。slot の変更前は初期調査の値（LBA プローブ追加前）、
+変更後は `target/spawn-after-slot`。いずれもゲスト時間でありホスト時間の測定ではない。
+変更後 VM の image/deps はそれぞれ約0.643/3.801 Mcycle、idle は0。
+残りは IPC 転送・fs 処理・カーネルのコピー/ローダ等で、起動コスト全体がなくなるわけではない。
+多種類のファイルを巡回して4窓を超える場合や、起動直後のコールドアクセスまで0 READになるとは限らない。
+
+disk.wax は124,966→326,818 bytes（このビルド）。ロード範囲は `0x500000` の59,488 bytes と
+`0x50F000` の267,234 bytes、stack は `0x57C000..0x580000` で、両者は重ならない。
+VM では静的バッファ増加分の物理ページも消費する。
+
+検証には `foundation/tests/disk_cache` のホストテストを追加した。
+実際のキャッシュに対して、観測したワーキングセット、LRU、窓の重なり、別 drive、媒体差し替え、
+先読み失敗後の exact retry、部分読込エラー、容量末尾・不正件数を確認する。
+シェルには既存の実行ファイルを上書きして次回起動で新しい内容が動くテストも加えた。
+
+最終検証（2026-10-24）:
+
+- `python -m unittest discover -s foundation/tests/disk_cache -v`: 1 test / 7シナリオ通過。
+- `python -m unittest discover -s foundation/tests/shell -v`: VMで24件通過。
+- 同じシェルテストを `FND_MM=slot` で実行: 24件通過。
+- `python -m unittest discover -s foundation/tests/disk -v`: 7件通過（BIOS→stage1→kernel→shellを含む）。
+- 計測用イメージの cached/VM、pipeline/VM、cached/slot で両echoの正常終了とR1=42停止を確認。
+- `git diff --check` と変更したPythonの `py_compile` 通過。
+
+ホスト検証の `CC` は `C:/Program Files/AMD/ROCm/6.4/bin/clang.exe`、
+`TEMP` / `TMP` はワークスペース内の書込可能なディレクトリを指定した。

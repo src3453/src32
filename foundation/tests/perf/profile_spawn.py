@@ -23,12 +23,15 @@ def replace(text, old, new):
 
 KERNEL_PROBES = '''
 /* Diagnostic image only: selectors 106..111 record boundaries; 120 reads. */
-static uint32_t prof_snap[6][6], prof_part[10];
+static uint32_t prof_snap[6][6], prof_part[16];
 static uint32_t prof_now(void) { return FND_REG32(0x80040448u); }
-void prof_disk(uint32_t sectors) { ++prof_part[8]; prof_part[9] += sectors; }
+void prof_disk(uint32_t lba, uint32_t sectors) {
+    if (prof_part[8] < 6) prof_part[10 + prof_part[8]] = lba;
+    ++prof_part[8]; prof_part[9] += sectors;
+}
 static void prof_mark(uint32_t n) {
     if (n == 0) {
-        for (uint32_t i = 0; i < 10; ++i) prof_part[i] = 0;
+        for (uint32_t i = 0; i < 16; ++i) prof_part[i] = 0;
         prof_part[5] = (uint32_t)mm_vm;
     }
     sched_cpu_snapshot(prof_snap[n]);
@@ -79,7 +82,7 @@ def library_source(text):
 
 def shell_source(text):
     text = replace(text, '    child_proc = 0;\n    if (break_hit)', '''    fnd_sys_info(111, 0, 0);
-    uint32_t p[46];
+    uint32_t p[52];
     if (fnd_sys_info(120, p, sizeof p) != sizeof p) return FND_E_FORMAT;
     const char *labels[5] = {"image", "deps", "spawn", "free", "wait"};
     for (uint32_t i = 0; i < 5; ++i) {
@@ -96,6 +99,9 @@ def shell_source(text):
     for (uint32_t i = 36; i < 44; ++i) { out(" "); out_dec((int32_t)p[i], 0); }
     out("\\n");
     out("io "); out_dec((int32_t)p[44], 0); out(" "); out_dec((int32_t)p[45], 0); out("\\n");
+    out("lbas");
+    for (uint32_t i = 46; i < 52; ++i) { out(" "); out_dec((int32_t)p[i], 0); }
+    out("\\n");
     if (status != FND_OK || code != 0) out("PROFILE CHILD FAILED\\n");
     child_proc = 0;
     if (break_hit)''')
@@ -104,8 +110,8 @@ def shell_source(text):
 
 def block_source(text):
     return replace(text, 'static void start(const struct blk_req *r) {',
-                   'extern void prof_disk(uint32_t sectors);\n'
-                   'static void start(const struct blk_req *r) {\n    prof_disk(r->count);')
+                   'extern void prof_disk(uint32_t lba, uint32_t sectors);\n'
+                   'static void start(const struct blk_req *r) {\n    prof_disk(r->lba, r->count);')
 
 
 def main():
@@ -180,13 +186,13 @@ def main():
         fields = line.split()
         if fields and fields[0] == 'image':
             samples.append({})
-        if fields and fields[0] in ('image', 'deps', 'spawn', 'free', 'wait', 'parts', 'io'):
+        if fields and fields[0] in ('image', 'deps', 'spawn', 'free', 'wait', 'parts', 'io', 'lbas'):
             samples[-1][fields[0]] = list(map(int, fields[1:]))
-    if len(samples) != 2 or any(set(s) != {'image', 'deps', 'spawn', 'free', 'wait', 'parts', 'io'} for s in samples):
+    if len(samples) != 2 or any(set(s) != {'image', 'deps', 'spawn', 'free', 'wait', 'parts', 'io', 'lbas'} for s in samples):
         raise RuntimeError('Expected two complete echo profiles; inspect result.txt')
     for sample in samples:
         if (any(len(sample[s]) != 5 for s in ('image', 'deps', 'spawn', 'free', 'wait')) or
-                len(sample['parts']) != 8 or len(sample['io']) != 2):
+                len(sample['parts']) != 8 or len(sample['io']) != 2 or len(sample['lbas']) != 6):
             raise RuntimeError('Unexpected profile record size; inspect result.txt')
         sample['elapsed'] = sum(sample[s][0] for s in ('image', 'deps', 'spawn', 'free', 'wait'))
     (run / 'samples.json').write_text(json.dumps(samples, indent=2) + '\n', encoding='utf-8')

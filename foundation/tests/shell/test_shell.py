@@ -154,6 +154,18 @@ class ShellTests(unittest.TestCase):
             '/>',
         ])
 
+    def test_exec_after_image_replacement(self):
+        # disk's read cache must discard old executable sectors on overwrite.
+        self.assertEqual(self.screen(
+            'echo before\\n', 'cp -f /bin/uname.wax /bin/echo.wax\\n', 'echo\\n'), BANNER + [
+            '/> echo before',
+            'before',
+            '/> cp -f /bin/uname.wax /bin/echo.wax',
+            '/> echo',
+            BANNER[0],
+            '/>',
+        ])
+
     def test_free_reports_installed_memory(self):
         # The kernel takes the sizes from the BMC (spec_BMC_DMAC.md §1.5).
         # 12 MiB holds slots 0-5, and the disk service now uses slot 2, so
