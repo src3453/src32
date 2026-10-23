@@ -1312,6 +1312,13 @@
 
 - AGENTS.md now exempts minor changes without functional impact from Jira creation/updates: ordinary Git operations, mechanical merges/conflict resolution, commit/rebase cleanup, typos and minor development-guide edits. Do not create separate Git-operation issues alongside an implementation/bug issue. Conflict resolutions that decide or change behavior remain tracked under the relevant implementation/bug issue. This rule was explicitly requested by the user to avoid tracking overhead.
 
+## bmpview（BMP を /dev/fb0 に表示, 2026-10-24, #127。旧 Jira KAN-66）
+
+- `/bin/bmpview`（`foundation/bin/bmpview.c`、`build.py` の COMMANDS に追加）。非圧縮 BMP の 8／24／32 bit。8 bit は BMP パレットを CLUT に書いて INDEX8、それ以外は RGB888（BMP は B,G,R の順なので入れ替える）。320×240 より大きければ中央を切り出し、小さければ中央に置く。行は `ST_SEEK` で読み、全体をメモリに載せない。
+- BMP のパレット項目は B,G,R,0 の順。サンプル生成の `examples/foundation-bmp/make_bmp.py` が最初 R,G,B で書いていて 8 bit のテストが赤青反転で落ちた。テストは画素値で見ているのでこの種の誤りに気付ける。
+- 描画は 1 画面に約 300 frame かかる（生成コードのバイトループが遅い）。`foundation/tests/bmpview` のキー送信は描画完了後（frame 400）に行う。bmpview は起動時に溜まったキーを捨てるため、描画中に送ったキーは無視され、残りの文字が終了キーとして消費される。
+- 検証: `python3 -m unittest discover -s foundation/tests/bmpview`（`FND_MM=slot` でも）4 件通過。画素は `--expect-pixel` で確認する。
+
 ## llvm-src32 コンパイル並列化 (2026-10-24, KAN-64)
 
 - `driver.py -j N`（既定 CPU 数）は Clang 呼び出し（入力ファイル、Newlib の pending バッチ、SoftFloat）だけをスレッドプールで並列化する。パース・`link_in`・依存関係収集は入力順の直列のまま。LLVM のモジュールマージ順が出力を決めるので、ここを並列化・順不同にしないこと（`--emit-llvm` が -j1 と -j4 でバイト一致することを確認済み）。
