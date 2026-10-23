@@ -26,7 +26,7 @@ what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands) and /lib/fnd.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal and /lib/lzma.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -38,9 +38,11 @@ Outputs:
 --stop-ticks makes the kernel stop with R1 = 42 at that tick (tests).
 """
 import argparse
+import importlib.util
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 
@@ -90,6 +92,7 @@ LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 LIBFND_RENAME = FOUNDATION / "lib/fnd/rename.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
+LZMA_DIR = FOUNDATION / "lib/lzma"
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
 FS2_FULL_MOUNT_CHECK = 0
@@ -176,6 +179,13 @@ def main(argv=None):
     fnd = driver([*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal", "--page-align",
                  "--image-id", "fnd",
                  "--abi-version", "1.1", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+    # /lib/lzma.1.wal: the LZMA SDK adapter (lib/lzma, WAL "lzma" 1.0). Self-contained: it needs
+    # no libfnd and no heap, so it adds nothing to the fs heap; programs that import it pass an arena.
+    lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
+    lzma_build = importlib.util.module_from_spec(lzma_spec)
+    lzma_spec.loader.exec_module(lzma_build)
+    lzma = lzma_build.build(out / "lzma", args.clang, args.optimization)
+    shutil.copyfile(lzma, root / "lib/lzma.1.wal")
     program([FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4, "foundation.shell", fnd)
     for name in COMMANDS:
         program([FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"], root / "bin" / f"{name}.wax",

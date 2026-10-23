@@ -20,7 +20,7 @@ fsサービスがルートとしてマウントする書き込み可能なIDC sl
 テストベンチでの再現手順（絶対パスに置き換えてください）：
 
 ```sh
-python examples/foundation-sol/build.py target/foundation-sol --stop-ticks 40000
+python examples/foundation-sol/build.py target/foundation-sol --stop-ticks 4000
 cd target/foundation-sol/run
 <repo>/target/release/src32_testbench <repo>/target/foundation-sol/foundation.wax 42 --cpu pipeline --frames 4200 --dump-pcg --type '40=sol-demo\n'
 ```

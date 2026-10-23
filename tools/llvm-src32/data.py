@@ -203,6 +203,8 @@ class Layout:
             raise CompileError("nonzero address spaces are unsupported")
         if typ.is_pointer or _INTEGER.fullmatch(text):
             return
+        if text in ("float", "double"):
+            return
         if typ.is_array or typ.is_struct:
             if typ.is_struct and typ.is_opaque_struct:
                 raise CompileError("opaque structs have no storage layout")
@@ -448,6 +450,11 @@ class DataImage:
         text = text.strip()
         if text == "zeroinitializer":
             return bytes(size)
+        if str(typ) in ("float", "double"):
+            from fp import literal_bits
+            if text in ("undef", "poison"):
+                return bytes(size)
+            return literal_bits(typ, text).to_bytes(size, "big")
         integer = _INTEGER.fullmatch(str(typ))
         if integer or typ.is_pointer:
             bits = int(integer[1]) if integer else 32
