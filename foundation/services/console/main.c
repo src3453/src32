@@ -257,6 +257,15 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
     }
     *result = FND_OK;
     switch (m->op) {
+    case FND_CON_KEY_STATE: {
+        if (!(s->flags & FND_OPEN_READ)) { *result = FND_E_ACCESS; return 0; }
+        if (r->reply_cap < sizeof(fnd_keyboard)) { *result = FND_E_LIMIT; return 0; }
+        poll_keys();
+        fnd_keyboard state;
+        con_pcg_key_state(&state);
+        reply(r->token, FND_OK, 0, 0, 0, &state, sizeof state);
+        return 1;
+    }
     case FND_ST_READ:
         if (!(s->flags & FND_OPEN_READ))
             *result = FND_E_ACCESS;

@@ -2,6 +2,9 @@
 
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 
+CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様と使い方](../doc/spec_Foundation_chip8.md) を参照してください。
+`/dev/sgu` は SGU 2基・16チャンネルと共有 PCMRAM を1ストリームで公開します（[API §9.2](../doc/spec_Foundation_API.md#92-sgu-2基と共有-pcmram-devsgu)）。
+
 sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../examples/foundation-sol/README.md) にあります。
 `boot/build.py --root DIR` は追加ファイルをFS2ディスクに組み込みます。
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
@@ -156,7 +159,7 @@ python -m unittest discover -s foundation/tests/disk -v
 
 ```sh
 python tools/llvm-src32/driver.py foundation/demo/user.c foundation/demo/main.c \
-  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
+  foundation/kernel/sched.c foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/sgu.c foundation/kernel/blk.c foundation/kernel/wax.c sdk/cpt32/src/pcg.c \
   -I sdk/cpt32/include -I foundation/include --origin 0x10000 --stack-top 0x100000 -O1 \
   -o target/foundation_demo.wax
 cargo run --release --bin cpt32 -- target/foundation_demo.wax
@@ -212,7 +215,7 @@ python -m unittest discover -s foundation/tests/wax -v
 ```sh
 python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/sgu.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
   --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
@@ -230,7 +233,7 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 ```sh
 python foundation/tests/wal/build.py target/foundation-wal
 python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
-  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/blk.c foundation/kernel/wax.c \
+  foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/sgu.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
   --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wal/test.wax
 src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120

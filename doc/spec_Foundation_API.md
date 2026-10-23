@@ -227,6 +227,7 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 | `0x1005` | `CON_SET_CURSOR` | `a0` = 桁、`a1` = 行（0 から） | — |
 | `0x1006` | `CON_GET_CURSOR` | — | `a0` = 桁、`a1` = 行 |
 | `0x1007` | `CON_SET_COLOR` | `a0` = 前景、`a1` = 背景（0〜15） | — |
+| `0x1008` | `CON_KEY_STATE` | — | `fnd_keyboard`（96 bytes）。READ 権限が必要 |
 
 キーコード：
 
@@ -243,6 +244,14 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 
 - 範囲外の座標と色は `FND_E_BAD_ARG` です。
 - 入力の順序は、`ST_READ` と `CON_READ_KEY` で共通の 1 本の待ち行列です。両方を同時に待つクライアントがいる場合、先に届いた要求から順に満たします。
+
+`<foundation/keyboard.h>` の `fnd_con_key_state` は物理 HID page 7 の usage 0〜255 を返します。
+構造体は `uint32_t down[8], pressed[8], released[8]` の順で、usage `u` は word `u/32` の bit `u%32` です。
+`down` は現在の長押し・同時押し状態、後の2配列は前回の取得以降に起きた遷移を表します。
+キーリピートは pressed を追加しません。取得は押下キーの通常キューを消費せず、遷移だけをクリアします。
+同じ取得間隔中の押下・解放は両方の bit が立ちます。回数・順序は保持しません。
+状態と遷移は物理キーボード1台について共有されるため、複数アプリが遷移を別々には取得できません。
+応答容量不足は LIMIT で、状態を消費しません。PeC FIFO の overflow 時には失われたイベントを復元できません。
 
 ### 8.4 中断（Ctrl+C）
 
@@ -292,6 +301,38 @@ CLUT操作はどの形式でも可能で、範囲は `first <= 256 && count <= 2
 `FB_SET_FORMAT`／`FB_CLUT_WRITE`／`ST_WRITE` は WRITE、`FB_CLUT_READ`／`ST_READ` は READ が必要で、権限不足は ACCESS。未知の操作は UNSUPPORTED、未知の形式は BAD_ARG、応答容量不足は LIMIT。BMCの実VRAM容量に必要領域が収まらない形式は NO_MEDIA で形式・位置を変えません。容量未報告（0）も NO_MEDIA です。
 
 C API は `<foundation/fb.h>` の `fnd_fb_get_info`、`fnd_fb_set_format`、`fnd_fb_seek`、`fnd_fb_clut_read`、`fnd_fb_clut_write`。既存 `fnd_call` を使うheader helperで、WAL ABIは追加しません。open/read/write/closeは既存libfnd APIです。実行例は [examples/foundation-fb](../examples/foundation-fb/README.md)。
+
+### 9.2 SGU 2基と共有 PCMRAM `/dev/sgu`
+
+`foundation/kernel/sgu.c` が提供するカーネルドライバです。UID 0、mode `0x0036`。
+fs が予約サービス `dev.sgu` へ `DEV_OPEN` を送り、ストリーム CHANNEL を転送します。
+`READ` / `WRITE` / 両方で開けます。全体で同時に1ストリームだけ利用でき、2回目の open は BUSY。
+dup・ハンドル転送は権限、位置、寿命を共有します。利用者の MMIO grant は不要です。
+
+| ストリーム offset | 対応する領域 |
+|---|---|
+| `0x0000..0x0FFF` | SGU 0（MMIO `0x80020000..0x80020FFF`） |
+| `0x1000..0x1FFF` | SGU 1（MMIO `0x80021000..0x80021FFF`） |
+| `0x2000..0x101FFF` | 共有 1 MiB PCMRAM（MMIO `0x18000000..0x180FFFFF`） |
+
+各コアの波形 RAM は `core + channel*0x100`、制御レジスタは
+`core + 0x800 + channel*0x20`（channel 0〜7）。レジスタの意味は [SGU 仕様](spec_SGU.md) に従います。
+予約領域の read/write もハードウェアと同じく0／無視です。
+例外として PHASE_RESET は **read で実レジスタを読まず0を返します**。位相をリセットするには write します。
+
+`ST_READ`、`ST_WRITE`、`ST_SEEK`（SET/CUR/END）、`ST_STAT`、`ST_SYNC` をサポートします。
+stream stat の size は `0x102000`、path stat は0。seek の有効位置は0〜size（終端を含む）で範囲外は BAD_ARG。
+終端 read は0 bytes、read の終端越えは切り詰め、1 IPC 要求の write の終端越えは NO_SPACE で無変更です。
+libfnd が分割する大きな write は、先行する要求分まで書ける場合があります。
+権限不足は ACCESS、不明 op は UNSUPPORTED、SYNC は即時成功で音声再生完了待ちではありません。
+ユーザーバッファは通常 IPC と同じ検証と `mm_copy_*` を通します。
+
+WRITE で open したときと、そのストリームの最後のハンドルが閉じたときに、
+両コア・全16チャンネルの VOLUME と PCM_CONTROL を0にします。
+正常終了、fault、kill、ハンドル生成失敗でも解放・消音します。
+波形、その他のレジスタ、PCMRAM の内容は保持し、以前の設定や再生位置は復元しません。
+READ-only の open/close は音を変更しません。既存の特権 MMIO grant を持つプログラムとの排他調停は行いません。
+`<foundation/sgu.h>` は offset 定数と `fnd_sgu_seek` を提供するヘッダーで、WAL ABI の追加はありません。
 
 ## 10. 構造体
 

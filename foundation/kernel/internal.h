@@ -78,6 +78,9 @@ int32_t sys_svc_register(struct fnd_proc *proc, uint32_t name, uint32_t port);
 int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name);
 /* Kernel /dev/fb0 driver, called only by the kernel-channel dispatcher. */
 int32_t fb_open(uint32_t flags);
+int32_t sgu_open(uint32_t flags);
+void sgu_close(void);
+int32_t sgu_call(struct fnd_proc *proc, const fnd_msg *req, fnd_msg *rep, uint32_t cap);
 void fb_close(void);
 int32_t fb_call(struct fnd_proc *proc, const fnd_msg *req, fnd_msg *rep, uint32_t cap);
 int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32_t code_ptr);

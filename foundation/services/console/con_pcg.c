@@ -173,6 +173,13 @@ fnd_status con_pcg_init(void) {
 
 static uint32_t held;      /* bit n: HID_LEFT_CTRL + n is down */
 static uint32_t caps_lock;
+static fnd_keyboard keyboard;
+
+void con_pcg_key_state(fnd_keyboard *state) {
+    *state = keyboard;
+    for (uint32_t i = 0; i < 8; ++i)
+        keyboard.pressed[i] = keyboard.released[i] = 0;
+}
 
 static uint32_t mods(void) {
     uint32_t m = 0;
@@ -236,6 +243,14 @@ static int decode(uint32_t event, fnd_key_t *key) {
     if ((event >> 28) != 0 || ((event >> 24) & 0xFu) != 0)
         return 0; /* not a keyboard KEY event */
     uint32_t usage = (event >> 16) & 0xFFu, down = (event & 0xFFFFu) != 0;
+    uint32_t word = usage / 32u, bit = 1u << (usage % 32u);
+    if (down) {
+        if (!(keyboard.down[word] & bit)) keyboard.pressed[word] |= bit;
+        keyboard.down[word] |= bit;
+    } else {
+        if (keyboard.down[word] & bit) keyboard.released[word] |= bit;
+        keyboard.down[word] &= ~bit;
+    }
     if (usage >= HID_LEFT_CTRL && usage < HID_LEFT_CTRL + 8u) {
         uint32_t bit = 1u << (usage - HID_LEFT_CTRL);
         held = down ? held | bit : held & ~bit;

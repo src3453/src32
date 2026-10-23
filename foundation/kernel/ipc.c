@@ -26,7 +26,7 @@ struct fnd_chan {
     struct fnd_port *port; /* NULL once the port is gone */
     uint32_t badge;
     struct fnd_chan *gone_next; /* on its port's pending list when refs = 0 */
-    uint32_t kernel; /* 0: user service, 1: dev.fb0 factory, 2: fb0 stream */
+    uint32_t kernel; /* 0: user, 1/2: fb factory/stream, 3/4: sgu factory/stream */
 };
 
 static struct fnd_port ports[MAX_PORTS];
@@ -84,6 +84,7 @@ static void port_destroy(struct fnd_port *port) {
 static void chan_last_closed(struct fnd_chan *chan) {
     if (chan->kernel) {
         if (chan->kernel == 2u) fb_close();
+        if (chan->kernel == 4u) sgu_close();
         chan->used = 0;
         return;
     }
@@ -347,12 +348,14 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
         if (msg.flags) return FND_E_BAD_ARG; /* kernel devices accept no handles */
         uint32_t cap = r.len;
         r = (fnd_msg){0, 0, 0, 0, 0, 0, r.buf, 0};
-        if (chan->kernel == 1u) {
-            status = msg.op == FND_DEV_OPEN ? fb_open(msg.a0) : FND_E_UNSUPPORTED;
+        if (chan->kernel == 1u || chan->kernel == 3u) {
+            uint32_t sound = chan->kernel == 3u;
+            status = msg.op == FND_DEV_OPEN ?
+                (sound ? sgu_open(msg.a0) : fb_open(msg.a0)) : FND_E_UNSUPPORTED;
             if (status == FND_OK) {
-                int32_t h = kernel_channel(proc, 2u);
+                int32_t h = kernel_channel(proc, sound ? 4u : 2u);
                 if (h < 0) {
-                    fb_close();
+                    if (sound) sgu_close(); else fb_close();
                     status = h;
                 } else {
                     r.flags = FND_MSG_XFER_HANDLE;
@@ -360,7 +363,7 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
                 }
             }
         } else {
-            status = fb_call(proc, &msg, &r, cap);
+            status = chan->kernel == 4u ? sgu_call(proc, &msg, &r, cap) : fb_call(proc, &msg, &r, cap);
         }
         r.op = (uint32_t)status;
         mm_copy_to_user(proc, rep, &r, sizeof r);
@@ -498,6 +501,7 @@ int32_t sys_svc_register(struct fnd_proc *proc, uint32_t name_addr, uint32_t h) 
     if (status != FND_OK)
         return status;
     if (name_equal(name, "dev.fb0")) return FND_E_EXISTS;
+    if (name_equal(name, "dev.sgu")) return FND_E_EXISTS;
     struct fnd_handle_entry *e = entry(proc, h);
     if (!e || e->kind != FND_OBJ_PORT)
         return FND_E_BAD_HANDLE;
@@ -524,6 +528,7 @@ int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name_addr) {
     if (status != FND_OK)
         return status;
     if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
+    if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
     for (unsigned i = 0; i < MAX_SERVICES; ++i) {
         if (services[i].port && name_equal(services[i].name, name)) {
             next_lookup_badge = (next_lookup_badge + 1u) & 0x7FFFFFFFu;

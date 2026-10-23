@@ -3,6 +3,7 @@
 #include <stdint.h>
 
 #include <foundation/fnd.h>
+#include <foundation/keyboard.h>
 
 /* The console service's screen and keyboard: the PCG and the PeC input
  * (doc/spec_Foundation_API.md §8). Output follows §8.1 and keys follow the
@@ -25,6 +26,7 @@ fnd_status con_pcg_init(void);
 void con_pcg_write(const uint8_t *text, uint32_t len);
 void con_pcg_clear(void);
 int con_pcg_poll_key(fnd_key_t *key);
+void con_pcg_key_state(fnd_keyboard *state);
 void con_pcg_get_cursor(uint32_t *x, uint32_t *y);
 void con_pcg_set_cursor(uint32_t x, uint32_t y);
 

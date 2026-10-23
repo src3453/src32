@@ -134,7 +134,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--dump-pcg] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -152,6 +152,7 @@ fn main() {
     let mut profile_cpu = false;
     let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
+    let mut final_memory_expectations = Vec::new();
     let mut typed: Vec<(usize, Vec<HostInputEvent>)> = Vec::new();
     let mut dump_pcg = false;
     let mut options = args.iter().skip(1);
@@ -172,13 +173,18 @@ fn main() {
             }
             "--profile-cpu" => profile_cpu = true,
             "--skip-render-checks" => skip_render_checks = true,
-            "--expect-mem-u8" => {
+            "--expect-mem-u8" | "--expect-final-mem-u8" => {
                 let (address, value) = options
                     .next()
                     .expect("--expect-mem-u8 requires ADDRESS=VALUE")
                     .split_once('=')
                     .expect("expected ADDRESS=VALUE");
-                memory_expectations.push((
+                let expectations = if option == "--expect-final-mem-u8" {
+                    &mut final_memory_expectations
+                } else {
+                    &mut memory_expectations
+                };
+                expectations.push((
                     integer(address),
                     u8::try_from(integer(value)).expect("value must fit u8"),
                 ));
@@ -190,6 +196,20 @@ fn main() {
                     .split_once('=')
                     .expect("expected FRAME=TEXT");
                 typed.push((integer(frame) as usize, typed_keys(text)));
+            }
+            "--key" => {
+                let spec = options.next().expect("--key requires FRAME:USAGE:0|1");
+                let parts: Vec<_> = spec.split(':').collect();
+                assert_eq!(parts.len(), 3, "--key requires FRAME:USAGE:0|1");
+                let down = integer(parts[2]);
+                assert!(down <= 1, "--key state must be 0 or 1");
+                typed.push((
+                    integer(parts[0]) as usize,
+                    vec![HostInputEvent::Key {
+                        usage: u8::try_from(integer(parts[1])).expect("usage must fit u8"),
+                        down: down != 0,
+                    }],
+                ));
             }
             "--dump-pcg" => dump_pcg = true,
             _ if option.starts_with('-') => panic!("unknown option: {option}"),
@@ -287,6 +307,10 @@ fn main() {
         }
     }
 
+    for &(address, expected) in &final_memory_expectations {
+        let actual = cpu.read_mem_u8(address);
+        assert_eq!(actual, expected, "final memory 0x{address:08X}");
+    }
     if profile_cpu {
         let total = cpu_profile.total();
         println!(
