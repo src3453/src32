@@ -77,6 +77,11 @@ testbench の `--key FRAME:USAGE:0|1` で物理キー遷移を注入し、
 `--expect-final-mem-u8 ADDRESS=VALUE` で終了時のメモリ／レジスタを確認します。
 これはスピーカーからの出音や聴感品質の確認とは別です。
 
+描画の回帰テストは VRAM に加え `--expect-pixel X:Y=0xRRGGBB` で VDP 合成後の表示色を検査します。
+`--dump-framebuffer PATH.ppm` で表示画像を PPM 形式に保存できます。
+外部 ROM は `CHIP8_TEST_ROM` にホスト上のパスを設定すると、再配布せず一時ディスクに置いて表示を検証できます。
+`CHIP8_TEST_CAPTURE` を指定するとそのテストの表示画像を保存します。
+
 実装の参照:
 [Mikolay の original CHIP-8 reference](https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Technical-Reference)、
 [命令表](https://github.com/mattmikolay/chip-8/wiki/CHIP%E2%80%908-Instruction-Set)、

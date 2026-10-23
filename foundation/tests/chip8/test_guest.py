@@ -39,9 +39,12 @@ class GuestTests(unittest.TestCase):
         subprocess.run([sys.executable, str(ROOT / 'examples/foundation-chip8/demo.py'), str(sample)],
                        check=True, capture_output=True, text=True)
         vol.put('/sample.ch8', sample.read_bytes(), mode=0x24)
+        if os.environ.get('CHIP8_TEST_ROM'):
+            vol.put('/reported.ch8', Path(os.environ['CHIP8_TEST_ROM']).read_bytes(), mode=0x24)
         cls.disk = bytes(vol.img)
 
-    def run_guest(self, batches, final=(), keys=(), frames=660, cpu='cached', running=False):
+    def run_guest(self, batches, final=(), keys=(), pixels=(), frames=660, cpu='cached', running=False,
+                  capture=False):
         run = self.work / self.id().split('.')[-1]
         run.mkdir()
         (run / 'disk.img').write_bytes(self.disk)
@@ -53,20 +56,36 @@ class GuestTests(unittest.TestCase):
         for frame, text in batches: command += ['--type', f'{frame}={text}']
         for key in keys: command += ['--key', key]
         for address, value in final: command += ['--expect-final-mem-u8', f'{address:#x}={value}']
+        for x, y, rgb in pixels: command += ['--expect-pixel', f'{x}:{y}={rgb:#x}']
+        if capture: command += ['--dump-framebuffer', str(run / 'frame.ppm')]
         result = subprocess.run(command, cwd=run, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         return result.stdout
 
+    @unittest.skipUnless(os.environ.get('CHIP8_TEST_ROM'), 'set CHIP8_TEST_ROM to a local ROM to reproduce')
+    def test_reported_rom_has_visible_output(self):
+        self.run_guest([(30, 'chip8 /reported.ch8\\n')], frames=360, running=True, capture=True,
+                       final=[(0x80000000, 1), (0x80000001, 0)])
+        image = (self.work / self.id().split('.')[-1] / 'frame.ppm').read_bytes()
+        header, pixels = image.split(b'\n255\n', 1)
+        self.assertEqual(header, b'P6\n320 240')
+        self.assertEqual(len(pixels), 320 * 240 * 3)
+        self.assertGreater(sum(pixel != 0 for pixel in pixels), 100, 'ROM rendered a black display')
+        if os.environ.get('CHIP8_TEST_CAPTURE'):
+            Path(os.environ['CHIP8_TEST_CAPTURE']).write_bytes(image)
+
     def test_render_and_sgu_while_waiting(self):
         # Stop before the kernel test halt: observe active graphics and SGU state.
         self.run_guest([(30, 'chip8 /demo.ch8\\n')], frames=260, running=True,
+                       pixels=[(0,40,0xFFFFFF),(20,40,0),(0,0,0)],
                        final=[(0x10000000 + 40*320, 1), (0x10000000 + 40*320 + 20, 0),
                               (0x10000000, 0), (0x80020800, 1), (0x80020801, 0xB8),
                               (0x80020803, 128), (0x80020000, 0xE0), (0x80020080, 0x20)])
 
     def test_sample_rom_maps_v_to_hex_f(self):
         self.run_guest([(30, 'chip8 /sample.ch8\\n'), (240, 'V')], frames=300, running=True,
+                       pixels=[(150,110,0xFFFFFF),(170,110,0),(150,115,0xFFFFFF),(155,115,0)],
                        final=[(0x10000000 + 110*320 + 150, 1),
                               (0x10000000 + 110*320 + 170, 0),
                               (0x10000000 + 115*320 + 150, 1),

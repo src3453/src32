@@ -48,7 +48,9 @@ int32_t fb_open(uint32_t flags) {
         REG8(FORMAT) = 0;
         REG8(OVERLAY) = 0;
         REG8(DISPLAY) = 0;
-        REG8(ENABLE) = 0;
+        /* Common DISPLAY_ENABLE is active-high; PCG_DISABLE at F000 is
+         * active-low, but is not the register used here. */
+        REG8(ENABLE) = 1;
     }
     return FND_OK;
 }

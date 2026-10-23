@@ -74,6 +74,7 @@ GPレイヤー順はGP番号で決まり、供給元内の順序は各供給元�
 
 - VRAM: `0x10000000`–`0x103FFFFF`、4 MiBを共有する。
 - VDP MMIO: `0x80000000`–`0x8000FFFF`。
+- 共通 `DISPLAY_ENABLE`（`0x00`）は bit0=1 で表示有効、0で黒画面。PCG互換の `PCG_DISABLE`（`0xF000`）は逆極性で、bit0=0で表示有効です。同じ値を両者へ書かないでください。
 - 共通レジスタ `0x04` は `BITMAP_COLOR_MODE`。`0`=256色パレット、`1`=RGB555、`2`=RGB888。`0`～`2`以外の書き込みは現在の色形式を維持し、STATUSのerror bitを立てる。
 - PCG `SCROLL_X` はレジスタ `0xF00C`（low byte）/`0xF00D`（high byte）、`SCROLL_Y` は `0xF00E`（low byte）/`0xF00F`（high byte）で設定する。いずれも16-bit unsigned pixel offsetで、reset値は0。PCGは各画面座標から `(X + dX) mod W`, `(Y + dY) mod H` のタイルマップ画素を表示し、`W`/`H` は `SCREEN_MODE` の解像度。
 - PCG `SCREEN_MODE=2`ではVRAM `0x00000`～`0x004AF`を文字セルに使う。600セル分を `row * 20 + column` 順に並べ、各セルをUTF-16BE（上位byte先行）の2 byteで格納する。FG/BG属性baseは従来どおり`0x01000`/`0x02000`で、各600 byteの下位6 bitをCLUT indexとする。mode 0/1のフォントバンクとraw 2/4 KiBファイル読込み契約は変更しない。mode 3は2400セルを1 byteずつ格納し、glyphデータは専用領域`0x21000`～`0x21FFF`から読む。既存8×8用バンク`0x20000`～`0x20FFF`はmode 3から書換え・参照しない。

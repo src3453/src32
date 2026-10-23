@@ -134,7 +134,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--expect-pixel X:Y=0xRRGGBB] [--dump-framebuffer PATH.ppm] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -153,6 +153,8 @@ fn main() {
     let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
     let mut final_memory_expectations = Vec::new();
+    let mut pixel_expectations = Vec::new();
+    let mut framebuffer_dump = None;
     let mut typed: Vec<(usize, Vec<HostInputEvent>)> = Vec::new();
     let mut dump_pcg = false;
     let mut options = args.iter().skip(1);
@@ -212,6 +214,28 @@ fn main() {
                 ));
             }
             "--dump-pcg" => dump_pcg = true,
+            "--expect-pixel" => {
+                let (xy, rgb) = options
+                    .next()
+                    .expect("--expect-pixel requires X:Y=0xRRGGBB")
+                    .split_once('=')
+                    .expect("expected X:Y=0xRRGGBB");
+                let (x, y) = xy.split_once(':').expect("expected X:Y");
+                let color = integer(rgb);
+                assert!(color <= 0xFFFFFF, "RGB must fit 24 bits");
+                pixel_expectations.push((
+                    integer(x) as usize,
+                    integer(y) as usize,
+                    ((color >> 16) as u8, (color >> 8) as u8, color as u8),
+                ));
+            }
+            "--dump-framebuffer" => {
+                framebuffer_dump = Some(
+                    options
+                        .next()
+                        .expect("--dump-framebuffer requires PATH.ppm"),
+                );
+            }
             _ if option.starts_with('-') => panic!("unknown option: {option}"),
             _ => expected = integer(option),
         }
@@ -310,6 +334,32 @@ fn main() {
     for &(address, expected) in &final_memory_expectations {
         let actual = cpu.read_mem_u8(address);
         assert_eq!(actual, expected, "final memory 0x{address:08X}");
+    }
+    if !pixel_expectations.is_empty() || framebuffer_dump.is_some() {
+        let vdp_ref = vdp.borrow();
+        let framebuffer = vdp_ref.framebuffer();
+        let (width, height) = framebuffer.dimensions();
+        for &(x, y, expected) in &pixel_expectations {
+            assert!(
+                x < width && y < height,
+                "pixel coordinates outside framebuffer"
+            );
+            assert_eq!(
+                framebuffer.get_pixel(x, y),
+                expected,
+                "display pixel ({x},{y})"
+            );
+        }
+        if let Some(output) = framebuffer_dump {
+            let mut ppm = format!("P6\n{width} {height}\n255\n").into_bytes();
+            for y in 0..height {
+                for x in 0..width {
+                    let (r, g, b) = framebuffer.get_pixel(x, y);
+                    ppm.extend_from_slice(&[r, g, b]);
+                }
+            }
+            fs::write(output, ppm).expect("failed to dump framebuffer");
+        }
     }
     if profile_cpu {
         let total = cpu_profile.total();

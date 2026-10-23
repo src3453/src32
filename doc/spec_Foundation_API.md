@@ -281,7 +281,7 @@ console サービスは、画面（PCG/VDP）とキー入力を受け持ちま�
 初版はビットマップと CLUT だけを扱います。PCG、SGC、VPU、GP合成設定、DMA、mmap、VSync待ちは公開しません。
 
 - `DEV_OPEN` は READ／WRITE の少なくとも一方を指定し、他のbitは BAD_ARG。同時に開けるストリームは1個で、2個目は BUSY。複製・転送は同じストリームと位置を共有します。fs経由の flags 処理は §6.4 のとおりです。
-- 新規ストリームは INDEX8、位置0です。WRITE付きopenは Graphics表示・bitmap INDEX8・PCG overlay無効・display enable に切り替えます。READだけのopenは INDEX8領域とCLUTを読み、表示設定は変更しません。
+- 新規ストリームは INDEX8、位置0です。WRITE付きopenは Graphics表示・bitmap INDEX8・PCG overlay無効・display enable（共通 `0x80000000` に1）に切り替えます。READだけのopenは INDEX8領域とCLUTを読み、表示設定は変更しません。
 - WRITE付きopenで、表示設定（enable、display mode、bitmap format、PCG overlay）、全256色のCLUT、INDEX8と重なるPCG文字・属性領域（VRAM `0x00000..0x02FFF`）を保存します。最後の参照を閉じると復元します。正常終了・fault・killによる破棄や、open後のハンドル確保失敗でも復元します。それ以外のビットマップ内容は保持します。
 - 保存はスナップショットです。open中に他プロセスが行ったPCG文字・属性・CLUTへの変更はcloseで元に戻ります。初版はコンソールとの描画調停を行わないため、描画中のコンソール出力を避けてください。既存の特権MMIO利用者との競合も調停しません。
 - `ST_READ`／`ST_WRITE` は選択形式の生画素byte列を操作します。libfndは4096 bytesずつ転送します。読み取りは末尾で短い応答、EOFは0 bytes。末尾を超える書き込みは、その要求全体を変更せず NO_SPACE。位置は成功したbyte数だけ進みます。

@@ -1299,3 +1299,15 @@
 ## Main merge resolution (2026-10-24)
 
 - MEMORY.md append conflict: retain both local Foundation framebuffer/CHIP-8/SGU contracts and incoming LLVM/SRC32 variadic/SoftFloat runtime guidance. These describe independent subsystems; neither side supersedes the other. The pre-existing black-screen fix working-tree changes remain separate from the merge.
+
+## Foundation fb0 black-screen regression (2026-10-24, KAN-61)
+
+- Common VDP DISPLAY_ENABLE at 0x80000000 is active-high: write 1 to show the display. PCG_DISABLE at 0x8000f000 has the opposite polarity: write 0 to show it. fb_open previously wrote 0 to the common register, so graphics stayed black despite correct VRAM and CLUT. WRITE open now sets the common register to 1; last close still restores its saved raw value. See src/devices/vdp/vdp.rs write_common_register/write_pcg_register and doc/spec_VDP.md.
+- Prior fb/CHIP-8 memory assertions and successful console restoration did not establish visible output: they could pass with the display disabled. Test actual VdpFramebuffer::get_pixel results with src32_testbench --expect-pixel X:Y=0xRRGGBB. --dump-framebuffer PATH.ppm captures that same composed display. New assertions reproduce the old driver failure (expected white at 0,40, actual black), then pass with the one-bit fix.
+- CHIP8_TEST_ROM points to an explicit user-provided external ROM for the optional integration reproduction; CHIP8_TEST_CAPTURE saves its PPM output. Do not vendor the ROM or imply repository licensing covers it. The reported octojam2title.ch8 is 1240 bytes and its 20 statically reachable instructions are original CHIP-8 operations; its blank screen was the fb enable bug, not an unsupported extension.
+
+- Validation: pre-merge CHIP-8 suite with the reported ROM 11/11, forced-slot visible-output tests 3/3, fb integration 4/4; after the main merge, rebuilt with the updated LLVM/SRC32 toolchain and passed all 3 composed-display tests again (normal glyph, original sample, reported ROM). The reported ROM capture contains 23,175 nonblack pixels and shows the Octojam title. Rebuilt the normal Foundation image with /octojam2title.ch8 and /demo.ch8 in the disk root; the pre-rebuild disk is saved as target/foundation-boot/foundation-before-display-fix.img. No external ROM is committed. Focused diff --check passes.
+
+## Jira tracking scope (2026-10-24)
+
+- AGENTS.md now exempts minor changes without functional impact from Jira creation/updates: ordinary Git operations, mechanical merges/conflict resolution, commit/rebase cleanup, typos and minor development-guide edits. Do not create separate Git-operation issues alongside an implementation/bug issue. Conflict resolutions that decide or change behavior remain tracked under the relevant implementation/bug issue. This rule was explicitly requested by the user to avoid tracking overhead.
