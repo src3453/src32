@@ -1,5 +1,15 @@
 ## 作業で得た知識・注意点
 
+- Issue #106 の spawn 初期計測は `foundation/tests/perf/profile_spawn.py`、結果と範囲は
+  `doc/foundation_spawn_profile.md`。通常ソースを変更せずコピーにプローブを挿入する。
+  診断 selector 106..111/120 は通常の sys_info ABI ではない。`--reuse` は同じスクリプトの
+  既存ビルド用で、ソースや FND_MM を変えたら再ビルドする。
+- 2026-10-24 の `18f5694`、-O1、cached の 2 回目 echo は slot 約12.44 Mcycle / VM 約15.30。
+  image+deps が約80%以上、毎回 IDC READ 5回・640セクタ。ディスク設定だけを 0ms / 1GB/s に
+  すると約7.52 / 10.39 Mcycle。これは性能修正ではなく待ち時間の切り分け。正確な無計測値ではない。
+  終了 cleanup は slot 約0.44 / VM 約0.23 Mcycle で、ゼロ埋めだけが支配的とは言えない。
+  CPU engine と実測 mm_vm を揃えて比較し、tick だけで割り込み禁止中の経過時間を測らない。
+
 - WAX v2 (`doc/spec_WAX.md`) は 64B big-endian header と 12B block table entry
   (`load_address`, `file_offset`, `size`) を使う。各 payload は 4B file alignment、load range は
   昇順・非重複・u32 範囲内。`base` は `.wax` 最小 load address、entry は実在 block 内のみ有効。
