@@ -1330,3 +1330,10 @@
 ## foundation/run.py -j (2026-10-24, KAN-65)
 
 - `run.py -j N` は `boot/build.py -j N` へ渡す。既定は物理コア数（Linux は /proc/cpuinfo の (physical id, core id)、macOS は sysctl hw.physicalcpu、Windows は PowerShell の Win32_Processor.NumberOfCores、取れなければ論理コア数）。`build.py` 単体の既定は論理コア数のまま。
+
+## Jira から GitHub Issues へ移行 (2026-10-23)
+
+- 課題管理は Jira (KAN) をやめ、GitHub Issues と Projects に移した。手順は AGENTS.md「GitHub Issues と Projects」、KAN-n と Issue 番号の対応は `doc/jira_to_github_issues.md`。過去の節にある `KAN-n` はこの表で読み替える。
+- Issue 番号は PR と共通の連番なので、KAN-n と数字は一致しない（例: KAN-6 は #64）。
+- エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分類は `epic:*` ラベルと Projects で行う。ラベル名の `epic:` 接頭辞は移行時の名残で、必要なら UI から改名できる（付与済みの Issue は引き継がれる）。
+- GitHub MCP には Projects 操作のツールがなく、Projects ボード自体はリポジトリ所有者が UI で作成する必要がある。
