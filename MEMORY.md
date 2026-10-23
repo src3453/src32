@@ -1261,3 +1261,7 @@
 - `foundation/boot/build.py` now builds `foundation/lib/lzma` (via its `build()`, same `--clang` and `-O` as the rest) into `out/lzma/liblzma.wal` and copies it to `root/lib/lzma.1.wal`, so every `foundation.img` has it (mode 0x3D like fnd). The example overlay still works: same path, later tree wins.
 - Choice: reuse the KAN-47 LZMA SDK adapter (public domain, no new port). xz-embedded/new code was not needed. The WAL is ~345 KB (llvm-src32 code size) and uses no heap or libfnd; the caller passes a 2 MiB arena, so fs heap is untouched. Cost: ~1 s more build time and 345 KB of the 8 MiB disk; boot time is unaffected (the file is only read when a program imports it).
 - Needs clang-20 + llvmlite 0.46 here (apt-get update first). Only the host image check (fs2 read-back, mode, check_image) was run for this change; disk/shell testbench suites were not rerun.
+
+## sol-libfnd テストの stop-ticks (2026-10-23, KAN-58)
+- KAN-57 で tick が 100 Hz になったため、`tools/solc/test_sol_libfnd.py` の `--stop-ticks 40000`（旧 1 kHz で 40 秒）は 400 秒相当になり、テストが R1=0（42 でない）で失敗していた。同じ 40 秒相当の 4000 に直した（`examples/foundation-sol/README.md` も）。tick 数で書く値は、周波数を変えたら必ず秒数で換算し直す。
+- 検証: release testbench で `test_libfnd_sample_in_real_foundation` の scalar/pipeline 2 件が通過（約 6 分）。
