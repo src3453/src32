@@ -1317,3 +1317,10 @@
 - `driver.py -j N`（既定 CPU 数）は Clang 呼び出し（入力ファイル、Newlib の pending バッチ、SoftFloat）だけをスレッドプールで並列化する。パース・`link_in`・依存関係収集は入力順の直列のまま。LLVM のモジュールマージ順が出力を決めるので、ここを並列化・順不同にしないこと（`--emit-llvm` が -j1 と -j4 でバイト一致することを確認済み）。
 - `foundation/boot/build.py` は独立したドライバ実行（fnd WAL、lzma、4 サービス、カーネル 2 種、シェルと /bin コマンド）をプールで同時実行する。/bin プログラムだけは fnd WAL の完成を待つ。各ドライバには `-j 1` を渡し、プロセス単位で並列化する（二重の並列で過剰購読しない）。フルビルドは 4 コアで約 41s → 12s。
 - `foundation.img` は元から実行ごとに数百バイト違う（時刻らしい）。決定性の確認は `foundation.wax`、`kernel.bin`、`fndboot.bin`、`root/` 配下の WAX/WAL を直接 cmp する。
+
+## Ctrl+C で子プロセスをキル (2026-10-24, KAN-26)
+
+- カーネルに `thread_create`／THREAD ハンドル／`thread_exit` を実装（`kernel/ipc.c` 末尾）。entry は X 領域の 4 byte 境界、sp は RW 領域の 8 byte 境界（`[sp, sp+8)` を検査）。新スレッドは R1 = arg、UGP は呼び出し元と同じ。C の第 1 引数はスタック渡しなので、スレッド関数は引数なしで書く（arg はレジスタにしか入らない）。最後のスレッドの `thread_exit` はプロセスを同じコードで終了させる。THREAD ハンドルは `wait` のみで、別プロセスへの dup／転送は FND_E_ACCESS。`refs` が残るスレッド枠は再利用されない。
+- シェルの break スレッド（`shell.c`）は `CON_BREAK_WAIT` で待ち、通知で `break_hit` を立てて `child_proc` を `proc_kill` する。`run_program` は起動前に `break_hit` を 0 にし、`child_proc` を設定した直後にも `break_hit` を確認する（起動中の Ctrl+C を取りこぼさない）。待ちの後は `child_proc = 0` にしてからハンドルを閉じる。残る隙間（読んだ直後にハンドル番号が再利用される）は極小で、現状は許容。スレッドは libfnd の malloc を使わないこと（非スレッドセーフ）。
+- 行編集中の Ctrl+C はキーとして届かず、`fnd_con_getkey` が `FND_E_INTERRUPTED` を返す。シェルはそれを `^C` と改行として扱う。console は通知時にタイプアヘッドも捨てる。組み込みコマンドとスクリプトの中断は未実装（スクリプトは KAN-19）。`top` の Ctrl+C はシェルが先に kill するため、`top` 側の処理には届かない。
+- テスト環境の落とし穴: llvmlite のメジャー版と Clang を合わせる。この環境では `pip install llvmlite==0.46.0`（LLVM 20）＋ `apt-get install clang-20`、`CLANG=/usr/bin/clang-20`。apt.llvm.org は届かない。`apt-get update` 後に `libasound2-dev libudev-dev` を入れて `cargo build --release --bin src32_testbench`。phase1 の「未実装 syscall」プローブは thread_create から irq_bind に変えた。
