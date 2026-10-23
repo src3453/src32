@@ -47,6 +47,7 @@ Revision 0.1、2026-10-22。Status: **ドラフト（主要な設計判断は確
 | `0x0300–0x03FF` | デバイスサービスの操作（§9） |
 | `0x1000–0x10FF` | コンソール操作（§8） |
 | `0x1100–0x11FF` | VDPビットマップ／CLUT操作（§9.1） |
+| `0x1200–0x12FF` | SGC 状態・出力GP・リセット操作（§9.3） |
 | `0x8000–0xFFFEFFFF` | 各サービスの独自操作 |
 | `0xFFFF0000–` | カーネルの通知（[Foundation §8.5](spec_Foundation.md)） |
 
@@ -333,6 +334,28 @@ WRITE で open したときと、そのストリームの最後のハンドル�
 波形、その他のレジスタ、PCMRAM の内容は保持し、以前の設定や再生位置は復元しません。
 READ-only の open/close は音を変更しません。既存の特権 MMIO grant を持つプログラムとの排他調停は行いません。
 `<foundation/sgu.h>` は offset 定数と `fnd_sgu_seek` を提供するヘッダーで、WAL ABI の追加はありません。
+
+### 9.3 SGC 2D コマンド FIFO `/dev/sgc`
+
+`foundation/kernel/sgc.c` が提供するカーネルドライバです。UID 0、mode `0x0036`。fs が予約サービス `dev.sgc`（`svc_register` は EXISTS）へ `DEV_OPEN` を送り、ストリーム CHANNEL を転送します。ハードウェアは [SGC 仕様](spec_SGC.md)。`READ`／`WRITE` のどちらか一方以上で開け、同時に開けるストリームは1個（2個目は BUSY）。dup・転送は権限と寿命を共有します。SGC の ID が `SGC1` でなければ NO_MEDIA です。
+
+初版は **コマンド FIFO だけ**を公開します（線分・矩形・三角形・Unifont glyph・全面塗り・色指定）。スプライト（SAT／パターン）は扱わず、sprite count は 0 のままです。表示の有効化とCLUTは `/dev/fb0`（§9.1）か既存の仕組みで行い、SGC の色は 6-bit の CLUT index（先頭64色）です。SGC の描画面は GP に供給されるので、`/dev/fb0` のビットマップ（GP0）の上に重なります。
+
+- WRITE 付き open でレジスタ（CONTROL、SAT_BASE、SPRITE_COUNT、OUTPUT_GP）を保存し、SGC を soft reset して有効化します（FIFO 空、描画面は透明、出力 GP 1、現在色0）。最後の参照が閉じる（正常終了・fault・kill・ハンドル確保失敗を含む）と、soft reset で FIFO と描画済み画素を捨て、保存したレジスタを戻します。READ だけの open は SGC を変更しません。
+- `ST_WRITE` は SGC の FIFO word 列（big-endian、[SGC §7](spec_SGC.md)）を投入します。長さは4の倍数で、そうでなければ BAD_ARG。FIFO の空きに入る分だけ（word 単位）を投入し、`a0` に投入した byte 数を返します。要求より少ない場合があります（短い書き込み）。空きがなければ WOULD_BLOCK で、待ちません。コマンドの途中でも分割して投入できます。コマンドの内容はカーネルが検査せず、不正なコマンドは SGC の FIFO_ERROR になります。
+- FIFO は VDP の1フレームにつき1回、完全なコマンドが消費されます（最大256 word で、満杯でも描画は進みます）。描画面はフレームをまたいで保持されるので、変化した部分だけを送れます。
+- `ST_STAT` は DEVICE、mode `0x0036`、size 0（READ だけなら READ_ONLY）。`ST_SYNC` は即時成功で描画完了を保証しません。`ST_READ`、`ST_SEEK`、`ST_TRUNCATE` は UNSUPPORTED。
+
+| op | 名前 | 要求 | 応答 |
+|---|---|---|---|
+| `0x1200` | `SGC_GET_STATUS` | `a0` = STATUS の sticky bit（0x1E の範囲）を W1C で消すマスク（0 なら消さない。非0は WRITE が必要） | データ = `fnd_sgc_status`（24 bytes）。消去前の値 |
+| `0x1201` | `SGC_SET_OUTPUT` | `a0` = 出力 GP 0〜7（範囲外は BAD_ARG） | — |
+| `0x1202` | `SGC_RESET` | — | soft reset して有効化。open 直後と同じ状態に戻す |
+| `0x1203` | `SGC_FIFO_CLEAR` | — | FIFO と未完コマンドを捨てる。描画済み画素は残す |
+
+`fnd_sgc_status` は big-endian u32 の `{id, control, status, fifo_used, fifo_free, output_gp}`。権限不足は ACCESS、応答容量不足は LIMIT、未知の操作は UNSUPPORTED。
+
+C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`、`fnd_sgc_reset`、`fnd_sgc_fifo_clear`、`fnd_sgc_submit`（空きの分だけ投入し、word 数を返す。空きが全くなければ WOULD_BLOCK）とコマンド定数。既存 `fnd_call` を使う header helper で、WAL ABI は追加しません。`fnd_write` は短い書き込みを IO にするので、`/dev/sgc` には `fnd_sgc_submit` を使ってください。
 
 ## 10. 構造体
 
