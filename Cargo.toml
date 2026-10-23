@@ -27,7 +27,7 @@ cranelift-jit = { version = "=0.117.2", optional = true }
 rand = "0.10.3"
 serde = { version = "1.0.229", features = ["derive"] }
 yaml_serde = "0.10.7"
-wgpu = "29.0.3" # 30.x will raise compatibility error on imgui-wgpu
+wgpu = "30.0.1" # 30.x will raise compatibility error on imgui-wgpu
 winit = "0.30.13"
 cpal = "0.18.2"
 tokio = { version = "1.53.2", features = ["rt", "sync"] }
