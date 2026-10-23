@@ -34,7 +34,8 @@ python examples/lzma-wal/build.py target/lzma-wal --clang 'C:\Program Files\AMD\
 ライブラリ単体なら `python foundation/lib/lzma/build.py target/lzma-wal --clang /path/to/clang`。
 どちらも最適化の指定は `--optimization=-O1` の形式です（既定 `-O2`）。
 
-ディスクへの追加は既存の root overlay を使います。
+`liblzma.wal` は標準の `foundation/boot/build.py` が `/lib/lzma.1.wal` として既定のディスクにも入れます（KAN-58）。
+自作ライブラリのように別の WAL をディスクへ足すときは、既存の root overlay を使います。
 
 ```sh
 python foundation/boot/build.py target/foundation-lzma --root target/lzma-wal/root --clang /path/to/clang -O1

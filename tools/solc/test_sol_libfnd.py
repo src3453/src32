@@ -40,7 +40,7 @@ def guest_image(tmp_path_factory):
         pytest.skip(str(exc))
     work = tmp_path_factory.mktemp("sol-libfnd")
     result = subprocess.run([sys.executable, str(ROOT / "examples/foundation-sol/build.py"),
-                             str(work), "--clang", clang, "--stop-ticks", "40000"],
+                             str(work), "--clang", clang, "--stop-ticks", "4000"],
                             capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=600)
     assert result.returncode == 0, result.stdout + result.stderr
     return harness, work

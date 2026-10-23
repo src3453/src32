@@ -1257,6 +1257,15 @@
 - Rebuild the actual testbench after CPU changes: the pre-existing release binary still lacked the Pipeline CPUID interlock, causing the VM kernel to return 4 after the source workaround NOPs had been removed. Do not rebuild an executable while a test is running it on Windows (file removal gets access denied). Use an absolute SRC32_TESTBENCH path; debug builds can time out on the longer scheduler run.
 - Validation: rebuilt release src32_testbench; phase1, WAX loader and VM kernel each passed O0/O1/O2 x Scalar/Cached/CachedRelaxed/Pipeline (12 executions each); shell 21 tests passed under default VM and forced slot; disk boot 7 tests passed. git diff --check passed. IRQ frequency reduction is configured and the guest timer period is measured; no application-throughput speedup is claimed.
 
+## /lib/lzma.1.wal in the default image (2026-10-23, KAN-58)
+- `foundation/boot/build.py` now builds `foundation/lib/lzma` (via its `build()`, same `--clang` and `-O` as the rest) into `out/lzma/liblzma.wal` and copies it to `root/lib/lzma.1.wal`, so every `foundation.img` has it (mode 0x3D like fnd). The example overlay still works: same path, later tree wins.
+- Choice: reuse the KAN-47 LZMA SDK adapter (public domain, no new port). xz-embedded/new code was not needed. The WAL is ~345 KB (llvm-src32 code size) and uses no heap or libfnd; the caller passes a 2 MiB arena, so fs heap is untouched. Cost: ~1 s more build time and 345 KB of the 8 MiB disk; boot time is unaffected (the file is only read when a program imports it).
+- Needs clang-20 + llvmlite 0.46 here (apt-get update first). Only the host image check (fs2 read-back, mode, check_image) was run for this change; disk/shell testbench suites were not rerun.
+
+## sol-libfnd テストの stop-ticks (2026-10-23, KAN-58)
+- KAN-57 で tick が 100 Hz になったため、`tools/solc/test_sol_libfnd.py` の `--stop-ticks 40000`（旧 1 kHz で 40 秒）は 400 秒相当になり、テストが R1=0（42 でない）で失敗していた。同じ 40 秒相当の 4000 に直した（`examples/foundation-sol/README.md` も）。tick 数で書く値は、周波数を変えたら必ず秒数で換算し直す。
+- 検証: release testbench で `test_libfnd_sample_in_real_foundation` の scalar/pipeline 2 件が通過（約 6 分）。
+
 ## llvm-src32 可変長引数と softfloat (2026-10-23, KAN-59)
 
 - Variadics: Clang's MIPS o32 `va_list` is a `char *`; `va_arg` is inlined (aligning 8-byte types with `llvm.ptrmask.p0.i32`), the backend only implements `llvm.va_start` (= FP+8+size of the named arguments), `va_copy` (copy the word), `va_end` (nothing) and ptrmask. Call sites align each variadic argument to its type alignment (max 8) relative to SP, which is 8-aligned, so the callee's realignment finds it. Fixed arguments stay packed (an i64 after an i32 is not aligned), so the variadic part is the only place padding appears. The variadic position is parsed from the call's explicit function type `(i32, ...)` (`fixed_argument_count`). Structs passed to `...` arrive as `inreg` i32 words and need nothing; `byval` in the variadic part is rejected because va_arg reads in place. `<stdarg.h>` is in runtime/include (`-nostdinc` hides Clang's own). WAL/import boundary: variadic still rejected (`check_prototype`).
