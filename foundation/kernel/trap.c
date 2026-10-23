@@ -218,13 +218,126 @@ cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame) {
     return next;
 }
 
+/* Panic screen: the kernel writes the PCG text planes itself, because the
+ * console service and IPC cannot be trusted any more. The layout is the one
+ * the console service sets up (SCREEN_MODE 1, 80x30 cells, scroll 0). */
+#define PANIC_COLS 80u
+#define PANIC_ROWS 30u
+#define PANIC_VRAM 0x10000000u
+#define PANIC_FG 0x1000u
+#define PANIC_BG 0x2000u
+#define PANIC_REG8(a) (*(volatile uint8_t *)(uintptr_t)(a))
+
+static uint32_t panic_col, panic_row, panic_entered;
+
+static void panic_putc(uint32_t c) {
+    if (c == '\n') {
+        panic_col = 0;
+        ++panic_row;
+        return;
+    }
+    if (panic_col >= PANIC_COLS || panic_row >= PANIC_ROWS)
+        return; /* no scrolling: the message is short and the first lines matter */
+    uint32_t cell = PANIC_VRAM + panic_row * PANIC_COLS + panic_col++;
+    PANIC_REG8(cell) = (uint8_t)c;
+}
+
+static void panic_puts(const char *s) {
+    while (*s)
+        panic_putc((uint8_t)*s++);
+}
+
+static void panic_hex(uint32_t value) {
+    for (int digit = 0; digit < 8; ++digit) {
+        uint32_t nibble = (value >> (28 - 4 * digit)) & 0xFu;
+        panic_putc(nibble < 10u ? '0' + nibble : 'A' + nibble - 10u);
+    }
+}
+
+static const char *panic_cause_name(uint32_t cause) {
+    switch (cause >> 16) {
+    case 0x8001u: return "illegal instruction";
+    case 0x8002u: return "bus error";
+    case 0x8003u: return "SYSCALL in kernel";
+    case 0x8004u: return "privileged instruction in U";
+    case 0x8005u: return "protection fault";
+    default: return cause & 0x80000000u ? "unknown exception" : "IRQ in kernel";
+    }
+}
+
+static void panic_screen(uint32_t cause, uint32_t epc) {
+    PANIC_REG8(0x80000000u) = 1; /* common DISPLAY_ENABLE */
+    PANIC_REG8(0x80000001u) = 1; /* DISPLAY_MODE: PCG text */
+    PANIC_REG8(0x80000004u) = 0; /* FORMAT: back from a bitmap lease */
+    PANIC_REG8(0x8000F00Bu) = 0; /* OVERLAY */
+    PANIC_REG8(0x8000F000u) = 0; /* PCG enabled */
+    PANIC_REG8(0x8000F003u) = 1; /* SCREEN_MODE 1 */
+    PANIC_REG8(0x8000F007u) = 0; /* no cursor */
+    PANIC_REG8(0x8000F00Cu) = 0; /* scroll 0, low byte first */
+    PANIC_REG8(0x8000F00Du) = 0;
+    PANIC_REG8(0x8000F00Eu) = 0;
+    PANIC_REG8(0x8000F00Fu) = 0;
+    for (uint32_t i = 0; i < PANIC_COLS * PANIC_ROWS; ++i) {
+        PANIC_REG8(PANIC_VRAM + i) = ' ';
+        PANIC_REG8(PANIC_VRAM + PANIC_FG + i) = 0x3Fu;
+        PANIC_REG8(PANIC_VRAM + PANIC_BG + i) = 0x00u;
+    }
+    panic_col = panic_row = 0;
+    panic_puts("Foundation: kernel panic\n");
+    panic_puts("cause=");
+    panic_hex(cause);
+    panic_puts(" (");
+    panic_puts(panic_cause_name(cause));
+    panic_puts(")\nepc=");
+    panic_hex(epc);
+    panic_puts(" ticks=");
+    panic_hex(fnd_ticks());
+    panic_puts("\nthread: ");
+    struct fnd_thread *thread = fnd_current;
+    if (thread && thread->proc) {
+        panic_puts("pid ");
+        panic_hex(thread->proc->pid);
+        panic_putc(' ');
+        for (uint32_t i = 0; i < 15u && thread->proc->name[i]; ++i)
+            panic_putc((uint8_t)thread->proc->name[i]);
+    } else {
+        panic_puts("idle or none");
+    }
+    /* The stub keeps the context saved at the last trap; for an exception in
+     * the kernel itself that is the interrupted thread's, not the kernel's. */
+    const cpt32_ctx_frame *frame = cpt32_ctx_current;
+    if (frame) {
+        panic_puts("\nlast saved context: epc=");
+        panic_hex(frame->epc);
+        panic_puts(" status=");
+        panic_hex(frame->status);
+        for (uint32_t n = 1; n < 32u; ++n) {
+            if ((n - 1u) % 4u == 0u)
+                panic_putc('\n');
+            else
+                panic_putc(' ');
+            panic_putc('R');
+            panic_putc('0' + n / 10u);
+            panic_putc('0' + n % 10u);
+            panic_putc('=');
+            panic_hex(frame->r[n]);
+        }
+    }
+}
+
 void kernel_panic(uint32_t cause, uint32_t epc) {
     sched_timer_stop();
-    fnd_debug_puts("\r\nFoundation: kernel panic cause=");
-    fnd_debug_hex(cause);
-    fnd_debug_puts(" epc=");
-    fnd_debug_hex(epc);
-    fnd_debug_puts("\r\n");
+    /* A fault while reporting (no UART on src32_testbench, for one) re-enters
+     * here from the stub; stop without touching the devices again. */
+    if (!panic_entered) {
+        panic_entered = 1;
+        panic_screen(cause, epc);
+        fnd_debug_puts("\r\nFoundation: kernel panic cause=");
+        fnd_debug_hex(cause);
+        fnd_debug_puts(" epc=");
+        fnd_debug_hex(epc);
+        fnd_debug_puts("\r\n");
+    }
     cpt32_jump((uint32_t)(uintptr_t)halt_code, 0x200u | (cause >> 16 & 0xFFu),
                (uint32_t)(uintptr_t)&halt_stack[16]);
 }

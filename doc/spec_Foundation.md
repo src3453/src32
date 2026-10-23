@@ -81,7 +81,12 @@ S モードの R30 は、常にスタブのアドレスでなければなりま�
 | その他の例外で `STATUS.PU = 1` | そのプロセスを fault で終了する（§9.4）。終了コードは CAUSE の値を `i32` として扱ったもの（負の値になる） |
 | その他の例外で `STATUS.PU = 0` | idle スレッドで起きた例外。`kernel_panic` 扱い |
 
-`kernel_panic` は UART へ CAUSE と EPC を出力し、全 IRQ を無効化して `HALT` で停止しなければなりません。
+`kernel_panic` は全 IRQ を無効化し、次の順に診断を出力して `HALT` で停止しなければなりません。
+
+1. PCG の文字画面（80×30、SCREEN_MODE 1、スクロール 0）へ、カーネルが VRAM の文字面へ直接書きます。コンソールサービスや IPC には頼りません。ビットマップの貸し出し中でも見えるよう、表示レジスタ（ENABLE、DISPLAY_MODE、FORMAT、OVERLAY、PCG）を戻してから全面を消します。内容は、CAUSE とその種別名、EPC、tick、実行中のプロセス（pid と名前。idle なら `idle or none`）、スタブが最後に保存した文脈（EPC、STATUS、R1〜R31）です。カーネル内の例外では、最後に保存した文脈はカーネルではなく中断されたスレッドのものです。
+2. UART へ CAUSE と EPC を出力します。UART のない環境（`src32_testbench`）ではここでバスエラーになりますが、`kernel_panic` に再入したら何も出力せず、そのまま停止します。
+
+停止時の R1 は `0x200 | CAUSE の例外コード（bit 23..16）` です。
 
 ## 4. エラーコード
 
