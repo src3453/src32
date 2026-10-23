@@ -14,6 +14,7 @@ from dataclasses import dataclass
 
 from llvmlite import binding as llvm
 
+import fp
 from data import CompileError, DataImage, Layout, parse_type, split_top, symbol
 
 
@@ -63,7 +64,8 @@ def _bits(ty):
         return 32
     if ty.type_kind == llvm.TypeKind.integer:
         return ty.type_width
-    return 0
+    # float and double travel as their bit patterns, like i32 and i64.
+    return {"sf": 32, "df": 64}.get(fp.kind(ty), 0)
 
 
 def _mask_identifiers(text):
@@ -186,8 +188,10 @@ class _Function:
         self.epilogue = self.c.fresh("return")
         self.context = f"function @{function.name}"
         self.check_type(function.global_value_type.get_function_return(), allow_void=True)
-        if function.global_value_type.is_function_vararg:
-            self.fail("variadic functions are not supported")
+        # A variadic callee finds its extra arguments right after the fixed ones:
+        # va_start stores that address (call sites align each extra argument to
+        # its own alignment, see call()).
+        self.variadic = function.global_value_type.is_function_vararg
         header = next(line for line in str(function).splitlines() if line.startswith("define "))
         attributes = " ".join(a.decode("utf-8") if isinstance(a, bytes) else str(a) for a in function.attributes)
         header += " " + attributes
@@ -201,9 +205,11 @@ class _Function:
             self.fail("unsupported ABI argument attribute")
         if re.search(r"\b(?:personality|prefix|prologue|comdat)\b", header):
             self.fail("unsupported function prefix, prologue, EH personality, or comdat")
+        self.fixed_bytes = 0
         for arg in function.arguments:
             self.check_type(arg.type)
             self.slots[arg] = self.allocate(self.storage(arg.type))
+            self.fixed_bytes += self.storage(arg.type)
         # The caller's R30 across calls to imported functions (call ABI 1).
         self.saved_origin = self.allocate(4) if owner.imports else None
         for block in self.blocks:
@@ -248,7 +254,7 @@ class _Function:
             for element in ty.elements:
                 self.check_type(element)
             return
-        self.fail(f"unsupported type {ty} (floating point, vectors, and tokens are not supported)")
+        self.fail(f"unsupported type {ty} (vectors, half, fp128 and tokens are not supported)")
 
     def storage(self, ty):
         return max(4, _round(self.layout.size(ty)))
@@ -289,7 +295,9 @@ class _Function:
             self.c.imm(reg, 0)
         elif bits:
             shift = 32 if bits > 32 and word == 0 else 0
-            if value.value_kind == llvm.ValueKind.constant_int:
+            if value.value_kind == llvm.ValueKind.constant_fp:
+                self.c.imm(reg, fp.literal_bits(value.type, str(value).partition(" ")[2]) >> shift)
+            elif value.value_kind == llvm.ValueKind.constant_int:
                 self.c.imm(reg, value.get_constant_value() >> shift)
             else:
                 self.c.imm(reg, ("constant", text, shift))
@@ -466,10 +474,122 @@ class _Function:
             self.call(inst, args)
         elif op in ("extractvalue", "insertvalue"):
             self.aggregate_value(inst, args, op)
+        elif op in ("fadd", "fsub", "fmul", "fdiv", "frem", "fneg", "fcmp",
+                    "fpext", "fptrunc", "fptosi", "fptoui", "sitofp", "uitofp"):
+            self.float_op(inst, op, args)
         elif op == "freeze":
             self.copy(args[0], self.slots[inst])
         else:
             self.fail(f"unsupported LLVM instruction {op}")
+
+    def runtime_call(self, name, arguments):
+        """Call the runtime routine `name`; `arguments` are LLVM values or
+        (size, emit(offset)) pairs. Results are left in R1 (and R2, high)."""
+        c = self.c
+        if name not in self.owner.definitions or self.owner.imports.get(name):
+            self.fail(f"floating point needs the runtime routine @{name}, which is not defined in this module")
+        sizes = [a[0] if isinstance(a, tuple) else self.storage(a.type) for a in arguments]
+        total = _round(sum(sizes), 8)
+        c.add_const(28, 28, -total)
+        offset = 0
+        for argument, size in zip(arguments, sizes):
+            if isinstance(argument, tuple):
+                argument[1](offset)
+            else:
+                for word in range(size // 4):
+                    self.load(argument, 1, word)
+                    c.mem("ST", 1, 28, offset + word * 4)
+            offset += size
+        c.imm(12, ("constant", "@" + self.quote_name(name)))
+        c.emit("JALR R12")
+        c.add_const(28, 28, total)
+
+    def store_result(self, inst):
+        if self.storage(inst.type) > 4:
+            self.store(inst, 2, 0)
+            self.store(inst, 1, 1)
+        else:
+            self.narrow(1, _bits(inst.type))
+            self.store(inst)
+
+    def float_op(self, inst, op, args):
+        c = self.c
+        if op == "fneg":
+            self.load(args[0], 1, 0)  # sign bit of the (high) first word
+            c.imm(2, 0x80000000)
+            c.emit("XOR R1, R1, R2")
+            self.store(inst, 1, 0)
+            if self.storage(inst.type) > 4:
+                self.load(args[0], 1, 1)
+                self.store(inst, 1, 1)
+            return
+        if op == "fcmp":
+            self.float_compare(inst, args)
+            return
+        if op in ("sitofp", "uitofp"):
+            bits = _bits(args[0].type)
+            if bits > 32:
+                operand = args[0]
+            else:
+                def narrowed(offset):
+                    self.load(args[0], 1)
+                    self.signed(1, bits) if op == "sitofp" else self.narrow(1, bits)
+                    c.mem("ST", 1, 28, offset)
+                operand = (4, narrowed)
+            self.runtime_call(fp.instruction_routines(inst)[0], [operand])
+        else:
+            self.runtime_call(fp.instruction_routines(inst)[0], list(args))
+        self.store_result(inst)
+
+    def float_compare(self, inst, args):
+        c = self.c
+        predicate = fp.comparison_predicate(inst)
+        join, clauses = fp.PREDICATES[predicate]
+        if not clauses:
+            c.imm(1, 1 if predicate == "true" else 0)
+            self.store(inst)
+            return
+        for index, ((_, test), routine) in enumerate(zip(clauses, fp.instruction_routines(inst))):
+            self.runtime_call(routine, list(args))
+            # R1 is the routine's signed result: reduce it to 0/1.
+            if test in ("==", ">=", "<="):
+                c.emit({"==": "SLTU R1, R0, R1", ">=": "SLT R1, R1, R0", "<=": "SLT R1, R0, R1"}[test])
+                c.imm(9, 1)
+                c.emit("XOR R1, R1, R9")
+            else:
+                c.emit({"!=": "SLTU R1, R0, R1", "<": "SLT R1, R1, R0", ">": "SLT R1, R0, R1"}[test])
+            if index:
+                c.mem("LD", 2, 29, self.slots[inst])
+                c.emit(f"{'AND' if join == 'and' else 'OR'} R1, R1, R2")
+            self.store(inst)
+
+    def float_intrinsic(self, inst, name, values):
+        c = self.c
+        base = name.split(".")[1]
+        words = self.storage(inst.type) // 4
+        if base in ("fabs", "copysign"):
+            c.imm(9, 0x7FFFFFFF)
+            self.load(values[0], 1, 0)
+            c.emit("AND R1, R1, R9")
+            if base == "copysign":
+                self.load(values[1], 2, 0)
+                c.imm(9, 0x80000000)
+                c.emit("AND R2, R2, R9")
+                c.emit("OR R1, R1, R2")
+            self.store(inst, 1, 0)
+            if words > 1:
+                self.load(values[0], 1, 1)
+                self.store(inst, 1, 1)
+            return
+        routines = fp.intrinsic_routines(name, inst.type)
+        if base == "fmuladd":
+            # Not fused: mul then add (fmuladd allows either).
+            self.runtime_call(routines[0], values[:2])
+            self.store_result(inst)
+            self.runtime_call(routines[1], [inst, values[2]])
+        else:
+            self.runtime_call(routines[0], values)
+        self.store_result(inst)
 
     def scalar_memory(self, op, value, base, bits):
         c = self.c
@@ -874,8 +994,7 @@ class _Function:
         syntax = _mask_identifiers(text)
         if re.search(r"\b(?:musttail|(?!(?:ccc|fastcc)\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+)\b", syntax):
             self.fail("unsupported call convention or musttail call")
-        if "..." in syntax:
-            self.fail("variadic calls are unsupported")
+        fixed = self.fixed_argument_count(text)
         if re.search(r"\b(?:inalloca|preallocated|byref|nest|swiftself|swifterror|swiftasync)\b", syntax):
             self.fail("unsupported ABI call argument attribute")
         if re.search(r"\[\s*\"", text):
@@ -892,8 +1011,6 @@ class _Function:
         if name and not imported:
             if name not in self.owner.definitions:
                 self.fail(f"undefined external function @{name}; freestanding modules must provide a definition")
-            if self.owner.definitions[name].global_value_type.is_function_vararg:
-                self.fail("variadic calls are unsupported")
         if str(inst.type) != "void" and self.storage(inst.type) > 8:
             self.fail("aggregate call results larger than 8 bytes require an sret pointer")
         # LLVM byval means the callee may mutate a private caller-created copy.
@@ -907,7 +1024,18 @@ class _Function:
                 if not rest.lstrip().startswith(")"):
                     self.fail("malformed byval type")
                 byvals[index] = ty
-        arg_bytes = sum(self.storage(v.type) for v in values)
+        # Offsets of the arguments. Variadic arguments are aligned to their
+        # type (at most 8) so the callee's inline va_arg code finds them.
+        offsets, arg_bytes = [], 0
+        for index, value in enumerate(values):
+            if fixed is not None and index >= fixed:
+                if index in byvals:
+                    self.fail("by-value aggregate arguments cannot be passed to variadic parameters")
+                arg_bytes = _round(arg_bytes, min(8, self.layout.align(value.type)))
+            offsets.append(arg_bytes)
+            arg_bytes += self.storage(value.type)
+        if imported and fixed is not None:
+            self.fail("variadic functions cannot cross a module boundary")
         total, copies = arg_bytes, {}
         for index, ty in byvals.items():
             total = _round(total, min(8, self.layout.align(ty)))
@@ -915,8 +1043,8 @@ class _Function:
             total += self.layout.size(ty)
         total = _round(total, 8)
         c.add_const(28, 28, -total)
-        offset = 0
         for index, value in enumerate(values):
+            offset = offsets[index]
             if index in copies:
                 self.load(value, 3)
                 c.add_const(4, 28, copies[index])
@@ -927,7 +1055,6 @@ class _Function:
                 for word in range(self.storage(value.type) // 4):
                     self.load(value, 1, word)
                     c.mem("ST", 1, 28, offset + word * 4)
-            offset += self.storage(value.type)
         if imported:
             if byvals:
                 self.fail("by-value aggregate arguments cannot cross a module boundary")
@@ -1060,9 +1187,22 @@ class _Function:
             c.emit("MTSR STATUS, R4")
             c.emit("IRET")
 
+    def fixed_argument_count(self, text):
+        """The number of named parameters of a variadic call, else None."""
+        for group in self.call_groups(text)[:-1]:
+            parts = split_top(group)
+            if parts and parts[-1] == "...":
+                return len(parts) - 1
+        return None
+
     @staticmethod
     def call_argument_text(text):
         # The final balanced (...) group before call attributes is the argument list.
+        groups = _Function.call_groups(text)
+        return split_top(groups[-1]) if groups else []
+
+    @staticmethod
+    def call_groups(text):
         groups, stack, quoted, escaped = [], [], False, False
         for index, char in enumerate(text):
             if quoted:
@@ -1080,7 +1220,7 @@ class _Function:
                 start = stack.pop()
                 if not stack:
                     groups.append(text[start + 1:index])
-        return split_top(groups[-1]) if groups else []
+        return groups
 
     def byte_copy(self, length):
         # R3 source, R4 destination. Constant-sized byval copies have no helper ABI.
@@ -1295,6 +1435,9 @@ class _Function:
                 self.narrow(1, bits)
                 self.store(inst)
             return
+        if name.split(".")[1] in ("fabs", "copysign", "sqrt", "fma", "fmuladd"):
+            self.float_intrinsic(inst, name, values)
+            return
         if name.split(".")[1] in ("smin", "smax", "umin", "umax", "abs", "bswap", "ctpop", "ctlz", "cttz"):
             self.integer_intrinsic(inst, name, values)
             return
@@ -1321,6 +1464,27 @@ class _Function:
                 self.load(values[2], 5)
             self.memory_loop(memory)
             return
+        if name.startswith("llvm.va_start."):
+            if not self.variadic:
+                self.fail("va_start in a function that is not variadic")
+            self.load(values[0], 3)
+            c.add_const(1, 29, 8 + self.fixed_bytes)
+            c.mem("ST", 1, 3)
+            return
+        if name.startswith("llvm.va_end."):
+            return
+        if name.startswith("llvm.va_copy."):
+            self.load(values[1], 3)
+            c.mem("LD", 1, 3)
+            self.load(values[0], 3)
+            c.mem("ST", 1, 3)
+            return
+        if name.startswith("llvm.ptrmask."):
+            self.load(values[0], 1)
+            self.load(values[1], 2)
+            c.emit("AND R1, R1, R2")
+            self.store(inst)
+            return
         if name.startswith("llvm.expect."):
             self.copy(values[0], self.slots[inst])
             return
@@ -1332,13 +1496,16 @@ class _Function:
 
 class _Module:
     def __init__(self, module, origin, stack_top, entry, protected=False, data_origin=None,
-                 pic=False, imports=None, exit_syscall=0, page_align=False):
+                 pic=False, imports=None, exit_syscall=0, page_align=False, prunable=None):
         self.module = module
         self.page_align = page_align
         self.layout = Layout(module)
         self.image = DataImage(module)
         self.code = _Code(origin, pic)
         self.definitions = {f.name: f for f in module.functions if not f.is_declaration}
+        # Runtime-library functions (the driver names them) are emitted only
+        # when something reaches them; everything else always is.
+        self.live = self.reachable(prunable) if prunable else self.definitions
         self.origin, self.stack_top, self.entry = origin, stack_top, entry
         self.protected = protected
         self.data_origin = data_origin
@@ -1352,6 +1519,23 @@ class _Module:
         self.uses_kernel_context = False
         self.uses_ctx_resume = False
         self.data_start = None
+
+    def reachable(self, prunable):
+        reference = re.compile(r'@([-a-zA-Z$._0-9]+)')
+        roots = [name for name in self.definitions if name not in prunable]
+        roots += [m for g in self.module.global_variables for m in reference.findall(str(g))]
+        live, pending = {}, roots
+        while pending:
+            name = pending.pop()
+            function = self.definitions.get(name)
+            if function is None or name in live:
+                continue
+            live[name] = function
+            pending.extend(reference.findall(str(function)))
+            for block in function.blocks:
+                for inst in block.instructions:
+                    pending.extend(fp.instruction_routines(inst))
+        return {name: self.definitions[name] for name in self.definitions if name in live}
 
     def slot_label(self, name):
         return "__llvm_src32_import_" + symbol(name)
@@ -1615,7 +1799,7 @@ class _Module:
             c.label(_KERNEL_CONTEXT)
             for _ in range(4):
                 c.emit(".DWORD 0")
-        functions = {name: c.labels[symbol(name)] for name in self.definitions}
+        functions = {name: c.labels[symbol(name)] for name in self.live}
         if kernel_trap is not None:
             # The stub's globals; C reaches them through extern declarations.
             # The depth starts at 1 so a trap before cpt32_ctx_resume panics.
@@ -1628,7 +1812,7 @@ class _Module:
         return self.finish(functions)
 
     def emit_functions(self):
-        for function in self.definitions.values():
+        for function in self.live.values():
             linkage = function.linkage.name
             if linkage not in ("external", "internal", "private"):
                 raise CompileError(f"function @{function.name}: unsupported linkage {linkage}")
@@ -1638,7 +1822,7 @@ class _Module:
         """Place static data and import slots after the code, then resolve."""
         c = self.code
         if functions is None:
-            functions = {name: c.labels[symbol(name)] for name in self.definitions}
+            functions = {name: c.labels[symbol(name)] for name in self.live}
         # With page_align the writable data starts on a 4 KiB boundary, so a
         # paged address space (Extension V) can give code and data different
         # permissions.
@@ -1690,7 +1874,8 @@ class _Module:
 
 
 def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", protected=False, info=None,
-                   data_origin=None, pic=False, imports=None, exit_syscall=0, page_align=False):
+                   data_origin=None, pic=False, imports=None, exit_syscall=0, page_align=False,
+                   prunable=None):
     """Lower an official llvmlite ModuleRef into standalone SRC32 assembly.
 
     The module is verified by LLVM, keeps its big-endian 32-bit target layout,
@@ -1712,6 +1897,8 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
     protected startup code uses to exit. `page_align` starts the data on a 4 KiB
     boundary (code R/X and data R/W then never share a page). `info` also receives `extents`
     (function name -> [start, end)) and `symbols` (global name -> address).
+    `prunable` names runtime-library functions that are emitted only when
+    reachable from other code (including the routines fp instructions call).
     """
     if not 0 <= origin <= 0xFFFFFFFC or origin % 4:
         raise CompileError("origin must be a word-aligned 32-bit address")
@@ -1731,7 +1918,7 @@ def compile_module(module, *, origin=0, stack_top=0x00100000, entry="main", prot
         raise CompileError(f"LLVM verification failed: {exc}") from exc
     try:
         compiled = _Module(module, origin, stack_top, entry, protected, data_origin, pic, imports,
-                           exit_syscall, page_align)
+                           exit_syscall, page_align, prunable)
         assembly = compiled.compile()
         if info is not None:
             info["data_start"] = compiled.data_start

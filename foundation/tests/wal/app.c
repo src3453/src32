@@ -11,6 +11,8 @@ uint32_t math_apply(uint32_t op, uint32_t x);
 uint32_t math_total(void);
 uint32_t math_base_calls(void);
 uint32_t math_origin(void);
+uint32_t math_sum3(uint32_t a, uint32_t b, uint32_t c);
+uint32_t math_float(uint32_t op, uint32_t a, uint32_t b);
 
 static uint32_t local(uint32_t x) { return x + 1u; }
 
@@ -36,5 +38,12 @@ int main(void) {
         return 7;
     if (f(1) != 2)
         return 8;
+    /* Variadic call and software floating point inside the library. */
+    if (math_sum3(1, 20, 300) != 321)
+        return 9;
+    if (math_float(0, 0x3FC00000u, 0x40100000u) != 0x40880000u)  /* 1.5 + 2.25 + 0.5 = 4.25 */
+        return 10;
+    if (math_float(1, 0x40000000u, 0x40400000u) != 0x40D00000u)  /* 2 * 3 + 0.5 = 6.5 */
+        return 11;
     return 42;
 }
