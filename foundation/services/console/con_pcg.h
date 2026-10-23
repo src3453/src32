@@ -29,5 +29,7 @@ int con_pcg_poll_key(fnd_key_t *key);
 void con_pcg_key_state(fnd_keyboard *state);
 void con_pcg_get_cursor(uint32_t *x, uint32_t *y);
 void con_pcg_set_cursor(uint32_t x, uint32_t y);
+/* ANSI color indices 0..15, validated by the service. Clears bold/inverse. */
+void con_pcg_set_color(uint32_t front, uint32_t back);
 
 #endif

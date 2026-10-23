@@ -334,8 +334,14 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
     case FND_CON_GET_CURSOR:
         con_pcg_get_cursor(&a[0], &a[1]);
         return 0;
+    case FND_CON_SET_COLOR:
+        if (m->a0 > 15 || m->a1 > 15)
+            *result = FND_E_BAD_ARG;
+        else
+            con_pcg_set_color(m->a0, m->a1);
+        return 0;
     default:
-        *result = FND_E_UNSUPPORTED; /* ST_SEEK, ST_TRUNCATE, CON_SET_COLOR */
+        *result = FND_E_UNSUPPORTED; /* ST_SEEK, ST_TRUNCATE */
         return 0;
     }
 }

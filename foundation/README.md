@@ -12,6 +12,20 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、
 追加ファイルをfsの実行イメージへ埋め込む必要はありません。
 
+## ANSI コンソール出力
+
+標準出力（`fnd_con_write`／`fnd_write`）へ ANSI のサブセットを送れます。例えば C で `fnd_con_write("\033[31m赤色\033[0m\n");` と書くと赤の前景色に切り替えてから既定色へ戻します（PCG の表示できない文字は従来どおり `?` になります）。ASCII の動作例:
+
+```c
+fnd_con_write("\033[2J\033[H");          /* 全消去して左上へ */
+fnd_con_write("\033[31;44mRED ON BLUE\033[0m\n");
+fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
+```
+
+カーソル移動・保存／復元、画面／行の消去、16色と高輝度化・反転、カーソル表示切替に対応します。色や解析状態は画面全体で共有されるため、終了前に `\033[0m`、カーソルを隠した場合は `\033[?25h` を送ってください。256色・RGB色、下線・点滅、スクロール領域、代替画面、端末応答は未対応です。詳細は [API §8.1.1](../doc/spec_Foundation_API.md#811-ansi-出力サブセット) を参照してください。
+
+検証: `python -m unittest discover -s foundation/tests/console -v`。ホスト C コンパイラと、ゲスト検証には Clang・llvmlite・`src32_testbench` が必要です。`FND_MM=slot` でも実行します。
+
 ## C版 TinyBASIC
 
 シェルで `tinybasic` を起動すると対話モード、`tinybasic program.bas` ならファイルを読み込んで実行し、終了後にシェルへ戻ります。
@@ -91,7 +105,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 - **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir`、`ls`、`hex` は `/bin` にあります（`cp` の同一ファイル検出はパス文字列の比較だけです）。Ctrl+C はシェルの専用スレッドが `CON_BREAK_WAIT` で受け取り、実行中の外部プログラムを `proc_kill` で止めます（`$?` は `FND_E_KILLED`、STDERR に `^C`）。行編集中は保留中の `CON_READ_KEY` が `FND_E_INTERRUPTED` になり、入力中の行を捨てます。組み込みコマンドの中断とスクリプトの入れ子中断は、スクリプト（KAN-19）とともに未実装です。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
-- **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は `FND_E_UNSUPPORTED` です。
+- **console**：`services/console` が PCG（SCREEN_MODE 1、80×30、8×8）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
 - `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、スロット方式では実在するユーザースロットのうち動いているプロセスが占めていないものの合計です。12 MiB のスロット方式では、サービス・init・シェル・実行中のコマンドで全スロットを使うため、`free` の `0 KiB free` は正常です。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh

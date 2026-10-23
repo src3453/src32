@@ -5,8 +5,12 @@
  * apart from the physical ring row. */
 #include "con_pcg.h"
 
+#ifndef MMIO8
 #define MMIO8(address) (*(volatile uint8_t *)(uintptr_t)(address))
+#endif
+#ifndef MMIO32
 #define MMIO32(address) (*(volatile uint32_t *)(uintptr_t)(address))
+#endif
 
 #define VDP_DISPLAY_MODE 0x80000001u
 #define PCG_DISABLE 0x8000F000u
@@ -27,19 +31,28 @@
 #define PEC_EVENT_STATUS 0x80040034u
 #define PEC_EVENT_POP 0x80040038u
 
-#define COLOR_FG 0x3Fu
-#define COLOR_BG 0x00u
 #define SUBSTITUTE '?'
 
 static uint32_t col, row, top; /* cursor cell; ring row shown at screen row 0 */
+/* ANSI RGB order mapped onto the existing RGB222 CLUT; never rewrite it. */
+static const uint8_t colors[16] = {0, 32, 8, 40, 2, 34, 10, 42,
+                                 21, 53, 29, 61, 23, 55, 31, 63};
+static uint32_t fg = 15, bg, bold, inverse;
+static uint32_t saved_col, saved_row;
+enum { GROUND, ESCAPE, ESC_INTERMEDIATE, CSI, STRING, STRING_ESC };
+static uint32_t parser, string_osc;
+#define ANSI_PARAMS 16u
+#define ANSI_MAX 9999u
+static uint32_t params[ANSI_PARAMS], param_count, private_mode, invalid, param_started;
 
 static uint32_t ring_row(uint32_t screen_row) { return (top + screen_row) % CON_PCG_ROWS; }
 
 static void put_cell(uint32_t x, uint32_t y, uint32_t ch) {
     uint32_t cell = CON_PCG_TEXT_START + ring_row(y) * CON_PCG_COLS + x;
     MMIO8(cell) = (uint8_t)ch;
-    MMIO8(cell + PCG_FG) = COLOR_FG;
-    MMIO8(cell + PCG_BG) = COLOR_BG;
+    uint8_t front = colors[fg < 8u && bold ? fg + 8u : fg], back = colors[bg];
+    MMIO8(cell + PCG_FG) = inverse ? back : front;
+    MMIO8(cell + PCG_BG) = inverse ? front : back;
 }
 
 static void clear_row(uint32_t y) {
@@ -73,6 +86,140 @@ static void newline(void) {
 static void advance(void) {
     if (++col == CON_PCG_COLS)
         newline();
+}
+
+static uint32_t clamp(uint32_t value, uint32_t size) {
+    return value < size ? value : size - 1u;
+}
+
+static void erase_cells(uint32_t first, uint32_t end) {
+    for (; first < end; ++first)
+        put_cell(first % CON_PCG_COLS, first / CON_PCG_COLS, ' ');
+}
+
+void con_pcg_set_color(uint32_t front, uint32_t back) {
+    fg = front;
+    bg = back;
+    bold = inverse = 0;
+}
+
+static void sgr(void) {
+    for (uint32_t i = 0; i < param_count; ++i) {
+        uint32_t p = params[i];
+        if (p == 0) con_pcg_set_color(15, 0);
+        else if (p == 1) bold = 1;
+        else if (p == 22) bold = 0;
+        else if (p == 7) inverse = 1;
+        else if (p == 27) inverse = 0;
+        else if (p >= 30 && p <= 37) fg = p - 30;
+        else if (p >= 40 && p <= 47) bg = p - 40;
+        else if (p >= 90 && p <= 97) fg = p - 90 + 8;
+        else if (p >= 100 && p <= 107) bg = p - 100 + 8;
+        else if (p == 39) fg = 15;
+        else if (p == 49) bg = 0;
+        /* Consume the operands of unsupported extended colors as a unit.
+         * In particular 38;2;... must not turn RGB values into SGR codes. */
+        else if (p == 38 || p == 48) {
+            if (i + 1u >= param_count) return;
+            uint32_t count = params[++i] == 2 ? 3u : params[i] == 5 ? 1u : ANSI_PARAMS;
+            if (count >= param_count - i) return;
+            i += count;
+        }
+    }
+}
+
+static void csi_final(uint32_t ch) {
+    if (invalid) return;
+    uint32_t p = params[0], n = p ? p : 1u;
+    if (private_mode) {
+        if (param_count == 1 && p == 25 && (ch == 'h' || ch == 'l'))
+            MMIO8(PCG_CURSOR_ENABLE) = ch == 'h';
+        return;
+    }
+    if (ch == 'm') { sgr(); return; }
+    if (ch == 'H' || ch == 'f') {
+        if (param_count > 2) return;
+        row = clamp(n - 1u, CON_PCG_ROWS);
+        col = clamp(params[1] ? params[1] - 1u : 0, CON_PCG_COLS);
+        return;
+    }
+    if (param_count != 1) return;
+    switch (ch) {
+    case 'A': row = n > row ? 0 : row - n; break;
+    case 'B': row = clamp(row + n, CON_PCG_ROWS); break;
+    case 'C': col = clamp(col + n, CON_PCG_COLS); break;
+    case 'D': col = n > col ? 0 : col - n; break;
+    case 'E': row = clamp(row + n, CON_PCG_ROWS); col = 0; break;
+    case 'F': row = n > row ? 0 : row - n; col = 0; break;
+    case 'G': col = clamp(n - 1u, CON_PCG_COLS); break;
+    case 'd': row = clamp(n - 1u, CON_PCG_ROWS); break;
+    case 'J': {
+        uint32_t pos = row * CON_PCG_COLS + col, end = CON_PCG_ROWS * CON_PCG_COLS;
+        if (p == 0) erase_cells(pos, end);
+        else if (p == 1) erase_cells(0, pos + 1u);
+        else if (p == 2) erase_cells(0, end);
+        break;
+    }
+    case 'K': {
+        uint32_t start = row * CON_PCG_COLS, pos = start + col;
+        if (p == 0) erase_cells(pos, start + CON_PCG_COLS);
+        else if (p == 1) erase_cells(start, pos + 1u);
+        else if (p == 2) erase_cells(start, start + CON_PCG_COLS);
+        break;
+    }
+    case 's': if (!p) { saved_col = col; saved_row = row; } break;
+    case 'u': if (!p) { col = saved_col; row = saved_row; } break;
+    default: break;
+    }
+}
+
+/* Parse bytes before UTF-8 decoding. State belongs to the shared screen and
+ * survives IPC chunks. Unknown sequences are consumed without buffering. */
+static int ansi_byte(uint32_t b) {
+    if (b == 0x18 || b == 0x1A) { parser = GROUND; return 1; }
+    if (parser == STRING || parser == STRING_ESC) {
+        if ((string_osc && b == 7) || (parser == STRING_ESC && b == '\\'))
+            parser = GROUND;
+        else parser = b == 0x1B ? STRING_ESC : STRING;
+        return 1;
+    }
+    if (b == 0x1B) { parser = ESCAPE; return 1; }
+    if (parser == GROUND) return 0;
+    if (b < 0x20 || b == 0x7F) return 1;
+    if (parser == ESCAPE) {
+        parser = GROUND;
+        if (b == '[') {
+            parser = CSI;
+            param_count = 1;
+            private_mode = invalid = param_started = 0;
+            for (uint32_t i = 0; i < ANSI_PARAMS; ++i) params[i] = 0;
+        } else if (b == ']' || b == 'P' || b == 'X' || b == '^' || b == '_') {
+            parser = STRING;
+            string_osc = b == ']';
+        } else if (b == '7') { saved_col = col; saved_row = row; }
+        else if (b == '8') { col = saved_col; row = saved_row; }
+        else if (b >= 0x20 && b <= 0x2F) parser = ESC_INTERMEDIATE;
+    } else if (parser == ESC_INTERMEDIATE) {
+        if (b >= 0x30) parser = GROUND;
+    } else if (b >= 0x40 && b <= 0x7E) {
+        csi_final(b);
+        parser = GROUND;
+    } else if (b == '?' && !param_started && !private_mode && !invalid) {
+        private_mode = 1;
+    } else if (b >= '0' && b <= '9') {
+        param_started = 1;
+        uint32_t value = params[param_count - 1u] * 10u + b - '0';
+        if (value > ANSI_MAX) invalid = 1;
+        else params[param_count - 1u] = value;
+    } else if (b == ';') {
+        param_started = 1;
+        if (param_count == ANSI_PARAMS) invalid = 1;
+        else ++param_count;
+    } else {
+        invalid = 1;
+        if (b > 0x7F) parser = GROUND;
+    }
+    return 1;
 }
 
 /* §8.1: LF, CR, BS and TAB are controls; other controls are not shown. The
@@ -111,6 +258,7 @@ static void put_scalar(uint32_t cp) {
 void con_pcg_write(const uint8_t *text, uint32_t len) {
     uint32_t i = 0;
     while (i < len) {
+        if (ansi_byte(text[i])) { ++i; continue; }
         uint32_t b = text[i], cp = SUBSTITUTE, n = 1, need = 0;
         if (b < 0x80u) {
             cp = b;
@@ -135,6 +283,7 @@ void con_pcg_write(const uint8_t *text, uint32_t len) {
 }
 
 void con_pcg_clear(void) {
+    parser = GROUND;
     top = 0;
     col = row = 0;
     set_scroll();
@@ -144,6 +293,8 @@ void con_pcg_clear(void) {
 }
 
 fnd_status con_pcg_init(void) {
+    con_pcg_set_color(15, 0);
+    saved_col = saved_row = 0;
     MMIO8(VDP_DISPLAY_MODE) = 1;
     MMIO8(PCG_DISABLE) = 0;
     MMIO8(PCG_SCREEN_MODE) = 1;
