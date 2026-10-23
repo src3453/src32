@@ -9,10 +9,38 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 
 
+def physical_cores():
+    """Physical core count of this machine (SMT siblings excluded); falls back to the logical count."""
+    count = None
+    try:
+        if sys.platform.startswith("linux"):
+            cores, package = set(), None
+            for line in Path("/proc/cpuinfo").read_text().splitlines():
+                key, _, value = line.partition(":")
+                key, value = key.strip(), value.strip()
+                if key == "physical id":
+                    package = value
+                elif key == "core id":
+                    cores.add((package, value))
+            count = len(cores)
+        elif sys.platform == "darwin":
+            count = int(subprocess.check_output(["sysctl", "-n", "hw.physicalcpu"], text=True))
+        elif os.name == "nt":
+            output = subprocess.check_output(
+                ["powershell", "-NoProfile", "-Command",
+                 "(Get-CimInstance Win32_Processor | Measure-Object -Property NumberOfCores -Sum).Sum"], text=True)
+            count = int(output.strip())
+    except (OSError, ValueError, subprocess.SubprocessError):
+        pass
+    return count if count and count > 0 else (os.cpu_count() or 1)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-only", action="store_true", help="build without opening the emulator")
     parser.add_argument("--clang", help="Clang executable passed to the SRC32 compiler")
+    parser.add_argument("-j", "--jobs", type=int, metavar="N",
+                        help="parallel compiler processes (default: physical core count)")
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
     parser.add_argument("--disk", action="store_true",
                         help="boot foundation.img through the BIOS and stage1 instead of loading the WAX")
@@ -29,6 +57,7 @@ def main():
     command = [sys.executable, str(ROOT / "foundation/boot/build.py"), str(output)]
     if args.clang:
         command += ["--clang", args.clang]
+    command += ["-j", str(args.jobs if args.jobs and args.jobs > 0 else physical_cores())]
     if args.root:
         command += ["--root", str(args.root.resolve())]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
