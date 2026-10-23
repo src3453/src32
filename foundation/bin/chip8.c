@@ -1,5 +1,6 @@
 #include "cmd.h"
 #include "chip8_core.h"
+#include "chip8_options.h"
 #include <foundation/fb.h>
 #include <foundation/sgu.h>
 #include <foundation/keyboard.h>
@@ -61,12 +62,16 @@ static fnd_status load_rom(const char *path) {
     return st == FND_OK && !total ? FND_E_FORMAT : st;
 }
 static int32_t chip8(uint32_t argc) {
-    if (argc != 2) return cmd_usage("chip8 ROM.ch8 (Esc to quit)");
+    if (argc < 2 || argc > 5) return cmd_usage(CHIP8_USAGE);
+    const char *argv[5];
+    for (uint32_t i = 0; i < argc; ++i) argv[i] = fnd_argv(i);
+    chip8_options options;
+    if (!chip8_parse_options(argc, argv, &options)) return cmd_usage(CHIP8_USAGE);
     uint32_t hz = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_HZ);
     if (hz < 60 || hz > 1000000) return cmd_report("chip8", 0, FND_E_BAD_ARG);
     chip8_init(&vm, (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO));
-    fnd_status st = load_rom(fnd_argv(1));
-    if (st < 0) return cmd_report("chip8", fnd_argv(1), st);
+    fnd_status st = load_rom(options.rom);
+    if (st < 0) return cmd_report("chip8", options.rom, st);
     fnd_handle fb = 0, sound = 0;
     st = fnd_file_open("/dev/sgu", FND_OPEN_WRITE, FND_MODE_DEFAULT, &sound);
     if (st == FND_OK) st = sound_init(sound);
@@ -98,15 +103,10 @@ static int32_t chip8(uint32_t argc) {
         chip8_keys(&vm, key_bits(keyboard.down), key_bits(keyboard.pressed), key_bits(keyboard.released));
         uint32_t now = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO), elapsed = now - last;
         last = now;
-        /* Bound catch-up after host pauses to 250 ms; timers still see all elapsed ticks. */
-        uint32_t steps = elapsed;
-        if (steps > hz / 4) steps = hz / 4;
+        uint32_t budget = chip8_cpu_budget(elapsed, hz, options.cycles, &cpu_phase);
         /* Saturate 8-bit timers without looping over an unbounded elapsed time. */
         if (elapsed > hz * 5u) { vm.delay = vm.sound = vm.sound_gate = 0; elapsed = hz; }
         for (uint32_t t = 0; t < elapsed; ++t) chip8_tick(&vm, hz);
-        cpu_phase += steps * 700u;
-        uint32_t budget = cpu_phase / hz;
-        cpu_phase %= hz;
         for (uint32_t s = 0; s < budget; ++s) {
             int result = chip8_step(&vm);
             if (result < 0) { st = FND_E_FORMAT; break; }
@@ -122,6 +122,6 @@ static int32_t chip8(uint32_t argc) {
     }
     if (sound) fnd_close(sound);
     if (fb) fnd_close(fb);
-    return st < 0 ? cmd_report("chip8", fnd_argv(1), st) : FND_OK;
+    return st < 0 ? cmd_report("chip8", options.rom, st) : FND_OK;
 }
 CMD_MAIN(chip8)

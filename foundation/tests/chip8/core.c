@@ -1,6 +1,51 @@
 #include "../../bin/chip8_core.h"
+#include "../../bin/chip8_options.h"
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
 static chip8_vm c;
+int test_options_and_budget(void) {
+    chip8_options options;
+    const char *plain[] = {"chip8", "rom.ch8"};
+    CHECK(chip8_parse_options(2, plain, &options) && !options.cycles && !strcmp(options.rom,"rom.ch8"));
+    const char *short_opt[] = {"chip8", "-c", "20", "rom.ch8"};
+    CHECK(chip8_parse_options(4, short_opt, &options) && options.cycles == 20);
+    const char *long_opt[] = {"chip8", "rom.ch8", "--cycles", "10000"};
+    CHECK(chip8_parse_options(4, long_opt, &options) && options.cycles == CHIP8_CYCLES_MAX);
+    const char *dash_rom[] = {"chip8", "-c", "1", "--", "-rom.ch8"};
+    CHECK(chip8_parse_options(5, dash_rom, &options) && options.cycles == 1 && !strcmp(options.rom,"-rom.ch8"));
+    const char *invalid[] = {"", "0", "-1", "+1", "1x", "1.5", "10001", "4294967296", "999999999999999999999"};
+    for (uint32_t i = 0; i < sizeof invalid / sizeof *invalid; ++i) {
+        short_opt[2] = invalid[i];
+        CHECK(!chip8_parse_options(4, short_opt, &options));
+    }
+    const char *missing[] = {"chip8", "rom.ch8", "-c"};
+    CHECK(!chip8_parse_options(3, missing, &options));
+    const char *duplicate[] = {"chip8", "-c", "2", "--cycles", "3", "rom.ch8"};
+    CHECK(!chip8_parse_options(6, duplicate, &options));
+    const char *unknown[] = {"chip8", "--bogus", "rom.ch8"};
+    CHECK(!chip8_parse_options(3, unknown, &options));
+    const char *two_roms[] = {"chip8", "a.ch8", "b.ch8"};
+    CHECK(!chip8_parse_options(3, two_roms, &options));
+    for (uint32_t hz = 60; hz <= 1000; hz += 40) {
+        uint32_t phase = 0, total = 0, frames = 0;
+        c.delay = 200; c.sound = 200; c.timer_phase = 0;
+        for (uint32_t tick = 0; tick < hz; ++tick) {
+            uint32_t n = chip8_cpu_budget(1, hz, 20, &phase);
+            CHECK(n == 0 || n == 20);
+            if (n) ++frames;
+            total += n;
+            chip8_tick(&c, hz);
+        }
+        CHECK(total == 1200 && frames == 60 && phase == 0);
+        CHECK(c.delay == 140 && c.sound == 140);
+        total = 0;
+        for (uint32_t tick = 0; tick < hz; ++tick) total += chip8_cpu_budget(1,hz,0,&phase);
+        CHECK(total == 700 && phase == 0);
+    }
+    uint32_t phase = 0;
+    CHECK(chip8_cpu_budget(0xFFFFFFFFu,100,10000,&phase) == 150000 && phase == 0);
+    CHECK(chip8_cpu_budget(0xFFFFFFFFu,1000000,10000,&phase) == 150000 && phase == 0);
+    return 0;
+}
 static int op(uint32_t code) {
     c.pc = 0x200; c.mem[0x200] = (uint8_t)(code >> 8); c.mem[0x201] = (uint8_t)code;
     return chip8_step(&c);

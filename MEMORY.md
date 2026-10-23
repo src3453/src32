@@ -1312,9 +1312,37 @@
 
 - AGENTS.md now exempts minor changes without functional impact from Jira creation/updates: ordinary Git operations, mechanical merges/conflict resolution, commit/rebase cleanup, typos and minor development-guide edits. Do not create separate Git-operation issues alongside an implementation/bug issue. Conflict resolutions that decide or change behavior remain tracked under the relevant implementation/bug issue. This rule was explicitly requested by the user to avoid tracking overhead.
 
+<<<<<<< HEAD
 ## bmpview（BMP を /dev/fb0 に表示, 2026-10-24, KAN-66）
 
 - `/bin/bmpview`（`foundation/bin/bmpview.c`、`build.py` の COMMANDS に追加）。非圧縮 BMP の 8／24／32 bit。8 bit は BMP パレットを CLUT に書いて INDEX8、それ以外は RGB888（BMP は B,G,R の順なので入れ替える）。320×240 より大きければ中央を切り出し、小さければ中央に置く。行は `ST_SEEK` で読み、全体をメモリに載せない。
 - BMP のパレット項目は B,G,R,0 の順。サンプル生成の `examples/foundation-bmp/make_bmp.py` が最初 R,G,B で書いていて 8 bit のテストが赤青反転で落ちた。テストは画素値で見ているのでこの種の誤りに気付ける。
 - 描画は 1 画面に約 300 frame かかる（生成コードのバイトループが遅い）。`foundation/tests/bmpview` のキー送信は描画完了後（frame 400）に行う。bmpview は起動時に溜まったキーを捨てるため、描画中に送ったキーは無視され、残りの文字が終了キーとして消費される。
 - 検証: `python3 -m unittest discover -s foundation/tests/bmpview`（`FND_MM=slot` でも）4 件通過。画素は `--expect-pixel` で確認する。
+=======
+## llvm-src32 コンパイル並列化 (2026-10-24, KAN-64)
+
+- `driver.py -j N`（既定 CPU 数）は Clang 呼び出し（入力ファイル、Newlib の pending バッチ、SoftFloat）だけをスレッドプールで並列化する。パース・`link_in`・依存関係収集は入力順の直列のまま。LLVM のモジュールマージ順が出力を決めるので、ここを並列化・順不同にしないこと（`--emit-llvm` が -j1 と -j4 でバイト一致することを確認済み）。
+- `foundation/boot/build.py` は独立したドライバ実行（fnd WAL、lzma、4 サービス、カーネル 2 種、シェルと /bin コマンド）をプールで同時実行する。/bin プログラムだけは fnd WAL の完成を待つ。各ドライバには `-j 1` を渡し、プロセス単位で並列化する（二重の並列で過剰購読しない）。フルビルドは 4 コアで約 41s → 12s。
+- `foundation.img` は元から実行ごとに数百バイト違う（時刻らしい）。決定性の確認は `foundation.wax`、`kernel.bin`、`fndboot.bin`、`root/` 配下の WAX/WAL を直接 cmp する。
+
+## CHIP-8 cycles-per-frame command-line option (2026-10-24, KAN-63)
+
+- `chip8 [-c N|--cycles N] ROM.ch8` accepts decimal N=1..10000 before or after the ROM. `--` terminates option parsing. A cycle means one CHIP-8 instruction; it does not mean an SRC32/1802 hardware cycle. No option preserves the existing 700 instructions/second rate. Bad/empty/overflow/zero/duplicate option values, unknown switches and extra/missing ROMs fail with BAD_ARG before opening the ROM or devices. Error reporting uses the parsed ROM path, not argv[1].
+- `foundation/bin/chip8_options.h` contains the actual shared parser and CPU-budget helper. In explicit mode, the helper accumulates 60 Hz boundaries from Foundation ticks and grants N instructions per boundary. This is 60 Hz VSync-equivalent budgeting, not a wait on host IRQ0. In default mode it retains the old 700/Hz fractional budget. CPU catch-up remains capped at 250 ms; key/draw waits discard unused credit and delay/sound continue at 60 Hz independently. Multiplying elapsed ticks by 60/700 before multiplying whole frames by N keeps u32 intermediates bounded for the validated tick-rate range.
+- The SRC32 freestanding string.h provides memory functions and strlen, but not strcmp. Argument parsing uses a small local equality helper; a host build alone would incorrectly accept strcmp via the host libc. Always compile and execute the guest argument path too.
+- Host tests check parsing, overflow/ranges, 60 frame budgets and 60 timer decrements across multiple scheduler rates, legacy 700 instructions/second, and bounded catch-up. Guest tests run a ROM that needs about 3,080 instructions before drawing: -c 1 stays black during the observation window, while a trailing --cycles 100 reaches the expected white glyph. They also check usage/status errors through the shell.
+- Rebuilt the installed WAX with the normal WAL, origin, stack and image ID; updated only /bin/chip8.wax in the existing Foundation disk and ran fs2.check_image before/after, preserving the other files. The old disk is saved as target/foundation-boot/foundation-before-cycles.img.
+- Validation: host parser/budget/timer tests 4/4; new guest CLI/slow/fast tests 3/3 in normal and forced-slot configurations. The normal suite also passed existing display, input, cleanup and sample checks. One pre-existing ROM-status test consumed its queued echo; changed it to `chip8 /bad.ch8; echo bad=$?` so the shell owns the continuation, then re-ran that test successfully (1/1). The earlier full run had 13 passes, that one failure and one optional external-ROM skip; it was not rerun in full after the test-only correction. Installed WAX build, read-back equality, FS2 checks and git diff --check passed.
+
+## foundation/run.py -j (2026-10-24, KAN-65)
+
+- `run.py -j N` は `boot/build.py -j N` へ渡す。既定は物理コア数（Linux は /proc/cpuinfo の (physical id, core id)、macOS は sysctl hw.physicalcpu、Windows は PowerShell の Win32_Processor.NumberOfCores、取れなければ論理コア数）。`build.py` 単体の既定は論理コア数のまま。
+
+## Jira から GitHub Issues へ移行 (2026-10-23)
+
+- 課題管理は Jira (KAN) をやめ、GitHub Issues とマイルストーンに移した（Projects は使わない）。手順は AGENTS.md「GitHub Issues とマイルストーン」、KAN-n と Issue 番号の対応は `doc/jira_to_github_issues.md`。過去の節にある `KAN-n` はこの表で読み替える。
+- Issue 番号は PR と共通の連番なので、KAN-n と数字は一致しない（例: KAN-6 は #64）。
+- エピックは廃止（親子 Issue や追跡用 Issue は作らない）。分類は `epic:*` ラベル、まとまりはマイルストーンで行う。ラベル名の `epic:` 接頭辞は移行時の名残で、必要なら UI から改名できる（付与済みの Issue は引き継がれる）。
+- GitHub MCP にはマイルストーンを作成するツールがなく（Issue への割り当てだけ可能）、マイルストーン自体はリポジトリ所有者が UI で作成する必要がある。
+>>>>>>> origin/main

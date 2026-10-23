@@ -15,7 +15,7 @@ class CoreTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix='chip8-core-')
         cls.addClassCleanup(cls.temp.cleanup)
         lib = Path(cls.temp.name) / ('chip8.dll' if os.name == 'nt' else 'chip8.so')
-        names = ['test_arithmetic', 'test_memory_control', 'test_draw_timing_keys']
+        names = ['test_arithmetic', 'test_memory_control', 'test_draw_timing_keys', 'test_options_and_budget']
         command = [CLANG, '-shared', '-O2', '-Wall', '-Wextra', str(Path(__file__).with_name('core.c')), '-o', str(lib)]
         if os.name == 'nt':
             for name in names:
@@ -30,6 +30,9 @@ class CoreTests(unittest.TestCase):
 
     def test_arithmetic(self):
         self.assertEqual(self.lib.test_arithmetic(), 0, 'failing core.c line')
+
+    def test_options_and_budget(self):
+        self.assertEqual(self.lib.test_options_and_budget(), 0, 'failing core.c line')
 
     def test_memory_control(self):
         self.assertEqual(self.lib.test_memory_control(), 0, 'failing core.c line')
