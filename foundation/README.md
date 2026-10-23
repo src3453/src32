@@ -223,6 +223,7 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 
 外部 C ライブラリを WAL 化する例は [LZMA SDK デモ](../examples/lzma-wal/README.md) を参照してください。
 `liblzma.wal` の圧縮・展開 API、export 定義、WAX 側の import、ディスクへの配置を説明しています。
+`liblzma.wal` は `/lib/lzma.1.wal` として既定のディスクイメージに含まれます（`boot/build.py` が `-O` の指定に従って作ります）。
 
 `tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 
