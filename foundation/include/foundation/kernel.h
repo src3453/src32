@@ -35,7 +35,7 @@ struct fnd_region {
 };
 
 /* A handle table entry (§6): kind FND_OBJ_* and the kernel object. */
-enum { FND_OBJ_NONE, FND_OBJ_PORT, FND_OBJ_CHANNEL, FND_OBJ_PROCESS };
+enum { FND_OBJ_NONE, FND_OBJ_PORT, FND_OBJ_CHANNEL, FND_OBJ_PROCESS, FND_OBJ_THREAD };
 struct fnd_handle_entry {
     uint32_t kind;
     void *object;

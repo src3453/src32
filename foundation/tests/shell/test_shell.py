@@ -464,6 +464,22 @@ class ShellTests(unittest.TestCase):
                 self.assertIn(self.mem_line(4096), rows)
                 self.assertEqual(rows[-3:], ['/> echo done', 'done', '/>'])
 
+    def test_ctrl_c_kills_running_command(self):
+        # §9.3: the break thread kills the running program; $? is KILLED (-20)
+        # and ^C goes to STDERR. top ignores nothing here: the shell never
+        # passes Ctrl+C to the child.
+        rows = self.screen('top\\n', '\\C', 'echo $?\\n', at_frames=[30, 290, 320])
+        self.assertIn('^C', rows)
+        self.assertEqual(rows[-3:], ['/> echo $?', '-20', '/>'])
+
+    def test_ctrl_c_interrupts_a_blocked_read(self):
+        # hex waits in ST_READ for a command line; Ctrl+C fails the read with
+        # INTERRUPTED (§8.4) and the shell kills hex. Repeating works.
+        rows = self.screen('hex /bin/echo.wax\\n', '\\C', 'hex /bin/echo.wax\\n', '\\C', 'echo $?\\n', 'echo again\\n',
+                           at_frames=[30, 300, 330, 360, 390, 420])
+        self.assertTrue(any('^C' in row for row in rows), rows)
+        self.assertEqual(rows[-5:], ['/> echo $?', '-20', '/> echo again', 'again', '/>'])
+
     def test_top_invalid_arguments_and_help(self):
         # top is /bin/top.wax, not a built-in (§10.3), so help does not know it.
         rows = self.screen('top -n 0\\n', 'top -n -1\\n', 'top -n x\\n',

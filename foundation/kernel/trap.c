@@ -121,7 +121,9 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
         sched_sleep(a1); /* stores the result itself when it blocks */
         result = FND_OK;
         break;
-    case FND_SYS_THREAD_EXIT: /* one thread per process in phase 1 */
+    case FND_SYS_THREAD_EXIT:
+        sys_thread_exit(thread, (int32_t)a1);
+        return;
     case FND_SYS_PROC_EXIT:
         proc_exit(proc, (int32_t)a1, 0);
         return;
@@ -182,7 +184,10 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_BLK_IO:
         result = sys_blk_io(thread, a1);
         break;
-    case FND_SYS_THREAD_CREATE: case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK:
+    case FND_SYS_THREAD_CREATE:
+        result = sys_thread_create(thread, a1, a2, a3);
+        break;
+    case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK:
         result = FND_E_UNSUPPORTED; /* defined by the ABI, later phases */
         break;
     default:

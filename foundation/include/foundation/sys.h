@@ -11,6 +11,8 @@
     ((int32_t)CPT32_SYSCALL3(FND_SYS_INFO, (selector), (uint32_t)(uintptr_t)(buffer), (cap)))
 #define fnd_sys_yield() ((int32_t)CPT32_SYSCALL0(FND_SYS_YIELD))
 #define fnd_sys_sleep(ticks) ((int32_t)CPT32_SYSCALL1(FND_SYS_SLEEP, (ticks)))
+#define fnd_sys_thread_create(entry, sp, arg)                                         \
+    ((int32_t)CPT32_SYSCALL3(FND_SYS_THREAD_CREATE, (uint32_t)(uintptr_t)(entry), (uint32_t)(uintptr_t)(sp), (arg)))
 #define fnd_sys_thread_exit(code) ((void)CPT32_SYSCALL1(FND_SYS_THREAD_EXIT, (uint32_t)(code)))
 #define fnd_sys_proc_exit(code) ((void)CPT32_SYSCALL1(FND_SYS_PROC_EXIT, (uint32_t)(code)))
 #define fnd_sys_time_get(selector) ((int32_t)CPT32_SYSCALL1(FND_SYS_TIME_GET, (selector)))
