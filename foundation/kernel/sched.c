@@ -78,8 +78,11 @@ static void init_idle(void) {
 struct fnd_thread *sched_alloc_thread(void) {
     for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
         struct fnd_thread *thread = &threads[i];
-        if ((thread->state == T_FREE || thread->state == T_DEAD) && thread != fnd_current) {
+        if ((thread->state == T_FREE || thread->state == T_DEAD) && thread != fnd_current &&
+            thread->refs == 0) {
             thread->state = T_FREE;
+            thread->wait_proc = 0;
+            thread->wait_thread = 0;
             thread->reason = B_NONE;
             thread->timed = 0;
             thread->next = 0;

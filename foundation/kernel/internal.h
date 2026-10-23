@@ -28,7 +28,10 @@ struct fnd_thread {
     uint32_t rep_buf, rep_cap;
     uint32_t rcv;         /* receiver's fnd_recv */
     struct fnd_proc *wait_proc;
+    struct fnd_thread *wait_thread; /* a WAIT on a THREAD handle (wait_proc is 0) */
     uint32_t code_ptr;
+    uint32_t refs;      /* THREAD handles: the slot is kept until they close */
+    int32_t exit_code;  /* of a thread that ended with thread_exit */
 };
 
 /* sched.c */
@@ -88,6 +91,8 @@ void fb_close(void);
 int32_t fb_call(struct fnd_proc *proc, const fnd_msg *req, fnd_msg *rep, uint32_t cap);
 int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32_t code_ptr);
 int32_t sys_proc_kill(struct fnd_proc *proc, uint32_t h);
+int32_t sys_thread_create(struct fnd_thread *thread, uint32_t entry, uint32_t sp, uint32_t arg);
+void sys_thread_exit(struct fnd_thread *thread, int32_t code);
 
 /* MMIO (doc/spec_PeC.md, doc/spec_IRQC.md). */
 #define FND_REG32(address) (*(volatile uint32_t *)(uintptr_t)(address))

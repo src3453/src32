@@ -5,7 +5,8 @@
  * other command is a program in /bin (§10.3).
  *
  * Not yet: wildcards (the fs has no directory listing yet), scripts, -c and
- * /etc/profile.fsh, and the Ctrl+C break thread (thread_create). README.md
+ * /etc/profile.fsh, and Ctrl+C of built-in commands and scripts (external programs are
+ * killed by the break thread). README.md
  * lists the details. */
 #include <stdint.h>
 
@@ -729,6 +730,33 @@ static void report_fault(const char *name, int32_t code) {
     err("\n");
 }
 
+/* §9.3: the break thread waits for Ctrl+C on the console and kills the
+ * running program. child_proc is its PROCESS handle while one runs, else 0;
+ * the shell clears it before closing the handle, so the thread only ever
+ * kills a live program or fails with BAD_HANDLE. */
+static volatile uint32_t child_proc, break_hit;
+static uint32_t break_stack[512] __attribute__((aligned(8)));
+
+static void break_thread(void) {
+    for (;;) {
+        fnd_status status = fnd_call(fnd_console(), FND_CON_BREAK_WAIT, 0, 0, 0, 0, 0, 0);
+        if (status == FND_OK) {
+            break_hit = 1;
+            uint32_t h = child_proc;
+            if (h)
+                fnd_sys_proc_kill(h);
+        } else if (status == FND_E_BAD_HANDLE || status == FND_E_PEER_GONE) {
+            fnd_sys_thread_exit(0); /* no console to watch */
+        } else {
+            fnd_sys_sleep(10u); /* BUSY: another waiter; try again later */
+        }
+    }
+}
+
+static void start_break_thread(void) {
+    fnd_sys_thread_create(break_thread, &break_stack[512] - 2, 0);
+}
+
 /* §7.2: runs the program at found with argv and waits for it. */
 static int32_t run_program(uint32_t argc, char **argv) {
     if (has_suffix(found, ".fsh"))
@@ -737,11 +765,21 @@ static int32_t run_program(uint32_t argc, char **argv) {
         return report(argv[0], 0, FND_E_FORMAT);
     fnd_exec_t ex = {argc, (const char *const *)argv, 0, cur_in, cur_out, cur_err, 0};
     fnd_handle proc;
+    break_hit = 0;
     fnd_status status = fnd_proc_exec(found, &ex, &proc);
     if (status != FND_OK)
         return report(argv[0], 0, status);
     int32_t code = 0;
+    child_proc = proc;
+    if (break_hit)
+        fnd_sys_proc_kill(proc); /* Ctrl+C came while it was starting */
     status = fnd_sys_wait(proc, FND_FOREVER, &code);
+    child_proc = 0;
+    if (break_hit) {
+        err("^C\n"); /* §9.3 */
+        fnd_sys_handle_close(proc);
+        return FND_E_KILLED;
+    }
     if (status == FND_OK && code <= -256)
         report_fault(argv[0], code);
     fnd_sys_handle_close(proc);
@@ -985,7 +1023,13 @@ static int read_line(void) {
     line_len = cursor = 0;
     for (;;) {
         fnd_key_t key;
-        if (fnd_con_getkey(&key) != FND_OK)
+        fnd_status got = fnd_con_getkey(&key);
+        if (got == FND_E_INTERRUPTED) { /* §8.4: Ctrl+C reached the break waiter */
+            out_n(line + cursor, line_len - cursor);
+            out("^C\n");
+            return 1;
+        }
+        if (got != FND_OK)
             fnd_exit(last_status);
         switch (key.code) {
         case FND_KEY_ENTER:
@@ -1102,6 +1146,7 @@ int main(void) {
     /* §2.1: arguments (-c, scripts) and /etc/profile.fsh are not handled
      * yet, so the shell is always interactive. */
     show_versions();
+    start_break_thread();
     for (;;) {
         prompt();
         if (read_line() != 0)

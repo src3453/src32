@@ -13,7 +13,7 @@
 進捗は GitHub の Issues（https://github.com/src3453/src32/issues ）とマイルストーンで管理します。Projects は使いません。以前使っていた Jira（プロジェクト `KAN`）は廃止しました。MEMORY.md や過去の課題に残る `KAN-n` は `doc/jira_to_github_issues.md` の対応表で Issue 番号に読み替えます。実装・機能変更・不具合修正のタスクは、特に明記しない限り Issue として載せます。ただし、プロジェクトの機能に影響しない軽微な変更は Issue の登録・更新を不要とします。例として、ブランチ操作、マージ、機械的なコンフリクト解消、コミット整理・rebase、誤字修正、開発ガイドの軽微な更新が該当します。実装や不具合修正に付随する Git 操作も、別の Issue として登録しません。競合解消で仕様や挙動の判断・変更を伴う場合は、該当する実装・不具合の Issue で管理します。GitHub の MCP サーバーや `gh` に接続できる場合だけ、次のとおり更新します。
 
 - **作業を始めるとき**: 先に Issue をタイトルで検索し、同じ作業の Issue がなければ新しく作成します。重複する Issue を作らないでください。見つけたバグも Issue として追加し、`bug` ラベルを付けます。
-- **エピックは使いません**: 親子 Issue（sub-issue）や追跡用 Issue で束ねず、分類はラベル、まとまり（フェーズやリリースなどの目標単位）はマイルストーンで表します。マイルストーンはリポジトリ所有者が作成し、関連する Issue と PR に割り当てます。分野ラベルは次のいずれか 1 つを付けます。Foundation OS は `epic:foundation-os`、開発基盤（CI・ツール）は `epic:devinfra`、エミュレータ・UX は `epic:emulator-ux`、SRC32 CPU（CPU ISA や実装の変更）は `epic:cpu`。
+- **エピックは使いません**: 親子 Issue（sub-issue）や追跡用 Issue で束ねません。分野の分類はマイルストーンで行い、すべての Issue（と PR）に次のいずれか 1 つを割り当てます。「Foundation OS」（Foundation OS 本体）、「開発基盤 (ツールチェーン、CI/CD)」（CI・ツール）、「エミュレータ・UI/UX」、「SRC32 CPU」（CPU ISA や実装の変更）。マイルストーンはリポジトリ所有者が作成し、新しい分野が必要なときは所有者に依頼します。ラベルは状態と種別（`bug`、`in-progress`、`in-review`、`on-hold`）だけに使います。
 - **状態**: Issue の open／closed とラベルで表します。着手したら `in-progress`、PR を作成したら `in-review` ラベルを付け、マージしたら Issue を close します（PR 本文に `Closes #n` と書けば自動で閉じます）。中断・待機するときは `on-hold` を付けます。着手前は何も付けません。
 - **PR リンク**: PR を作成したら、Issue の本文またはコメントにその PR のリンクを書きます。複数の PR にまたがる場合はすべて並べます。
 - **記述**: Issue のタイトルと説明は日本語で書きます。

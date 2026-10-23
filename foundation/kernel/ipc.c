@@ -52,6 +52,8 @@ static void obj_ref(uint32_t kind, void *object) {
         ++((struct fnd_port *)object)->refs;
     else if (kind == FND_OBJ_CHANNEL)
         ++((struct fnd_chan *)object)->refs;
+    else if (kind == FND_OBJ_THREAD)
+        ++((struct fnd_thread *)object)->refs;
     else
         ++((struct fnd_proc *)object)->refs;
 }
@@ -116,6 +118,8 @@ static void obj_unref(uint32_t kind, void *object) {
         struct fnd_chan *chan = object;
         if (--chan->refs == 0)
             chan_last_closed(chan);
+    } else if (kind == FND_OBJ_THREAD) {
+        --((struct fnd_thread *)object)->refs;
     } else {
         proc_release(object);
     }
@@ -167,6 +171,8 @@ int32_t handle_dup_into(struct fnd_proc *from, uint32_t h, struct fnd_proc *to) 
     struct fnd_handle_entry *e = entry(from, h);
     if (!e)
         return FND_E_BAD_HANDLE;
+    if (e->kind == FND_OBJ_THREAD && from != to)
+        return FND_E_ACCESS; /* a THREAD handle stays in its process */
     return handle_add(to, e->kind, e->object);
 }
 
@@ -553,21 +559,29 @@ static struct fnd_proc *process_handle(struct fnd_proc *proc, uint32_t h) {
 
 int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32_t code_ptr) {
     struct fnd_proc *target = process_handle(thread->proc, h);
-    if (!target)
-        return FND_E_BAD_HANDLE; /* THREAD handles come with thread_create */
+    struct fnd_handle_entry *e = entry(thread->proc, h);
+    struct fnd_thread *target_thread = e && e->kind == FND_OBJ_THREAD ? e->object : 0;
+    if (!target && !target_thread)
+        return FND_E_BAD_HANDLE;
+    if (target_thread == thread)
+        return FND_E_BAD_ARG; /* a thread cannot wait for itself */
     if (code_ptr) {
         int32_t status = user_struct(thread->proc, code_ptr, 4u, CPT32_PERM_W);
         if (status != FND_OK)
             return status;
     }
-    if (target->state != FND_PROC_LIVE) {
+    int ended = target_thread ? (target_thread->state == T_DEAD || target_thread->state == T_FREE)
+                              : target->state != FND_PROC_LIVE;
+    if (ended) {
         if (code_ptr)
-            mm_write32(thread->proc, code_ptr, (uint32_t)target->exit_code);
+            mm_write32(thread->proc, code_ptr,
+                       (uint32_t)(target_thread ? target_thread->exit_code : target->exit_code));
         return FND_OK;
     }
     if (timeout == 0)
         return FND_E_WOULD_BLOCK;
     thread->wait_proc = target;
+    thread->wait_thread = target_thread;
     thread->code_ptr = code_ptr;
     sched_block(thread, B_WAIT, timeout);
     return FND_OK;
@@ -590,4 +604,56 @@ int32_t sys_proc_kill(struct fnd_proc *proc, uint32_t h) {
         return FND_E_BAD_HANDLE;
     proc_exit(target, FND_E_KILLED, 0);
     return FND_OK;
+}
+
+/* ---- threads (§6, §7) ---- */
+
+int32_t sys_thread_create(struct fnd_thread *caller, uint32_t entry_pc, uint32_t sp, uint32_t arg) {
+    struct fnd_proc *proc = caller->proc;
+    if ((entry_pc & 3u) || (sp & 7u))
+        return FND_E_BAD_ARG;
+    if (!proc_user_range_ok(proc, entry_pc, 4u, CPT32_PERM_X) ||
+        !proc_user_range_ok(proc, sp, 8u, CPT32_PERM_R | CPT32_PERM_W))
+        return FND_E_ACCESS;
+    if (handle_free_count(proc) == 0)
+        return FND_E_LIMIT;
+    struct fnd_thread *thread = sched_alloc_thread();
+    if (!thread)
+        return FND_E_LIMIT;
+    for (unsigned i = 0; i < 32u; ++i)
+        thread->frame.r[i] = 0;
+    thread->frame.r[1] = arg;
+    thread->frame.r[28] = sp;
+    thread->frame.r[30] = caller->frame.r[30]; /* UGP of the process */
+    thread->frame.epc = entry_pc;
+    thread->frame.status = CPT32_STATUS_PU | CPT32_STATUS_PIE;
+    thread->priority = caller->priority;
+    thread->proc = proc;
+    thread->exit_code = 0;
+    int32_t h = handle_add(proc, FND_OBJ_THREAD, thread);
+    if (h < 0)
+        return h;
+    ++proc->threads;
+    sched_make_ready(thread);
+    return h;
+}
+
+/* The last thread of a process ends the process with the same code (§7). */
+void sys_thread_exit(struct fnd_thread *thread, int32_t code) {
+    struct fnd_proc *proc = thread->proc;
+    if (proc->threads <= 1u) {
+        proc_exit(proc, code, 0);
+        return;
+    }
+    --proc->threads;
+    thread->exit_code = code;
+    thread->state = T_DEAD;
+    for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
+        struct fnd_thread *t = &fnd_threads[i];
+        if (t->state == T_BLOCKED && t->reason == B_WAIT && t->wait_thread == thread) {
+            if (t->code_ptr)
+                mm_write32(t->proc, t->code_ptr, (uint32_t)code);
+            sched_wake(t, FND_OK);
+        }
+    }
 }
