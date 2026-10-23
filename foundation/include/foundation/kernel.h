@@ -16,9 +16,9 @@
  * grants (at most FND_MAX_GRANTS). The slot backend keeps all in the 8 CPU
  * regions; the vm backend only records them. */
 #define FND_PROC_REGIONS 16u
-#define FND_TICK_HZ 1000u
-#define FND_TICK_CYCLES 48000u /* PeC timer ch0 RELOAD at 48 MHz */
-#define FND_SLICE_TICKS 10u
+#define FND_TICK_HZ 100u
+#define FND_TICK_CYCLES (48000000u / FND_TICK_HZ) /* PeC timer ch0 RELOAD at 48 MHz */
+#define FND_SLICE_TICKS 1u /* 10 ms, one scheduler tick */
 
 /* User slots (§5.2): the slot backend's fixed physical areas. With
  * Extension V the same numbers are only link-time addresses. */

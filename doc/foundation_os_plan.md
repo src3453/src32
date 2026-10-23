@@ -101,7 +101,7 @@ doc/spec_Foundation.md, spec_Foundation_API.md, spec_FS2.md （各フェーズ�
 ### 4.3 スケジューラ
 
 - 優先度は 4 段階：`IRQ`（通知を受けるドライバのスレッド）> `SERVICE` > `APP` > `IDLE`。同じ段階の中ではラウンドロビンにします。
-- tick は PeC timer ch0 の periodic で、既定は 1 ms（RELOAD = 48,000 cycles）。タイムスライスの既定は 10 tick です。tick 間隔は起動設定で変えられるようにします。
+- tick は PeC timer ch0 の periodic で、既定は 10 ms（100 Hz、RELOAD = 480,000 cycles）。タイムスライスの既定は 1 tick（10 ms）です。tick 間隔は起動設定で変えられるようにします。
 - スレッドの状態は `READY / RUNNING / BLOCKED(ipc, sleep, wait, blk_io) / DEAD` です。BLOCKED からの解除は、必ずカーネル内の一箇所の関数（`wake(thread, result)`）を通します。
 
 ### 4.4 ハンドルと IPC
@@ -278,6 +278,6 @@ libfnd とサービスのプロトコルは [API 仕様](spec_Foundation_API.md)
 | ファイル名の大文字小文字 | FS2仕様で確定：保存名を維持し、Unicode 16.0.0 full case foldingで比較する |
 | ファイル名の文字コード | FS2仕様で確定：UTF-8、最大256 Unicode scalar values / 1024 bytes |
 | WAX ローダの置き場所 | カーネル内（所有権表と原子的な起動を一箇所で扱うため） |
-| tick とタイムスライス | 1 ms と 10 ms |
+| tick とタイムスライス | 10 ms と 10 ms |
 | ゲスト側の設定形式 | 1 行に 1 コマンドのテキスト。YAML はホスト側の設定にだけ使う |
 | C++ の利用範囲 | カーネルとサービスは C11。アプリは C++17 も可（new/delete・グローバル初期化なし） |

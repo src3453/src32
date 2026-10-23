@@ -25,10 +25,10 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fs2  # noqa: E402
-STOP_TICKS = 6000
+STOP_TICKS = 800  # 8 seconds at 100 Hz, including long command batches
 # FND_MM=slot forces slots; otherwise CPUID decides the actual backend.
 SLOT_MM = os.environ.get('FND_MM') == 'slot'
-FRAMES = 600
+FRAMES = 660
 # Keys typed before the shell is up (about frame 120: fs checks the boot
 # volume, then init reads /bin/shell.wax) wait in the console's type-ahead.
 FIRST_FRAME = 30

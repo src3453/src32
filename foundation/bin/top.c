@@ -92,7 +92,7 @@ static int32_t wait_or_quit(uint32_t refresh) {
         if (status == FND_OK && key.code == FND_KEY_CHAR &&
             (upper(key.ch) == 'Q' || ((key.mods & FND_MOD_CTRL) && upper(key.ch) == 'C')))
             return 1;
-        fnd_sys_sleep(10u);
+        fnd_sys_sleep(1u); /* poll keys every 10 ms at 100 Hz */
     }
     return 0;
 }

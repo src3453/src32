@@ -12,7 +12,7 @@
 
 #include "con_pcg.h"
 
-#define POLL_TICKS 4u
+#define POLL_TICKS 1u /* minimum wait: 10 ms at 100 Hz */
 #define STREAMS 16u
 #define PENDING 16u
 #define KEYS 256u /* type-ahead; as deep as the PeC event FIFO */

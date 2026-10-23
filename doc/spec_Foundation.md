@@ -203,7 +203,7 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 
 ### 7.1 タイムアウト
 
-タイムアウトの単位は tick です。0 はブロックせず、条件が満たされていなければ `FND_E_WOULD_BLOCK` を返します。`0xFFFFFFFF`（`FND_FOREVER`）は無期限です。それ以外の値は、起点から数えてその tick 数の後に `FND_E_TIMEOUT` を返します。
+タイムアウトの単位は tick（10 ms）です。実時間からの換算には `time_get(2)` または `sys_info(0)` の `tick_hz`（100）を使い、1 tick = 1 ms と仮定してはなりません。0 はブロックせず、条件が満たされていなければ `FND_E_WOULD_BLOCK` を返します。`0xFFFFFFFF`（`FND_FOREVER`）は無期限です。それ以外の値は、起点から数えてその tick 数の後に `FND_E_TIMEOUT` を返します。
 
 ## 8. IPC
 
@@ -460,11 +460,11 @@ CPU が Extension V を報告するとき（`CPU_FEATURES` bit 9）、カーネ�
 ### 10.1 スケジューラ
 
 - 優先度は 0 DRIVER、1 SERVICE、2 APP、3 IDLE です（値が小さいほど優先）。同じ優先度の中では FIFO のラウンドロビンにします。
-- tick は PeC timer ch0 の periodic で、1000 Hz（RELOAD = 48,000）です。IRQ4 で受けます。
+- tick は PeC timer ch0 の periodic で、100 Hz（1 tick = 10 ms、RELOAD = 480,000）です。IRQ4 で受けます。
   - timer ch0 はカーネル専用です。
   - RTC alarm は v1 では使いません。
   - IRQ0（VSync）を時刻に使ってはなりません。
-- タイムスライスは 10 tick です。使い切ったスレッドは同じ優先度のキューの末尾へ回します。
+- タイムスライス（クオンタム）は 1 tick（10 ms）です。使い切ったスレッドは同じ優先度のキューの末尾へ回します。
 - より高い優先度のスレッドが起きた場合、カーネルからユーザーへ戻る時点でそのスレッドに切り替えます。
 
 ### 10.2 IRQ

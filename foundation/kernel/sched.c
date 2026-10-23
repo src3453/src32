@@ -1,6 +1,6 @@
 /* Scheduler (doc/spec_Foundation.md §2, §10.1): four priorities with FIFO
- * round robin inside each, 1000 Hz tick on PeC timer ch0 (IRQ4) and a
- * 10-tick time slice. The kernel itself is never preempted. */
+ * round robin inside each, 100 Hz tick on PeC timer ch0 (IRQ4) and a
+ * 1-tick (10 ms) time slice. The kernel itself is never preempted. */
 #include "internal.h"
 
 #define TIMER_ENABLE 0x80040184u

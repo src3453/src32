@@ -1,6 +1,6 @@
 /* Foundation phase 1 demo: three U-mode processes counting without yielding
- * share the CPU through the 10-tick time slice, one of them crashes on a
- * protection fault, and a SERVICE process wakes every 250 ticks. The kernel
+ * share the CPU through the 1-tick (10 ms) time slice, one of them crashes on a
+ * protection fault, and a SERVICE process wakes every 25 ticks. The kernel
  * shows every process on the PCG screen ten times a second. */
 #include <cpt32/pcg.h>
 #include <foundation/kernel.h>
@@ -43,7 +43,7 @@ static void label(uint32_t x, uint32_t y, const char *text) {
 }
 
 static uint32_t show(uint32_t ticks) {
-    if (ticks % 100u)
+    if (ticks % (FND_TICK_HZ / 10u))
         return 0;
     pcg_colorfg(0x3Fu);
     label(0, 2, "ticks    ");

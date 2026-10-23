@@ -6,8 +6,8 @@
 
 #include "fnd_internal.h"
 
-#define RETRY_TICKS 10u
-#define RESPAWN_TICKS 100u
+#define RETRY_TICKS 1u    /* 10 ms at 100 Hz */
+#define RESPAWN_TICKS 10u /* 100 ms at 100 Hz */
 
 static const char *const shell_argv[] = {"/bin/shell.wax"};
 

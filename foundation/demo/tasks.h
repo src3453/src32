@@ -6,7 +6,7 @@
  * its task points at the bottom, where word 0 is a counter the kernel shows. */
 #define TASK_RAM 0x4000u
 #define CRASH_AFTER 1000000u
-#define TICKER_SLEEP 250u /* ticks */
+#define TICKER_SLEEP 25u /* 250 ms at 100 Hz */
 
 /* user.c: code granted R/X lies in [user_code_begin, user_code_end). */
 void user_code_begin(void);

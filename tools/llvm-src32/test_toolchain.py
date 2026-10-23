@@ -479,7 +479,7 @@ int main(void) {
 
     def test_foundation_phase1_kernel(self):
         # Foundation phase 1 (doc/foundation_os_plan.md §8): U-mode counters
-        # that never yield advance on the 10-tick slice, one process dies on a
+        # that never yield advance on the 1-tick (10 ms) slice, one process dies on a
         # protection fault while the others keep running, and a SERVICE
         # process checks sleep, priority preemption and syscall errors.
         foundation = ROOT / 'foundation'
@@ -494,7 +494,7 @@ int main(void) {
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
-                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '30'],
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '90'],
                             cwd=self.work, capture_output=True, text=True, encoding='utf-8',
                             errors='replace', timeout=120)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -524,7 +524,7 @@ int main(void) {
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
-                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '90'],
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '180'],
                             cwd=self.work, capture_output=True, text=True, encoding='utf-8',
                             errors='replace', timeout=120)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
@@ -552,7 +552,7 @@ int main(void) {
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
-                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '120'],
+                            [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '180'],
                             cwd=self.work, capture_output=True, text=True, encoding='utf-8',
                             errors='replace', timeout=300)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)

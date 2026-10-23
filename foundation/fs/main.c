@@ -120,10 +120,10 @@ static void mount_disks(void) {
         boot = ((uint32_t)info[24] << 24) | ((uint32_t)info[25] << 16) | ((uint32_t)info[26] << 8) | info[27];
     /* The kernel starts disk before fs; give it a moment to register. */
     int32_t ch = FND_E_NOT_FOUND;
-    for (uint32_t tries = 0; tries < 50u && ch < 0; ++tries) {
+    for (uint32_t tries = 0; tries < 10u && ch < 0; ++tries) {
         ch = fnd_sys_svc_lookup("disk");
         if (ch < 0)
-            fnd_sys_sleep(2u);
+            fnd_sys_sleep(1u); /* up to 100 ms, in 10 ms ticks */
     }
     if (ch < 0)
         return;

@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fndboot  # noqa: E402
 import fs2  # noqa: E402
 
-STOP_TICKS = 6000
+STOP_TICKS = 600  # 6 seconds at 100 Hz
 # The kernel starts after the 120-frame POST hold and the HDD read (~frame
 # 125) and stops STOP_TICKS later (360 frames at 60 Hz). fs checks the volume
 # before init can load /bin/shell.wax, so the banner appears ~115 frames later.

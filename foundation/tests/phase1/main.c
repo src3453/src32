@@ -3,17 +3,18 @@
  * dies on a protection fault while the others keep running, and a SERVICE
  * task checks sleep, priority preemption and system call errors, then exits.
  * The probe is gone before CHECK_TICK, so between CHECK_TICK and END_TICK
- * only the 10-tick time slice can move the CPU between the counters. Ends with
+ * only the 1-tick (10 ms) time slice can move the CPU between the counters. Ends with
  * R1 = 42 at a HALT, or 0x100 + the number of failed checks. */
 #include <foundation/kernel.h>
 
 #include "tasks.h"
 
-#define CHECK_TICK 150u
-#define END_TICK 300u
+#define CHECK_TICK 50u  /* probe finishes its five 7-tick sleeps first */
+#define END_TICK 100u   /* one second at 100 Hz */
 
 static int32_t pid_a, pid_b, pid_fault, pid_probe;
 static uint32_t failures, a_mid, b_mid;
+static uint32_t a_last, b_last, last_ran, clock_mid;
 /* Copy of the probe mailbox, refreshed every tick: its exit zeroes the slot. */
 static uint32_t probe[PROBE_UNSUPPORTED + 1];
 
@@ -42,6 +43,9 @@ static uint32_t on_tick(uint32_t ticks) {
         check(box(SLOT_FAULT)[0] == 0u); /* its slot was zeroed */
         a_mid = box(SLOT_A)[0];
         b_mid = box(SLOT_B)[0];
+        a_last = a_mid;
+        b_last = b_mid;
+        clock_mid = *(volatile uint32_t *)(uintptr_t)0x80040448u; /* PeC ch1, 48 MHz */
         check(a_mid != 0u && b_mid != 0u);
         check(a_mid != 0xDEADu); /* the faulting store never landed */
         check(probe[PROBE_BAD_POINTER] == (uint32_t)FND_E_ACCESS);
@@ -49,6 +53,7 @@ static uint32_t on_tick(uint32_t ticks) {
         check(probe[PROBE_BAD_CONTEXT] == (uint32_t)FND_E_BAD_CALL);
         check(probe[PROBE_UNSUPPORTED] == (uint32_t)FND_E_UNSUPPORTED);
         check(probe[PROBE_TICK_HZ] == FND_TICK_HZ);
+        check(probe[PROBE_TICK_HZ] == 100u);
         check(probe[PROBE_WRITTEN] == 1u);
         check(probe[PROBE_CPU_SIZE] == 48u); /* header + four PID/cycle pairs */
         check(probe[PROBE_CPU_BAD_POINTER] == (uint32_t)FND_E_ACCESS);
@@ -63,14 +68,29 @@ static uint32_t on_tick(uint32_t ticks) {
         check(p && p->state == FND_PROC_EXITED && p->exit_code == (int32_t)(PROBE_EXIT_BASE + PROBE_SLEEPS));
         check(p && p->fault_epc == 0u);
     }
+    if (ticks > CHECK_TICK) {
+        uint32_t a = box(SLOT_A)[0], b = box(SLOT_B)[0];
+        /* After the probe exits, exactly one counter runs per 10 ms tick. */
+        check((a != a_last) != (b != b_last));
+        uint32_t ran = a != a_last ? 1u : 2u;
+        check(last_ran == 0u || ran != last_ran);
+        last_ran = ran;
+        a_last = a;
+        b_last = b;
+    }
     if (ticks < END_TICK)
         return 0;
+    /* Check the real timer period independently of the tick constants.
+     * Allow two ticks for trap latency; 1 ms and 100 ms both fail. */
+    uint32_t elapsed = *(volatile uint32_t *)(uintptr_t)0x80040448u - clock_mid;
+    check(elapsed >= (END_TICK - CHECK_TICK - 2u) * 480000u);
+    check(elapsed <= (END_TICK - CHECK_TICK + 2u) * 480000u);
     /* Both counters kept going after the fault. */
     check(box(SLOT_A)[0] > a_mid && box(SLOT_B)[0] > b_mid);
     struct fnd_proc *a = fnd_proc_get((uint32_t)pid_a), *b = fnd_proc_get((uint32_t)pid_b);
     check(a && a->state == FND_PROC_LIVE && b && b->state == FND_PROC_LIVE);
     check(a && a->cpu_cycles > 0u && b && b->cpu_cycles > 0u);
-    /* 10-tick slices alternate A and B. */
+    /* One-tick slices alternate A and B. */
     check(fnd_context_switches() >= END_TICK / FND_SLICE_TICKS);
     return failures == 0u ? 42u : 0x100u + failures;
 }
