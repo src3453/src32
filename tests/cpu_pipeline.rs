@@ -253,6 +253,41 @@ fn cpuid_advertises_p_and_r0_stays_zero() {
 }
 
 #[test]
+fn cpuid_results_forward_to_immediately_following_readers() {
+    // CPUID retires R1/R2 implicitly; readers 0..3 instructions behind it
+    // must see them without NOPs in between.
+    for gap in 0..4 {
+        let mut cpu = boot();
+        let mut image = Vec::new();
+        image.extend_from_slice(&encode_i(0x3C, 1, 0, 7)); // LDIL R1, 7 (older value, overwritten)
+        image.extend_from_slice(&encode_r(0x3E, 0, 0, 0)); // CPUID
+        for _ in 0..gap {
+            image.extend_from_slice(&encode_r(0x03, 0, 0, 0)); // ADD R0, R0, R0 (NOP)
+        }
+        image.extend_from_slice(&encode_r(0x03, 3, 1, 2)); // ADD R3, R1, R2
+        image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+        cpu.load_program(0, &image);
+        cpu.run(64);
+        let id = 0x5352_4332u32;
+        let features = 0x33F | 0x80;
+        assert_eq!(cpu.read_reg(3), id.wrapping_add(features), "gap {gap}");
+    }
+}
+
+#[test]
+fn younger_writer_of_r1_wins_over_cpuid_forwarding() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_r(0x3E, 0, 0, 0)); // CPUID
+    image.extend_from_slice(&encode_i(0x3C, 1, 0, 5)); // LDIL R1, 5
+    image.extend_from_slice(&encode_r(0x03, 3, 1, 2)); // ADD R3, R1, R2
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    cpu.load_program(0, &image);
+    cpu.run(64);
+    assert_eq!(cpu.read_reg(3), (0x33Fu32 | 0x80).wrapping_add(cpu.read_reg(1)));
+}
+
+#[test]
 fn active_pipeline_irq_returns_to_the_interrupted_program() {
     let mut cpu = boot();
     let mut image = Vec::new();
