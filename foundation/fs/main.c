@@ -15,8 +15,11 @@
 #include "../services/disk/disk.h"
 #include "server.h"
 
-/* /tmp (§11.1): an FS2 volume in RAM, uid 0, mode 0x003F. */
-#define TMP_SECTORS 128u
+/* /tmp (§11.1): an FS2 volume in RAM, uid 0, mode 0x003F. fs lives in a
+ * 512 KiB slot whose heap (about 110 KiB after the image and the stack) holds
+ * two fs2_vol (about 21 KiB each) and this image; 128 sectors left almost
+ * nothing for the directory indexes once /bin had 14 commands (KAN-17). */
+#define TMP_SECTORS 96u
 #define TMP_INODES 32u
 
 static uint8_t req_data[FS_IPC_MAX] __attribute__((aligned(4)));

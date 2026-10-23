@@ -25,7 +25,7 @@ def main():
     lib = ROOT / "foundation/lib/fnd"
     wal = out / "sample-fnd.wal"
     command = [sys.executable, str(ROOT / "tools/llvm-src32/driver.py"),
-               *[str(lib / name) for name in ("start.c", "mem.c", "proc.c", "strerror.c")],
+               *[str(lib / name) for name in ("start.c", "mem.c", "proc.c", "rename.c", "strerror.c")],
                "-I", str(ROOT / "foundation/include"), "-I", str(ROOT / "sdk/cpt32/include"),
                "-O1", "--wal", "--image-id", "fnd", "--abi-version", "1.1", "--exports", str(lib / "fnd.exports"),
                "-o", str(wal)]

@@ -78,8 +78,7 @@ jobs:
             esac
             args+=(--test "$name")
           done
-          cargo test --no-fail-fast "${args[@]}" -- \
-            --skip dos_hex_returns_to_shell_at_800_cycles_per_frame
+          cargo test --no-fail-fast "${args[@]}"
 
   # 失敗が既知のテスト。ステップ単位の continue-on-error なので PR のチェックは緑のまま、
   # 結果はこのジョブのログ (Known-failing tests ステップ) で確認できる。
@@ -110,7 +109,6 @@ jobs:
         continue-on-error: true
         run: |
           cargo test --no-fail-fast --test strek_micro --test strek_smoke --test tb_load_live
-          cargo test --test dos_smoke dos_hex_returns_to_shell_at_800_cycles_per_frame
 
   # LLVM/SRC32 ツールチェーンと Foundation の受け入れテスト (test_toolchain.py)。
   # Clang は llvmlite が組み込んでいる LLVM と同じメジャーバージョンを使う

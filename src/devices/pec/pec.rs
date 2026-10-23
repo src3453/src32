@@ -391,8 +391,24 @@ impl Device for PeCInputDevice {
     }
 }
 
-/// Register PeC input and timing MMIO and process host input off-thread.
-pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
+/// Host-side handle that applies input events to the PeC FIFO synchronously.
+///
+/// `connect_pec_input` applies events on a separate thread, so an event sent
+/// "now" reaches the FIFO at an unspecified host time. Headless tests advance
+/// simulated time in frames, independent of host time, and need a key to be
+/// in the FIFO before the next frame runs; they use this handle instead.
+#[derive(Clone)]
+pub struct PeCInputHandle {
+    state: Arc<Mutex<PeCState>>,
+}
+
+impl PeCInputHandle {
+    pub fn send(&self, event: HostInputEvent) {
+        lock_state(&self.state).apply(event);
+    }
+}
+
+fn attach_pec_input_device(bus: &mut Bus) -> Arc<Mutex<PeCState>> {
     let state = Arc::new(Mutex::new(PeCState::default()));
     bus.attach_pec_input(Arc::clone(&state));
     bus.add_device(
@@ -404,6 +420,20 @@ pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
         }),
     );
     crate::devices::pec::timing::connect_pec_timer_rtc(bus);
+    state
+}
+
+/// Register PeC input and timing MMIO; host input is applied synchronously
+/// by the returned handle (see [`PeCInputHandle`]).
+pub fn connect_pec_input_sync(bus: &mut Bus) -> PeCInputHandle {
+    PeCInputHandle {
+        state: attach_pec_input_device(bus),
+    }
+}
+
+/// Register PeC input and timing MMIO and process host input off-thread.
+pub fn connect_pec_input(bus: &mut Bus) -> UnboundedSender<HostInputEvent> {
+    let state = attach_pec_input_device(bus);
 
     let (sender, mut receiver) = mpsc::unbounded_channel::<HostInputEvent>();
     std::thread::Builder::new()

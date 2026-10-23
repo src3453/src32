@@ -23,14 +23,13 @@ use cpt32::bus::{Bus, connect_devices_with_vdp};
 use cpt32::cpu::CYCLES_PER_FRAME;
 use cpt32::cpu_select::{AnyCpu, CpuKind};
 use cpt32::devices::pec::idc::idc::{Idc, connect_idc};
-use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
+use cpt32::devices::pec::pec::{HostInputEvent, PeCInputHandle, connect_pec_input_sync};
 use cpt32::devices::pec::rng::connect_rng;
 use cpt32::devices::vdp::vdp::{VDP_VRAM_BASE, Vdp};
 use std::cell::RefCell;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
-use tokio::sync::mpsc::UnboundedSender;
 
 const SECTOR: usize = 512;
 const TOTAL: usize = 2880;
@@ -165,7 +164,7 @@ fn write_config(root: &Path, slots: &[(&str, bool)]) {
 struct Harness {
     cpu: AnyCpu,
     vdp: Rc<RefCell<Vdp>>,
-    input: UnboundedSender<HostInputEvent>,
+    input: PeCInputHandle,
     root: PathBuf,
     cycles_per_frame: usize,
     started_at: Instant,
@@ -179,7 +178,7 @@ impl Harness {
     fn boot_with_kind(root: &Path, cpu_kind: CpuKind) -> Harness {
         let drives = Idc::load_drives(&root.join("config.yaml")).unwrap();
         let mut bus = Bus::new();
-        let input = connect_pec_input(&mut bus);
+        let input = connect_pec_input_sync(&mut bus);
         connect_rng(&mut bus);
         let vdp = connect_devices_with_vdp(&mut bus);
         connect_idc(&mut bus, drives);
@@ -237,9 +236,7 @@ impl Harness {
     }
 
     fn key(&self, usage: u8, down: bool) {
-        self.input
-            .send(HostInputEvent::Key { usage, down })
-            .unwrap();
+        self.input.send(HostInputEvent::Key { usage, down });
     }
 
     fn type_text(&self, text: &str) {
@@ -367,7 +364,7 @@ fn hex_returns_to_shell_at_budget(cycles_per_frame: usize, cpu_kind: CpuKind, ta
 
     let render_frames = 16_000_000usize.div_ceil(cycles_per_frame);
     let command_frames = 4_000_000usize.div_ceil(cycles_per_frame);
-    h.command("HEX TEST.TXT", "HEX EDITOR", 2_000);
+    h.command("HEX TEST.TXT", "HEX EDITOR", render_frames);
     h.frames(render_frames);
     let text = h.screen();
     assert_hex_columns(&text);
@@ -679,6 +676,9 @@ fn dos_shell_manages_files_on_two_drives() {
 
     // EXIT stops the CPU.
     h.command("EXIT", "BYE", 200);
+    // "BYE" is on screen before the guest reaches HALT; let it get there.
+    h.frames(5);
+    assert!(!h.cpu.is_running(), "guest did not halt after EXIT");
     let pc = h.cpu.pc();
     h.frames(5);
     assert_eq!(h.cpu.pc(), pc, "guest kept running after EXIT");

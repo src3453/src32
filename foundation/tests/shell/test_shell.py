@@ -271,6 +271,56 @@ class ShellTests(unittest.TestCase):
         self.assertTrue(any(r.endswith('  ls.wax') and '  <DIR>' not in r for r in rows), rows)
         self.assertTrue(any(r.endswith(' file(s), 1 dir(s)') or ' file(s), 0 dir(s)' in r for r in rows), rows)
 
+    def test_cat_and_cp(self):
+        # §10.3, §10.5: cat joins its files, cp refuses an existing target
+        # unless -f, copies into a directory and rejects the same file.
+        rows = self.screen(
+            'echo hello > a.txt\\n', 'cat a.txt\\n', 'cp a.txt b.txt\\n', 'cat b.txt a.txt\\n', 'cp a.txt b.txt\\n',
+            'echo new > a.txt\\n', 'cp -f a.txt b.txt\\n', 'cat b.txt\\n', 'cp a.txt a.txt\\n', 'cat /bin\\n', 'cat\\n',
+            'cp -x a b\\n')
+        self.assertEqual(rows, BANNER + [
+            '/> echo hello > a.txt',
+            '/> cat a.txt',
+            'hello',
+            '/> cp a.txt b.txt',
+            '/> cat b.txt a.txt',
+            'hello',
+            'hello',
+            '/> cp a.txt b.txt',
+            'cp: b.txt: already exists (-11)',
+            '/> echo new > a.txt',
+            '/> cp -f a.txt b.txt',
+            '/> cat b.txt',
+            'new',
+            '/> cp a.txt a.txt',
+            'cp: a.txt: invalid argument (-2)',
+            '/> cat /bin',
+            'cat: /bin: is a directory (-65)',
+            '/> cat',
+            'usage: cat path...',
+            '/> cp -x a b',
+            'usage: cp [-f] src... dst',
+            '/>',
+        ])
+
+    def test_directory_commands(self):
+        # §10.3, §10.5: mkdir, mv, rm and rmdir; a failed target does not stop
+        # the rest. The screen scrolls, so only the tail is compared.
+        rows = self.screen(
+            'echo x > a.txt\\n', 'mkdir d\\n', 'cp a.txt a.txt d\\n', 'mv a.txt d/c.txt\\n',
+            'mv d/c.txt d/a.txt\\n', 'rmdir d\\n', 'rm d/c.txt nope d/a.txt\\n', 'rmdir d\\n')
+        self.assertEqual(rows[-9:], [
+            '/> mv a.txt d/c.txt',
+            '/> mv d/c.txt d/a.txt',
+            'mv: d/c.txt: already exists (-11)',
+            '/> rmdir d',
+            'rmdir: d: directory not empty (-66)',
+            '/> rm d/c.txt nope d/a.txt',
+            'rm: nope: not found (-10)',
+            '/> rmdir d',
+            '/>',
+        ])
+
     def test_paths_and_file_system(self):
         # §7.1 against the fs service on the boot disk: writes work, globs
         # are not there yet.
