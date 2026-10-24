@@ -562,6 +562,69 @@ extern "C" int main() { return value; }
         result = self.driver(source, '-o', self.work / 'global.wax', success=False)
         self.assertIn('unsupported linkage appending', result.stderr)
 
+    def test_pcg_cursor_attributes_follow_current_colors(self):
+        source = self.work / 'pcg-cursor.c'
+        source.write_text(r'''
+#include <cpt32/pcg.h>
+#include <cpt32/mmio.h>
+static int attrs(unsigned cell) {
+    return CPT32_MMIO8(pcg_vram_base + 0x1000 + cell) == 0x12 &&
+           CPT32_MMIO8(pcg_vram_base + 0x2000 + cell) == 0x23;
+}
+int main(void) {
+    pcg_initPCG();
+    if (CPT32_MMIO8(pcg_vram_base + 0x1000) != 63 ||
+        CPT32_MMIO8(pcg_vram_base + 0x2000) != 0) return 1;
+    for (unsigned mode = 0; mode < 3; ++mode) {
+        if (mode == 0) pcg_col40();
+        if (mode == 1) pcg_col80();
+        if (mode == 2) pcg_mode80x16();
+        pcg_scroll_y = pcg_cell_height * 29;
+        pcg_locate(pcg_width - 1, 29);
+        pcg_colorfg(0x12); pcg_colorbg(0x23);
+        unsigned previous = 28 * pcg_width + pcg_width - 1;
+        if (!attrs(previous)) return 2;
+        pcg_cls(0x15);
+        if (!attrs(previous)) return 3;
+        for (unsigned i = 0; i < 0x1000; ++i) {
+            if (CPT32_MMIO8(pcg_vram_base + i) != 0) return 4;
+            if (i != previous &&
+                (CPT32_MMIO8(pcg_vram_base + 0x1000 + i) != 0x15 ||
+                 CPT32_MMIO8(pcg_vram_base + 0x2000 + i) != 0x15)) return 5;
+        }
+        pcg_putcscr('A');
+        if (!attrs(previous) || !attrs(29 * pcg_width)) return 6;
+        if (CPT32_MMIO8(pcg_vram_base + previous) != 'A') return 7;
+        if (CPT32_MMIO8(0x8000f005) != 0 ||
+            CPT32_MMIO8(0x8000f006) != 29) return 8;
+    }
+    /* Deterministic visible cursor: custom palette, one set glyph pixel. */
+    CPT32_MMIO8(0x8000f008) = 0;
+    CPT32_MMIO8(0x8000f009) = 0;
+    CPT32_MMIO8(pcg_vram_base + 0x21000) = 0x80;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x12 * 3) = 17;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x12 * 3 + 1) = 83;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x12 * 3 + 2) = 149;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x23 * 3) = 29;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x23 * 3 + 1) = 101;
+    CPT32_MMIO8(pcg_vram_base + 0x12c00 + 0x23 * 3 + 2) = 211;
+    return 42;
+}
+''', encoding='utf-8')
+        for opt in ('-O0', '-O2'):
+            image = self.work / ('cursor' + opt[1:] + '.wax')
+            self.driver(source, ROOT / 'sdk/cpt32/src/pcg.c',
+                        '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
+            for cpu in ('scalar', 'pipeline'):
+                with self.subTest(optimization=opt, cpu=cpu):
+                    result = subprocess.run(
+                        [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '128',
+                         '--expect-pixel', '0:464=0x1d65d3',
+                         '--expect-pixel', '1:464=0x115395'],
+                        cwd=self.work, capture_output=True, text=True, timeout=120)
+                    self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                    self.assertIn('PASS:', result.stdout)
+
     def test_cpt32_halt_waits_for_irq_then_resumes(self):
         source = self.work / 'halt.c'
         source.write_text('''

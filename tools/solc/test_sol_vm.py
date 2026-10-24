@@ -745,9 +745,36 @@ pcg.pcg_fg_color pcg.pcg_bg_color pcg.pcg_width pcg.pcg_cell_height
 '''
     assert vm.run_source(source) == [width - 1, 29, cell_height * 29, 28, 0x12, 0x23, width, cell_height]
     for plane, expected in [(0, 0), (0x1000, 0x15), (0x2000, 0x15)]:
-        assert all(vm.memory[base + plane + offset] == expected for offset in range(0x1000))
+        for offset in range(0x1000):
+            value = expected
+            if offset == 28 * width + width - 1 and plane:
+                value = 0x12 if plane == 0x1000 else 0x23
+            assert vm.memory[base + plane + offset] == value
     for address in (base - 1, base + 0x3000, 0x10020000, 0x10021000):
         assert vm.memory[address] == 0xA5
+
+
+@pytest.mark.parametrize("mode,width,cell_height", [("col40", 40, 8), ("col80", 80, 8), ("mode80x16", 80, 16)])
+def test_pcg_cursor_prepares_current_attributes_after_moves_and_scroll(mode, width, cell_height):
+    pcg_path = Path(__file__).resolve().parents[2] / "sol/cpt32/pcg.sol"
+    vm = SolVM()
+    source = f'''!include "{pcg_path.as_posix()}"
+pcg.initPCG pcg.{mode}
+0x12 pcg.colorfg 0x23 pcg.colorbg
+{cell_height * 29} >pcg.pcg_scroll_y
+{width - 1} 29 pcg.locate
+65 pcg.putcscr
+'''
+    vm.run_source(source)
+    # Writing the last screen cell wraps and scrolls to physical row 29.
+    previous = 28 * width + width - 1
+    current = 29 * width
+    assert vm.memory[0x10000000 + previous] == 65
+    for cell in (previous, current):
+        assert vm.memory[0x10001000 + cell] == 0x12
+        assert vm.memory[0x10002000 + cell] == 0x23
+    assert vm.memory[to_i32(0x8000F005)] == 0
+    assert vm.memory[to_i32(0x8000F006)] == 29
 
 
 def test_pcg_console_scrolls_and_clears_only_reused_ring_row():
@@ -773,6 +800,8 @@ pcg._pcg_ln
     cleared_row = set(range(0x10000000, 0x10000028))
     cleared_row.update(range(0x10001000, 0x10001028))
     cleared_row.update(range(0x10002000, 0x10002028))
+    # locate also prepares the previous cursor cell's two attributes.
+    cleared_row.update((0x10001000 + 29 * 40, 0x10002000 + 29 * 40))
     sentinels = {0x10000028, 0x10001028, 0x10002028}
     vram_writes = {
         address

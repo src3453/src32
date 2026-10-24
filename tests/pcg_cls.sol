@@ -3,8 +3,14 @@
 
 fn check_plane (addr value) :
     local i 0
+    local expected 0
     while
-        addr i add ldb value neq if 1 >failed end
+        value >expected
+        i pcg.pcg_vram_row pcg.pcg_width mul pcg.pcg_cur_x add eq if
+            addr pcg.pcg_vram_base 0x1000 add eq if pcg.pcg_fg_color >expected end
+            addr pcg.pcg_vram_base 0x2000 add eq if pcg.pcg_bg_color >expected end
+        end
+        addr i add ldb expected neq if 1 >failed end
         i 1 add >i
         i 0x1000 lt
     end

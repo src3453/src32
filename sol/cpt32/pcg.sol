@@ -48,6 +48,11 @@ fn mode80x16 () :
 ;
 
 fn _pcg_update_cur () :
+    # The cursor swaps the cell's FG/BG, so prepare both current colors.
+    local ptr 0
+    pcg_vram_row pcg_width mul pcg_cur_x add pcg_vram_base add >ptr
+    pcg_fg_color ptr 0x1000 add stb
+    pcg_bg_color ptr 0x2000 add stb
     # CURSOR_POS registers are tilemap coordinates: the display samples
     # (screen + scroll), so writing the logical row pcg_cur_y would
     # drift by scroll_y/8 rows. pcg_vram_row is the physical ring row
@@ -72,6 +77,7 @@ fn cls (color) :
     pcg_vram_base 0x1000 0 _pcg_fill
     pcg_vram_base 0x1000 add 0x1000 color _pcg_fill
     pcg_vram_base 0x2000 add 0x1000 color _pcg_fill
+    _pcg_update_cur
 ;
 
 fn initPCG () :
@@ -151,9 +157,11 @@ fn prnlnscr (ptr) :
 
 fn colorfg (color) :
     color >pcg_fg_color
+    _pcg_update_cur
 ;
 
 fn colorbg (color) :
     color >pcg_bg_color
+    _pcg_update_cur
 ;
 !end

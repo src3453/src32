@@ -70,7 +70,7 @@ int main(void) {
 ## バッファと状態
 
 - MMIOはvolatileアクセス。CPUのword/halfwordとファイル整数はbig-endian。PCG scroll MMIOのbyte laneはlow byteからです。
-- `pcg_cls(color)`は`pcg_vram_base`から文字面4 KiBを0、前景・背景属性面各4 KiBを指定色で埋め、スクロールで隠れた行も消去します。glyph 0が空でなくても指定色で塗りつぶされます。カーソル位置・スクロール量と、以後の出力用の`pcg_fg_color`/`pcg_bg_color`は保持します。
+- `pcg_cls(color)`は`pcg_vram_base`から文字面4 KiBを0、前景・背景属性面各4 KiBを指定色で埋め、スクロールで隠れた行も消去します。glyph 0が空でなくても指定色で塗りつぶされます。ただしカーソル位置のFG/BGは現在の出力色で再設定します。カーソル位置・スクロール量と、以後の出力用の`pcg_fg_color`/`pcg_bg_color`は保持します。
 - VPUの配列長・テクスチャサイズなどの前提条件は元のsol APIと同じです。APIコメントを確認してください。
 - DSFSは単一mountです。ディレクトリbufferは8192 byte、bitmapは`dsfs_bitmap_blocks()*512` byte、ファイルbufferはsector切り上げサイズが必要です。書込みは入力bufferの最終sector末尾をゼロ埋めします。名前はドットなし・space-paddingの大文字11 byteです。
 - `idc_identify(slot, &capacity)`は成功時0、失敗時1を返し、全範囲の`uint32_t`セクタ数を出力引数へ格納します。失敗時は出力を変更しません。
@@ -95,3 +95,5 @@ CMake buildとnative `src32_testbench`を使い、Scalar/Pipelineの5ゲスト�
 各実行はBIOSなしの一時directoryを使い、storage用64-sector画像は毎回新規作成します。ホストのディスク画像を変更しません。更新後にhost DSFS validatorでリーク0を確認します。
 
 描画デモは[`examples/3d-cube-c`](../../examples/3d-cube-c/README.md)。同じライブラリを使い、120フレームのcube/overlay/背景検査をScalar/Pipelineで通しています。
+
+PCGカーソルはセルの前景色・背景色を交換して描画します。初期化、`pcg_locate`、文字出力・改行後、`pcg_colorfg` / `pcg_colorbg`、`pcg_cls` は、カーソル位置の両属性を現在の出力色に設定します（文字コードは保持）。スクロール時は物理ring rowへ書き込みます。既存ゲストへの反映には再ビルドが必要です。

@@ -273,7 +273,8 @@ impl PcgRenderer {
                     };
 
                     if line_visible && cursor_visible {
-                        rgb = (255 - rgb.0, 255 - rgb.1, 255 - rgb.2);
+                        // Exchange the cell's palette colors after SWAP_FGBG.
+                        rgb = Self::clut_rgb(&vram, if use_fg { bg } else { fg });
                     }
                 }
             }

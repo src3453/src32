@@ -747,8 +747,8 @@ mod tests {
         vdp.write_pcg_register(0xF007, 1);
         vdp.write_pcg_register(0xF008, 0x7F);
         let fb = vdp.framebuffer();
-        assert_eq!(fb.get_pixel(304, 224), (255, 255, 55));
-        assert_eq!(fb.get_pixel(304, 225), (255, 255, 55));
+        assert_eq!(fb.get_pixel(304, 224), (255, 0, 0));
+        assert_eq!(fb.get_pixel(304, 225), (255, 0, 0));
         assert_eq!(fb.get_pixel(304, 226), (0, 0, 200));
 
         let mut vdp = mode2_vdp();
@@ -758,7 +758,7 @@ mod tests {
         vdp.write_pcg_register(0xF007, 1);
         vdp.write_pcg_register(0xF008, 0xFE);
         let fb = vdp.framebuffer();
-        assert_eq!(fb.get_pixel(319, 239), (255, 255, 55));
+        assert_eq!(fb.get_pixel(319, 239), (255, 0, 0));
     }
 
     #[test]
@@ -805,6 +805,7 @@ mod tests {
         vdp.write_pcg_register(0xF006, 29);
         vdp.write_pcg_register(0xF007, 1);
         vdp.write_pcg_register(0xF008, 0xFE);
+        vdp.vram.borrow_mut()[crate::devices::vdp::pcg::PCG_FG_ATTR_ADDR + 29 * 80] = 63;
         let fb = vdp.framebuffer();
         assert_eq!(fb.get_pixel(0, 476), (0, 0, 0));
         assert_eq!(fb.get_pixel(0, 478), (255, 255, 255));

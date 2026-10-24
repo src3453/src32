@@ -34,7 +34,12 @@ static void pcg_setcur(uint32_t x, uint32_t y) {
 static void pcg_update_row(void) {
   pcg_vram_row = ((pcg_scroll_y / pcg_cell_height) + pcg_cur_y) % pcg_height;
 }
-static void pcg_update_cur(void) { pcg_setcur(pcg_cur_x, pcg_vram_row); }
+static void pcg_update_cur(void) {
+  uint32_t p = pcg_vram_base + pcg_vram_row * pcg_width + pcg_cur_x;
+  CPT32_MMIO8(p + 0x1000u) = (uint8_t)pcg_fg_color;
+  CPT32_MMIO8(p + 0x2000u) = (uint8_t)pcg_bg_color;
+  pcg_setcur(pcg_cur_x, pcg_vram_row);
+}
 void pcg_locate(uint32_t x, uint32_t y) {
   pcg_cur_x = x;
   pcg_cur_y = y;
@@ -46,6 +51,7 @@ void pcg_cls(uint32_t color) {
   /* Glyph zero is writable; equal attributes blank even a nonempty glyph. */
   pcg_fill(pcg_vram_base + 0x1000u, 0x1000u, (uint8_t)color);
   pcg_fill(pcg_vram_base + 0x2000u, 0x1000u, (uint8_t)color);
+  pcg_update_cur();
 }
 void pcg_initPCG(void) {
   CPT32_MMIO8(0x80000001u) = 1;
@@ -101,5 +107,11 @@ void pcg_prnlnscr(const char *s) {
   pcg_prnscr(s);
   pcg_ln();
 }
-void pcg_colorfg(uint32_t c) { pcg_fg_color = c; }
-void pcg_colorbg(uint32_t c) { pcg_bg_color = c; }
+void pcg_colorfg(uint32_t c) {
+  pcg_fg_color = c;
+  pcg_update_cur();
+}
+void pcg_colorbg(uint32_t c) {
+  pcg_bg_color = c;
+  pcg_update_cur();
+}

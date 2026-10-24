@@ -13,10 +13,11 @@ void pcg_col40(void);
 void pcg_col80(void);
 /* 8×16フォントの80列×30行表示へ切り替えます。 */
 void pcg_mode80x16(void);
-/* 論理文字座標を設定し、スクロールを考慮してハードウェアカーソルを移動します。 */
+/* 論理文字座標を設定し、移動先のFG/BGを現在色にしてカーソルを移動します。 */
 void pcg_locate(uint32_t x, uint32_t y);
 /* Clear all 4 KiB of text to glyph zero and both attribute planes to color.
- * Preserves cursor, scroll and the colors used for subsequent text output. */
+ * Then prepares the cursor cell's FG/BG with the current output colors.
+ * Preserves cursor position, scroll and the output color variables. */
 /* 文字面と前景・背景属性面を全消去し、指定色で画面を埋めます。 */
 void pcg_cls(uint32_t color);
 /* PCGを40列×30行に初期化し、スクロールとカーソル位置をリセットします。 */
@@ -27,8 +28,8 @@ void pcg_putcscr(uint32_t character);
 void pcg_prnscr(const char *string);
 /* NUL終端文字列を書き、次の行へ移動します。 */
 void pcg_prnlnscr(const char *string);
-/* 以後の文字出力に使う前景色を設定します。 */
+/* 文字出力と現在のカーソル位置に使う前景色を設定します。 */
 void pcg_colorfg(uint32_t color);
-/* 以後の文字出力に使う背景色を設定します。 */
+/* 文字出力と現在のカーソル位置に使う背景色を設定します。 */
 void pcg_colorbg(uint32_t color);
 #endif
