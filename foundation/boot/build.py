@@ -26,7 +26,7 @@ what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal and /lib/lzma.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal and /lib/sgc.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -94,6 +94,9 @@ LIBFND_RENAME = FOUNDATION / "lib/fnd/rename.c"
 KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "sgc.c", "pec.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 LZMA_DIR = FOUNDATION / "lib/lzma"
+SGC_DIR = FOUNDATION / "lib/sgc"
+# Commands that import /lib/sgc.1.wal (libsgc) as well as fnd.
+SGC_COMMANDS = {"chip8"}
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
 FS2_FULL_MOUNT_CHECK = 0
@@ -120,9 +123,10 @@ def static(sources, output, args, slot, *extra, stack=STACK):
     return driver([*sources, *LIBFND], output, args, "--protected", "--page-align", *layout(slot, stack), *extra)
 
 
-def program(sources, output, args, slot, image_id, fnd):
-    """A WAX v3 that imports the WAL fnd."""
-    return driver(sources, output, args, "--wax3", "--page-align", "--image-id", image_id, "--import-wal", fnd, *layout(slot))
+def program(sources, output, args, slot, image_id, fnd, *libs):
+    """A WAX v3 that imports the WAL fnd, and any other WALs in libs."""
+    imports = [arg for lib in (fnd, *libs) for arg in ("--import-wal", lib)]
+    return driver(sources, output, args, "--wax3", "--page-align", "--image-id", image_id, *imports, *layout(slot))
 
 
 def embed(name, data):
@@ -221,12 +225,20 @@ def main(argv=None):
     ]
 
     fnd = fnd_job.result()
+    # /lib/sgc.1.wal: libsgc (lib/sgc, WAL "sgc" 1.0), which imports the fnd WAL built above.
+    sgc_spec = importlib.util.spec_from_file_location("sgc_build", SGC_DIR / "build.py")
+    sgc_build = importlib.util.module_from_spec(sgc_spec)
+    sgc_spec.loader.exec_module(sgc_build)
+    sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization)
     program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4,
                                 "foundation.shell", fnd)]
-    for name in COMMANDS:
+    # The commands that import libsgc go last, so the others start while it builds.
+    for name in sorted(COMMANDS, key=lambda name: name in SGC_COMMANDS):
+        libs = [sgc_job.result()] if name in SGC_COMMANDS else []
         program_jobs.append(pool.submit(program, [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"],
-                                        root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd))
+                                        root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd, *libs))
     shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
+    shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
     for job in program_jobs:
         job.result()
     modules = [dict(spec, image=spec["image"].result().read_bytes()) for spec in specs]
