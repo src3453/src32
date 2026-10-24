@@ -3,6 +3,11 @@
 #include <stdint.h>
 #define CPT32_PCG_FONT_8X16_VRAM_OFFSET 0x21000u
 #define CPT32_PCG_FONT_8X16_SIZE 0x1000u
+/* mode 3 の2 byte文字: FG属性 bit 7:6 (WIDE_KIND) と WIDE_FONT_BASE (0xF010..0xF013, VRAM byte offset)。 */
+#define CPT32_PCG_WIDE_KIND_SINGLE 0x00u
+#define CPT32_PCG_WIDE_KIND_MSB 0x40u
+#define CPT32_PCG_WIDE_KIND_LSB 0x80u
+#define CPT32_PCG_WIDE_GLYPH_SIZE 32u
 /* sol pcg namespace state is public and intentionally mutable by callers. */
 extern uint32_t pcg_cur_x, pcg_cur_y, pcg_width, pcg_height, pcg_cell_height;
 extern uint32_t pcg_fg_color, pcg_bg_color, pcg_mode, pcg_cursor;

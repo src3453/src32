@@ -1483,3 +1483,9 @@
 - `src/devices/sgu/{sqv4,s3w2}.rs` の外部 golden に依存するテスト4件と専用ヘルパー2件を `#[cfg(any())]` でコンパイル対象から除外した。`include_str!("../../../../s3w2_core/tests/...")` はリポジトリの隣のディレクトリを参照する。現在のローカル環境にはファイルがあるが、リポジトリには含まれないため、単体チェックアウトでのビルドを妨げる。
 - `#[ignore]` は実行だけを抑止し、include_str! の展開と欠落ファイルによるビルドエラーを防げない。再有効化する際は fixture をリポジトリ内へ同梱し、参照先を修正してからテスト・ヘルパーの cfg を除去する。通常の golden_vector_is_stable を含む自己完結したテストは有効のまま。
 - 検証: `cargo test --lib devices::sgu:: --quiet` は14件成功。`cargo test --lib --quiet` はビルド成功、workspace 内 TEMP/TMP/TMPDIR で145件成功・COWの1件失敗。`cow::tests::rejects_crc_sequence_range_and_base_mismatch` が cow.rs:629 の一時ファイル削除で失敗する別件は #151 に記録。標準TEMPでは music::gui の出力置換テストもアクセス拒否となったが、workspace 内 TEMP では成功した。過去の golden 欠落による lib ビルド不可の記述はこの変更で解消。
+
+## PCG mode 3 の2 byte文字 (2026-10-24)
+
+- mode 3 のFG属性 bit 7:6（`WIDE_KIND`）で 01=UTF-16BE の MSB、10=LSB。隣り合う `01`,`10` の対だけが1文字で、孤立した `01`/`10`・`11` は1 byte文字として描く（`pcg.rs` の `wide_pair`）。mode 0〜2 は従来どおり下位6 bitだけを見る。
+- フォントは `WIDE_FONT_BASE`（`0xF010`〜`0xF013`、32-bit LE、reset 0）+ code unit×32（16行×2 byte、Unifont ROM と同じ形式）。VRAM 終端超えは blank。既定の置き場は決めていない（VRAM 4 MiB 下限では `0x200000` のRGB888 ビットマップと衝突しうるため、ゲストが選ぶ）。
+- `PcgRenderer::get_pixel` は引数末尾に `wide_font_base` が増えた。lib 単体テストは s3w2_core の golden が無いとビルドできないので、新テストは統合テスト `tests/vdp_pcg_wide.rs` に置いた（`cargo test --test vdp_pcg_wide`）。Foundation console はまだ使っていない。
