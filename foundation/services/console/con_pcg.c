@@ -1,10 +1,13 @@
 /* Provisional console on the PCG (doc/spec_VDP.md) and the PeC keyboard
  * (doc/spec_PeC.md), see con_pcg.h. The default is SCREEN_MODE 1, 80x30
- * cells of 8x8; modes 0 and 3 provide 40 columns and 8x16 glyphs.
+ * cells of 8x8; modes 0 and 3 provide 40 columns and 8x16 glyphs. In mode 3 a
+ * JIS X 0208 character takes two cells: MSB and LSB of its UTF-16 code unit
+ * with WIDE_KIND 01 and 10 in the foreground attribute (doc/spec_VDP.md).
  * Scrolling moves SCROLL_Y by one cell row and clears only the
  * ring row that comes back at the bottom; the cursor keeps its screen row
  * apart from the physical ring row. */
 #include "con_pcg.h"
+#include "con_wide.h"
 
 #ifndef MMIO8
 #define MMIO8(address) (*(volatile uint8_t *)(uintptr_t)(address))
@@ -51,13 +54,50 @@ static uint32_t params[ANSI_PARAMS], param_count, private_mode, invalid, param_s
 
 static uint32_t ring_row(uint32_t screen_row) { return (top + screen_row) % CON_PCG_ROWS; }
 
-static void put_cell(uint32_t x, uint32_t y, uint32_t ch) {
-    uint32_t cell = CON_PCG_TEXT_START + ring_row(y) * columns + x;
+#define KIND_MSB 1u
+#define KIND_LSB 2u
+#define WIDE_KIND_SHIFT 6
+
+static uint32_t cell_address(uint32_t x, uint32_t y) {
+    return CON_PCG_TEXT_START + ring_row(y) * columns + x;
+}
+
+/* WIDE_KIND of a cell; only mode 3 has it. */
+static uint32_t cell_kind(uint32_t x, uint32_t y) {
+    return display == FND_CON_DISPLAY_8X16 ? MMIO8(cell_address(x, y) + PCG_FG) >> WIDE_KIND_SHIFT : 0;
+}
+
+/* The lower cell is the LSB half of a pair whose MSB half is on its left. */
+static int is_pair_tail(uint32_t x, uint32_t y) {
+    return x && cell_kind(x, y) == KIND_LSB && cell_kind(x - 1u, y) == KIND_MSB;
+}
+
+/* Overwriting one half must not leave the other half to be drawn as a 1 byte
+ * glyph: it becomes a blank cell with its colors. */
+static void break_pair(uint32_t x, uint32_t y) {
+    uint32_t kind = cell_kind(x, y), other;
+    if (kind == KIND_MSB && x + 1u < columns && cell_kind(x + 1u, y) == KIND_LSB)
+        other = x + 1u;
+    else if (kind == KIND_LSB && x && cell_kind(x - 1u, y) == KIND_MSB)
+        other = x - 1u;
+    else
+        return;
+    uint32_t cell = cell_address(other, y);
+    MMIO8(cell) = ' ';
+    MMIO8(cell + PCG_FG) &= 0x3Fu;
+}
+
+static void put_cell_kind(uint32_t x, uint32_t y, uint32_t ch, uint32_t kind) {
+    uint32_t cell = cell_address(x, y);
+    if (display == FND_CON_DISPLAY_8X16)
+        break_pair(x, y);
     MMIO8(cell) = (uint8_t)ch;
     uint8_t front = colors[fg < 8u && bold ? fg + 8u : fg], back = colors[bg];
-    MMIO8(cell + PCG_FG) = inverse ? back : front;
+    MMIO8(cell + PCG_FG) = (inverse ? back : front) | kind << WIDE_KIND_SHIFT;
     MMIO8(cell + PCG_BG) = inverse ? front : back;
 }
+
+static void put_cell(uint32_t x, uint32_t y, uint32_t ch) { put_cell_kind(x, y, ch, 0); }
 
 static void clear_row(uint32_t y) {
     for (uint32_t x = 0; x < columns; ++x)
@@ -90,6 +130,18 @@ static void newline(void) {
 static void advance(void) {
     if (++col == columns)
         newline();
+}
+
+/* Two cells, never split over a line end: a last column is left blank first. */
+static void put_wide(uint32_t unit) {
+    if (col + 1u == columns) {
+        put_cell(col, row, ' ');
+        newline();
+    }
+    put_cell_kind(col, row, unit >> 8, KIND_MSB);
+    put_cell_kind(col + 1u, row, unit & 0xFFu, KIND_LSB);
+    advance();
+    advance();
 }
 
 static uint32_t clamp(uint32_t value, uint32_t size) {
@@ -227,7 +279,8 @@ static int ansi_byte(uint32_t b) {
 }
 
 /* §8.1: LF, CR, BS and TAB are controls; other controls are not shown. The
- * PCG font has one byte per cell, so scalars above ASCII show SUBSTITUTE. */
+ * PCG font has one byte per cell, so scalars above ASCII show SUBSTITUTE,
+ * except in mode 3 where the wide font shows its characters in two cells. */
 static void put_scalar(uint32_t cp) {
     switch (cp) {
     case '\n':
@@ -242,7 +295,11 @@ static void put_scalar(uint32_t cp) {
         } else if (row) {
             --row;
             col = columns - 1u;
+        } else {
+            return;
         }
+        if (is_pair_tail(col, row))
+            --col; /* back over the whole character */
         return;
     case '\t':
         do {
@@ -255,6 +312,10 @@ static void put_scalar(uint32_t cp) {
     }
     if (cp < 0x20u || cp == 0x7Fu || (cp >= 0x80u && cp < 0xA0u))
         return;
+    if (display == FND_CON_DISPLAY_8X16 && cp < 0x10000u && con_wide_has(cp)) {
+        put_wide(cp);
+        return;
+    }
     /* Private-use scalars address configured PCG glyphs without interpreting
      * glyph 00/09/0A/1B as console controls. No font or CLUT mutation. */
     put_cell(col, row, cp >= 0xE000u && cp <= 0xE0FFu ? cp - 0xE000u :
@@ -313,7 +374,10 @@ fnd_status con_pcg_init(void) {
 fnd_status con_pcg_set_display(uint32_t mode) {
     if (mode != FND_CON_DISPLAY_40 && mode != FND_CON_DISPLAY_80 && mode != FND_CON_DISPLAY_8X16)
         return FND_E_BAD_ARG;
-    /* Font VRAM belongs to the startup configuration; preserve it in every mode. */
+    /* The 1 byte font VRAM belongs to the startup configuration; preserve it in every
+     * mode. Only the wide font area is written, on the first switch to mode 3. */
+    if (mode == FND_CON_DISPLAY_8X16)
+        con_wide_install();
     display = mode;
     columns = mode == FND_CON_DISPLAY_40 ? 40u : 80u;
     cell_height = mode == FND_CON_DISPLAY_8X16 ? 16u : 8u;
