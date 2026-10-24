@@ -35,8 +35,6 @@
 
 static uint32_t col, row, top; /* cursor cell; ring row shown at screen row 0 */
 static uint32_t columns = 80, cell_height = 8, display = FND_CON_DISPLAY_80;
-/* Generated from bundled Unifont by boot/build.py, ASCII 32..126, OFL-1.1. */
-extern const uint8_t con_font8x16[95 * 16];
 
 uint32_t con_pcg_columns(void) { return columns; }
 uint32_t con_pcg_display(void) { return display; }
@@ -312,12 +310,7 @@ fnd_status con_pcg_init(void) {
 fnd_status con_pcg_set_display(uint32_t mode) {
     if (mode != FND_CON_DISPLAY_40 && mode != FND_CON_DISPLAY_80 && mode != FND_CON_DISPLAY_8X16)
         return FND_E_BAD_ARG;
-    if (mode == FND_CON_DISPLAY_8X16) {
-        /* Dedicated 4 KiB bank: never overwrite either 8x8 font bank. */
-        for (uint32_t i = 0; i < 256u * 16u; ++i)
-            MMIO8(CON_PCG_FONT_START + i) = i >= 32u * 16u && i < 127u * 16u
-                ? con_font8x16[i - 32u * 16u] : 0;
-    }
+    /* Font VRAM belongs to the startup configuration; preserve it in every mode. */
     display = mode;
     columns = mode == FND_CON_DISPLAY_40 ? 40u : 80u;
     cell_height = mode == FND_CON_DISPLAY_8X16 ? 16u : 8u;

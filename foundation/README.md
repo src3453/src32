@@ -23,9 +23,7 @@ sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../
 | `mode 8x16` | 80列×30行、8×16字形（640×480） |
 | `mode` | 現在の設定を表示 |
 
-8×16は同梱GNU UnifontのASCII字形を専用VRAMへ読み込みます。8×8用フォントは保持され、`mode 80`／`mode 40`で元へ戻せます。40列と8×16の組合せはPCGにないため、独立した3つの表示設定として切り替えます。LINE／RAW入力モードや現在の色は切替で変わりません。詳細は [API §8.1.2](../doc/spec_Foundation_API.md#812-コンソール表示モード) を参照してください。
-
-フォントのbitmapデータにはOFL-1.1を適用します（OSのコードとは別です）。`boot/build.py` は既存の `assets/unifont-bmp.chr` からASCII部分を生成し、元データの記録・著作権表示・OFL本文をディスクの `/share/licenses/console/` に同梱します。新しい外部フォントのダウンロードは不要です。
+8×16は専用VRAMに設定済みの字形を使い、起動・表示切替・消去・スクロールで上書きしません。GUIの `config.yaml` の `pcg.font_8x16` またはlauncherの `PCG font 8x16` で4096 byteのrawフォントを指定してください。未設定で専用領域が空なら8×16の文字は表示されません。8×8用フォントは保持され、`mode 80`／`mode 40`で元へ戻せます。40列と8×16の組合せはPCGにないため、独立した3つの表示設定として切り替えます。LINE／RAW入力モードや現在の色は切替で変わりません。詳細は [API §8.1.2](../doc/spec_Foundation_API.md#812-コンソール表示モード) を参照してください。
 
 ## ANSI コンソール出力
 

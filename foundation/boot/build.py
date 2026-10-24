@@ -27,7 +27,6 @@ CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
   root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal and /lib/lzma.1.wal
-                  /share/licenses/console/ (embedded Unifont ASCII subset notices)
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -135,35 +134,11 @@ def embed(name, data):
 
 
 def console_grants():
-    """MMIO windows in con_pcg.h: VDP, PCG text, dedicated 8x16 font, PeC input."""
+    """MMIO windows in con_pcg.h: VDP, PCG text, PeC input."""
     text = (FOUNDATION / "services/console/con_pcg.h").read_text(encoding="utf-8")
     value = {name: int(number, 16) for name, number in re.findall(r"#define (CON_PCG_\w+) (0x[0-9A-Fa-f]+)u", text)}
     return [(value[f"CON_PCG_{window}_START"], value[f"CON_PCG_{window}_END"], 3)
-            for window in ("VDP", "TEXT", "FONT", "INPUT")]
-
-
-def console_font(out, root):
-    """ASCII 8x16 from bundled Unifont's left byte per row (OFL-1.1).
-
-    Retain the font's source record, copyright notice and license in the disk.
-    This does not apply the repository's MIT license to the bitmap data.
-    """
-    rom = (ROOT / "assets/unifont-bmp.chr").read_bytes()
-    if len(rom) != 65536 * 32:
-        raise ValueError("Unifont BMP ROM must contain 65536 16x16 slots")
-    data = bytes(rom[cp * 32 + row * 2] for cp in range(32, 127) for row in range(16))
-    source = out / "console_font.c"
-    source.write_text('/* Generated ASCII subset of GNU Unifont 18.0.01 (OFL-1.1).\n'
-                      ' * Source: assets/unifont-bmp.chr; see /share/licenses/console/. */\n'
-                      '#include <stdint.h>\nconst uint8_t con_font8x16[95 * 16] = {\n' +
-                      ',\n'.join(','.join(f'0x{b:02x}' for b in data[i:i + 16])
-                                 for i in range(0, len(data), 16)) + '\n};\n', encoding="utf-8")
-    notices = root / "share/licenses/console"
-    notices.mkdir(parents=True, exist_ok=True)
-    for relative in ("assets/UNIFONT-LICENSE.txt", "licenses/UNIFONT-OFL-1.1.txt",
-                     "licenses/UNIFONT-18.0.01-NOTICE.txt"):
-        shutil.copyfile(ROOT / relative, notices / Path(relative).name)
-    return source
+            for window in ("VDP", "TEXT", "INPUT")]
 
 
 def header(path, parts):
@@ -204,7 +179,6 @@ def main(argv=None):
     (root / "bin").mkdir(parents=True, exist_ok=True)
     (root / "lib").mkdir(parents=True, exist_ok=True)
     services = FOUNDATION / "services"
-    font = console_font(out, root)
 
     jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 1)
     pool = ThreadPoolExecutor(max_workers=jobs)
@@ -233,7 +207,7 @@ def main(argv=None):
     # §11: spawned in this order, init last.
     specs = [
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
-             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c", font],
+             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c"],
                                out / "console.wax", args, SLOT1, "-I", str(services / "console"))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
              image=pool.submit(static, [services / "disk/main.c", services / "disk/cache.c"],

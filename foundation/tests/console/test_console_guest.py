@@ -12,12 +12,23 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(HERE.parent / 'shell'))
 import test_shell
+sys.path.insert(0, str(ROOT / "tools/wax"))
+import wax
 
 
 class ConsoleGuestTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         test_shell.ShellTests.setUpClass.__func__(cls)
+        # Testbench does not load GUI font configuration. Seed a custom font
+        # in a test-only WAX block, exactly where pcg.font_8x16 loads it.
+        cls.font = bytes((i * 37 + 0x5a) & 255 for i in range(4096))
+        cls.font = cls.font[:32 * 16] + bytes(16) + cls.font[33 * 16:]
+        image = wax.parse(cls.image.read_bytes())
+        blocks = [(b['load_address'], b['data']) for b in image['blocks']]
+        blocks.append((0x10021000, cls.font))
+        cls.image = cls.work / 'configured-font.wax'
+        cls.image.write_bytes(wax.pack(image['base'], image['entry_offset'], blocks))
         guest = cls.work / 'concheck.wax'
         command = [sys.executable, str(ROOT / 'tools/llvm-src32/driver.py'), str(HERE / 'guest.c'),
                    '-I', str(ROOT / 'foundation/include'), '-I', str(ROOT / 'sdk/cpt32/include'),
@@ -98,14 +109,16 @@ class ConsoleGuestTests(unittest.TestCase):
                                 pixels=[(8, 0, 0x0000AA), (0, 232, 0xAA0000), (0, 239, 0xAA0000)])
         self.assertIn('A', text)
 
-    def test_native_8x16_font_and_display_pixels(self):
-        rom = (ROOT / 'assets/unifont-bmp.chr').read_bytes()
-        glyph = rom[ord('A') * 32: (ord('A') + 1) * 32:2]
+    def test_configured_8x16_font_survives_switches_and_display_pixels(self):
+        glyph = self.font[ord('A') * 16:(ord('A') + 1) * 16]
         y = next(i for i, bits in enumerate(glyph) if bits)
         x = next(i for i in range(8) if glyph[y] & (0x80 >> i))
-        text = self.run_console('mode 8x16\\n', 'mode\\n', 'cat /display.txt\\n',
+        offsets = sorted(set([0, 31 * 16, 127 * 16, 255 * 16, 4095] +
+                             list(range(ord('A') * 16, (ord('A') + 1) * 16))))
+        text = self.run_console('mode 8x16\\n', 'mode 8x16\\n', 'mode 40\\n',
+                                'mode 80\\n', 'mode 8x16\\n', 'mode\\n', 'cat /display.txt\\n',
                                 final=[(0x8000F003, 3)] +
-                                      [(0x10021000 + ord('A') * 16 + i, b) for i, b in enumerate(glyph)],
+                                      [(0x10021000 + i, self.font[i]) for i in offsets],
                                 pixels=[(x, y, 0xAA0000), (8, 0, 0x0000AA),
                                         (0, 464, 0xAA0000), (0, 479, 0xAA0000)])
         self.assertIn('A', text)
