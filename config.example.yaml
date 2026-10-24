@@ -28,6 +28,9 @@ pcg:
   # Raw PCG font bank image: exactly 2 KiB (one bank) or 4 KiB (both banks).
   # Relative paths are resolved from the directory containing config.yaml.
   # font: "assets/UNSCII.F08"
+  # Mode 3 font: exactly 4 KiB (256 glyphs x 16 rows, bit 7 = left pixel).
+  # Loads dedicated VRAM 0x21000..0x21FFF; does not select the screen mode.
+  # font_8x16: "path/to/font.f16"
 
 # Connect up to four raw disk images. Relative paths are resolved from the
 # directory containing config.yaml. Each configured image must already exist.

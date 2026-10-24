@@ -110,14 +110,17 @@ Bus tick（デバイス構成別）、VDP/PCG合成、SGCのfill/sprite、VPU三
 RUST_LOG=debug cargo run --release --bin cpt32 -- path/to/program.bin
 ```
 
-PCG の raw font file は引数ではなく、起動時の `config.yaml` で指定します。`font.bin` は PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。相対 path は `config.yaml` のある directory を基準にします。設定を省略した場合は内蔵フォントを使用します。
+PCG の raw font file は引数ではなく、GUI起動時の `config.yaml` で指定します。`pcg.font` は8×8の PCG font bank 0/1 用の2 KiBまたは4 KiBファイルです。`pcg.font_8x16` は mode 3 用の4096 byte（256 glyph×16行、各行bit 7が左端）のファイルで、専用VRAMに読み込みます。相対 path は `config.yaml` のある directory を基準にします。8×16の指定を省略すると専用領域は書き換えません。
 
 ```yaml
 pcg:
   font: "assets/UNSCII.F08"
+  # font_8x16: "path/to/font.f16"
 ```
 
 旧来の `<program.bin> [font.bin]` 形式は使えません。
+
+launcherの「ROM・ディスク・拡張」には8×8と8×16それぞれの選択欄があります。8×16の指定は画面モードを変更しません。ゲストで `SCREEN_MODE=3` を選びます。ゲストがフォントを書き換えた場合はそちらが優先されます。Foundation の `mode 8x16` は切替のたびに同梱フォントを読み込むため、この設定のフォントも上書きします。
 
 同梱の8×8フォントは PD / CC0 の UNSCII です。旧 `assets/CGA.F08` を指定していた設定は `assets/UNSCII.F08` に変更してください。文字配置は CP437 を維持しますが、図柄は変わります。
 

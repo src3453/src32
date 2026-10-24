@@ -436,6 +436,10 @@ impl Vdp {
         self.pcg.load_font_file(path)
     }
 
+    pub fn load_pcg_font_8x16_from_file<P: AsRef<Path>>(&self, path: P) -> io::Result<()> {
+        self.pcg.load_font_8x16_file(path)
+    }
+
     pub fn set_display_mode(&mut self, mode: DisplayMode) {
         self.regs.display_mode = mode;
     }

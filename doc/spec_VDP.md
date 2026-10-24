@@ -44,6 +44,8 @@ mode 2のカーソル範囲はX=0～19、Y=0～14。8-bit `CURSOR_LINES`の各bi
 
 mode 3の文字セルは`row * 80 + column`順で、VRAM `0x00000`から1 byteのglyph番号を格納する。属性はmode 0/1と同じ1 cellあたり1 byte。フォントは既存の8×8用2バンクと重ならない専用領域VRAM `0x21000`～`0x21FFF`を単一バンクとして使い、各glyphは16 byte（上から16行、各行8 pixelでbit 7が左端）とする。`PCG_FONT_BANK`はmode 3では無視する。8×16フォントは256 glyphで4 KiB。mode 3のカーソル範囲はX=0～79、Y=0～29で、`CURSOR_LINES`の各bitを隣接する2 scanlineに適用する。
 
+GUIエミュレータの起動時、`config.yaml` の `pcg.font_8x16` でこの専用領域へ読み込むrawファイルを指定できる。サイズは4096 byteのみを受け付け、不正サイズ・読込失敗は起動エラーとする。相対パスは設定ファイルのディレクトリ基準。省略時は領域を書き換えない。`pcg.font`（8×8の2/4 KiB）とは独立し、4 KiBの自動判別はしない。設定は画面モードを変更せず、ゲストは引き続き専用領域を書き換えられる。
+
 `SCROLL_X` (`0xF00C` low byte, `0xF00D` high byte) と `SCROLL_Y` (`0xF00E` low byte, `0xF00F` high byte) は、PCGタイルマップの表示位置を指定する16-bit unsigned pixel offsetである。画面座標 `(X, Y)` はタイルマップ座標 `((X + dX) mod W, (Y + dY) mod H)` から読み出す。`W` と `H` は現在の `SCREEN_MODE` の幅・高さで、各offsetのreset値は0。カーソルもスクロール後のタイルマップ位置に追従する。
 
 ### 2.2 ビットマップGP

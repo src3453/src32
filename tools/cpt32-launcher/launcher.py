@@ -60,7 +60,7 @@ if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
 else:
     PROFILE_FILE = Path.home() / ".config" / "CPT32" / "Launcher" / "profiles.json"
 SAFE_CONFIG_PATHS = (
-    ("bios", "image"), ("pcg", "font"), ("disk_sound", "asset_root"),
+    ("bios", "image"), ("pcg", "font"), ("pcg", "font_8x16"), ("disk_sound", "asset_root"),
     ("expansion_card", "package"),
 )
 
@@ -386,6 +386,7 @@ class Launcher(tk.Tk):
         self.music_stream = tk.StringVar()
         self.bios = tk.StringVar()
         self.font = tk.StringVar()
+        self.font_8x16 = tk.StringVar()
         self.sound_root = tk.StringVar()
         self.sound_volume = tk.StringVar(value="1.0")
         self.fdd_profile = tk.StringVar()
@@ -465,20 +466,21 @@ class Launcher(tk.Tk):
         hardware.columnconfigure(1, weight=1)
         self.tabs.add(hardware, text="ROM・ディスク・拡張")
         self._path_row(hardware, 0, "BIOS ROM", self.bios, lambda: self._choose_into(self.bios, "BIOS / WAX ROM", "*.rom *.bin *.wax"))
-        self._path_row(hardware, 1, "PCG font", self.font, lambda: self._choose_into(self.font, "PCG font", "*.bin *.f08 *.chr"))
-        self._path_row(hardware, 2, "Disk sound assets", self.sound_root, lambda: self._choose_into(self.sound_root, "86Box assets", directory=True))
-        ttk.Label(hardware, text="サウンド音量").grid(row=3, column=0, sticky="w", pady=5)
+        self._path_row(hardware, 1, "PCG font 8x8", self.font, lambda: self._choose_into(self.font, "PCG font", "*.bin *.f08 *.chr"))
+        self._path_row(hardware, 2, "PCG font 8x16", self.font_8x16, lambda: self._choose_into(self.font_8x16, "PCG font 8x16 (4096 bytes)", "*.bin *.f16 *.chr"))
+        self._path_row(hardware, 3, "Disk sound assets", self.sound_root, lambda: self._choose_into(self.sound_root, "86Box assets", directory=True))
+        ttk.Label(hardware, text="サウンド音量").grid(row=4, column=0, sticky="w", pady=5)
         sound = ttk.Frame(hardware)
-        sound.grid(row=3, column=1, sticky="w")
+        sound.grid(row=4, column=1, sticky="w")
         ttk.Entry(sound, textvariable=self.sound_volume, width=8).pack(side="left")
         ttk.Label(sound, text=" FDD profile").pack(side="left")
         ttk.Entry(sound, textvariable=self.fdd_profile, width=24).pack(side="left", padx=(4, 10))
         ttk.Label(sound, text="HDD profile").pack(side="left")
         ttk.Entry(sound, textvariable=self.hdd_profile, width=24).pack(side="left", padx=4)
-        ttk.Separator(hardware).grid(row=4, column=0, columnspan=3, sticky="ew", pady=9)
-        ttk.Label(hardware, text="ディスクイメージ").grid(row=5, column=0, columnspan=3, sticky="w")
+        ttk.Separator(hardware).grid(row=5, column=0, columnspan=3, sticky="ew", pady=9)
+        ttk.Label(hardware, text="ディスクイメージ").grid(row=6, column=0, columnspan=3, sticky="w")
         for slot in range(4):
-            self._drive_row(hardware, slot, 6 + slot)
+            self._drive_row(hardware, slot, 7 + slot)
         advanced = ttk.Frame(self.tabs, padding=12)
         advanced.columnconfigure(1, weight=1)
         self.tabs.add(advanced, text="詳細設定")
@@ -632,6 +634,7 @@ class Launcher(tk.Tk):
             self.vram_mib.set(str(memory.get("vram_mib", 4)) if isinstance(memory, dict) else "4")
             self.bios.set(bios.get("image", "") if isinstance(bios, dict) else "")
             self.font.set(pcg.get("font", "") if isinstance(pcg, dict) else "")
+            self.font_8x16.set(pcg.get("font_8x16", "") if isinstance(pcg, dict) else "")
             self.sound_root.set(sound.get("asset_root", "") if isinstance(sound, dict) else "")
             self.sound_volume.set(str(sound.get("volume", 1.0)) if isinstance(sound, dict) else "1.0")
             self.fdd_profile.set(sound.get("default_fdd_profile", "") if isinstance(sound, dict) else "")
@@ -686,7 +689,7 @@ class Launcher(tk.Tk):
             document["memory"] = memory
         else:
             document.pop("memory", None)
-        for section, key, value in (("bios", "image", self.bios.get()), ("pcg", "font", self.font.get())):
+        for section, key, value in (("bios", "image", self.bios.get()), ("pcg", "font", self.font.get()), ("pcg", "font_8x16", self.font_8x16.get())):
             if value.strip():
                 nested = document.get(section) or {}
                 if not isinstance(nested, dict):
@@ -829,6 +832,7 @@ class Launcher(tk.Tk):
         bios, pcg, sound = (self.document.get(k, {}) or {} for k in ("bios", "pcg", "disk_sound"))
         self.bios.set(bios.get("image", "") if isinstance(bios, dict) else "")
         self.font.set(pcg.get("font", "") if isinstance(pcg, dict) else "")
+        self.font_8x16.set(pcg.get("font_8x16", "") if isinstance(pcg, dict) else "")
         self.sound_root.set(sound.get("asset_root", "") if isinstance(sound, dict) else "")
         self.sound_volume.set(str(sound.get("volume", 1.0)) if isinstance(sound, dict) else "1.0")
         self.fdd_profile.set(sound.get("default_fdd_profile", "") if isinstance(sound, dict) else "")

@@ -278,10 +278,20 @@ fn build_guest_machine(
     };
     let entry = load_program_data(program, music_stream, &mut bus)?;
     let vdp = connect_vdp_with_vram_size(&mut bus, vram_size);
-    if let Some(font_path) = pcg_font_path_from_config()? {
+    if let Some(font_path) = pcg_font_path_from_config("font")? {
         vdp.borrow()
             .load_pcg_font_from_file(&font_path)
             .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
+    }
+    if let Some(font_path) = pcg_font_path_from_config("font_8x16")? {
+        vdp.borrow()
+            .load_pcg_font_8x16_from_file(&font_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to load PCG 8x16 font {}: {error}",
+                    font_path.display()
+                )
+            })?;
     }
     let plugins = cartridge
         .as_ref()
@@ -332,10 +342,20 @@ fn build_raw_guest(
     let entry = load_program_data(&data, music_stream, &mut bus)?;
     let (_, vram_size) = memory_sizes_from_config(Path::new("config.yaml"))?;
     let vdp = connect_vdp_with_vram_size(&mut bus, vram_size);
-    if let Some(font_path) = pcg_font_path_from_config()? {
+    if let Some(font_path) = pcg_font_path_from_config("font")? {
         vdp.borrow()
             .load_pcg_font_from_file(&font_path)
             .map_err(|error| format!("Failed to load PCG font {}: {error}", font_path.display()))?;
+    }
+    if let Some(font_path) = pcg_font_path_from_config("font_8x16")? {
+        vdp.borrow()
+            .load_pcg_font_8x16_from_file(&font_path)
+            .map_err(|error| {
+                format!(
+                    "Failed to load PCG 8x16 font {}: {error}",
+                    font_path.display()
+                )
+            })?;
     }
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)?;
     let entry = match cpt32::devices::bios::load_bios(Path::new("config.yaml"), &mut bus)? {
@@ -2903,7 +2923,7 @@ struct GuiLaunchOptions {
     cpu_execution: CpuExecutionSettings,
 }
 
-fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
+fn pcg_font_path_from_config(key: &str) -> Result<Option<PathBuf>, String> {
     let config_path = Path::new("config.yaml");
     let contents = match std::fs::read_to_string(config_path) {
         Ok(contents) => contents,
@@ -2912,14 +2932,24 @@ fn pcg_font_path_from_config() -> Result<Option<PathBuf>, String> {
     };
     let root: yaml_serde::Value = yaml_serde::from_str(&contents)
         .map_err(|error| format!("invalid YAML in {}: {error}", config_path.display()))?;
+    pcg_font_path_from_yaml(&root, config_path, key)
+}
+
+fn pcg_font_path_from_yaml(
+    root: &yaml_serde::Value,
+    config_path: &Path,
+    key: &str,
+) -> Result<Option<PathBuf>, String> {
     let Some(pcg) = root.get("pcg") else {
         return Ok(None);
     };
     let table = pcg.as_mapping().ok_or("`pcg` must be a mapping")?;
-    let Some(font) = table.get("font") else {
+    let Some(font) = table.get(key) else {
         return Ok(None);
     };
-    let font = font.as_str().ok_or("`pcg.font` must be a path string")?;
+    let font = font
+        .as_str()
+        .ok_or_else(|| format!("`pcg.{key}` must be a path string"))?;
     let path = Path::new(font);
     Ok(Some(if path.is_absolute() {
         path.to_path_buf()
@@ -3107,6 +3137,31 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
 mod input_tests {
     use super::*;
     use std::io::Write;
+
+    #[test]
+    fn pcg_font_paths_are_independent_and_relative_to_config() {
+        let root = yaml_serde::from_str("pcg:\n  font: old.f08\n  font_8x16: tall.f16\n").unwrap();
+        let config = Path::new("profiles/config.yaml");
+        assert_eq!(
+            pcg_font_path_from_yaml(&root, config, "font").unwrap(),
+            Some(PathBuf::from("profiles/old.f08"))
+        );
+        assert_eq!(
+            pcg_font_path_from_yaml(&root, config, "font_8x16").unwrap(),
+            Some(PathBuf::from("profiles/tall.f16"))
+        );
+        let root = yaml_serde::from_str("pcg:\n  font: old.f08\n").unwrap();
+        assert_eq!(
+            pcg_font_path_from_yaml(&root, config, "font_8x16").unwrap(),
+            None
+        );
+        let root = yaml_serde::from_str("pcg:\n  font_8x16: 4096\n").unwrap();
+        assert!(
+            pcg_font_path_from_yaml(&root, config, "font_8x16")
+                .unwrap_err()
+                .contains("pcg.font_8x16")
+        );
+    }
 
     #[test]
     fn memory_config_caps_vram_before_pcmram() {

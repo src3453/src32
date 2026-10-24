@@ -116,6 +116,7 @@ pub const PCG_FONT_TOTAL_SIZE: usize = PCG_FONT_BANK_SIZE * 2;
 pub const PCG_FONT_BANK0_ADDR: usize = 0x20000;
 pub const PCG_FONT_BANK1_ADDR: usize = 0x20800;
 pub const PCG_FONT_8X16_ADDR: usize = 0x21000;
+pub const PCG_FONT_8X16_SIZE: usize = 256 * 16;
 pub const PCG_TEXT_ADDR: usize = 0x00000;
 pub const PCG_FG_ATTR_ADDR: usize = 0x01000;
 pub const PCG_BG_ATTR_ADDR: usize = 0x02000;
@@ -171,6 +172,27 @@ impl PcgRenderer {
                 ),
             )),
         }
+    }
+
+    pub fn load_font_8x16_file(&self, path: impl AsRef<Path>) -> io::Result<()> {
+        let font_data = fs::read(path)?;
+        self.load_font_8x16_bytes(&font_data)
+    }
+
+    pub fn load_font_8x16_bytes(&self, font_data: &[u8]) -> io::Result<()> {
+        if font_data.len() != PCG_FONT_8X16_SIZE {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!(
+                    "Invalid PCG 8x16 font size: expected {} bytes, got {}",
+                    PCG_FONT_8X16_SIZE,
+                    font_data.len()
+                ),
+            ));
+        }
+        self.vram.borrow_mut()[PCG_FONT_8X16_ADDR..PCG_FONT_8X16_ADDR + PCG_FONT_8X16_SIZE]
+            .copy_from_slice(font_data);
+        Ok(())
     }
 
     fn clut_rgb(vram: &[u8], color_index: u8) -> (u8, u8, u8) {

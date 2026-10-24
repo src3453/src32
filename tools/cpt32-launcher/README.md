@@ -14,6 +14,8 @@ ROM欄には `.sol` ソースも指定できます。「この設定で起動」
 
 ランチャーはGUIの起動時に `config.yaml` を固定名で読むエミュレーターの仕様に合わせ、一時フォルダーに現在の設定を生成して実行します。相対のBIOS／font／disk／WASM package／sound asset pathは、選択したYAMLのある場所を基準に絶対化します。指定がなければdisk soundの探索先も選んだYAMLの場所になります。cargo projectの場所からビルドし、一時フォルダーを作業ディレクトリにするので、リポジトリ直下のconfig.yamlを書き換えずにプロファイルを切り替えられます。読み書き可能で起動中に変更しないdisk imageは元のファイルを直接使います。
 
+「ROM・ディスク・拡張」の `PCG font 8x8` は `pcg.font`（2/4 KiB）、`PCG font 8x16` は `pcg.font_8x16`（4096 byte、256 glyph×16行、bit 7が左端）です。両方を独立して保存・復元でき、空欄ならそのキーを省略します。8×16は専用VRAMへの初期ロードだけで、表示モードはゲストが選択します。Foundation の `mode 8x16` は同梱フォントで上書きします。monitorではこれらのフォント設定を読み込みません。
+
 「設定を保存」は画面に選択したYAMLへ変更を保存する明示操作です。「プロファイル保存」は設定内容とROM／CLI設定を、Windowsでは `%LOCALAPPDATA%\CPT32\Launcher\profiles.json`、その他の環境では `~/.config/CPT32/Launcher/profiles.json` に保存します。プロファイル名を入力して「読込」を押すと戻せます。
 
 PyYAMLなしの標準ライブラリfallbackは通常のmapping／sequence、引用文字列、数値、真偽値、null、JSON形式のflow collectionを扱います。YAML alias／tag／block stringなど対応していない拡張構文を見つけたときは、元ファイルを変更せずエラーを表示します。PyYAMLが利用できる環境ではその機能に従います。

@@ -296,6 +296,7 @@ class LaunchPipelineTests(unittest.TestCase):
             vram_mib=Variable("128"),
             bios=Variable(""),
             font=Variable(""),
+            font_8x16=Variable("fonts/tall.f16"),
             sound_root=Variable(""),
             fdd_profile=Variable(""),
             hdd_profile=Variable(""),
@@ -308,6 +309,11 @@ class LaunchPipelineTests(unittest.TestCase):
         restored = launcher.parse_yaml(launcher.dump_yaml(saved))
         self.assertEqual(restored["memory"], {"ram_mib": 96, "vram_mib": 128})
         self.assertEqual(restored["cpu"]["jit_block_size"], 32)
+        self.assertEqual(restored["pcg"]["font_8x16"], "fonts/tall.f16")
+        run = launcher.prepare_run_config(restored, self.base, "pipeline")
+        self.assertEqual(run["pcg"]["font_8x16"], str(self.base / "fonts/tall.f16"))
+        ui.font_8x16.set("")
+        self.assertNotIn("font_8x16", launcher.Launcher._effective_document(ui).get("pcg", {}))
 
         ui.vram_mib.set("129")
         with self.assertRaises(launcher.ConfigError):
