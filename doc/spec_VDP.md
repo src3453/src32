@@ -48,6 +48,19 @@ mode 3の文字セルは`row * 80 + column`順で、VRAM `0x00000`から1 byte�
 
 GUIエミュレータの起動時、`config.yaml` の `pcg.font_8x16` でこの専用領域へ読み込むrawファイルを指定できる。サイズは4096 byteのみを受け付け、不正サイズ・読込失敗は起動エラーとする。相対パスは設定ファイルのディレクトリ基準。省略時は領域を書き換えない。`pcg.font`（8×8の2/4 KiB）とは独立し、4 KiBの自動判別はしない。設定は画面モードを変更せず、ゲストは引き続き専用領域を書き換えられる。
 
+mode 3は、前景色属性（FG base `0x01000`）の予約bit 7～6（`WIDE_KIND`）でUTF-16BE BMPの2 byte文字を表示できる。下位6 bitのCLUT indexは従来どおりで、mode 0～2ではbit 7～6を無視する。
+
+| `WIDE_KIND` | 意味 |
+|---:|---|
+| `00` | 1 byte文字（従来のglyph番号） |
+| `01` | 2 byte文字の上位（MSB）byte |
+| `10` | 2 byte文字の下位（LSB）byte |
+| `11` | 予約。`00`として扱う |
+
+同じ行で隣り合う、左が`01`で右が`10`のセルの組を1つの2 byte文字とし、code unit = (左セルのtext byte << 8) | 右セルのtext byteとする。左セルにglyphの左8 pixel、右セルに右8 pixelを描く。前景・背景色、カーソルは各セルの属性に従う。対の相手がない`01`／`10`（行末の`01`、直前が`01`でない`10`など）は`00`として扱い、1 byteフォントで描く。surrogate code unitに特別な扱いはせず、フォントの内容をそのまま描く。
+
+2 byte文字のフォントは、1 byteフォント領域とは別にVRAMの任意の位置へ置ける。`WIDE_FONT_BASE`（`0xF010`～`0xF013`、32-bit、low byte先行、reset値0）はその先頭のVRAM byte offsetで、code unit `u`のglyphは`WIDE_FONT_BASE + u * 32`から始まる32 byte（上から16行、各行2 byte、左端pixelが最上位bit。形式は`GLYPH`用Unifont ROMと同じ）とする。全code unitを置くと2 MiBになるため、ゲストは必要な範囲だけを置けばよい（置かなかった範囲は他データの内容がそのまま描かれる）。VRAM終端を超える読み出しは0（背景色）として扱う。`WIDE_FONT_BASE`は5 byte目以降を持たず、mode 3以外の描画には影響しない。
+
 `SCROLL_X` (`0xF00C` low byte, `0xF00D` high byte) と `SCROLL_Y` (`0xF00E` low byte, `0xF00F` high byte) は、PCGタイルマップの表示位置を指定する16-bit unsigned pixel offsetである。画面座標 `(X, Y)` はタイルマップ座標 `((X + dX) mod W, (Y + dY) mod H)` から読み出す。`W` と `H` は現在の `SCREEN_MODE` の幅・高さで、各offsetのreset値は0。カーソルもスクロール後のタイルマップ位置に追従する。
 
 ### 2.2 ビットマップGP

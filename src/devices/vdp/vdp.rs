@@ -93,6 +93,7 @@ pub enum VdpFramebuffer<'a> {
         pcg_cursor_blink_tick: u64,
         pcg_scroll_x: u16,
         pcg_scroll_y: u16,
+        pcg_wide_font_base: u32,
         pcg_output_gp: u8,
         composed_pixels: OnceLock<Vec<[u8; 3]>>,
     },
@@ -110,6 +111,7 @@ pub enum VdpFramebuffer<'a> {
         cursor_blink_tick: u64,
         scroll_x: u16,
         scroll_y: u16,
+        wide_font_base: u32,
         border_color: u8,
         vpu: &'a RefCell<Vpu>,
         sgc_pixels: Vec<Rgba>,
@@ -198,6 +200,7 @@ impl<'a> VdpFramebuffer<'a> {
                 cursor_blink_tick,
                 scroll_x,
                 scroll_y,
+                wide_font_base,
                 ..
             } => renderer.get_pixel(
                 Self::scroll_coordinate(x, *scroll_x, screen_mode.width()),
@@ -211,6 +214,7 @@ impl<'a> VdpFramebuffer<'a> {
                 *cursor_lines,
                 *cursor_blink_period,
                 *cursor_blink_tick,
+                *wide_font_base,
             ),
             VdpFramebuffer::Blank => (0, 0, 0),
         };
@@ -245,6 +249,7 @@ impl<'a> VdpFramebuffer<'a> {
             pcg_cursor_blink_tick,
             pcg_scroll_x,
             pcg_scroll_y,
+            pcg_wide_font_base,
             pcg_output_gp,
             ..
         } = self
@@ -264,6 +269,7 @@ impl<'a> VdpFramebuffer<'a> {
                     *pcg_cursor_lines,
                     *pcg_cursor_blink_period,
                     *pcg_cursor_blink_tick,
+                    *pcg_wide_font_base,
                 );
                 layers[*pcg_output_gp as usize] =
                     source_over([rgb.0, rgb.1, rgb.2, 255], layers[*pcg_output_gp as usize]);
@@ -352,6 +358,7 @@ impl Vdp {
                 pcg_cursor_blink_tick: self.state.pcg_cursor_blink_tick,
                 pcg_scroll_x: self.regs.pcg_scroll_x,
                 pcg_scroll_y: self.regs.pcg_scroll_y,
+                pcg_wide_font_base: self.regs.pcg_wide_font_base,
                 pcg_output_gp: self.regs.pcg_output_gp,
                 composed_pixels: OnceLock::new(),
             },
@@ -369,6 +376,7 @@ impl Vdp {
                 cursor_blink_tick: self.state.pcg_cursor_blink_tick,
                 scroll_x: self.regs.pcg_scroll_x,
                 scroll_y: self.regs.pcg_scroll_y,
+                wide_font_base: self.regs.pcg_wide_font_base,
                 border_color: self.regs.border_color,
                 vpu: self.vpu.as_ref(),
                 sgc_pixels,
@@ -492,6 +500,7 @@ impl Vdp {
             0xF00D => (self.regs.pcg_scroll_x >> 8) as u8,
             0xF00E => self.regs.pcg_scroll_y as u8,
             0xF00F => (self.regs.pcg_scroll_y >> 8) as u8,
+            0xF010..=0xF013 => (self.regs.pcg_wide_font_base >> ((reg_addr - 0xF010) * 8)) as u8,
             0xFFFF => 0,
             _ => 0,
         }
@@ -546,6 +555,11 @@ impl Vdp {
             }
             0xF00F => {
                 self.regs.pcg_scroll_y = (self.regs.pcg_scroll_y & 0x00FF) | ((value as u16) << 8);
+            }
+            0xF010..=0xF013 => {
+                let shift = (reg_addr - 0xF010) * 8;
+                self.regs.pcg_wide_font_base =
+                    (self.regs.pcg_wide_font_base & !(0xFF << shift)) | ((value as u32) << shift);
             }
             0xFFFF => {
                 if value & 1 != 0 {
