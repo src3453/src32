@@ -26,7 +26,7 @@ python examples/lzma-wal/build.py target/lzma-wal --clang 'C:\Program Files\AMD\
 
 | ファイル | 用途 |
 | --- | --- |
-| `target/lzma-wal/liblzma.wal` | WAL 単体。image ID `lzma`、ABI 1.0 |
+| `target/lzma-wal/liblzma.wal` | WAL 単体。image ID `lzma`、ABI 1.1 |
 | `target/lzma-wal/lzma-demo.wax` | 圧縮して展開し、一致と圧縮率を確認して 42 で終了する WAX v3 |
 | `target/lzma-wal/root/lib/lzma.1.wal` | Foundation が実行時に探す配置名 |
 | `target/lzma-wal/root/bin/lzma-demo.wax` | Foundation ディスクへ追加する実行ファイル |
@@ -54,7 +54,7 @@ python foundation/boot/build.py target/foundation-lzma --root target/lzma-wal/ro
 2. `foundation/include/foundation/lzma.h` に固定幅の公開 API を定義します。
    SDK の allocator はアダプター内部だけで作り、関数ポインタを WAL 境界へ渡しません。
 3. `foundation/lib/lzma/lzma.exports` に公開名と signature を書きます。
-   `--wal --image-id lzma --abi-version 1.0 --exports ...` で SDK とアダプターをリンクします。
+   `--wal --image-id lzma --abi-version 1.1 --exports ...` で SDK とアダプターをリンクします。
    依存する別の WAL はありません。
 4. 利用者はヘッダーを include し、`--wax3 --import-wal target/lzma-wal/liblzma.wal`
    でビルドします。`main.c` は SDK のソースを静的リンクせず、2 関数を import します。

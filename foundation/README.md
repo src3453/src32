@@ -259,6 +259,12 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 `liblzma.wal` の圧縮・展開 API、export 定義、WAX 側の import、ディスクへの配置を説明しています。
 `liblzma.wal` は `/lib/lzma.1.wal` として既定のディスクイメージに含まれます（`boot/build.py` が `-O` の指定に従って作ります）。
 
+### 圧縮ライブラリ共通 API「conde」
+
+圧縮ライブラリ（lzma、rle、今後追加するもの）は conde（compression-decompression）に従います。規約は [`include/foundation/conde.h`](include/foundation/conde.h) に書いてあります。関数は `cpt_<algo>_compress`／`cpt_<algo>_decompress`／`cpt_<algo>_compress_bound` の形に揃え、戻り値は `CONDE_*`、`*dst_size` は容量を入力して実長を返し、作業領域は呼出側が渡します（不要なアルゴリズムは NULL／0 でよい）。WAL 間では関数ポインタを渡せないため、共通化は名前・シグネチャ・コードで行います。
+
+`librle.wal`（`lib/rle`、image ID `rle`、ABI 1.0）は PackBits 形式の RLE で、`/lib/rle.1.wal` として既定のディスクに入ります。heap・libfnd・作業領域を使わず、4 byte 単位でラン検出・コピー・埋め込みを行います。テストは `python3 -m unittest foundation.tests.rle.test_rle`（Clang と `src32_testbench` が必要。後者がなければ Foundation 上のテストは skip）です。
+
 `tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 
 ```sh

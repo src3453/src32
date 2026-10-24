@@ -103,3 +103,7 @@ int32_t cpt_lzma_decompress(uint8_t *dst, uint32_t *dst_size,
     *dst_size = (uint32_t)output;
     return SZ_OK;
 }
+
+uint32_t cpt_lzma_compress_bound(uint32_t src_size) {
+    return src_size > 0xBFFFFF00u ? 0xFFFFFFFFu : src_size + src_size / 3 + 128 + 13;
+}
