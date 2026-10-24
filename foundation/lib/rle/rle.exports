@@ -1,0 +1,4 @@
+# WAL ABI 1.0; helpers are not exported.
+cpt_rle_compress fn(ptr,ptr,ptr,u32,ptr,u32,u32,u32)->i32
+cpt_rle_decompress fn(ptr,ptr,ptr,u32,ptr,u32)->i32
+cpt_rle_compress_bound fn(u32)->u32

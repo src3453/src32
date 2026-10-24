@@ -16,7 +16,7 @@ def build(out, clang=None, optimization="-O2"):
                *(str(HERE / "vendor" / name) for name in ("LzmaEnc.c", "LzmaDec.c", "LzFind.c")),
                "-I", str(ROOT / "foundation/include"), "-I", str(HERE / "vendor"),
                "-I", str(HERE / "compat"), "-D", "Z7_ST", optimization,
-               "--wal", "--image-id", "lzma", "--abi-version", "1.0",
+               "--wal", "--image-id", "lzma", "--abi-version", "1.1",
                "--exports", str(HERE / "lzma.exports"), "-o", str(out / "liblzma.wal")]
     if clang:
         command += ["--clang", clang]

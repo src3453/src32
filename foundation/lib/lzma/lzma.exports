@@ -1,3 +1,4 @@
-# WAL ABI 1.0; private SDK interfaces are not exported.
+# WAL ABI 1.1 (1.1 adds cpt_lzma_compress_bound); private SDK interfaces are not exported.
 cpt_lzma_compress fn(ptr,ptr,ptr,u32,ptr,u32,u32,u32)->i32
 cpt_lzma_decompress fn(ptr,ptr,ptr,u32,ptr,u32)->i32
+cpt_lzma_compress_bound fn(u32)->u32

@@ -1,4 +1,4 @@
-/* Foundation external-library demo: these calls import lzma ABI 1.0. */
+/* Foundation external-library demo: these calls import lzma ABI 1.1. */
 #include <foundation/lzma.h>
 #include <string.h>
 

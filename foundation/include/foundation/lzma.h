@@ -1,14 +1,15 @@
 #ifndef FOUNDATION_LZMA_H
 #define FOUNDATION_LZMA_H
-#include <stdint.h>
+/* conde（<foundation/conde.h>）に準拠する。 */
+#include <foundation/conde.h>
 
-#define CPT_LZMA_OK 0
-#define CPT_LZMA_DATA 1
-#define CPT_LZMA_MEMORY 2
-#define CPT_LZMA_UNSUPPORTED 4
-#define CPT_LZMA_PARAMETER 5
-#define CPT_LZMA_INPUT_EOF 6
-#define CPT_LZMA_OUTPUT_EOF 7
+#define CPT_LZMA_OK CONDE_OK
+#define CPT_LZMA_DATA CONDE_DATA
+#define CPT_LZMA_MEMORY CONDE_MEMORY
+#define CPT_LZMA_UNSUPPORTED CONDE_UNSUPPORTED
+#define CPT_LZMA_PARAMETER CONDE_PARAMETER
+#define CPT_LZMA_INPUT_EOF CONDE_INPUT_EOF
+#define CPT_LZMA_OUTPUT_EOF CONDE_OUTPUT_EOF
 
 /* .lzma (LZMA-Alone) のヘッダーを含む圧縮。*dst_size は容量を入力し実長を返す。 */
 int32_t cpt_lzma_compress(uint8_t *dst, uint32_t *dst_size,
@@ -20,4 +21,7 @@ int32_t cpt_lzma_compress(uint8_t *dst, uint32_t *dst_size,
 int32_t cpt_lzma_decompress(uint8_t *dst, uint32_t *dst_size,
                             const uint8_t *src, uint32_t src_size,
                             void *work, uint32_t work_size);
+
+/* 13 byte のヘッダーを含め、圧縮結果が必ず収まるサイズ（SDK の見積り式）。表せなければ 0xFFFFFFFF。 */
+uint32_t cpt_lzma_compress_bound(uint32_t src_size);
 #endif
