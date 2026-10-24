@@ -5,7 +5,7 @@
 
 /* Thread states and BLOCKED reasons (doc/spec_Foundation.md §2). */
 enum { T_FREE, T_READY, T_RUNNING, T_BLOCKED, T_DEAD };
-enum { B_NONE, B_SEND, B_REPLY, B_RECV, B_SLEEP, B_WAIT, B_BLK_IO };
+enum { B_NONE, B_SEND, B_REPLY, B_RECV, B_SLEEP, B_WAIT, B_BLK_IO, B_PEC_READ };
 
 struct fnd_thread {
     cpt32_ctx_frame frame; /* saved user context (continuation style) */
@@ -67,6 +67,12 @@ void handle_close_all(struct fnd_proc *proc);
 uint32_t handle_free_count(const struct fnd_proc *proc);
 int32_t handle_dup_into(struct fnd_proc *from, uint32_t h, struct fnd_proc *to);
 void ipc_proc_exited(struct fnd_proc *proc); /* wakes WAIT on it */
+/* Kernel channel kinds for PeC streams; the factory kind is stream - 1. */
+enum { KDEV_TRNG = 8u, KDEV_PRNG = 10u, KDEV_UART0 = 12u };
+void ipc_pec_poll(void);
+int32_t pec_open(uint32_t kind, uint32_t flags);
+int32_t pec_call(struct fnd_proc *proc, uint32_t kind, uint32_t rights,
+                 const fnd_msg *req, fnd_msg *rep, uint32_t cap);
 void ipc_timed_out(struct fnd_thread *thread);
 int32_t sys_handle_close(struct fnd_proc *proc, uint32_t h);
 int32_t sys_handle_dup(struct fnd_proc *proc, uint32_t h);

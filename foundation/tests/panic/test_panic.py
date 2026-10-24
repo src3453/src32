@@ -12,7 +12,7 @@ import tempfile
 import unittest
 
 ROOT = Path(__file__).resolve().parents[3]
-KERNEL = ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'fb.c', 'sgu.c', 'sgc.c', 'blk.c', 'wax.c')
+KERNEL = ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'fb.c', 'sgu.c', 'sgc.c', 'pec.c', 'blk.c', 'wax.c')
 BUS_ERROR_HALT = 0x202  # 0x200 | exception code 2
 
 

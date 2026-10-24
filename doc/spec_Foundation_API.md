@@ -401,6 +401,26 @@ READ-only の open/close は音を変更しません。既存の特権 MMIO gran
 
 C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`、`fnd_sgc_reset`、`fnd_sgc_fifo_clear`、`fnd_sgc_submit`（空きの分だけ投入し、word 数を返す。空きが全くなければ WOULD_BLOCK）とコマンド定数。既存 `fnd_call` を使う header helper で、WAL ABI は追加しません。`fnd_write` は短い書き込みを IO にするので、`/dev/sgc` には `fnd_sgc_submit` を使ってください。
 
+### 9.4 PeC 乱数・UART `/dev/trng`・`/dev/prng`・`/dev/uart0`
+
+`foundation/kernel/pec.c` のカーネルドライバです。fs は予約サービス
+`dev.trng`、`dev.prng`、`dev.uart0` に `DEV_OPEN` を送り、CHANNEL を転送します。
+`svc_register` でこれらの名前を登録すると EXISTS です。新しい syscall や WAL ABI は追加しません。
+
+| ノード | mode（UID 0） | open | `ST_READ` | `ST_WRITE` |
+|---|---|---|---|---|
+| `/dev/trng` | `0x0024` | READ のみ | PeC TRNG。READY=0 ならブロック | ACCESS |
+| `/dev/prng` | `0x0024` | READ のみ | PeC PRNG。常に待機せず読み出す | ACCESS |
+| `/dev/uart0` | `0x0036` | READ／WRITE の一方以上 | RX_READY=0 ならブロック | DATA_RW へ全バイトを投入 |
+
+- `DEV_OPEN` は READ／WRITE 以外の bit、または 0 を BAD_ARG にします。乱数デバイスに WRITE を指定すると ACCESS です。fs 経由の CREATE／EXCL／TRUNC／APPEND は §6.4 の規則に従います。
+- 複数の open を許します。すべてのストリームは同じハードウェアの乱数列／UART 受信キューを消費します。dup・転送は元の権限を共有します。open／close はシード、有効化、UART 設定を変更しません。
+- `ST_READ` は要求 `a0` と応答バッファ容量の小さい方まで返します。0 bytes は MMIO に触れず即時成功します。1 byte も取得できなければ、TRNG と UART は呼び出しスレッドだけを `PEC_READ` で待機させます。カーネルは 100 Hz のタイマーで再確認し、データ取得後に IPC 応答とともに起こします。WOULD_BLOCK や EOF は返しません。1 byte 以上あれば短い読み出しを許します。終了・kill 済みのスレッドへ遅延コピーしません。
+- RNG は 32-bit 出力を上位 byte から返します。先頭 lane の読み出しで次の word を生成し、4 lanes を順に消費します。要求末尾が 4 の倍数でなければ残りの bytes は破棄します。TRNG は各 word の前で READY を確認します。PRNG は GFSR（初期シード `0x55555555`）であり暗号用途の保証はありません。独自の entropy pool は設けず、TRNG の待機条件はハードウェアの READY に従います。エミュレータでは有効な TRNG は通常 READY です（[PeC 仕様](spec_PeC.md)）。
+- UART は変換・行編集をしないバイト列です。NUL もデータとして扱います。書き込みはカーネルの `debug_write` と同じく DATA_RW に投入し、全長を `a0` に返します。PeC エミュレータでは DATA_RW が送信キューに追加するため、TX_READY を待ちません。ホスト標準入出力への接続は UART の実装に従います。
+- `ST_STAT` は DEVICE、上表の mode、UID 0、size 0 を返します。乱数デバイスの flags は READ_ONLY、UART は 0 です。`ST_SYNC` は成功する no-op、seek／truncate／その他の操作は UNSUPPORTED。権限のない read／write は ACCESS です。ユーザーバッファは IPC の検証後に `mm_copy_*` でコピーします。
+- C アプリは既存の `fnd_file_open`、`fnd_read`、`fnd_write`、`fnd_close` を使えます。たとえば `fnd_file_open("/dev/prng", FND_OPEN_READ, FND_MODE_DEFAULT, &h)` で開いて任意長を読み出せます。
+
 ## 10. 構造体
 
 ### 10.1 `fnd_stat`（64 bytes）

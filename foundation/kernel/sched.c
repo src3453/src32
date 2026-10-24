@@ -175,6 +175,7 @@ void sched_timer_stop(void) {
 void sched_tick(void) {
     FND_REG32(TIMER_ACK) = 1u;
     ++ticks;
+    ipc_pec_poll();
     for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
         struct fnd_thread *thread = &threads[i];
         if (thread->state == T_BLOCKED && thread->timed && (int32_t)(ticks - thread->wake_tick) >= 0)

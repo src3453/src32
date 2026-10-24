@@ -292,7 +292,7 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 
 `fs/`（スロット 3）は FS2（[仕様](../doc/spec_FS2.md)）を `/` として見せる fs サービスです。disk サービス（`services/disk/`、スロット 2）の IPC を通して、カーネルの `blk_io`（IDC + DMAC）でディスクを読み書きします。
 
-- **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`、`/dev/fb0`、`/dev/sgu`、`/dev/sgc`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
+- **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`、`/dev/fb0`、`/dev/sgu`、`/dev/sgc`、`/dev/trng`、`/dev/prng`、`/dev/uart0`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
 - **VDP bitmap**：`/dev/fb0` はカーネルドライバです。通常のopen/read/writeと `<foundation/fb.h>` で、320×240のINDEX8／RGB555／RGB888と全256色のCLUTを操作できます。openは排他で、最後のclose・プロセス終了時に表示設定・CLUT・重なったPCG文字領域を復元します。[実行例](../examples/foundation-fb/README.md)、[BMP 表示 `bmpview`](../examples/foundation-bmp/README.md)、[API仕様 §9.1](../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0)。
 - **マウント**：KAN-38 の暫定対策で、fsサービスの全チェーン・ディレクトリ・参照整合性検査を省略します。署名・レイアウト・DIRTY拒否とbitmap/inodeの基本検査は残します。clean媒体の破損を見逃すため、事前に `python tools/fs2/fs2.py check IMAGE` で検査してください。`foundation/boot/build.py` の `FS2_FULL_MOUNT_CHECK` を1に戻して再ビルドすると、§10の完全検査を復元できます（[仕様の暫定例外](../doc/spec_FS2.md#101-foundation-の一時的な起動対策kan-38)）。disk サービスは128 sectorの先読み窓を4つ（LRU、計256 KiB）、fsは8 sectorの先読みと32ラインのキャッシュを使います。書込範囲と重なるdiskの全窓は書込前に無効化し、IDENTIFYでは該当driveの全窓、read/writeエラーでは全窓を無効化します。性能は[起動性能の計測](../doc/foundation_spawn_profile.md)を参照してください。キャッシュ単体の検証は `python -m unittest discover -s foundation/tests/disk_cache -v` で実行できます。
 - **DIRTY**：最初の書き込みで DIRTY を立てます。シャットダウン時にはアンマウントしないので、書き込んだ後は fsck が要ります（ホスト側の `tools/fs2` は `allow_dirty` で読めます）。
@@ -308,3 +308,10 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 - `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 230 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。
+
+
+### PeC 乱数と UART
+
+`/dev/trng` は READ 専用で、ハードウェアの READY が落ちている間は呼び出したスレッドをブロックします。`/dev/prng` は READ 専用のノンブロッキング GFSR 乱数です（暗号用途向けではありません）。`/dev/uart0` はホスト標準入出力へつながるバイトストリームで、読み出しは受信待ち、書き込みはデータをそのまま送信します。通常の `fnd_file_open`／`fnd_read`／`fnd_write` で利用できます。複数 open は同じハードウェアを共有します。乱数列の seed 設定 API は公開しません。[API §9.4](../doc/spec_Foundation_API.md#94-pec-乱数uart-devtrngdevprngdevuart0)。
+
+検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=slot` でも実行してください。testbench には UART がないため、UART の正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
