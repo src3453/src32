@@ -45,6 +45,14 @@ class ConsoleGuestTests(unittest.TestCase):
         volume.put('/display.txt', b'\x1b[2J\x1b[H\x1b[31;44mA \x1b[0m'
                    b'\x1b[30;1H\x1b[41m \x1b[0m\x1b[3;1H', mode=0x3D)
         volume.put('/wide.txt', '\x1b[2J\x1b[H\x1b[31;44m日本a\x1b[0m'.encode(), mode=0x3D)
+        # Mixed-width prefixes leave two cells, one cell, or no cells.
+        edge = '\x1b[2J\x1b[H'
+        for row, prefix in [(3, 'a日' * 26), (6, 'a日' * 26 + 'b'),
+                            (9, 'a日' * 26 + 'bc')]:
+            edge += f'\x1b[{row};1H\x1b[31;44m{prefix}日本z'
+        # Keep the shell prompt away from the rows inspected below.
+        edge += '\x1b[0m\x1b[15;1H'
+        volume.put('/edge.txt', edge.encode(), mode=0x3D)
         volume.put('/scroll.txt', b'row\n' * 46, mode=0x3D)
         cls.disk = bytes(volume.img)
 
@@ -147,6 +155,37 @@ class ConsoleGuestTests(unittest.TestCase):
         self.run_console('mode 80\\n', 'cat /wide.txt\\n',
                          final=[(0x10000000, ord('?')), (0x10000001, ord('?')), (0x10000002, ord('a')),
                                 (0x10001000, 32), (0x10001001, 32)])
+
+    def test_mixed_width_line_ends_in_8x16(self):
+        cells = [(0x8000F003, 3)]
+
+        def expect(x, y, byte, kind=0):
+            offset = y * 80 + x
+            cells.extend([(0x10000000 + offset, byte),
+                          (0x10001000 + offset, 32 | kind << 6),
+                          (0x10002000 + offset, 2)])
+
+        def pair(x, y, character):
+            expect(x, y, ord(character) >> 8, 1)
+            expect(x + 1, y, ord(character) & 255, 2)
+
+        # Exactly two cells: 日 fits; 本 and z follow on the next row.
+        pair(78, 2, '日')
+        pair(0, 3, '本')
+        expect(2, 3, ord('z'))
+        # One cell: blank the last column, then place both whole characters.
+        expect(78, 5, ord('b'))
+        expect(79, 5, ord(' '))
+        pair(0, 6, '日')
+        pair(2, 6, '本')
+        expect(4, 6, ord('z'))
+        # Zero cells: the final ASCII cell already wrapped to the next row.
+        expect(78, 8, ord('b'))
+        expect(79, 8, ord('c'))
+        pair(0, 9, '日')
+        pair(2, 9, '本')
+        expect(4, 9, ord('z'))
+        self.run_console('mode 8x16\\n', 'cat /edge.txt\\n', final=cells)
 
     def test_mode_scroll_uses_pixel_cell_height(self):
         for mode, hardware, low, high in [('40', 0, 144, 0), ('8x16', 3, 32, 1)]:

@@ -33,6 +33,40 @@ static uint8_t kind(uint32_t x, uint32_t y) { return vram[0x1000 + ring_row(y) *
 static uint8_t cell(uint32_t x, uint32_t y, uint32_t plane) {
     return vram[plane + ring_row(y) * columns + x];
 }
+static void mixed_line_ends(void) {
+    /* Try every starting column, both before scrolling and after the ring
+     * has wrapped twice. Check every visible cell for orphaned wide halves. */
+    for (uint32_t scroll = 0; scroll <= 90; scroll += 90) {
+        for (uint32_t start = 0; start < 80; ++start) {
+            con_pcg_clear();
+            for (uint32_t i = 0; i < scroll; ++i) write_text("\n");
+            uint32_t expected_x = start, expected_y = scroll ? 29 : 0;
+            con_pcg_set_cursor(start, expected_y);
+            const uint32_t widths[] = {1, 2, 2, 1, 2, 1}; /* a日本bあz */
+            write_text("a\xE6\x97\xA5\xE6\x9C\xAC" "b\xE3\x81\x82z");
+            for (uint32_t i = 0; i < sizeof widths / sizeof widths[0]; ++i) {
+                if (expected_x + widths[i] > 80) {
+                    expected_x = 0;
+                    if (expected_y < 29) ++expected_y;
+                }
+                expected_x += widths[i];
+                if (expected_x == 80) {
+                    expected_x = 0;
+                    if (expected_y < 29) ++expected_y;
+                }
+            }
+            cursor(expected_x, expected_y);
+            for (uint32_t y = 0; y < 30; ++y) {
+                for (uint32_t x = 0; x < 80; ++x) {
+                    uint32_t k = kind(x, y);
+                    assert(k <= 2);
+                    if (k == 1) assert(x + 1 < 80 && kind(x + 1, y) == 2);
+                    if (k == 2) assert(x && kind(x - 1, y) == 1);
+                }
+            }
+        }
+    }
+}
 int main(void) {
     con_pcg_init();
     write_text("ASCII \xE6\x97\xA5\xC2\x9B");
@@ -195,6 +229,7 @@ int main(void) {
     assert(kind(78, 28) == 1 && kind(79, 28) == 2 && kind(0, 29) == 0);
     write_text("\n");
     for (uint32_t x = 0; x < 80; ++x) assert(kind(x, 29) == 0);
+    mixed_line_ends();
     assert(con_pcg_set_display(FND_CON_DISPLAY_80) == FND_OK);
     for (uint32_t y = 0; y < 30; ++y)
         for (uint32_t x = 0; x < 80; ++x) assert(kind(x, y) == 0);
