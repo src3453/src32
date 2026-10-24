@@ -35,6 +35,6 @@ CPT32 用 OS。契約は `doc/spec_Foundation.md`（カーネル ABI）、`doc/s
 - testbench のビルドには `libasound2-dev` と `libudev-dev` が必要です（Linux）。
 - C ツールチェーンは `pip install -r tools/llvm-src32/requirements.txt`。Clang は llvmlite と同じ LLVM メジャー版を使います（`python -c "import llvmlite.binding as l; print(l.llvm_version_info[0])"`）。ずれると -O1/-O2 で "icmp constexprs" エラーになります。
 - Python のゲストテストは環境変数 `SRC32_TESTBENCH` と `CLANG` で実行ファイルを指定できます（CI はこれを使用）。testbench は debug ビルドだと非常に遅いので、ローカルでは `cargo build --release --bin src32_testbench` を使うか、CI と同じく `CARGO_PROFILE_DEV_OPT_LEVEL=2` を設定します。
-- `cargo test` の lib 単体テストは外部リポジトリ（s3w2_core）の golden ファイルが必要でビルドできないことがあります。統合テストは `cargo test --test <name>` で個別に実行します。`dos_smoke`／`tinybasic` などは、先に `dos.sol` などから `dos.bin` をリポジトリルートへビルドしておく必要があります（`.github/workflows/ci.yml` の手順参照）。
+- 外部リポジトリ（s3w2_core）の golden ファイルに依存する SQV4 テスト4件は `#[cfg(any())]` で無効化しています。fixture をこのリポジトリに同梱して参照先を修正したら、専用ヘルパーも含めて再有効化します。lib 単体テストは `cargo test --lib`、統合テストは `cargo test --test <name>` で実行します。`dos_smoke`／`tinybasic` などは、先に `dos.sol` などから `dos.bin` をリポジトリルートへビルドしておく必要があります（`.github/workflows/ci.yml` の手順参照）。
 - CI（`.github/workflows/ci.yml`）の `known-failures` ジョブは既知の失敗（strek_*、tb_load_live）を非ブロッキングで回します。修正したら通常ジョブへ戻し、新しい失敗をここへ逃がしません。
 - 単一テスト: テストディレクトリはパッケージではないので、`python -m unittest discover -s foundation/tests/shell -k <テスト名の一部>` のように `discover -s` と `-k` で絞ります。pytest のものは `python3 -m pytest tools/solc/test_sol_compiler.py -k <名前>`。
