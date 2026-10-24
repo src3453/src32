@@ -90,6 +90,7 @@ AmigaやPlayStation、PC-98などに影響を受けつつ、モダンな設計�
   - ストリーミングバッファ
 
 SGUの音源コア、MMIOインターフェース、レジスタマップは [`spec_SGU.md`](spec_SGU.md) を参照。
+`config.yaml` の `sgu.version`（`1`／`2`／`2.1`、既定 `2.1`）でSGUの版を選べる（[`spec_SGU.md` §8](spec_SGU.md)）。
 
 ---
 

@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 @AGENTS.md
 
-`MEMORY.md` は過去の作業で得た知識と落とし穴の記録（日付付きの節）です。触る領域の節を先に読み、作業後は追記します。
+過去の作業で得た知識と落とし穴は、`MEMORY.md`（旧記録のアーカイブ、日付付きの節。新規追記しない）と `memory/`（1 作業 1 ファイル。書式は `memory/README.md`）にあります。触る領域を `grep -ril <語> memory/ MEMORY.md` で探して先に読み、作業後は `memory/` に新規ファイルを足します。
 
 ## 全体構成
 

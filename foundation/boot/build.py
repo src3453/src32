@@ -55,6 +55,7 @@ sys.path.insert(0, str(HERE))
 sys.path.insert(0, str(ROOT / "tools/fs2"))
 sys.path.insert(0, str(ROOT / "tools/wax"))
 import fndboot  # noqa: E402
+import wide_font  # noqa: E402
 import fs2  # noqa: E402
 import wax  # noqa: E402
 
@@ -139,11 +140,11 @@ def embed(name, data):
 
 
 def console_grants():
-    """MMIO windows in con_pcg.h: VDP, PCG text, PeC input."""
+    """MMIO windows in con_pcg.h: VDP, PCG text, wide font, PeC input."""
     text = (FOUNDATION / "services/console/con_pcg.h").read_text(encoding="utf-8")
     value = {name: int(number, 16) for name, number in re.findall(r"#define (CON_PCG_\w+) (0x[0-9A-Fa-f]+)u", text)}
     return [(value[f"CON_PCG_{window}_START"], value[f"CON_PCG_{window}_END"], 3)
-            for window in ("VDP", "TEXT", "INPUT")]
+            for window in ("VDP", "TEXT", "FONT", "INPUT")]
 
 
 def header(path, parts):
@@ -217,8 +218,10 @@ def main(argv=None):
     # §11: spawned in this order, init last.
     specs = [
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
-             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c"],
-                               out / "console.wax", args, SLOT1, "-I", str(services / "console"))),
+             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c",
+                                      services / "console/con_wide.c"],
+                               out / "console.wax", args, SLOT1, "-I", str(services / "console"),
+                               "-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
              image=pool.submit(static, [services / "disk/main.c", services / "disk/cache.c"],
                                out / "disk.wax", args, SLOT2)),

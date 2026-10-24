@@ -1499,3 +1499,18 @@
 - ファイル上限14 MiBは実際のheap容量を保証しない。slot方式のコマンド領域4 MiBにはコードとスタックも入る。曲は --root DIR でディスクへ配置し、ホストの --music-stream は使わない。
 - 検証: `python -m unittest discover -s foundation/tests/sgub -v`。ホスト7件、Foundation実行6件をVMとFND_MM=slotの両方で成功。実Furnaceの波形/PCMファイル、v1/v2/v3、repeat、Esc/q、Ctrl+C後の再オープン、事前拒否、出力失敗を確認。既存SDK MMIO smokeもCached/Pipelineで成功。実音の聴取は未実施。
 - Windowsのホストctypes試験ではロード済みDLLを削除できないので、TemporaryDirectoryのcleanupより先にFreeLibraryする。ビルド・テストのTEMP/TMPはworkspace内に置く。シェル試験では最初の起動完了を待って次のコマンドを送る（再生中の先行文字列はプレイヤーが消費する）。
+
+## SGU v2.1 (3WS8PNA) と版切替 (2026-10-24, Issue #154)
+- `SguVersion`（V1/V2/V2_1、既定 V2_1）は `S3w2Sound.version`。config は `sgu.version`（1/2/2.1）で `sgu_version_from_config` が読む。main と testbench のみ配線済み（`connect_devices_with_sgu_version`）。Music Editor や単体テストの `S3w2Sound::new()` は既定の V2_1。版の定義はユーザー指示: v1=SGUが1基のみ（SGU 1のMMIOを登録しない）、v2=2基・補間なし（現行）、v2.1=補間+FIFO。v1でも `sgus[1]` オブジェクトはあるが未マップで無音。SGUBストリーム（target 1）のホスト直接書き込みは版を見ないので v1 でも鳴る。
+- 内部サンプルは Q8.8（0x80 中心）。V2/V1 は補間なし・Slew 出力を整数に切り捨てるため従来と bit 一致。Ring は v2.1 のみ Q8.8 で計算し、V1/V2 は従来の整数式（ただし i64、従来の i32 オーバーフローは解消）。
+- FIFO DAC は WAVEFORM=5、チャンネルごとに 2048 サンプル。0x0C/0x0D=データ（Hを先に、Lで確定）、0x0E/0x0F=個数。FREQUENCY は「FREQUENCY+1 出力サンプルごとに 1 取り出し」で、空なら保持。内部 192 kHz の 4 tick ごとに 1 ステップ進む（`fifo_sub`）ので、テストで `generate_sample` を直接呼ぶときは 4 回単位でそろえる。PHASE_RESET は FIFO をクリアし sub を 0 に戻す。
+- Foundation の /dev/sgu は MMIO 素通しなので新レジスタはそのまま使える（読み出しに副作用なし）。
+
+## console の全角文字 (2026-10-24, GitHub #150)
+
+- 8×16 表示（PCG mode 3）だけ、JIS X 0208 と U+FFFD を2セルで描く（左=UTF-16 上位 byte・属性 bit 7:6=01、右=下位 byte・10）。それ以外（8×8 表示、補助平面、集合外）は従来どおり `?` 1セル。幅の判定はフォントがあるかどうか（`con_wide_has`）だけで、East Asian Width は見ない。
+- フォントは console が最初に mode 3 へ切り替えたときだけ VRAM `0x200000 + u*32` へ書く（Unifont ROM と同じ並び。`WIDE_FONT_BASE`=0x200000）。起動時には書かない（起動時間が増えるため）。データは `foundation/boot/wide_font.py` が `assets/unifont-bmp.chr` から生成するヘッダ（ビルド時のみ。コミットしない）。書き込みは4 byte単位（byte ごとは約25命令/byte で遅い）。0x200000 を選んだのは RGB888 ビットマップ（0x200000–0x238400）と JIS の字形が重ならず、未使用の上位 2 MiB に Unifont の並びのまま置けるため。
+- console の MMIO grant に `CON_PCG_FONT_*`（0x10200000–0x10400000）が増えた（`build.py` が `con_pcg.h` から読む）。1 byte 用 8×16 フォント（0x21000）は引き続き触らない。host テストは未許可の VRAM 範囲へのアクセスを assert で検出する。
+- 2セル文字の不変条件: 行をまたがない（最終列は空白にして折返す）／BS は2セル戻る／片方のセルを上書き・消去すると、もう片方は空白（色は保持）にする（孤立した 01/10 は VDP が 1 byte 文字として描き、上位 byte が別の字形に化けるため）。判定は属性の WIDE_KIND を読むので、kind は mode 3 以外では読まない。
+- キー入力は US 配列で ASCII のみなので、入力側（CON_READ_KEY／LINE）は変更なし。シェルの行編集は全角文字を想定していない（打てないため）。
+- テスト: `foundation/tests/console/host.c`（ホスト）と `test_console_guest.py` の `test_wide_characters_in_8x16`（testbench で属性・WIDE_FONT_BASE・Unifont 由来の画素を確認）。
