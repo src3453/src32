@@ -1468,3 +1468,12 @@
 - lzma に `cpt_lzma_compress_bound` を追加し ABI を 1.1 に上げた（minor は互換追加）。`/lib/lzma.1.wal` を import する WAX は `--import-wal` で渡した WAL の版を要求するので、デモ・テストは再ビルドすれば足りる。
 - llvm-src32 は `llvm.uadd.sat` を受け付けない。`a > MAX - b ? MAX : a + b` はコンパイラが飽和加算にまとめるので、`bound` は定数との比較（`src_size > 0xFE000000u`）で書く。
 - テスト: `python3 -m unittest foundation.tests.rle.test_rle`（ホストは ctypes で独立実装の PackBits 展開器と突き合わせ、容量不足・不正ストリームを網羅。ゲストは rle と lzma を同時 import して U モードで往復）。コンテナでは clang-20 + `llvmlite==0.46.*` を使い、`CLANG=/usr/bin/clang-20` を渡す。
+
+## libsgc: SGC 2D ライブラリ WAL（2026-10-24, GitHub #143）
+
+- `foundation/lib/sgc`（sgc.c、sgc.exports、build.py）が WAL「sgc」1.0（`/lib/sgc.1.wal`）。`fnd` WAL を import する WAL なので、`build.py` には fnd.1.wal を渡し、利用側 WAX は `--import-wal` を fnd と sgc の両方に指定する（`boot/build.py` の `program(..., *libs)` と `SGC_COMMANDS`）。WAL が WAL を import し、spawner が推移的に依存を読む経路は実機相当（testbench、VM／slot の両方）で動作確認済み。公開 API とセマンティクスは `doc/spec_Foundation_API.md` §9.3 末尾と `<foundation/libsgc.h>`。
+- WAL 境界は u32／ptr のみなので int は int32_t で渡し、export は `fn(...)->i32`。WAL に静的状態を持たせず、呼び出し側の `cpt_sgc` 文脈とバッファを使う（WAL の静的データにアドレスを置けない制約を避ける）。
+- 契約: 描画関数はコマンドを分割しない。バッファが埋まれば一度 flush して、なお入らなければ WOULD_BLOCK で何も積まない。flush は FIFO 満杯でも FND_OK（進捗は `cpt_sgc_pending`）。面積のない RECT と一直線の TRIANGLE は積まない（ハードウェアは FIFO_ERROR を立てる）。三角形の一直線判定は差分が 15 bit 以内のときだけ 32 bit 演算で行い、それ以外はデバイスに任せる（i64 を避けた）。cancel／reset／raw の後は SET_COLOR 省略用の現在色を「不明」に戻す（FIFO clear で積み済み SET_COLOR が実行されたか分からないため）。
+- chip8 は `cpt_sgc_rect` の戻りを見て、成功した run だけ `shown` を更新する（バッファ満杯でも次フレームに再送できる）。
+- テスト: `python -m unittest discover -s foundation/tests/libsgc`（FND_MM=slot でも）。`host.c` は sgc.c をホスト cc で、fnd_call／fnd_file_open／cpt32_syscall をモックしてコンパイルし、256 word FIFO（スリープで排出）のモデルで符号化・満杯・TIMEOUT を検証する。guest.c は 8 word バッファで 600 word を流し、CLUT 付きで `--expect-pixel` を確認する（画素は PCG のシェル文字と重ならない y>=100 を使う）。
+- コンテナの環境: apt.llvm.org が使えないので `apt-get update && apt-get install clang-20 libasound2-dev libudev-dev` と `pip install "llvmlite==0.46.*"`（LLVM 20）を使い、`CLANG=/usr/bin/clang-20` を設定する。`cargo build --release --bin src32_testbench` は約 3.5 分。

@@ -401,6 +401,16 @@ READ-only の open/close は音を変更しません。既存の特権 MMIO gran
 
 C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`、`fnd_sgc_reset`、`fnd_sgc_fifo_clear`、`fnd_sgc_submit`（空きの分だけ投入し、word 数を返す。空きが全くなければ WOULD_BLOCK）とコマンド定数。既存 `fnd_call` を使う header helper で、WAL ABI は追加しません。`fnd_write` は短い書き込みを IO にするので、`/dev/sgc` には `fnd_sgc_submit` を使ってください。
 
+#### libsgc（WAL `sgc` 1.0、`/lib/sgc.1.wal`）
+
+`/dev/sgc` の上の高レベルライブラリです。ヘッダーは `<foundation/libsgc.h>`、実装は `foundation/lib/sgc`。`fnd` WAL を import する WAL で、`/lib/sgc.1.wal` として既定のディスクに入ります（利用側は `--import-wal` で `fnd` と `sgc` の両方を指定します）。静的状態は持たず、呼び出し側の `cpt_sgc` 文脈とコマンドバッファ（word 配列、`CPT_SGC_MAX_COMMAND`＝8 word 以上）を使います。
+
+- `cpt_sgc_open` は `/dev/sgc` を WRITE で開きます。`cpt_sgc_display_init(first, count, rgb)` は `/dev/fb0` を開き、320×240・INDEX8 を確認して CLUT を書き、`cpt_sgc_close` まで開いたままにします（SGC の画素は fb0 ではなく SGC の描画面に描かれます）。
+- 描画関数（`cpt_sgc_clear`／`rect`（x, y, 幅, 高さ）／`line`／`triangle`／`glyph`／`raw`）はコマンドをバッファへ積むだけです。色は 0〜63（範囲外は BAD_ARG）、直前と同じ色の SET_COLOR は省きます。座標は符号付き 16 bit に丸めます。面積のない矩形と一直線上の三角形（ハードウェアが FIFO_ERROR にする）は積まずに FND_OK を返します。
+- `cpt_sgc_flush` は FIFO の空き（256 word）に入る分だけ投入し、待ちません。FIFO が満杯でも FND_OK で、残りは `cpt_sgc_pending` で分かります。描画関数はバッファが埋まると一度 flush を試し、なお入らなければコマンドを分割せず FND_E_WOULD_BLOCK を返します（呼び出し側は次のフレームで再試行）。`cpt_sgc_flush_wait` は 1 tick ずつ眠って空になるまで待ち、`CPT_SGC_WAIT_TICKS` 回進まなければ TIMEOUT です。
+- `cpt_sgc_cancel`（未送信を捨てて FIFO clear）、`cpt_sgc_reset`、`cpt_sgc_set_output`、`cpt_sgc_status` は対応するデバイス操作です。cancel／reset と raw の後は現在色が不明になり、次の描画で SET_COLOR を送り直します。
+- テストは `foundation/tests/libsgc`（ホスト側のモデルでコマンド列と FIFO 満杯・バッファ満杯を検証、Foundation 上で WAL を呼んで画素を確認）。`chip8` が利用者の例です。
+
 ### 9.4 PeC 乱数・UART `/dev/trng`・`/dev/prng`・`/dev/uart0`
 
 `foundation/kernel/pec.c` のカーネルドライバです。fs は予約サービス

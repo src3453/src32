@@ -1,0 +1,18 @@
+# WAL ABI 1.0 of libsgc (foundation/include/foundation/libsgc.h).
+cpt_sgc_open fn(ptr,ptr,u32)->i32
+cpt_sgc_close fn(ptr)->i32
+cpt_sgc_display_init fn(ptr,u32,u32,ptr)->i32
+cpt_sgc_flush fn(ptr)->i32
+cpt_sgc_pending fn(ptr)->u32
+cpt_sgc_flush_wait fn(ptr)->i32
+cpt_sgc_cancel fn(ptr)->i32
+cpt_sgc_reset fn(ptr)->i32
+cpt_sgc_set_output fn(ptr,u32)->i32
+cpt_sgc_status fn(ptr,u32,ptr)->i32
+cpt_sgc_set_color fn(ptr,u32)->i32
+cpt_sgc_clear fn(ptr,u32)->i32
+cpt_sgc_rect fn(ptr,u32,u32,u32,u32,u32)->i32
+cpt_sgc_line fn(ptr,u32,u32,u32,u32,u32)->i32
+cpt_sgc_triangle fn(ptr,u32,u32,u32,u32,u32,u32,u32)->i32
+cpt_sgc_glyph fn(ptr,u32,u32,u32,u32)->i32
+cpt_sgc_raw fn(ptr,ptr,u32)->i32

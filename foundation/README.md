@@ -258,6 +258,7 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 外部 C ライブラリを WAL 化する例は [LZMA SDK デモ](../examples/lzma-wal/README.md) を参照してください。
 `liblzma.wal` の圧縮・展開 API、export 定義、WAX 側の import、ディスクへの配置を説明しています。
 `liblzma.wal` は `/lib/lzma.1.wal` として既定のディスクイメージに含まれます（`boot/build.py` が `-O` の指定に従って作ります）。
+`libsgc`（SGC の2Dコマンド構築と FIFO 投入、[API §9.3](../doc/spec_Foundation_API.md#93-sgc-2d-コマンド-fifo-devsgc)）は `/lib/sgc.1.wal` として同様に含まれ、`fnd` WAL を import します。`chip8` が利用しています。
 
 ### 圧縮ライブラリ共通 API「conde」
 

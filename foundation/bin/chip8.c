@@ -1,18 +1,17 @@
 #include "cmd.h"
 #include "chip8_core.h"
 #include "chip8_options.h"
-#include <foundation/fb.h>
-#include <foundation/sgc.h>
+#include <foundation/libsgc.h>
 #include <foundation/sgu.h>
 #include <foundation/keyboard.h>
 
 static chip8_vm vm;
-/* SGC command queue. Worst case is every other pixel of a row changing:
+/* SGC command buffer. Worst case is every other pixel of a row changing:
  * 1024 runs * (SET_COLOR + RECT) = 6144 words. */
 #define QUEUE_WORDS 8192u
-static uint32_t queue[QUEUE_WORDS], queue_head, queue_len;
+static uint32_t queue[QUEUE_WORDS];
+static cpt_sgc sgc;
 static uint8_t shown[64 * 32]; /* what the SGC plane shows once the queue drains */
-static uint32_t queue_color;
 /* Physical HID usages in CHIP-8 keypad order: 0,1,...,F. */
 static const uint8_t usages[16] = {27,30,31,32,20,26,8,4,22,7,29,6,33,21,9,25};
 static uint16_t key_bits(const uint32_t bits[8]) {
@@ -35,56 +34,36 @@ static fnd_status sound_init(fnd_handle h) {
     fnd_status st = put_at(h, 0, wave, sizeof wave);
     return st == FND_OK ? put_at(h, 0x800, regs, sizeof regs) : st;
 }
-/* 5x integer pixels: 320x160, with 40-pixel black top/bottom bars. */
-static void queue_rect(uint32_t x0, uint32_t y, uint32_t x1, uint32_t color) {
-    if (color != queue_color) queue[queue_len++] = FND_SGC_OP_SET_COLOR | color;
-    queue_color = color;
-    queue[queue_len++] = FND_SGC_OP_RECT;
-    queue[queue_len++] = x0 * 5;
-    queue[queue_len++] = 40 + y * 5;
-    queue[queue_len++] = x1 * 5;
-    queue[queue_len++] = 40 + y * 5 + 5;
-}
-/* Paints only the pixels that differ from what the plane already shows, as one
- * RECT per horizontal run. SGC keeps its plane between frames, so nothing else
- * is sent. Only called with an empty queue, which always has room. */
-static void queue_diff(void) {
+/* 5x integer pixels: 320x160, with 40-pixel black top/bottom bars. Paints only
+ * the pixels that differ from what the plane already shows, as one RECT per
+ * horizontal run. SGC keeps its plane between frames, so nothing else is sent.
+ * Only called with an empty queue, which always has room. */
+static fnd_status queue_diff(void) {
     for (uint32_t y = 0; y < 32; ++y)
         for (uint32_t x = 0; x < 64;) {
             uint32_t i = y * 64 + x, v = vm.pixels[i];
             if (v == shown[i]) { ++x; continue; }
             uint32_t end = x;
-            while (end < 64 && vm.pixels[y * 64 + end] == v && shown[y * 64 + end] != v) {
-                shown[y * 64 + end] = (uint8_t)v;
-                ++end;
-            }
-            queue_rect(x, y, end, v);
+            while (end < 64 && vm.pixels[y * 64 + end] == v && shown[y * 64 + end] != v) ++end;
+            fnd_status st = cpt_sgc_rect(&sgc, (int32_t)(x * 5), (int32_t)(40 + y * 5), (int32_t)((end - x) * 5), 5, v);
+            if (st != FND_OK) return st;
+            for (uint32_t k = x; k < end; ++k) shown[y * 64 + k] = (uint8_t)v;
             x = end;
         }
     vm.dirty = 0;
+    return FND_OK;
 }
-/* Hands queued words to the FIFO (256 words per frame at most). A full FIFO is
- * not an error: the rest goes out on a later loop pass. */
-static fnd_status pump(fnd_handle sgc) {
-    if (queue_head == queue_len) return FND_OK;
-    uint32_t done;
-    fnd_status st = fnd_sgc_submit(sgc, queue + queue_head, queue_len - queue_head, &done);
-    if (st == FND_E_WOULD_BLOCK) st = FND_OK;
-    queue_head += done;
-    if (queue_head == queue_len) queue_head = queue_len = 0;
-    return st;
+/* A full FIFO is not an error: the rest goes out on a later loop pass. */
+static fnd_status render(void) {
+    fnd_status st = FND_OK;
+    if (!cpt_sgc_pending(&sgc)) st = queue_diff(); /* else the plane is still catching up */
+    if (st == FND_E_WOULD_BLOCK) st = FND_OK; /* buffer full: vm.dirty stays set */
+    return st == FND_OK ? cpt_sgc_flush(&sgc) : st;
 }
-static fnd_status render(fnd_handle sgc) {
-    if (queue_len) return pump(sgc); /* the plane is still catching up */
-    queue_diff();
-    return pump(sgc);
-}
-static fnd_status clear_screen(fnd_handle sgc) {
-    queue[queue_len++] = FND_SGC_OP_SET_COLOR;
-    queue[queue_len++] = FND_SGC_OP_SCREEN_FILL;
-    queue_color = 0;
+static fnd_status clear_screen(void) {
+    fnd_status st = cpt_sgc_clear(&sgc, 0);
     for (uint32_t i = 0; i < sizeof shown; ++i) shown[i] = 0;
-    return pump(sgc);
+    return st == FND_OK ? cpt_sgc_flush(&sgc) : st;
 }
 static fnd_status load_rom(const char *path) {
     fnd_handle h;
@@ -115,20 +94,15 @@ static int32_t chip8(uint32_t argc) {
     chip8_init(&vm, (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO));
     fnd_status st = load_rom(options.rom);
     if (st < 0) return cmd_report("chip8", options.rom, st);
-    fnd_handle fb = 0, sound = 0, sgc = 0;
+    fnd_handle sound = 0;
     st = fnd_file_open("/dev/sgu", FND_OPEN_WRITE, FND_MODE_DEFAULT, &sound);
     if (st == FND_OK) st = sound_init(sound);
-    if (st == FND_OK) st = fnd_file_open("/dev/fb0", FND_OPEN_WRITE, FND_MODE_DEFAULT, &fb);
-    fnd_fb_info info;
-    if (st == FND_OK) st = fnd_fb_get_info(fb, &info);
-    if (st == FND_OK && (info.width != 320 || info.height != 240 || info.format != FND_FB_INDEX8))
-        st = FND_E_UNSUPPORTED;
     const uint8_t palette[6] = {0,0,0,255,255,255};
-    if (st == FND_OK) st = fnd_fb_clut_write(fb, 0, 2, palette);
     /* fb0 only sets up the display and CLUT; every pixel is drawn through the SGC. */
-    if (st == FND_OK) st = fnd_file_open("/dev/sgc", FND_OPEN_WRITE, FND_MODE_DEFAULT, &sgc);
-    if (st == FND_OK) st = clear_screen(sgc);
-    if (st == FND_OK) st = render(sgc);
+    if (st == FND_OK) st = cpt_sgc_open(&sgc, queue, QUEUE_WORDS);
+    if (st == FND_OK) st = cpt_sgc_display_init(&sgc, 0, 2, palette);
+    if (st == FND_OK) st = clear_screen();
+    if (st == FND_OK) st = render();
     uint32_t last = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO), cpu_phase = 0;
     uint8_t sounding = 0;
     fnd_keyboard keyboard;
@@ -163,12 +137,11 @@ static int32_t chip8(uint32_t argc) {
             uint8_t volume = on ? 128 : 0;
             st = put_at(sound, 0x803, &volume, 1); sounding = on;
         }
-        if (st == FND_OK && (vm.dirty || queue_len)) st = render(sgc);
+        if (st == FND_OK && (vm.dirty || cpt_sgc_pending(&sgc))) st = render();
         if (st == FND_OK) st = fnd_sys_sleep(1);
     }
     if (sound) fnd_close(sound);
-    if (sgc) fnd_close(sgc);
-    if (fb) fnd_close(fb);
+    cpt_sgc_close(&sgc);
     return st < 0 ? cmd_report("chip8", options.rom, st) : FND_OK;
 }
 CMD_MAIN(chip8)
