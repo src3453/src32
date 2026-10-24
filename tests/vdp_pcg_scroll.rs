@@ -36,7 +36,8 @@ fn pcg_cursor_exchanges_palette_colors_in_all_modes() {
             for y in 0..mode.cell_height() {
                 for x in 0..mode.cell_width() {
                     let pixel = |enabled, lines, period, tick, cx| {
-                        renderer.get_pixel(x, y, mode, 0, swap, cx, 0, enabled, lines, period, tick)
+                        renderer
+                            .get_pixel(x, y, mode, 0, swap, cx, 0, enabled, lines, period, tick, 0)
                     };
                     let normal = pixel(false, 0, 0, 0, 0);
                     seen[usize::from(normal == fg)] = true;
@@ -70,6 +71,7 @@ fn pcg_cursor_exchanges_palette_colors_in_all_modes() {
             0,
             0,
             true,
+            0,
             0,
             0,
             0

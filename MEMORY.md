@@ -1477,3 +1477,9 @@
 - chip8 は `cpt_sgc_rect` の戻りを見て、成功した run だけ `shown` を更新する（バッファ満杯でも次フレームに再送できる）。
 - テスト: `python -m unittest discover -s foundation/tests/libsgc`（FND_MM=slot でも）。`host.c` は sgc.c をホスト cc で、fnd_call／fnd_file_open／cpt32_syscall をモックしてコンパイルし、256 word FIFO（スリープで排出）のモデルで符号化・満杯・TIMEOUT を検証する。guest.c は 8 word バッファで 600 word を流し、CLUT 付きで `--expect-pixel` を確認する（画素は PCG のシェル文字と重ならない y>=100 を使う）。
 - コンテナの環境: apt.llvm.org が使えないので `apt-get update && apt-get install clang-20 libasound2-dev libudev-dev` と `pip install "llvmlite==0.46.*"`（LLVM 20）を使い、`CLANG=/usr/bin/clang-20` を設定する。`cargo build --release --bin src32_testbench` は約 3.5 分。
+
+## PCG mode 3 の2 byte文字 (2026-10-24)
+
+- mode 3 のFG属性 bit 7:6（`WIDE_KIND`）で 01=UTF-16BE の MSB、10=LSB。隣り合う `01`,`10` の対だけが1文字で、孤立した `01`/`10`・`11` は1 byte文字として描く（`pcg.rs` の `wide_pair`）。mode 0〜2 は従来どおり下位6 bitだけを見る。
+- フォントは `WIDE_FONT_BASE`（`0xF010`〜`0xF013`、32-bit LE、reset 0）+ code unit×32（16行×2 byte、Unifont ROM と同じ形式）。VRAM 終端超えは blank。既定の置き場は決めていない（VRAM 4 MiB 下限では `0x200000` のRGB888 ビットマップと衝突しうるため、ゲストが選ぶ）。
+- `PcgRenderer::get_pixel` は引数末尾に `wide_font_base` が増えた。lib 単体テストは s3w2_core の golden が無いとビルドできないので、新テストは統合テスト `tests/vdp_pcg_wide.rs` に置いた（`cargo test --test vdp_pcg_wide`）。Foundation console はまだ使っていない。

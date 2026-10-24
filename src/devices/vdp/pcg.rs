@@ -31,6 +31,8 @@
 // 0xF00C-0xF00D: SCROLL_X:RW (16-bit pixel offset; low byte at F00C)
 // 0xF00E-0xF00F: SCROLL_Y:RW (16-bit pixel offset; low byte at F00E)
 // Display samples source pixels at ((X + SCROLL_X) mod W, (Y + SCROLL_Y) mod H).
+// 0xF010-0xF013: WIDE_FONT_BASE:RW (32-bit VRAM byte offset of the mode 3 wide font; low byte at F010)
+// Mode 3 FG attribute bits 7:6 (WIDE_KIND): 00 = 1-byte glyph, 01 = MSB of a UTF-16BE BMP code unit, 10 = LSB.
 // 0xFFFF: RESET:-W (Reset register) (write 1 to reset VDP state)
 
 use std::cell::RefCell;
@@ -120,6 +122,12 @@ pub const PCG_FONT_8X16_SIZE: usize = 256 * 16;
 pub const PCG_TEXT_ADDR: usize = 0x00000;
 pub const PCG_FG_ATTR_ADDR: usize = 0x01000;
 pub const PCG_BG_ATTR_ADDR: usize = 0x02000;
+pub const PCG_WIDE_KIND_MASK: u8 = 0xC0;
+pub const PCG_WIDE_KIND_SINGLE: u8 = 0x00;
+pub const PCG_WIDE_KIND_MSB: u8 = 0x40;
+pub const PCG_WIDE_KIND_LSB: u8 = 0x80;
+/// Bytes per code unit in the wide font: 16 rows x 2 bytes, as in the Unifont ROM.
+pub const PCG_WIDE_GLYPH_SIZE: usize = 32;
 
 pub struct PcgRenderer {
     vram: Rc<RefCell<Vec<u8>>>,
@@ -213,6 +221,7 @@ impl PcgRenderer {
         cursor_lines: u8,
         cursor_blink_period: u8,
         cursor_blink_tick: u64,
+        wide_font_base: u32,
     ) -> (u8, u8, u8) {
         let width = screen_mode.width();
         let columns = screen_mode.columns();
@@ -236,9 +245,33 @@ impl PcgRenderer {
                 .expect("PCG mode has a 16-row glyph");
             row[local_x / 8] & (1 << (7 - local_x % 8)) != 0
         } else if screen_mode == PcgScreenMode::Font8x16 {
-            let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
-            let font_offset = PCG_FONT_8X16_ADDR + glyph * 16 + row_in_char;
-            vram[font_offset] & (1 << (7 - local_x)) != 0
+            let kind_of = |index: usize| vram[PCG_FG_ATTR_ADDR + index] & PCG_WIDE_KIND_MASK;
+            let wide_pair = match kind_of(char_index) {
+                // A wide half is valid only when it is paired inside the same row.
+                PCG_WIDE_KIND_MSB
+                    if char_col + 1 < columns && kind_of(char_index + 1) == PCG_WIDE_KIND_LSB =>
+                {
+                    Some((char_index, 0))
+                }
+                PCG_WIDE_KIND_LSB
+                    if char_col > 0 && kind_of(char_index - 1) == PCG_WIDE_KIND_MSB =>
+                {
+                    Some((char_index - 1, 1))
+                }
+                _ => None,
+            };
+            if let Some((msb_index, half)) = wide_pair {
+                let code_unit = (vram[PCG_TEXT_ADDR + msb_index] as usize) << 8
+                    | vram[PCG_TEXT_ADDR + msb_index + 1] as usize;
+                let font_offset = (wide_font_base as usize)
+                    .saturating_add(code_unit * PCG_WIDE_GLYPH_SIZE + row_in_char * 2 + half);
+                vram.get(font_offset)
+                    .is_some_and(|row_bits| row_bits & (1 << (7 - local_x)) != 0)
+            } else {
+                let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
+                let font_offset = PCG_FONT_8X16_ADDR + glyph * 16 + row_in_char;
+                vram[font_offset] & (1 << (7 - local_x)) != 0
+            }
         } else {
             let glyph = vram[PCG_TEXT_ADDR + char_index] as usize;
             let bank_base = if font_bank & 1 == 0 {
