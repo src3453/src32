@@ -1434,3 +1434,8 @@
 - This supersedes the older all-attributes-equal cls contract: clear still fills all three 4 KiB planes, then the cursor cell alone gets current output FG/BG. Position, scroll, color variables and fonts stay unchanged. Regression checks must account for this one cell, even with the cursor disabled. Existing guests need rebuilding to receive library changes.
 - Validation: Rust PCG mode unit tests 6/6 and scroll/font integration tests 4/4; sol VM suite 99/99. The updated sol cls guest compiled/assembled and halted with R1=42 on Scalar and Pipeline. The C SDK guest passes -O0/-O2 on Scalar/Pipeline, checking attributes across 40/80/8x16 modes, wrap/scroll and actual custom-palette cursor pixels. Use --frames 128 for the full-plane guest checks; the default cycle budget is too short for -O0 and Scalar.
 - Foundation console regression suite: 8/8 passed with the updated renderer (host driver and actual IPC/display/scroll guests).
+
+## BIOS rebuild after PCG cursor update (2026-10-24, GitHub #136)
+
+- Run python bios/build.py with workspace-local TEMP/TMP/TMPDIR; this C BIOS links sdk/cpt32/src/pcg.c, not the legacy sol/bios.sol. Rebuilt assets/bios.rom is 27568 bytes (64 KiB window), SHA256 DC9E6C76CF79FC1CB8FBB7837A9C1F93BFDAF5CE0B0F040EFF7DF7B6F0D287EA.
+- Pipeline testbench in target/bios-rebuild-check, with only the rebuilt BIOS configured, completed POST and the 120-VSync hold, booted the RAM probe and halted with R1=42 (--frames 160). BIOS loader tests passed 8/8. Avoid running cargo test while executing target/debug/src32_testbench.exe on Windows: Cargo rebuilds bin targets and cannot replace the running executable; the freshly built bios_rom test binary can be run directly instead.
