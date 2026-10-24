@@ -1,10 +1,13 @@
-// 3WS8PN (S3W2) Sound Generator Core Implementation
+// 3WS8PN / 3WS8PNA (S3W2) Sound Generator Core Implementation
 //
 // 3WS8PN is a wavetable/PCM/noise sound generator chip with 8 channels.
+// SGU v2.1 (3WS8PNA) adds 2-tap linear interpolation and a 16-bit FIFO DAC;
+// `SguVersion` selects v1 / v2 / v2.1 behavior (doc/spec_SGU.md section 8).
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
 
 use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::rc::Rc;
 
 use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
@@ -16,6 +19,40 @@ pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
 pub const SOUND_CLOCK: u32 = 192_000;
 pub const SGU_CLOCK_DIVIDER: u32 = 250; // 48MHz / 250 = 192kHz
+/// Per-channel FIFO DAC capacity in 16-bit samples (v2.1).
+pub const FIFO_CAPACITY: usize = 2048;
+
+/// SGU hardware generation. `V2` is the pre-3WS8PNA behavior.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum SguVersion {
+    /// A single SGU core (SGU 1 is absent); no interpolation.
+    V1,
+    /// Two SGU cores; Wavetable/PCM are not interpolated.
+    V2,
+    /// 3WS8PNA: 2-tap linear interpolation and the FIFO DAC.
+    #[default]
+    V2_1,
+}
+
+impl SguVersion {
+    pub fn parse(text: &str) -> Option<Self> {
+        match text.trim().trim_start_matches(['v', 'V']) {
+            "1" | "1.0" => Some(Self::V1),
+            "2" | "2.0" => Some(Self::V2),
+            "2.1" => Some(Self::V2_1),
+            _ => None,
+        }
+    }
+
+    /// Number of SGU cores mapped on the bus.
+    pub fn core_count(self) -> usize {
+        if self == Self::V1 { 1 } else { 2 }
+    }
+
+    fn has_3ws8pna(self) -> bool {
+        self == Self::V2_1
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WaveformType {
@@ -24,6 +61,8 @@ pub enum WaveformType {
     Noise = 2,
     DmaPcm = 3,
     Sqv4 = 4,
+    /// 16-bit 48 kHz FIFO DAC (SGU v2.1).
+    FifoDac = 5,
 }
 
 impl From<u8> for WaveformType {
@@ -34,6 +73,7 @@ impl From<u8> for WaveformType {
             2 => WaveformType::Noise,
             3 => WaveformType::DmaPcm,
             4 => WaveformType::Sqv4,
+            5 => WaveformType::FifoDac,
             _ => WaveformType::Wavetable,
         }
     }
@@ -103,6 +143,14 @@ pub struct Channel {
     pub active: bool,
     slew_current: i32,
 
+    // FIFO DAC (v2.1): queued samples, last output, remaining hold ticks and
+    // the 192 kHz sub-tick (the DAC advances once per 48 kHz output sample).
+    pub fifo: VecDeque<i16>,
+    fifo_held: i16,
+    fifo_hold: u32,
+    fifo_sub: u8,
+    fifo_latch: u8,
+
     // Wavetable data (256 bytes)
     pub wavetable: [u8; WAVETABLE_SIZE],
 }
@@ -139,6 +187,11 @@ impl Default for Channel {
             last_sample: 0,
             active: true,
             slew_current: 0,
+            fifo: VecDeque::new(),
+            fifo_held: 0,
+            fifo_hold: 0,
+            fifo_sub: 0,
+            fifo_latch: 0,
             wavetable: [0x80; WAVETABLE_SIZE],
         };
         ch.reset();
@@ -168,21 +221,36 @@ impl Channel {
         self.lfsr_state = 0x12D4_803C;
         self.active = true;
         self.slew_current = 0;
+        self.reset_fifo();
         self.wavetable.fill(0x80);
+    }
+
+    fn reset_fifo(&mut self) {
+        self.fifo.clear();
+        self.fifo_held = 0;
+        self.fifo_hold = 0;
+        self.fifo_sub = 0;
+        self.fifo_latch = 0;
     }
     // Unsigned Q8.8 accumulator, updated at the 192 kHz internal clock.
     fn apply_slew(&mut self, sample: u8) -> u8 {
-        let difference = (i32::from(sample) << 8) - self.slew_current;
+        (self.apply_slew_q8(i32::from(sample) << 8) >> 8) as u8
+    }
+
+    /// Slew on a Q8.8 input; returns the new Q8.8 state (or the input when
+    /// no Slew mode is selected).
+    fn apply_slew_q8(&mut self, sample_q8: i32) -> i32 {
+        let difference = sample_q8 - self.slew_current;
         let step = i32::from(self.modulation_param_1);
         self.slew_current = match self.modulation_type {
             ModulationType::SlewRate => self.slew_current + difference.clamp(-step, step),
             ModulationType::SlewStep => {
                 self.slew_current + if difference > 0 { step } else { -step }
             }
-            _ => return sample,
+            _ => return sample_q8,
         }
         .clamp(0, 255 << 8);
-        (self.slew_current >> 8) as u8
+        self.slew_current
     }
 
     fn invalidate_sqv4(&mut self) {
@@ -200,6 +268,7 @@ impl Channel {
 }
 
 pub struct S3w2Sound {
+    pub version: SguVersion,
     pub channels: [Channel; NUM_CHANNELS],
     pub pcm_ram: Rc<RefCell<Vec<u8>>>,
 }
@@ -220,12 +289,29 @@ impl S3w2Sound {
     }
 
     pub fn with_pcm_ram(pcm_ram: Rc<RefCell<Vec<u8>>>) -> Self {
+        Self::with_version(pcm_ram, SguVersion::default())
+    }
+
+    pub fn with_version(pcm_ram: Rc<RefCell<Vec<u8>>>, version: SguVersion) -> Self {
         let mut sound = Self {
+            version,
             channels: std::array::from_fn(|_| Channel::default()),
             pcm_ram,
         };
         sound.reset();
         sound
+    }
+
+    /// Select the hardware generation. Registers keep their values, but
+    /// features the new version lacks stop taking effect on the next write.
+    pub fn set_version(&mut self, version: SguVersion) {
+        self.version = version;
+        for c in &mut self.channels {
+            if !version.has_3ws8pna() && c.waveform_type == WaveformType::FifoDac {
+                c.waveform_type = WaveformType::Wavetable;
+            }
+            c.reset_fifo();
+        }
     }
 
     pub fn reset(&mut self) {
@@ -296,6 +382,9 @@ impl S3w2Sound {
                     }
                 }
                 0x0B => self.channels[ch].modulation_targeting_mode & 1,
+                0x0E | 0x0F if self.version.has_3ws8pna() => {
+                    (self.channels[ch].fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
+                }
                 0x10..=0x19 => self.read_channel_pcm_reg(ch, offset - 0x10),
                 _ => 0,
             }
@@ -353,6 +442,7 @@ impl S3w2Sound {
         if ch >= NUM_CHANNELS {
             return;
         }
+        let version = self.version;
         let c = &mut self.channels[ch];
         match offset {
             0 => {
@@ -362,7 +452,10 @@ impl S3w2Sound {
                 c.frequency = (c.frequency & 0xFF00) | (value as u16);
             }
             2 => {
-                c.waveform_type = WaveformType::from(value);
+                c.waveform_type = match WaveformType::from(value) {
+                    WaveformType::FifoDac if !version.has_3ws8pna() => WaveformType::Wavetable,
+                    other => other,
+                };
                 c.invalidate_sqv4();
             }
             3 => {
@@ -392,9 +485,19 @@ impl S3w2Sound {
                 c.slew_current = 0;
                 c.invalidate_sqv4();
                 c.lfsr_state = 0x12D4_803C;
+                c.reset_fifo();
             }
             0x0B => {
                 c.modulation_targeting_mode = value & 0x01;
+            }
+            // FIFO_DATA: high byte is latched, the low byte pushes the sample.
+            // A write to a full FIFO is dropped.
+            0x0C if version.has_3ws8pna() => c.fifo_latch = value,
+            0x0D if version.has_3ws8pna() => {
+                if c.fifo.len() < FIFO_CAPACITY {
+                    c.fifo
+                        .push_back(i16::from_be_bytes([c.fifo_latch, value]));
+                }
             }
             _ => {}
         }
@@ -427,6 +530,9 @@ impl S3w2Sound {
                 0
             }
             0x0B => c.modulation_targeting_mode & 0x01,
+            0x0E | 0x0F if self.version.has_3ws8pna() => {
+                (c.fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
+            }
             0x10..=0x19 => {
                 // PCM registers are at offset 0x10-0x19
                 let pcm_offset = offset - 0x10;
@@ -521,6 +627,9 @@ impl S3w2Sound {
         }
     }
 
+    /// One 192 kHz internal-clock sample. Wavetable/PCM/Noise/Slew are
+    /// computed in signed Q8.8 (centered on the 0x80 silence level) so v2.1
+    /// interpolation keeps its fraction until the volume stage.
     pub fn generate_sample(&mut self, ch: usize) -> i16 {
         if ch >= NUM_CHANNELS {
             return 0;
@@ -530,23 +639,38 @@ impl S3w2Sound {
         }
 
         let waveform = self.channels[ch].waveform_type;
-        let sample = match waveform {
+        let q8 = match waveform {
             WaveformType::Wavetable => self.generate_wavetable_sample(ch),
             WaveformType::Pcm => self.generate_pcm_sample(ch),
-            WaveformType::Noise => self.generate_noise_sample(ch),
-            WaveformType::DmaPcm => self.generate_dma_pcm_sample(ch),
-            WaveformType::Sqv4 => self.generate_sqv4_sample(ch),
+            WaveformType::Noise => i32::from(self.generate_noise_sample(ch)) << 8,
+            WaveformType::DmaPcm => i32::from(self.generate_dma_pcm_sample(ch)) << 8,
+            WaveformType::Sqv4 => i32::from(self.generate_sqv4_sample(ch)) << 8,
+            WaveformType::FifoDac => {
+                // 16-bit sample, fixed gain: VOLUME does not apply.
+                let sample = self.generate_fifo_sample(ch);
+                self.channels[ch].last_sample = sample >> 8;
+                return sample;
+            }
         };
 
-        self.channels[ch].last_sample = sample;
+        self.channels[ch].last_sample = (q8 >> 8) as i16;
         let volume = self.channels[ch].volume as i32;
         if waveform == WaveformType::Sqv4 {
-            (sample as i32 * volume / 255) as i16
+            ((q8 >> 8) * volume / 255) as i16
         } else {
-            (sample as i32 * volume / 4) as i16
+            (q8 * volume / (4 * 256)) as i16
         }
     }
-    fn generate_wavetable_sample(&mut self, ch: usize) -> i16 {
+
+    /// Fraction of `phase * 256` in 1/256 steps and its integer part.
+    fn split_phase(phase: f64) -> (u64, i32) {
+        let scaled = phase * 256.0;
+        let whole = scaled as u64;
+        (whole, (((scaled - whole as f64) * 256.0) as i32).clamp(0, 255))
+    }
+
+    fn generate_wavetable_sample(&mut self, ch: usize) -> i32 {
+        let interpolate = self.version.has_3ws8pna();
         let abs_target_ch = Self::convert_to_absolute_channel_address(
             ch as u8,
             self.channels[ch].modulation_targeting_mode,
@@ -557,10 +681,9 @@ impl S3w2Sound {
 
         let c = &mut self.channels[ch];
         c.phase += (c.frequency as f64) / (SOUND_CLOCK as f64);
-        let phase = (c.phase * 256.0) as u64;
+        let (phase, frac) = Self::split_phase(c.phase);
 
         let index = match c.modulation_type {
-            ModulationType::None => (phase & 0xFF) as usize,
             ModulationType::Phase => {
                 let phase_offset =
                     ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
@@ -569,30 +692,53 @@ impl S3w2Sound {
             _ => (phase & 0xFF) as usize,
         };
 
-        let mut sample8 = c.wavetable[index];
+        let current = i32::from(c.wavetable[index]);
+        let mut q8 = if interpolate {
+            let next = i32::from(c.wavetable[(index + 1) & 0xFF]);
+            current * (256 - frac) + next * frac
+        } else {
+            current << 8
+        };
 
         if c.modulation_type == ModulationType::Ring {
-            let mod_sample = target_last_sample as i32;
-            let org_sample8 = sample8 as i32;
-            let calculated =
-                (((org_sample8 - 128) * mod_sample * (c.modulation_param_1 as i32)) / 65536) + 128;
-            sample8 = calculated.clamp(0, 255) as u8;
+            q8 = Self::ring(q8, target_last_sample, c.modulation_param_1, interpolate);
         } else if c.modulation_type == ModulationType::HardSync {
             if target_phase < 1.0 {
                 c.phase = 0.0;
-                sample8 = c.wavetable[0];
+                q8 = i32::from(c.wavetable[0]) << 8;
             }
         } else if c.modulation_type == ModulationType::Window {
-            let mod_sample = target_last_sample;
-            if mod_sample < 0 {
-                sample8 = 128;
+            if target_last_sample < 0 {
+                q8 = 128 << 8;
             }
         }
 
-        (i32::from(c.apply_slew(sample8)) - 128) as i16
+        Self::finish_unsigned(c, q8, interpolate)
     }
 
-    fn generate_pcm_sample(&mut self, ch: usize) -> i16 {
+    fn ring(q8: i32, modulator: i16, param: u16, interpolate: bool) -> i32 {
+        let scale = i64::from(modulator) * i64::from(param);
+        if interpolate {
+            ((i64::from(q8 - (128 << 8)) * scale) / 65536 + (128 << 8)).clamp(0, 255 << 8) as i32
+        } else {
+            // Integer-sample arithmetic of v1/v2.
+            let original = i64::from(q8 >> 8) - 128;
+            (((original * scale) / 65536 + 128).clamp(0, 255) as i32) << 8
+        }
+    }
+
+    /// Slew, then re-center the unsigned Q8.8 sample. v1/v2 truncate to whole
+    /// sample steps after Slew.
+    fn finish_unsigned(c: &mut Channel, q8: i32, interpolate: bool) -> i32 {
+        let mut out = c.apply_slew_q8(q8);
+        if !interpolate {
+            out &= !0xFF;
+        }
+        out - (128 << 8)
+    }
+
+    fn generate_pcm_sample(&mut self, ch: usize) -> i32 {
+        let interpolate = self.version.has_3ws8pna();
         let abs_target_ch = Self::convert_to_absolute_channel_address(
             ch as u8,
             self.channels[ch].modulation_targeting_mode,
@@ -601,7 +747,7 @@ impl S3w2Sound {
         let target_last_sample = self.channels[abs_target_ch].last_sample;
 
         let c = &mut self.channels[ch];
-        let mut phase = (c.phase * 256.0) as u64;
+        let (mut phase, frac) = Self::split_phase(c.phase);
 
         if c.modulation_type == ModulationType::Phase {
             let phase_offset =
@@ -610,8 +756,25 @@ impl S3w2Sound {
         }
 
         let addr = ((phase + c.pcm_start_addr as u64) as usize) & (PCM_RAM_SIZE - 1);
-        let sample8 = self.pcm_ram.borrow()[addr];
-        let mut out = (i32::from(self.channels[ch].apply_slew(sample8)) - 128) as i16;
+        let current = i32::from(self.pcm_ram.borrow()[addr]);
+        let q8 = if interpolate {
+            let c = &self.channels[ch];
+            // The tap after the last sample is the loop start (looping) or
+            // the last sample itself (one-shot hold).
+            let next_addr = addr + 1;
+            let next = if (next_addr as u32) < c.pcm_end_addr {
+                next_addr & (PCM_RAM_SIZE - 1)
+            } else if (c.pcm_control & 0x02) != 0 {
+                (c.pcm_loop_addr as usize) & (PCM_RAM_SIZE - 1)
+            } else {
+                addr
+            };
+            let next = i32::from(self.pcm_ram.borrow()[next]);
+            current * (256 - frac) + next * frac
+        } else {
+            current << 8
+        };
+        let mut out = Self::finish_unsigned(&mut self.channels[ch], q8, interpolate);
 
         let c = &mut self.channels[ch];
         if (addr as u32) >= c.pcm_end_addr {
@@ -627,6 +790,25 @@ impl S3w2Sound {
         }
 
         out
+    }
+
+    /// FIFO DAC: one 48 kHz output step per four internal ticks. A new sample
+    /// is taken every FREQUENCY + 1 output steps; an empty FIFO holds the last
+    /// value and retries on the next step.
+    fn generate_fifo_sample(&mut self, ch: usize) -> i16 {
+        let c = &mut self.channels[ch];
+        if c.fifo_sub == 0 {
+            if c.fifo_hold == 0 {
+                if let Some(sample) = c.fifo.pop_front() {
+                    c.fifo_held = sample;
+                    c.fifo_hold = u32::from(c.frequency);
+                }
+            } else {
+                c.fifo_hold -= 1;
+            }
+        }
+        c.fifo_sub = (c.fifo_sub + 1) & 3;
+        c.fifo_held
     }
 
     fn initialize_sqv4(&mut self, ch: usize) -> bool {
@@ -882,6 +1064,144 @@ mod tests {
         assert_eq!(c.apply_slew(0), 0);
         c.modulation_param_1 = 0;
         assert_eq!(c.apply_slew(255), 0);
+    }
+
+    fn v21_sound() -> S3w2Sound {
+        S3w2Sound::new()
+    }
+
+    fn v2_sound() -> S3w2Sound {
+        S3w2Sound::with_version(Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE])), SguVersion::V2)
+    }
+
+    #[test]
+    fn wavetable_two_tap_interpolation_vs_v2() {
+        for (mut sound, interpolated) in [(v21_sound(), true), (v2_sound(), false)] {
+            sound.channels[0].wavetable[0] = 0;
+            sound.channels[0].wavetable[1] = 128;
+            // 24 => 24/750 = 0.032 entry per internal tick.
+            sound.channels[0].frequency = 24;
+            sound.channels[0].volume = 4;
+            let mut outputs = Vec::new();
+            for _ in 0..32 {
+                outputs.push(sound.generate_sample(0));
+            }
+            // After 16 ticks the position is 0.512 entry.
+            if interpolated {
+                assert!((-64..=-60).contains(&outputs[15]), "{}", outputs[15]);
+                assert_ne!(outputs[15], outputs[0]);
+            } else {
+                assert_eq!(outputs[15], -128);
+            }
+        }
+    }
+
+    #[test]
+    fn wavetable_interpolation_wraps_last_to_first_entry() {
+        let mut sound = v21_sound();
+        sound.channels[0].wavetable[255] = 0;
+        sound.channels[0].wavetable[0] = 200;
+        sound.channels[0].volume = 4;
+        sound.channels[0].phase = 255.5 / 256.0;
+        // The advance (frequency 0) is nil, so index 255 + 0.5.
+        assert_eq!(sound.generate_sample(0), 100 - 128);
+    }
+
+    #[test]
+    fn pcm_two_tap_interpolation_loop_and_hold() {
+        let mut sound = v21_sound();
+        sound.write_pcm_ram(0, 0);
+        sound.write_pcm_ram(1, 100);
+        sound.write_pcm_ram(2, 200);
+        let c = &mut sound.channels[0];
+        c.waveform_type = WaveformType::Pcm;
+        c.volume = 4;
+        c.pcm_end_addr = 2;
+        c.pcm_control = 0x01;
+        c.phase = 1.5 / 256.0;
+        // between ram[1]=100 and ram[2]... end is exclusive: one-shot holds ram[1].
+        assert_eq!(sound.generate_sample(0), 100 - 128);
+        sound.channels[0].phase = 0.5 / 256.0;
+        assert_eq!(sound.generate_sample(0), 50 - 128);
+        // Looping: the tap past the end reads the loop start.
+        sound.channels[0].pcm_control = 0x03;
+        sound.channels[0].pcm_loop_addr = 0;
+        sound.channels[0].phase = 1.5 / 256.0;
+        assert_eq!(sound.generate_sample(0), 50 - 128);
+    }
+
+    #[test]
+    fn fifo_dac_is_16_bit_fixed_gain_with_decimation_and_pan() {
+        let mut sound = v21_sound();
+        sound.write_register(0x802, 5);
+        assert_eq!(sound.read_register(0x802), 5);
+        sound.write_register(0x803, 0); // VOLUME does not apply
+        sound.write_register(0x801, 1); // hold each sample for 2 output steps
+        for sample in [1000i16, -2000, 3000] {
+            let [hi, lo] = sample.to_be_bytes();
+            sound.write_register(0x80C, hi);
+            sound.write_register(0x80D, lo);
+        }
+        assert_eq!(sound.read_register(0x80E), 0);
+        assert_eq!(sound.read_register(0x80F), 3);
+        let mut steps = Vec::new();
+        for _ in 0..8 {
+            let tick = sound.generate_sample(0);
+            for _ in 0..3 {
+                assert_eq!(sound.generate_sample(0), tick);
+            }
+            steps.push(tick);
+        }
+        assert_eq!(steps, [1000, 1000, -2000, -2000, 3000, 3000, 3000, 3000]);
+        assert_eq!(sound.read_register(0x80F), 0);
+        // Writing PHASE_RESET flushes the FIFO and the held value.
+        sound.write_register(0x80C, 0x7F);
+        sound.write_register(0x80D, 0xFF);
+        sound.write_register(0x80A, 0);
+        assert_eq!(sound.read_register(0x80F), 0);
+        for _ in 0..4 {
+            assert_eq!(sound.generate_sample(0), 0);
+        }
+
+        // Panpot: left only.
+        sound.write_register(0x801, 0);
+        sound.write_register(0x804, 0xF0);
+        sound.write_register(0x80C, 0x40);
+        sound.write_register(0x80D, 0x00);
+        let (left, right) = sound.clock_mixed(1);
+        assert_eq!((left[0], right[0]), (0x4000 / 8 * 4, 0));
+    }
+
+    #[test]
+    fn fifo_capacity_drops_excess_writes() {
+        let mut sound = v21_sound();
+        for _ in 0..FIFO_CAPACITY + 10 {
+            sound.write_register(0x80D, 1);
+        }
+        let count = u16::from_be_bytes([sound.read_register(0x80E), sound.read_register(0x80F)]);
+        assert_eq!(count as usize, FIFO_CAPACITY);
+    }
+
+    #[test]
+    fn older_versions_ignore_new_features() {
+        let mut v2 = v2_sound();
+        v2.write_register(0x802, 5);
+        assert_eq!(v2.read_register(0x802), 0);
+        v2.write_register(0x80D, 1);
+        assert_eq!(v2.read_register(0x80F), 0);
+        v2.write_register(0x805, 5 << 3);
+        assert_eq!(v2.channels[0].modulation_type, ModulationType::SlewRate);
+        assert_eq!(SguVersion::V1.core_count(), 1);
+        assert_eq!(SguVersion::V2.core_count(), 2);
+    }
+
+    #[test]
+    fn version_parses_config_values() {
+        assert_eq!(SguVersion::parse("1"), Some(SguVersion::V1));
+        assert_eq!(SguVersion::parse("v2"), Some(SguVersion::V2));
+        assert_eq!(SguVersion::parse("2.1"), Some(SguVersion::V2_1));
+        assert_eq!(SguVersion::parse("3"), None);
+        assert_eq!(SguVersion::default(), SguVersion::V2_1);
     }
 
     #[test]

@@ -1150,9 +1150,19 @@ pub fn connect_devices_with_memory(
     ram_size: usize,
     vram_size: u32,
 ) -> Rc<RefCell<Vdp>> {
+    connect_devices_with_sgu_version(bus, ram_size, vram_size, Default::default())
+}
+
+/// `connect_devices_with_memory` with a selected SGU generation.
+pub fn connect_devices_with_sgu_version(
+    bus: &mut Bus,
+    ram_size: usize,
+    vram_size: u32,
+    sgu_version: crate::devices::sgu::s3w2::SguVersion,
+) -> Rc<RefCell<Vdp>> {
     crate::devices::ram::connect_ram_with_size(bus, ram_size);
     connect_bmc_dmac(bus);
-    let _sgu = crate::devices::sgu::sgu::connect_sgu(bus);
+    let _sgu = crate::devices::sgu::sgu::connect_sgu_with_version(bus, sgu_version);
     crate::devices::vdp::vdp::connect_vdp_with_vram_size(bus, vram_size)
 }
 
