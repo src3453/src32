@@ -269,6 +269,15 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 
 `librle.wal`（`lib/rle`、image ID `rle`、ABI 1.0）は PackBits 形式の RLE で、`/lib/rle.1.wal` として既定のディスクに入ります。heap・libfnd・作業領域を使わず、4 byte 単位でラン検出・コピー・埋め込みを行います。テストは `python3 -m unittest foundation.tests.rle.test_rle`（Clang と `src32_testbench` が必要。後者がなければ Foundation 上のテストは skip）です。
 
+### 文字コード変換 libcode
+
+`libcode.wal`（`lib/code`、image ID `code`、ABI 1.0、`/lib/code.1.wal`）は UTF-8（BOM あり／なし）、UTF-16LE／BE、UTF-32LE／BE を変換します。UTF-32BE を基準の形式とし、`cpt_code_<enc>_to_utf32be` と `cpt_code_utf32be_to_<enc>`（`<enc>` は `utf8`、`utf8bom`、`utf16le`、`utf16be`、`utf32le`）の対で変換します。他の符号化どうしは UTF-32BE を経由します。引数・戻り値・`*dst_size` は conde と同じ形（`flags` を追加）で、規約は [`include/foundation/code.h`](include/foundation/code.h) にあります。
+
+- 不正な列（過長形式、サロゲート、U+10FFFF 超、対にならないサロゲート）は `CONDE_DATA`、末尾で切れた列は `CONDE_INPUT_EOF`。`CODE_REPLACE` を付けると不正な部分（maximal subpart）ごとに U+FFFD を書いて続けます。
+- BOM: `utf8bom` への変換は BOM を必ず付け、からの変換は先頭の BOM を読み飛ばします。他の符号化には `CODE_ADD_BOM`／`CODE_STRIP_BOM`。BOM から符号化を調べるのは `cpt_code_detect`（`FF FE 00 00` は UTF-32LE）。
+- 出力の見積もりは `cpt_code_bound`。heap・libfnd・作業領域は使いません。
+- テストは `python3 -m unittest foundation.tests.code.test_code`（ホストは Clang、Foundation 上は `src32_testbench` も必要）です。
+
 `tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 
 ```sh
