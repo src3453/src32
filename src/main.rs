@@ -24,7 +24,7 @@ use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::ram::connect_ram_with_size;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
-use cpt32::devices::sgu::sgu::connect_sgu;
+use cpt32::devices::sgu::sgu::{connect_sgu_with_version, sgu_version_from_config};
 #[cfg(test)]
 use cpt32::devices::vdp::vdp::{MAX_VDP_VRAM_SIZE, connect_vdp};
 use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_vram_size};
@@ -261,7 +261,10 @@ fn build_guest_machine(
     } else {
         connect_idc_from_config(&mut bus)?
     };
-    let sgu = connect_sgu(&mut bus);
+    let sgu = connect_sgu_with_version(
+        &mut bus,
+        sgu_version_from_config(Path::new("config.yaml"))?,
+    );
     let program = match cartridge.as_ref() {
         Some(cartridge) => cartridge.program.as_slice(),
         None => {
@@ -3686,7 +3689,7 @@ mod input_tests {
         let mut old_bus = Bus::new();
         connect_ram(&mut old_bus);
         old_bus.write_u8(0, 0xA5);
-        let old_sgu = connect_sgu(&mut old_bus);
+        let old_sgu = cpt32::devices::sgu::sgu::connect_sgu(&mut old_bus);
         let old_vdp = connect_vdp(&mut old_bus);
         let old_cpu = AnyCpu::new(CpuKind::Scalar, old_bus);
         let (old_sender, mut old_receiver) = tokio::sync::mpsc::unbounded_channel();

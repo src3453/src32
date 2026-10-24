@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 
 use cpt32::bus::Bus;
-use cpt32::bus::connect_devices_with_memory;
+use cpt32::bus::connect_devices_with_sgu_version;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CYCLES_PER_FRAME, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
@@ -254,7 +254,9 @@ fn main() {
     let (ram_size, vram_size) =
         cpt32::memory_config::memory_sizes_from_config(Path::new("config.yaml"))
             .expect("Invalid memory configuration");
-    let vdp = connect_devices_with_memory(&mut bus, ram_size, vram_size);
+    let sgu_version = cpt32::devices::sgu::sgu::sgu_version_from_config(Path::new("config.yaml"))
+        .expect("Invalid SGU configuration");
+    let vdp = connect_devices_with_sgu_version(&mut bus, ram_size, vram_size, sgu_version);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");

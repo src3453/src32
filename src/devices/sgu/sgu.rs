@@ -7,7 +7,9 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
-use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound};
+use std::path::Path;
+
+use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound, SguVersion};
 
 pub const SGU_REG_BASE: u32 = 0x8002_0000;
 pub const SGU2_REG_BASE: u32 = 0x8002_1000;
@@ -72,11 +74,51 @@ impl Device for SguDevice {
     }
 }
 
+/// Reads `sgu.version` (`"1"`, `"2"` or `"2.1"`; default 2.1) from config.yaml.
+/// A missing file selects the default.
+pub fn sgu_version_from_config(path: &Path) -> Result<SguVersion, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(error) => return Err(format!("{}: {error}", path.display())),
+    };
+    sgu_version_from_yaml(&contents)
+}
+
+pub fn sgu_version_from_yaml(contents: &str) -> Result<SguVersion, String> {
+    let root: yaml_serde::Value = if contents.trim().is_empty() {
+        yaml_serde::Value::Null
+    } else {
+        yaml_serde::from_str(contents).map_err(|error| format!("invalid YAML: {error}"))?
+    };
+    let Some(sgu) = root.get("sgu") else {
+        return Ok(SguVersion::default());
+    };
+    let table = sgu.as_mapping().ok_or("`sgu` must be a mapping")?;
+    let Some(value) = table.get("version") else {
+        return Ok(SguVersion::default());
+    };
+    let text = match value {
+        yaml_serde::Value::String(text) => text.clone(),
+        yaml_serde::Value::Number(number) => number.to_string(),
+        _ => return Err("`sgu.version` must be 1, 2 or 2.1".into()),
+    };
+    SguVersion::parse(&text)
+        .ok_or_else(|| format!("`sgu.version` must be 1, 2 or 2.1 (got `{text}`)"))
+}
+
 pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
+    connect_sgu_with_version(bus, SguVersion::default())
+}
+
+pub fn connect_sgu_with_version(
+    bus: &mut Bus,
+    version: SguVersion,
+) -> [Rc<RefCell<S3w2Sound>>; 2] {
     let pcm_ram = Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE]));
     let sgus = [
-        Rc::new(RefCell::new(S3w2Sound::with_pcm_ram(Rc::clone(&pcm_ram)))),
-        Rc::new(RefCell::new(S3w2Sound::with_pcm_ram(pcm_ram))),
+        Rc::new(RefCell::new(S3w2Sound::with_version(Rc::clone(&pcm_ram), version))),
+        Rc::new(RefCell::new(S3w2Sound::with_version(pcm_ram, version))),
     ];
     bus.add_device(
         SGU_REG_BASE,
@@ -99,6 +141,21 @@ pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn config_selects_sgu_version() {
+        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V2_1));
+        assert_eq!(sgu_version_from_yaml("sgu:\n  version: 1\n"), Ok(SguVersion::V1));
+        assert_eq!(sgu_version_from_yaml("sgu:\n  version: \"2\"\n"), Ok(SguVersion::V2));
+        assert_eq!(sgu_version_from_yaml("sgu:\n  version: 2.1\n"), Ok(SguVersion::V2_1));
+        assert!(sgu_version_from_yaml("sgu:\n  version: 3\n").is_err());
+        assert!(sgu_version_from_yaml("sgu: 2\n").is_err());
+        let mut bus = Bus::new();
+        let sgus = connect_sgu_with_version(&mut bus, SguVersion::V1);
+        assert_eq!(sgus[1].borrow().version, SguVersion::V1);
+        bus.write_u8(SGU_REG_BASE + 0x802, 5);
+        assert_eq!(bus.read_u8(SGU_REG_BASE + 0x802), 0);
+    }
 
     #[test]
     fn debugger_register_read_does_not_reset_channel_phase() {
