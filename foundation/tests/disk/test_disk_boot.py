@@ -113,7 +113,7 @@ class DiskBootTests(unittest.TestCase):
             self.assertEqual(boot[module['offset']:][:module['size']], image)
         self.assertEqual([m['caps'] for m in modules], [8, 12, 8, 0])  # SVC for the services, DISK for disk
         self.assertEqual(len(modules[0]['grants']), 3)  # the console's MMIO windows
-        for path in ('/bin/shell.wax', '/bin/echo.wax', '/lib/fnd.1.wal', '/lib/lzma.1.wal'):
+        for path in ('/bin/shell.wax', '/bin/echo.wax', '/lib/fnd.1.wal', '/lib/lzma.1.wal', '/lib/rle.1.wal'):
             inode = volume.resolve(path)
             self.assertEqual(volume.read(inode), (self.build / 'root' / path[1:]).read_bytes())
             self.assertEqual(inode['mode'], 0x003D)

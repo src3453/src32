@@ -26,7 +26,7 @@ what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal and /lib/sgc.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal and /lib/sgc.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -97,6 +97,7 @@ LZMA_DIR = FOUNDATION / "lib/lzma"
 SGC_DIR = FOUNDATION / "lib/sgc"
 # Commands that import /lib/sgc.1.wal (libsgc) as well as fnd.
 SGC_COMMANDS = {"chip8"}
+RLE_DIR = FOUNDATION / "lib/rle"
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
 FS2_FULL_MOUNT_CHECK = 0
@@ -196,6 +197,11 @@ def main(argv=None):
     lzma_build = importlib.util.module_from_spec(lzma_spec)
     lzma_spec.loader.exec_module(lzma_build)
     lzma_job = pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization)
+    # /lib/rle.1.wal: PackBits RLE (lib/rle, WAL "rle" 1.0), also self-contained. Both follow conde.
+    rle_spec = importlib.util.spec_from_file_location("rle_build", RLE_DIR / "build.py")
+    rle_build = importlib.util.module_from_spec(rle_spec)
+    rle_spec.loader.exec_module(rle_build)
+    rle_job = pool.submit(rle_build.build, out / "rle", args.clang, args.optimization)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
@@ -239,6 +245,7 @@ def main(argv=None):
                                         root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd, *libs))
     shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
     shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
+    shutil.copyfile(rle_job.result(), root / "lib/rle.1.wal")
     for job in program_jobs:
         job.result()
     modules = [dict(spec, image=spec["image"].result().read_bytes()) for spec in specs]

@@ -1461,6 +1461,14 @@
 - Focused checks: `python -m unittest discover -s foundation/tests/shell -k test_hex -v` (6 tests) and `-k test_ctrl_c` (2 tests); console suite (8 tests); run each with default memory and FND_MM=slot. Tests verify actual FS2 bytes, all 256 literal glyph bytes, zero/selection attributes, 40/80/8x16 modes, Ctrl+S/Q, exact goto/bounds, confirmation/cancel, and shell recovery. STOP_TICKS leaves a mounted DIRTY volume: host test inspection uses `Volume(..., allow_dirty=True)` plus `read(resolve(path))`, not repair or an unchecked mount. The TUI revealed shell overlap after Ctrl+C (#141): run_program now sends CAN, SGR 0, cursor-show and erase-to-screen-end via CONSOLE after killing a child, before printing ^C to STDERR. Keep the shell transcript assertions exact, including absence of stale TUI row tails.
 - On Windows, use workspace-local TEMP/TMP and the Python installation with llvmlite. Prepending MSYS2 UCRT bin to PATH for GCC can also select its unrelated python.exe; scope that PATH to the compiler or use the intended Python explicitly. For a visible framebuffer seed a preview-only WAX with configured font blocks; src32_testbench does not apply GUI pcg.font settings.
 
+## librle と圧縮共通 API conde (2026-10-24, GitHub #142)
+
+- conde (compression-decompression) は圧縮ライブラリ共通の API 名。規約は `foundation/include/foundation/conde.h`: `cpt_<algo>_compress(dst,&dst_size,src,src_size,work,work_size,level,param)` / `cpt_<algo>_decompress(...)` / `cpt_<algo>_compress_bound(src_size)`、戻り値 `CONDE_*`（lzma の `CPT_LZMA_*` は別名で互換）、失敗時は `*dst_size=0`。今後の圧縮 WAL もこれに従う。WAL 間で関数ポインタは渡せないため、共通化は命名・シグネチャ・コードで行い、ディスパッチ表は作らない。
+- `foundation/lib/rle` は PackBits（制御 0..127=literal c+1 byte、129..255=繰返し 257-c 回、128=不正）。3 連続以上だけ繰返し、128 で打切った続きの 2 連続も繰返しにする。作業領域・heap・libfnd は不要で `/lib/rle.1.wal`（約 10 KB）。ラン検出は 4 byte 単位（`w ^ (w << 8)` のマスク、`__BYTE_ORDER__` で分岐）、コピー・埋め込みは非整列 word アクセス（packed struct）。ホスト Clang とゲストの両方で同じ C を使うので、エンディアンに依存する処理は必ず `__BYTE_ORDER__` で分ける。
+- lzma に `cpt_lzma_compress_bound` を追加し ABI を 1.1 に上げた（minor は互換追加）。`/lib/lzma.1.wal` を import する WAX は `--import-wal` で渡した WAL の版を要求するので、デモ・テストは再ビルドすれば足りる。
+- llvm-src32 は `llvm.uadd.sat` を受け付けない。`a > MAX - b ? MAX : a + b` はコンパイラが飽和加算にまとめるので、`bound` は定数との比較（`src_size > 0xFE000000u`）で書く。
+- テスト: `python3 -m unittest foundation.tests.rle.test_rle`（ホストは ctypes で独立実装の PackBits 展開器と突き合わせ、容量不足・不正ストリームを網羅。ゲストは rle と lzma を同時 import して U モードで往復）。コンテナでは clang-20 + `llvmlite==0.46.*` を使い、`CLANG=/usr/bin/clang-20` を渡す。
+
 ## libsgc: SGC 2D ライブラリ WAL（2026-10-24, GitHub #143）
 
 - `foundation/lib/sgc`（sgc.c、sgc.exports、build.py）が WAL「sgc」1.0（`/lib/sgc.1.wal`）。`fnd` WAL を import する WAL なので、`build.py` には fnd.1.wal を渡し、利用側 WAX は `--import-wal` を fnd と sgc の両方に指定する（`boot/build.py` の `program(..., *libs)` と `SGC_COMMANDS`）。WAL が WAL を import し、spawner が推移的に依存を読む経路は実機相当（testbench、VM／slot の両方）で動作確認済み。公開 API とセマンティクスは `doc/spec_Foundation_API.md` §9.3 末尾と `<foundation/libsgc.h>`。
