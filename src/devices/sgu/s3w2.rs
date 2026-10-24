@@ -25,9 +25,9 @@ pub const FIFO_CAPACITY: usize = 2048;
 /// SGU hardware generation. `V2` is the pre-3WS8PNA behavior.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SguVersion {
-    /// No Slew Rate / Slew Step modulation.
+    /// A single SGU core (SGU 1 is absent); no interpolation.
     V1,
-    /// Adds Slew modulation; Wavetable/PCM are not interpolated.
+    /// Two SGU cores; Wavetable/PCM are not interpolated.
     V2,
     /// 3WS8PNA: 2-tap linear interpolation and the FIFO DAC.
     #[default]
@@ -44,8 +44,9 @@ impl SguVersion {
         }
     }
 
-    fn has_slew(self) -> bool {
-        self != Self::V1
+    /// Number of SGU cores mapped on the bus.
+    pub fn core_count(self) -> usize {
+        if self == Self::V1 { 1 } else { 2 }
     }
 
     fn has_3ws8pna(self) -> bool {
@@ -306,14 +307,6 @@ impl S3w2Sound {
     pub fn set_version(&mut self, version: SguVersion) {
         self.version = version;
         for c in &mut self.channels {
-            if !version.has_slew()
-                && matches!(
-                    c.modulation_type,
-                    ModulationType::SlewRate | ModulationType::SlewStep
-                )
-            {
-                c.modulation_type = ModulationType::None;
-            }
             if !version.has_3ws8pna() && c.waveform_type == WaveformType::FifoDac {
                 c.waveform_type = WaveformType::Wavetable;
             }
@@ -472,12 +465,7 @@ impl S3w2Sound {
                 c.panpot = value;
             }
             5 => {
-                c.modulation_type = match ModulationType::from(value >> 3) {
-                    ModulationType::SlewRate | ModulationType::SlewStep if !version.has_slew() => {
-                        ModulationType::None
-                    }
-                    other => other,
-                };
+                c.modulation_type = ModulationType::from(value >> 3);
                 c.modulation_target = value & 0x07;
             }
             6..=9 => {
@@ -1203,15 +1191,8 @@ mod tests {
         assert_eq!(v2.read_register(0x80F), 0);
         v2.write_register(0x805, 5 << 3);
         assert_eq!(v2.channels[0].modulation_type, ModulationType::SlewRate);
-
-        let mut v1 = S3w2Sound::with_version(
-            Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE])),
-            SguVersion::V1,
-        );
-        v1.write_register(0x805, 5 << 3);
-        assert_eq!(v1.channels[0].modulation_type, ModulationType::None);
-        v1.write_register(0x805, 4 << 3);
-        assert_eq!(v1.channels[0].modulation_type, ModulationType::Window);
+        assert_eq!(SguVersion::V1.core_count(), 1);
+        assert_eq!(SguVersion::V2.core_count(), 2);
     }
 
     #[test]

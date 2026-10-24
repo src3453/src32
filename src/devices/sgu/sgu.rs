@@ -125,11 +125,14 @@ pub fn connect_sgu_with_version(
         "SGU 0 MMIO",
         Box::new(SguDevice::new(sgus.clone(), SguPort::Regs(0))),
     );
-    bus.add_device(
-        SGU2_REG_BASE,
-        "SGU 1 MMIO",
-        Box::new(SguDevice::new(sgus.clone(), SguPort::Regs(1))),
-    );
+    // v1 has a single SGU: SGU 1's MMIO window is left unmapped.
+    if version.core_count() > 1 {
+        bus.add_device(
+            SGU2_REG_BASE,
+            "SGU 1 MMIO",
+            Box::new(SguDevice::new(sgus.clone(), SguPort::Regs(1))),
+        );
+    }
     bus.add_device(
         PCM_RAM_BASE,
         "PCMRAM",
@@ -153,8 +156,18 @@ mod tests {
         let mut bus = Bus::new();
         let sgus = connect_sgu_with_version(&mut bus, SguVersion::V1);
         assert_eq!(sgus[1].borrow().version, SguVersion::V1);
-        bus.write_u8(SGU_REG_BASE + 0x802, 5);
-        assert_eq!(bus.read_u8(SGU_REG_BASE + 0x802), 0);
+        // v1: only SGU 0 is mapped; the PCM RAM stays available.
+        bus.write_u8(SGU_REG_BASE + 0x803, 7);
+        assert_eq!(bus.read_u8(SGU_REG_BASE + 0x803), 7);
+        bus.write_u8(SGU2_REG_BASE + 0x803, 7);
+        assert_eq!(bus.read_u8(SGU2_REG_BASE + 0x803), 0);
+        assert_eq!(sgus[1].borrow().channels[0].volume, 0);
+        bus.write_u8(PCM_RAM_BASE + 5, 9);
+        assert_eq!(bus.read_u8(PCM_RAM_BASE + 5), 9);
+        let mut bus = Bus::new();
+        connect_sgu_with_version(&mut bus, SguVersion::V2);
+        bus.write_u8(SGU2_REG_BASE + 0x803, 7);
+        assert_eq!(bus.read_u8(SGU2_REG_BASE + 0x803), 7);
     }
 
     #[test]

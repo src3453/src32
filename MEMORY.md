@@ -1491,7 +1491,7 @@
 - `PcgRenderer::get_pixel` は引数末尾に `wide_font_base` が増えた。lib 単体テストは s3w2_core の golden が無いとビルドできないので、新テストは統合テスト `tests/vdp_pcg_wide.rs` に置いた（`cargo test --test vdp_pcg_wide`）。Foundation console はまだ使っていない。
 
 ## SGU v2.1 (3WS8PNA) と版切替 (2026-10-24, Issue #154)
-- `SguVersion`（V1/V2/V2_1、既定 V2_1）は `S3w2Sound.version`。config は `sgu.version`（1/2/2.1）で `sgu_version_from_config` が読む。main と testbench のみ配線済み（`connect_devices_with_sgu_version`）。Music Editor や単体テストの `S3w2Sound::new()` は既定の V2_1。v1/v2 の定義は「v1=Slewなし、v2=現行補間なし、v2.1=補間+FIFO」とこのスレッドで決めたもので、元から文書化された区別ではない。
+- `SguVersion`（V1/V2/V2_1、既定 V2_1）は `S3w2Sound.version`。config は `sgu.version`（1/2/2.1）で `sgu_version_from_config` が読む。main と testbench のみ配線済み（`connect_devices_with_sgu_version`）。Music Editor や単体テストの `S3w2Sound::new()` は既定の V2_1。版の定義はユーザー指示: v1=SGUが1基のみ（SGU 1のMMIOを登録しない）、v2=2基・補間なし（現行）、v2.1=補間+FIFO。v1でも `sgus[1]` オブジェクトはあるが未マップで無音。SGUBストリーム（target 1）のホスト直接書き込みは版を見ないので v1 でも鳴る。
 - 内部サンプルは Q8.8（0x80 中心）。V2/V1 は補間なし・Slew 出力を整数に切り捨てるため従来と bit 一致。Ring は v2.1 のみ Q8.8 で計算し、V1/V2 は従来の整数式（ただし i64、従来の i32 オーバーフローは解消）。
 - FIFO DAC は WAVEFORM=5、チャンネルごとに 2048 サンプル。0x0C/0x0D=データ（Hを先に、Lで確定）、0x0E/0x0F=個数。FREQUENCY は「FREQUENCY+1 出力サンプルごとに 1 取り出し」で、空なら保持。内部 192 kHz の 4 tick ごとに 1 ステップ進む（`fifo_sub`）ので、テストで `generate_sample` を直接呼ぶときは 4 回単位でそろえる。PHASE_RESET は FIFO をクリアし sub を 0 に戻す。
 - Foundation の /dev/sgu は MMIO 素通しなので新レジスタはそのまま使える（読み出しに副作用なし）。
