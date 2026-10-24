@@ -99,7 +99,7 @@ class ShellTests(unittest.TestCase):
     def mem_line(self, kib):
         return 'Mem: 16384K total, %sK free' % (kib if self.slot_mm else 'N')
 
-    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached'):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached', final=(), keys=()):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows. config is the text of a
         config.yaml for this run only."""
@@ -126,6 +126,10 @@ class ShellTests(unittest.TestCase):
         for i, text in enumerate(batches):
             frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
             command += ['--type', f'{frame}={text}']
+        for address, value in final:
+            command += ['--expect-final-mem-u8', f'{address:#x}={value}']
+        for key in keys:
+            command += ['--key', key]
         self.last_run = run
         result = subprocess.run(command, cwd=run, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=600)
@@ -279,15 +283,95 @@ class ShellTests(unittest.TestCase):
         self.assertIn('usage: ls [-l] [path...]', rows)
 
     def test_hex(self):
-        # §10.3: the DOS hex editor as /bin/hex. E edits, W writes back with
-        # the same size, errors keep the DOS wording.
-        rows = self.screen('echo 0123456789ABCD > h.txt\\n', 'hex h.txt\\n', 'e 0 58 58\\n', 'g zz\\n',
-                           'w\\n', 'q\\n', 'hex nope\\n', 'hex\\n')
-        text = '\\n'.join(rows)
-        self.assertIn('0000: 58 58 32 33 34 35 36 37 38 39 41 42 43 44 0A', text)
-        self.assertIn('|XX23456789ABCD.', text)
+        # Cursor edit both nibbles, ASCII edit, exact goto, legacy command,
+        # save and return. Check the disk bytes as well as shell recovery.
+        rows = self.screen('echo 0123456789ABCD > h.txt\\n', 'hex h.txt\\n',
+                           '58\\R\\tZ\\t', 'g000e\\n', '00', ':e 1 59\\n',
+                           'w', 'q', 'hex nope\\n', 'hex\\n', step=32)
+        vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
+        self.assertEqual(vol.read(vol.resolve('/h.txt')), b'XYZ3456789ABCD\x00')
         self.assertIn('hex: nope: not found (-10)', rows)
         self.assertIn('usage: hex path', rows)
+
+    def hex_disk(self, content):
+        vol = fs2.Volume(bytearray(self.disk))
+        vol.put('/hex.bin', content, mode=0x24)
+        self.disk = bytes(vol.img)
+
+    def test_hex_all_glyphs_and_colors(self):
+        original = self.disk
+        try:
+            self.hex_disk(bytes(range(256)))
+            final = []
+            # ASCII column is a literal PCG glyph, even NUL/LF/ESC/FF.
+            for i in range(256):
+                cell = (3 + i // 16) * 80 + 54 + i % 16
+                final.append((0x10000000 + cell, i))
+            # Cursor starts on 00: cyan highlight; nonzero bytes are white.
+            final += [(0x10001000 + 3 * 80 + 5, 0),
+                      (0x10002000 + 3 * 80 + 5, 31),
+                      (0x10001000 + 3 * 80 + 8, 63)]
+            self.screen('hex hex.bin\\n', step=40, final=final)
+        finally:
+            self.disk = original
+
+    def test_hex_zero_grey_8x16_and_command_cancel(self):
+        original = self.disk
+        try:
+            self.hex_disk(bytes(256))
+            rows = self.screen('mode 8x16\\n', 'hex hex.bin > ignored.txt\\n',
+                               'gffff\\e', ':g zz\\n', step=40,
+                               final=[(0x8000F003, 3),
+                                      (0x10001000 + 3 * 80 + 8, 21),
+                                      (0x10001000 + 3 * 80 + 55, 21)])
+            self.assertIn('ERROR: BAD ADDRESS', rows)
+        finally:
+            self.disk = original
+
+    def test_hex_control_save_quit_and_ascii_q(self):
+        original = self.disk
+        try:
+            self.hex_disk(bytes(4))
+            keys = []
+            for frame, usage in ((240, 22), (300, 20)):  # Ctrl+S, Ctrl+Q
+                keys += [f'{frame}:224:1', f'{frame}:{usage}:1',
+                         f'{frame}:{usage}:0', f'{frame}:224:0']
+            rows = self.screen('hex hex.bin\\n', '\\tq', 'echo shortcuts\\n',
+                               at_frames=[30, 190, 350], keys=keys,
+                               final=[(0x8000F007, 1), (0x10001000 + 27 * 80, 63),
+                                      (0x10002000 + 27 * 80, 0)])
+            self.assertIn('shortcuts', rows)
+            # STOP_TICKS halts with a mounted (DIRTY) volume: inspect only.
+            vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
+            self.assertEqual(vol.read(vol.resolve('/hex.bin')), b'q\x00\x00\x00')
+        finally:
+            self.disk = original
+
+    def test_hex_bounds_goto_and_discard(self):
+        original = self.disk
+        try:
+            self.hex_disk(bytes(65536))
+            rows = self.screen('hex hex.bin\\n', '\\L\\U', 'gffff\\n', 'aa\\R\\D',
+                               'g10000\\n', 'q', 'n', 'q', 'y', 'echo returned\\n', step=35)
+            self.assertIn('UNSAVED CHANGES DISCARDED', rows)
+            self.assertIn('returned', rows)
+            vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
+            self.assertEqual(vol.read(vol.resolve('/hex.bin')), bytes(65536))
+        finally:
+            self.disk = original
+
+    def test_hex_40_columns_zero_and_page(self):
+        original = self.disk
+        try:
+            self.hex_disk(bytes(256))
+            # N moves 128 bytes in 40 columns; editing must not cross EOF.
+            rows = self.screen('mode 40\\n', 'hex hex.bin\\n', 'n', '\\Eaa', 'w', 'q',
+                               'echo ready\\n', step=40)
+            self.assertIn('ready', rows)
+            vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
+            self.assertEqual(vol.read(vol.resolve('/hex.bin')), bytes(135) + b'\xaa' + bytes(120))
+        finally:
+            self.disk = original
 
     def test_ls_long(self):
         rows = self.screen('ls -l /bin\\n')
@@ -485,11 +569,13 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(rows[-3:], ['/> echo $?', '-20', '/>'])
 
     def test_ctrl_c_interrupts_a_blocked_read(self):
-        # hex waits in ST_READ for a command line; Ctrl+C fails the read with
+        # hex waits in CON_READ_KEY for a cursor/edit key; Ctrl+C fails the read with
         # INTERRUPTED (§8.4) and the shell kills hex. Repeating works.
         rows = self.screen('hex /bin/echo.wax\\n', '\\C', 'hex /bin/echo.wax\\n', '\\C', 'echo $?\\n', 'echo again\\n',
-                           at_frames=[30, 300, 330, 360, 390, 420])
+                           at_frames=[30, 300, 330, 360, 390, 420],
+                           final=[(0x8000F007, 1)])
         self.assertTrue(any('^C' in row for row in rows), rows)
+        # Shell interruption clears old TUI rows, including their tails.
         self.assertEqual(rows[-5:], ['/> echo $?', '-20', '/> echo again', 'again', '/>'])
 
     def test_top_invalid_arguments_and_help(self):

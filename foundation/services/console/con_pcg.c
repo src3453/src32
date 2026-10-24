@@ -255,7 +255,10 @@ static void put_scalar(uint32_t cp) {
     }
     if (cp < 0x20u || cp == 0x7Fu || (cp >= 0x80u && cp < 0xA0u))
         return;
-    put_cell(col, row, cp < 0x7Fu ? cp : SUBSTITUTE);
+    /* Private-use scalars address configured PCG glyphs without interpreting
+     * glyph 00/09/0A/1B as console controls. No font or CLUT mutation. */
+    put_cell(col, row, cp >= 0xE000u && cp <= 0xE0FFu ? cp - 0xE000u :
+                       cp < 0x7Fu ? cp : SUBSTITUTE);
     advance();
 }
 

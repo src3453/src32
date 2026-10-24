@@ -776,6 +776,11 @@ static int32_t run_program(uint32_t argc, char **argv) {
     status = fnd_sys_wait(proc, FND_FOREVER, &code);
     child_proc = 0;
     if (break_hit) {
+        /* A killed TUI cannot restore its terminal. Cancel a partial ANSI
+         * sequence and clear from its cursor so shell lines do not overlay
+         * old table cells. Use CONSOLE even when STDERR is redirected. */
+        const char reset[] = "\030\033[0m\033[?25h\033[J";
+        (void)fnd_write(fnd_console(), reset, sizeof reset - 1u, 0);
         err("^C\n"); /* §9.3 */
         fnd_sys_handle_close(proc);
         return FND_E_KILLED;

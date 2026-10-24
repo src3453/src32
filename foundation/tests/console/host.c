@@ -129,6 +129,21 @@ int main(void) {
     assert(con_pcg_set_display(FND_CON_DISPLAY_8X16) == FND_OK);
     con_pcg_clear();
     con_pcg_init();
+    /* All 256 configured glyphs, including control-byte glyphs, are literal
+     * cells through U+E000..E0FF. Test each display geometry and ring mapping. */
+    for (uint32_t mode = 0; mode < 4; ++mode) {
+        if (mode == 2) continue;
+        assert(con_pcg_set_display(mode) == FND_OK);
+        for (uint32_t i = 0; i < 256; ++i) {
+            uint8_t text[3] = {0xEE, (uint8_t)(0x80 | (i >> 6)), (uint8_t)(0x80 | (i & 63))};
+            con_pcg_write(text, 3);
+            assert(cell(i % columns, i / columns, 0) == i);
+        }
+        cursor(256 % columns, 256 / columns);
+        write_text("\033[31m\xEE\x80\x9B");
+        assert(cell(256 % columns, 256 / columns, 0) == 0x1B);
+        assert(cell(256 % columns, 256 / columns, 0x1000) == 32);
+    }
     puts("console host passed");
     return 0;
 }
