@@ -44,6 +44,7 @@ class ConsoleGuestTests(unittest.TestCase):
         volume.put('/bin/concheck.wax', guest.read_bytes(), mode=0x3D)
         volume.put('/display.txt', b'\x1b[2J\x1b[H\x1b[31;44mA \x1b[0m'
                    b'\x1b[30;1H\x1b[41m \x1b[0m\x1b[3;1H', mode=0x3D)
+        volume.put('/wide.txt', '\x1b[2J\x1b[H\x1b[31;44m日本a\x1b[0m'.encode(), mode=0x3D)
         volume.put('/scroll.txt', b'row\n' * 46, mode=0x3D)
         cls.disk = bytes(volume.img)
 
@@ -122,6 +123,30 @@ class ConsoleGuestTests(unittest.TestCase):
                                 pixels=[(x, y, 0xAA0000), (8, 0, 0x0000AA),
                                         (0, 464, 0xAA0000), (0, 479, 0xAA0000)])
         self.assertIn('A', text)
+
+    def test_wide_characters_in_8x16(self):
+        rom = (ROOT / 'assets/unifont-bmp.chr').read_bytes()
+
+        def lit(unit):
+            glyph = rom[unit * 32:unit * 32 + 32]
+            return [(x, y) for y in range(16) for x in range(16)
+                    if glyph[y * 2 + x // 8] & (0x80 >> x % 8)]
+        pixels = []
+        for index, unit in enumerate('日本'):
+            x, y = lit(ord(unit))[0]
+            pixels.append((index * 16 + x, y, 0xAA0000))
+        # Each character is a pair of cells: WIDE_KIND 01 (MSB) then 10 (LSB), CLUT 32 (red).
+        cells = [(0x10000000, 0x65), (0x10000001, 0xE5), (0x10000002, 0x67), (0x10000003, 0x2C),
+                 (0x10000004, ord('a')),
+                 (0x10001000, 32 | 0x40), (0x10001001, 32 | 0x80), (0x10001002, 32 | 0x40),
+                 (0x10001003, 32 | 0x80), (0x10001004, 32), (0x10002000, 2), (0x10002001, 2),
+                 (0x8000F010, 0), (0x8000F011, 0), (0x8000F012, 0x20), (0x8000F013, 0)]
+        text = self.run_console('mode 8x16\\n', 'cat /wide.txt\\n', final=cells, pixels=pixels)
+        self.assertIn('a', text)
+        # In the 8x8 modes there is no wide font, so a character is one '?'.
+        self.run_console('mode 80\\n', 'cat /wide.txt\\n',
+                         final=[(0x10000000, ord('?')), (0x10000001, ord('?')), (0x10000002, ord('a')),
+                                (0x10001000, 32), (0x10001001, 32)])
 
     def test_mode_scroll_uses_pixel_cell_height(self):
         for mode, hardware, low, high in [('40', 0, 144, 0), ('8x16', 3, 32, 1)]:

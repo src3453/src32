@@ -1483,3 +1483,12 @@
 - mode 3 のFG属性 bit 7:6（`WIDE_KIND`）で 01=UTF-16BE の MSB、10=LSB。隣り合う `01`,`10` の対だけが1文字で、孤立した `01`/`10`・`11` は1 byte文字として描く（`pcg.rs` の `wide_pair`）。mode 0〜2 は従来どおり下位6 bitだけを見る。
 - フォントは `WIDE_FONT_BASE`（`0xF010`〜`0xF013`、32-bit LE、reset 0）+ code unit×32（16行×2 byte、Unifont ROM と同じ形式）。VRAM 終端超えは blank。既定の置き場は決めていない（VRAM 4 MiB 下限では `0x200000` のRGB888 ビットマップと衝突しうるため、ゲストが選ぶ）。
 - `PcgRenderer::get_pixel` は引数末尾に `wide_font_base` が増えた。lib 単体テストは s3w2_core の golden が無いとビルドできないので、新テストは統合テスト `tests/vdp_pcg_wide.rs` に置いた（`cargo test --test vdp_pcg_wide`）。Foundation console はまだ使っていない。
+
+## console の全角文字 (2026-10-24, GitHub #150)
+
+- 8×16 表示（PCG mode 3）だけ、JIS X 0208 と U+FFFD を2セルで描く（左=UTF-16 上位 byte・属性 bit 7:6=01、右=下位 byte・10）。それ以外（8×8 表示、補助平面、集合外）は従来どおり `?` 1セル。幅の判定はフォントがあるかどうか（`con_wide_has`）だけで、East Asian Width は見ない。
+- フォントは console が最初に mode 3 へ切り替えたときだけ VRAM `0x200000 + u*32` へ書く（Unifont ROM と同じ並び。`WIDE_FONT_BASE`=0x200000）。起動時には書かない（起動時間が増えるため）。データは `foundation/boot/wide_font.py` が `assets/unifont-bmp.chr` から生成するヘッダ（ビルド時のみ。コミットしない）。書き込みは4 byte単位（byte ごとは約25命令/byte で遅い）。0x200000 を選んだのは RGB888 ビットマップ（0x200000–0x238400）と JIS の字形が重ならず、未使用の上位 2 MiB に Unifont の並びのまま置けるため。
+- console の MMIO grant に `CON_PCG_FONT_*`（0x10200000–0x10400000）が増えた（`build.py` が `con_pcg.h` から読む）。1 byte 用 8×16 フォント（0x21000）は引き続き触らない。host テストは未許可の VRAM 範囲へのアクセスを assert で検出する。
+- 2セル文字の不変条件: 行をまたがない（最終列は空白にして折返す）／BS は2セル戻る／片方のセルを上書き・消去すると、もう片方は空白（色は保持）にする（孤立した 01/10 は VDP が 1 byte 文字として描き、上位 byte が別の字形に化けるため）。判定は属性の WIDE_KIND を読むので、kind は mode 3 以外では読まない。
+- キー入力は US 配列で ASCII のみなので、入力側（CON_READ_KEY／LINE）は変更なし。シェルの行編集は全角文字を想定していない（打てないため）。
+- テスト: `foundation/tests/console/host.c`（ホスト）と `test_console_guest.py` の `test_wide_characters_in_8x16`（testbench で属性・WIDE_FONT_BASE・Unifont 由来の画素を確認）。

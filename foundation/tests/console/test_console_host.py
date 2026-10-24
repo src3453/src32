@@ -2,6 +2,7 @@
 import os
 from pathlib import Path
 import shutil
+import sys
 import subprocess
 import tempfile
 import unittest
@@ -22,8 +23,11 @@ class ConsoleHostTests(unittest.TestCase):
         env['PATH'] = str(Path(cc).resolve().parent) + os.pathsep + env.get('PATH', '')
         with tempfile.TemporaryDirectory(prefix='foundation-console-') as tmp:
             exe = Path(tmp) / ('console.exe' if os.name == 'nt' else 'console')
+            sys.path.insert(0, str(ROOT / 'foundation/boot'))
+            import wide_font
+            font_dir = wide_font.write_header(Path(tmp) / 'font' / 'con_wide_font.h').parent
             build = subprocess.run([cc, '-std=c11', '-Wall', '-Wextra', '-Werror', '-O2',
-                            '-I', str(ROOT / 'foundation/include'),
+                            '-I', str(ROOT / 'foundation/include'), '-I', str(font_dir),
                             '-I', str(ROOT / 'sdk/cpt32/include'),
                             str(Path(__file__).with_name('host.c')), '-o', str(exe)],
                             env=env, capture_output=True, text=True)

@@ -13,11 +13,15 @@
 #define CON_PCG_ROWS 30u
 
 /* MMIO the console touches: the VDP window (display and PCG registers), the
- * PCG text/attribute planes in VRAM, and PeC input. Font VRAM is not accessed. */
+ * PCG text/attribute planes in VRAM, the wide font area and PeC input. The 1 byte
+ * font VRAM (0x21000) is not accessed. */
 #define CON_PCG_VDP_START 0x80000000u
 #define CON_PCG_VDP_END 0x80010000u
 #define CON_PCG_TEXT_START 0x10000000u
 #define CON_PCG_TEXT_END 0x10003000u
+/* The wide font installed for mode 3 (con_wide.h): VRAM 0x200000 and up. */
+#define CON_PCG_FONT_START 0x10200000u
+#define CON_PCG_FONT_END 0x10400000u
 #define CON_PCG_INPUT_START 0x80040030u
 #define CON_PCG_INPUT_END 0x80040180u
 
