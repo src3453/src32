@@ -77,6 +77,7 @@ int main(void) {
 - DSFS mountは元のsol版同様superblockのmagic/version/layoutを検査します。完全な不正媒体検査ではありません。未信頼画像は先に`tools/dsfs/dsfs.py verify`で検査してください。更新順はbitmap占有→payload→entry更新→旧領域解放、削除はentry解除→bitmap解放です。
 - WAX loaderは元の16 MiB RAMゲストの予約域を維持します。`0x00FE0000..0x00FFFFFF`をstaging/span map/trampolineに使用するため、16 MiB以上のRAMが必要です。最大ファイル64 KiB、予約域へのloadは拒否。ロード時に全IRQC sourceを無効化・ackします。成功したプログラム切替は呼出元に戻りません。
 - SGUBはcaller所有の不変streamと正確なbyte数を受け取り、全ヘッダー・pool・操作・frameを検証してから初期MMIOを書きます。`sgub_init`後は`sgub_step`で1フレームずつ適用します。repeatで初期化列を再実行せず、非repeat終端の次stepで全voiceを停止します。
+- `sgub_init_output(stream, size, &output)` はMMIOの代わりに `sgub_output_t` のwrite callbackへ出力します。`targets` のbit maskにないtargetはファイル全体の検証中に `ERROR_TARGET` として拒否し、出力しません。callbackは順序と重複を保って全byteを転送し、負の戻り値で `ERROR_IO` に停止します。FILLは4096 byte以下に分割され、COPY_POOLは連続データとして渡されます。output・context・streamは再生中有効に保ってください。`sgub_init`とNULL outputは従来のMMIO動作です。Foundationの `sgubplay` はこの経路で `/dev/sgu` を使います。
 - 各モジュールのsingleton状態は再入可能ではありません。同じdeviceをmainとIRQから同時更新しないでください。
 
 ## 検証

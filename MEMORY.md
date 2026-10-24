@@ -1489,3 +1489,13 @@
 - mode 3 のFG属性 bit 7:6（`WIDE_KIND`）で 01=UTF-16BE の MSB、10=LSB。隣り合う `01`,`10` の対だけが1文字で、孤立した `01`/`10`・`11` は1 byte文字として描く（`pcg.rs` の `wide_pair`）。mode 0〜2 は従来どおり下位6 bitだけを見る。
 - フォントは `WIDE_FONT_BASE`（`0xF010`〜`0xF013`、32-bit LE、reset 0）+ code unit×32（16行×2 byte、Unifont ROM と同じ形式）。VRAM 終端超えは blank。既定の置き場は決めていない（VRAM 4 MiB 下限では `0x200000` のRGB888 ビットマップと衝突しうるため、ゲストが選ぶ）。
 - `PcgRenderer::get_pixel` は引数末尾に `wide_font_base` が増えた。lib 単体テストは s3w2_core の golden が無いとビルドできないので、新テストは統合テスト `tests/vdp_pcg_wide.rs` に置いた（`cargo test --test vdp_pcg_wide`）。Foundation console はまだ使っていない。
+
+## Foundation SGUBプレイヤー (2026-10-24, GitHub #152)
+
+- 標準コマンド `sgubplay FILE` はFS2からSGUBを全読み込みし、C SDKの `sgub_init_output` / `sgub_step` を使って `/dev/sgu` に出力する。SDKをコマンドと同じWAXへリンクする（WALをまたぐcallbackではない）。ユーザープロセスにMMIO grantを足さない。
+- v1/v2とSGU/PCMのみのv3が対象。output.targets=7でtarget 0〜2だけ許可し、後方フレームの未対応targetも初期化出力前に拒否する。パーサーをコピーして分岐させない。元の `sgub_init` はNULL outputで従来のMMIO経路。callbackの負値はERROR_IOとなり以後の出力を止める。非repeat終了の消音は有効なSGU targetだけへ送る。
+- /dev/sguは検証成功後の最初のcallbackで開く。連続アドレスではseekを省くが、個別WRITEの重複・順番を省略しない。FILLは4096 byteずつ、COPY_POOLもIPC上限4096 byteで分割する。256 byte単位のFILLでは1 MiB初期化のIPC回数が大きくなる。closeとプロセスkillでカーネルが16チャンネルを消音する。
+- FoundationにはVSync待機APIがないため、100 Hz tickから60 Hzを累積する。10 ms量子化でVSync位相同期ではない。追いつき時にも1フレームごとにキーを確認すること。一度に多数フレームを処理すると、実Furnace曲でqが長く待たされる。経過時間・蓄積は1秒に制限するが、フレームの操作自体は省略しない。
+- ファイル上限14 MiBは実際のheap容量を保証しない。slot方式のコマンド領域4 MiBにはコードとスタックも入る。曲は --root DIR でディスクへ配置し、ホストの --music-stream は使わない。
+- 検証: `python -m unittest discover -s foundation/tests/sgub -v`。ホスト7件、Foundation実行6件をVMとFND_MM=slotの両方で成功。実Furnaceの波形/PCMファイル、v1/v2/v3、repeat、Esc/q、Ctrl+C後の再オープン、事前拒否、出力失敗を確認。既存SDK MMIO smokeもCached/Pipelineで成功。実音の聴取は未実施。
+- Windowsのホストctypes試験ではロード済みDLLを削除できないので、TemporaryDirectoryのcleanupより先にFreeLibraryする。ビルド・テストのTEMP/TMPはworkspace内に置く。シェル試験では最初の起動完了を待って次のコマンドを送る（再生中の先行文字列はプレイヤーが消費する）。

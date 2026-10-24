@@ -16,7 +16,9 @@ typedef enum {
   SGUB_STATUS_ERROR_FORMAT = -2,
   SGUB_STATUS_ERROR_VERSION = -3,
   SGUB_STATUS_ERROR_BOUNDS = -4,
-  SGUB_STATUS_ERROR_STATE = -5
+  SGUB_STATUS_ERROR_STATE = -5,
+  SGUB_STATUS_ERROR_TARGET = -6,
+  SGUB_STATUS_ERROR_IO = -7
 } sgub_status_t;
 
 typedef struct {
@@ -29,6 +31,22 @@ typedef struct {
   uint8_t repeat;
   sgub_status_t status;
 } sgub_state_t;
+
+/* Optional stream output instead of direct MMIO. targets is a bit mask of
+ * accepted target IDs. write returns zero on success, negative on failure;
+ * it must preserve byte order and duplicate writes, and consume all bytes.
+ * The output and context must remain valid until playback ends. */
+typedef struct {
+  void *context;
+  uint32_t targets;
+  int32_t (*write)(void *context, uint8_t target, uint32_t address,
+                   const uint8_t *data, uint32_t size);
+} sgub_output_t;
+
+/* NULL output selects the original MMIO backend. Unsupported targets anywhere
+ * in the stream are rejected before the first output callback. */
+sgub_status_t sgub_init_output(const uint8_t *stream, size_t size,
+                               const sgub_output_t *output);
 
 /*
  * Validate the complete bounded v1/v2/v3 stream before performing any MMIO.

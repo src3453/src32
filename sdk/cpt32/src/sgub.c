@@ -4,8 +4,6 @@
 #define SGUB_MAX_SIZE UINT32_C(0x00E00000)
 #define SGUB_SGU0_BASE UINT32_C(0x80020000)
 #define SGUB_SGU1_BASE UINT32_C(0x80021000)
-#define SGUB_SGU0_REGS UINT32_C(0x80020800)
-#define SGUB_SGU1_REGS UINT32_C(0x80021800)
 #define SGUB_PCMRAM_BASE UINT32_C(0x18000000)
 #define SGUB_CARD0_BASE UINT32_C(0xA0000000)
 #define SGUB_V2_HEADER_SIZE 40u
@@ -28,6 +26,8 @@ typedef struct {
 } sgub_pool_t;
 
 static sgub_state_t player;
+static const sgub_output_t *output;
+static uint8_t io_failed;
 static uint32_t pool_count;
 static uint32_t init_count;
 static uint32_t directory_offset;
@@ -52,9 +52,18 @@ static uint32_t sgub_read_address(const uint8_t *p) {
   return player.version == SGUB_VERSION_V3 ? sgub_read_u32(p) : sgub_read_u24(p);
 }
 
+static uint8_t sgub_supported(uint8_t target) {
+  if (output && (target >= 32u || !(output->targets & (1u << target)))) {
+    player.status = SGUB_STATUS_ERROR_TARGET;
+    return 0;
+  }
+  return 1;
+}
+
 static uint8_t sgub_valid_record(const uint8_t *record) {
   uint8_t target = record[0];
   uint32_t address = sgub_read_u24(record + 1);
+  if (!sgub_supported(target)) return 0;
   if (target <= 1u)
     return (uint8_t)(address <= UINT32_C(0x8ff));
   if (target == 2u)
@@ -146,6 +155,7 @@ static uint8_t sgub_validate_operation(size_t *cursor, size_t limit) {
   }
   if (!valid)
     return 0;
+  if (!sgub_supported(target)) return 0;
   *cursor += operation_size;
   return 1;
 }
@@ -275,6 +285,11 @@ static uint8_t sgub_validate_v2(void) {
 }
 
 static void sgub_write_target(uint8_t target, uint32_t address, uint8_t value) {
+  if (output) {
+    if (!io_failed && output->write(output->context, target, address, &value, 1u) < 0)
+      io_failed = 1;
+    return;
+  }
   uintptr_t base = target == 0u   ? SGUB_SGU0_BASE
                    : target == 1u ? SGUB_SGU1_BASE
                    : target == 3u ? SGUB_CARD0_BASE
@@ -303,6 +318,17 @@ static size_t sgub_apply_operation(size_t cursor) {
     uint32_t length = sgub_read_u32(p + 2u + address_size);
     uint8_t value = p[6u + address_size];
     uint32_t packed = (uint32_t)value * UINT32_C(0x01010101);
+    if (output) {
+      uint8_t bytes[4096];
+      for (i = 0; i < sizeof bytes; ++i) bytes[i] = value;
+      for (i = 0; i < length && !io_failed;) {
+        uint32_t n = length - i < sizeof bytes ? length - i : sizeof bytes;
+        if (output->write(output->context, target, address + i, bytes, n) < 0)
+          io_failed = 1;
+        i += n;
+      }
+      return cursor + 2u + address_size + 4u + 1u;
+    }
     for (i = 0; target != 3u && length - i >= 4u; i += 4u)
       CPT32_MMIO32(destination + i) = packed;
     for (; i < length; ++i)
@@ -317,6 +343,12 @@ static size_t sgub_apply_operation(size_t cursor) {
     uint32_t payload_offset;
     (void)sgub_pool_info(pool_id, &pool);
     payload_offset = pool.payload_offset + source_offset;
+    if (output) {
+      if (!io_failed && output->write(output->context, target, address,
+                                      player.stream + payload_offset, length) < 0)
+        io_failed = 1;
+      return cursor + 2u + address_size + 2u + 4u + 4u;
+    }
     for (i = 0; target != 3u && length - i >= 4u; i += 4u) {
       uint32_t word = ((uint32_t)player.stream[payload_offset + i] << 24) |
                      ((uint32_t)player.stream[payload_offset + i + 1u] << 16) |
@@ -337,17 +369,24 @@ static void sgub_apply_record(const uint8_t *record) {
 static void sgub_stop_all(void) {
   uint32_t voice;
   for (voice = 0; voice < 16u; ++voice) {
-    uintptr_t base = voice < 8u ? SGUB_SGU0_REGS + (voice % 8u) * 0x20u
-                                : SGUB_SGU1_REGS + (voice % 8u) * 0x20u;
-    CPT32_MMIO8(base + 3u) = 0;
-    CPT32_MMIO8(base + 0x19u) = 0;
+    if (output && !(output->targets & (1u << (voice / 8u)))) continue;
+    uint32_t address = 0x800u + (voice % 8u) * 0x20u;
+    sgub_write_target((uint8_t)(voice / 8u), address + 3u, 0);
+    sgub_write_target((uint8_t)(voice / 8u), address + 0x19u, 0);
   }
 }
 
 sgub_status_t sgub_init(const uint8_t *stream, size_t size) {
+  return sgub_init_output(stream, size, (const sgub_output_t *)0);
+}
+
+sgub_status_t sgub_init_output(const uint8_t *stream, size_t size,
+                               const sgub_output_t *sink) {
   uint8_t valid;
   uint8_t version;
-  if (stream == (const uint8_t *)0 || size == 0u) {
+  output = sink;
+  io_failed = 0;
+  if (stream == (const uint8_t *)0 || size == 0u || (output && !output->write)) {
     player.status = SGUB_STATUS_ERROR_ARGUMENT;
     return player.status;
   }
@@ -395,7 +434,7 @@ sgub_status_t sgub_init(const uint8_t *stream, size_t size) {
       cursor = sgub_apply_operation(cursor);
     player.frame_cursor = frames_offset;
   }
-  player.status = SGUB_STATUS_PLAYING;
+  player.status = io_failed ? SGUB_STATUS_ERROR_IO : SGUB_STATUS_PLAYING;
   return player.status;
 }
 
@@ -416,7 +455,7 @@ sgub_status_t sgub_step(void) {
                                 : frames_offset;
     } else {
       sgub_stop_all();
-      player.status = SGUB_STATUS_COMPLETE;
+      player.status = io_failed ? SGUB_STATUS_ERROR_IO : SGUB_STATUS_COMPLETE;
       return player.status;
     }
   }
@@ -434,6 +473,10 @@ sgub_status_t sgub_step(void) {
   }
   player.frame_cursor = cursor;
   ++player.frame_index;
+  if (io_failed) {
+    player.status = SGUB_STATUS_ERROR_IO;
+    return player.status;
+  }
   return SGUB_STATUS_READY;
 }
 

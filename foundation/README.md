@@ -7,6 +7,9 @@ CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様�
 
 `/dev/sgu` は SGU 2基・16チャンネルと共有 PCMRAM を1ストリームで公開します（[API §9.2](../doc/spec_Foundation_API.md#92-sgu-2基と共有-pcmram-devsgu)）。
 
+`sgubplay /music/song.sgub` でディスク上のSGUBを再生できます。Esc/qで停止します。
+曲の組み込み方と対応形式は [SGUBプレイヤー](../doc/spec_Foundation_sgubplay.md) を参照してください。
+
 sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../examples/foundation-sol/README.md) にあります。
 `boot/build.py --root DIR` は追加ファイルをFS2ディスクに組み込みます。
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、

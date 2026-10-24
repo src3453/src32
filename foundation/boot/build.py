@@ -81,7 +81,7 @@ DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["cat", "clear", "cp", "echo", "free", "hex", "ls", "mkdir", "mode", "mv", "ps", "pwd", "rm", "rmdir", "top",
-            "uname", "tinybasic", "chip8", "bmpview"]
+            "uname", "tinybasic", "chip8", "bmpview", "sgubplay"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
@@ -241,7 +241,10 @@ def main(argv=None):
     # The commands that import libsgc go last, so the others start while it builds.
     for name in sorted(COMMANDS, key=lambda name: name in SGC_COMMANDS):
         libs = [sgc_job.result()] if name in SGC_COMMANDS else []
-        program_jobs.append(pool.submit(program, [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"],
+        sources = [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"]
+        if name == "sgubplay":
+            sources.append(ROOT / "sdk/cpt32/src/sgub.c")
+        program_jobs.append(pool.submit(program, sources,
                                         root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd, *libs))
     shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
     shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
