@@ -1,0 +1,13 @@
+# WAL ABI 1.0; helpers are not exported.
+cpt_code_utf8_to_utf32be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32be_to_utf8 fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf8bom_to_utf32be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32be_to_utf8bom fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf16le_to_utf32be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32be_to_utf16le fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf16be_to_utf32be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32be_to_utf16be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32le_to_utf32be fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_utf32be_to_utf32le fn(ptr,ptr,ptr,u32,u32)->i32
+cpt_code_bound fn(u32,u32,u32)->u32
+cpt_code_detect fn(ptr,u32,ptr)->i32
