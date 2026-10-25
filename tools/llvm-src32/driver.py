@@ -145,9 +145,12 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     if posix_library:
         # Newlib is written for GNU C and builds with the old implicit-declaration rules.
         defines = (*defines, *newlib_posix_defines())
+    # Only use the MIPS frontend's 32-bit big-endian layout, not its codegen.
+    # -G0 becomes -mllvm -mips-ssection-threshold=0, which Clang builds without
+    # the MIPS backend (including ROCm) reject even when emitting LLVM IR.
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-ffp-contract=off", "-fno-stack-protector", "-fno-pic", "-fno-pie",
-               "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-G0", "-nostdinc",
+               "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
                "-std=c++17" if cxx else "-std=gnu11" if posix_library or (newlib and newlib.posix) else "-std=c11",
                optimization, "-S", "-emit-llvm"]
     if posix_library:

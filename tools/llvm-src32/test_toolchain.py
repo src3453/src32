@@ -65,6 +65,35 @@ class ToolchainTests(unittest.TestCase):
         path.write_text(LAYOUT + TRIPLE + text, encoding='utf-8')
         return path
 
+    def test_compile_only_frontend_layout(self):
+        # ROCm Clang has the MIPS frontend but no MIPS codegen options such as
+        # -mips-ssection-threshold (implicitly requested by -G0). Exercise the
+        # real frontend and then execute its IR through our own backend.
+        for suffix in ('.c', '.cpp'):
+            source = self.work / ('layout' + suffix)
+            source.write_text('''#include <stdint.h>
+volatile uint32_t value = 0x12345678;
+#ifdef __cplusplus
+extern "C"
+#endif
+int main(void) {
+    volatile unsigned char *bytes = (volatile unsigned char *)&value;
+    if (sizeof(void *) != 4 || sizeof(long) != 4) return 1;
+    if (bytes[0] != 0x12 || bytes[3] != 0x78) return 2;
+    value += 1;
+    return bytes[3] == 0x79 ? 42 : 3;
+}
+''', encoding='utf-8')
+            for opt in ('-O0', '-O1', '-O2'):
+                with self.subTest(language=suffix, optimization=opt):
+                    ir = self.work / 'layout.ll'
+                    image = self.work / 'layout.wax'
+                    self.driver(source, '-c', opt, '-o', ir)
+                    self.assertIn('target triple = "mips-unknown-none"',
+                                  ir.read_text(encoding='utf-8'))
+                    self.driver(ir, '-o', image)
+                    self.execute(image, 42)
+
     def test_multifile_c_project(self):
         sources = [HERE / 'examples/conformance' / name
                    for name in ('main.c', 'operations.c', 'integers.c', 'wide.c')]

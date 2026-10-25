@@ -16,6 +16,8 @@ CMake 用モジュールは `cmake/SRC32.cmake`。
 - CMake 3.20 以降と Ninja（CMake ビルド時）。Ninja がない場合は `python -m pip install ninja`。
 - 実行検証用: `cargo build --bin src32_testbench`。Windows では `.exe` を使う。拡張子なしの古い Linux バイナリと混同しないこと。
 
+Clang は MIPS の 32-bit big-endian 設定で LLVM IR のみを生成し、機械語生成は SRC32 バックエンドが行います。MIPS 機械語バックエンドを含まない ROCm Clang も利用できます。`-G0` は内部の `-mips-ssection-threshold` オプションが未対応エラーになるため渡しません。
+
 Python と llvmlite は同じ環境へインストールしてください。複数 Python がある場合、CMake の `SRC32_PYTHON_EXECUTABLE` を明示します。
 llvmlite は LLVM 自身による IR のパース・検証・モジュールリンク・データレイアウト計算に使用します。
 
