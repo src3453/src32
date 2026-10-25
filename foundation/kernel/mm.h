@@ -40,7 +40,8 @@ void mm_release(struct fnd_proc *proc);
 
 /* §5.4: no 32-bit overflow, nothing at or above 0xFFFF0000, and every byte
  * in memory of proc that has all of perm (CPT32_PERM_*). MMIO is never
- * accepted. */
+ * accepted. VM write validation also resolves COW before any output or block;
+ * returns 0 if a private frame cannot be allocated. */
 int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm);
 
 /* Copies for addresses proc_user_range_ok accepted. kmem_copy and kmem_zero
@@ -98,6 +99,11 @@ static inline uint32_t mm_read8(const struct fnd_proc *proc, uint32_t addr) {
 
 #define MM_PAGE 4096u
 #define MM_PAGE_MASK (MM_PAGE - 1u)
+
+/* Clone VM mappings with COW; on failure child owns nothing, parent is unchanged. */
+int32_t mm_vm_clone(struct fnd_proc *child, struct fnd_proc *parent);
+/* Resolve an owned COW page; ACCESS for other pages, NO_MEMORY if copying fails. */
+int32_t mm_vm_cow(const struct fnd_proc *proc, uint32_t va);
 
 /* The page table of a new process: FND_E_NO_MEMORY if no frame is free. */
 int32_t mm_vm_create(struct fnd_proc *proc);

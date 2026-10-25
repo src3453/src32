@@ -853,6 +853,44 @@ int main(void) {
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn('PASS:', result.stdout)
 
+    def test_foundation_fork(self):
+        foundation = ROOT / 'foundation'
+        sources = [foundation / 'tests/fork/main.c',
+                   *(foundation / 'kernel' / name for name in
+                     ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'fb.c',
+                      'sgu.c', 'sgc.c', 'pec.c', 'blk.c', 'wax.c'))]
+        for slot in (False, True):
+            (self.work / 'config.yaml').write_text(
+                f'memory:\n  ram_mib: {16 if slot else 5}\n', encoding='utf-8')
+            for opt in ('-O0', '-O1', '-O2'):
+                with self.subTest(slot=slot, optimization=opt):
+                    guest = self.work / 'guest.wax'
+                    self.driver(foundation / 'tests/fork/guest.c',
+                                '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
+                                '--protected', '--page-align', '--origin', '0x800000',
+                                '--stack-top', '0xC00000', '--user-stack-size', '0x4000',
+                                opt, *(['-D', 'SLOT_TEST'] if slot else []), '-o', guest)
+                    data = guest.read_bytes()
+                    padded = data + bytes(-len(data) % 4)
+                    words = ','.join(hex(int.from_bytes(padded[i:i + 4], 'big')) + 'u'
+                                     for i in range(0, len(padded), 4))
+                    (self.work / 'images.h').write_text(
+                        f'static const uint32_t img_guest[] = {{{words}}};\n'
+                        f'#define img_guest_size {len(data)}u\n', encoding='utf-8')
+                    image = self.work / 'fork.wax'
+                    self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
+                                '-I', foundation / 'include', '-I', foundation / 'kernel',
+                                '-I', self.work, '--origin', '0x10000', '--stack-top', '0x100000',
+                                opt, *(['-D', 'FND_MM_SLOT_ONLY'] if slot else []), '-o', image)
+                    for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                        with self.subTest(cpu=cpu):
+                            result = subprocess.run(
+                                [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '600'],
+                                cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                                errors='replace', timeout=300)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            self.assertIn('PASS:', result.stdout)
+
     def test_foundation_vm_kernel(self):
         # Foundation on Extension V (doc/foundation_vm_plan.md): the images of
         # the WAX loader test, but two copies of one executable run at once

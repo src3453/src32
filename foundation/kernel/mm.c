@@ -199,10 +199,11 @@ static int slot_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t le
 #define PTE_U 0x10u
 #define PTE_DEV 0x20u
 #define PTE_OWNED 0x100u /* SW bit: the frame is the process's and is freed with it */
+#define PTE_COW 0x200u /* SW bit: logically writable, shared until a write */
 #define PTE_FRAME 0xFFFFF000u
 #define PTE_RWX (PTE_R | PTE_W | PTE_X)
 
-static uint32_t frame_used[MAX_FRAMES / 32u]; /* bit set: handed out */
+static uint8_t frame_refs[MAX_FRAMES]; /* at most FND_MAX_PROCS references */
 static uint32_t pool_frames, free_frames, next_hint;
 
 static void vm_init(void) {
@@ -212,12 +213,12 @@ static void vm_init(void) {
         pool_frames = MAX_FRAMES;
     free_frames = pool_frames;
     next_hint = 0;
-    for (uint32_t i = 0; i < MAX_FRAMES / 32u; ++i)
-        frame_used[i] = 0;
+    for (uint32_t i = 0; i < MAX_FRAMES; ++i)
+        frame_refs[i] = 0;
     /* The first frames are the DMA bounce buffer for good. */
     uint32_t reserved = MM_BOUNCE_BYTES / MM_PAGE;
     for (uint32_t f = 0; f < reserved && f < pool_frames; ++f) {
-        frame_used[f >> 5] |= 1u << (f & 31u);
+        frame_refs[f] = 1;
         --free_frames;
     }
     next_hint = reserved;
@@ -233,8 +234,8 @@ static uint32_t frame_alloc(void) {
         uint32_t f = next_hint + n;
         if (f >= pool_frames)
             f -= pool_frames;
-        if (!(frame_used[f >> 5] & (1u << (f & 31u)))) {
-            frame_used[f >> 5] |= 1u << (f & 31u);
+        if (!frame_refs[f]) {
+            frame_refs[f] = 1;
             --free_frames;
             next_hint = f + 1u;
             uint32_t pa = POOL_BASE + f * MM_PAGE;
@@ -247,10 +248,10 @@ static uint32_t frame_alloc(void) {
 
 static void frame_free(uint32_t pa) {
     uint32_t f = (pa - POOL_BASE) / MM_PAGE;
-    if (pa < POOL_BASE || f >= pool_frames || !(frame_used[f >> 5] & (1u << (f & 31u))))
+    if (pa < POOL_BASE || f >= pool_frames || !frame_refs[f])
         return;
-    frame_used[f >> 5] &= ~(1u << (f & 31u));
-    ++free_frames;
+    if (--frame_refs[f] == 0)
+        ++free_frames;
 }
 
 uint32_t mm_vm_free_bytes(void) { return free_frames * MM_PAGE; }
@@ -281,6 +282,26 @@ static uint32_t *l2_entry(const struct fnd_proc *proc, uint32_t va, int create) 
     return table_at(l1 & PTE_FRAME) + ((va >> 12) & 0x3FFu);
 }
 
+/* Only owned COW pages are eligible. A true RX page must stay RX. */
+int32_t mm_vm_cow(const struct fnd_proc *proc, uint32_t va) {
+    uint32_t *entry = proc->pt_root ? l2_entry(proc, va, 0) : 0;
+    if (!entry || (*entry & (PTE_V | PTE_U | PTE_OWNED | PTE_COW | PTE_DEV)) !=
+                             (PTE_V | PTE_U | PTE_OWNED | PTE_COW))
+        return FND_E_ACCESS;
+    uint32_t pa = *entry & PTE_FRAME;
+    if (frame_refs[(pa - POOL_BASE) / MM_PAGE] > 1u) {
+        uint32_t copy = frame_alloc();
+        if (!copy)
+            return FND_E_NO_MEMORY;
+        kmem_copy(copy, pa, MM_PAGE);
+        frame_free(pa);
+        pa = copy;
+    }
+    *entry = pa | ((*entry & ~PTE_FRAME & ~PTE_COW) | PTE_W);
+    mm_reload((struct fnd_proc *)proc);
+    return FND_OK;
+}
+
 int32_t mm_vm_map(struct fnd_proc *proc, uint32_t start, uint32_t end, uint32_t perm) {
     uint32_t flags = PTE_V | PTE_U | ((perm & CPT32_PERM_R) ? PTE_R : 0) | ((perm & CPT32_PERM_W) ? PTE_W : 0) |
                      ((perm & CPT32_PERM_X) ? PTE_X : 0);
@@ -289,6 +310,11 @@ int32_t mm_vm_map(struct fnd_proc *proc, uint32_t start, uint32_t end, uint32_t 
         if (!entry)
             return FND_E_NO_MEMORY;
         if (*entry & PTE_V) {
+            if ((*entry & PTE_COW) && (flags & PTE_W)) {
+                int32_t status = mm_vm_cow(proc, page);
+                if (status != FND_OK)
+                    return status;
+            }
             *entry |= flags;
         } else {
             uint32_t frame = frame_alloc();
@@ -343,6 +369,74 @@ static void vm_destroy(struct fnd_proc *proc) {
     proc->vm_pages = 0;
 }
 
+/* Build the child completely before write-protecting the parent. Failure
+ * drops child references/tables and leaves the parent's PTEs untouched. */
+int32_t mm_vm_clone(struct fnd_proc *child, struct fnd_proc *parent) {
+    int32_t status = mm_vm_create(child);
+    if (status != FND_OK)
+        return status;
+    uint32_t *root = table_at(parent->pt_root);
+    for (uint32_t i = 0; i < 1024u; ++i) {
+        if (!(root[i] & PTE_V))
+            continue;
+        uint32_t *src = table_at(root[i] & PTE_FRAME);
+        uint32_t *dst = l2_entry(child, i << 22, 1);
+        if (!dst) {
+            status = FND_E_NO_MEMORY;
+            break;
+        }
+        for (uint32_t k = 0; k < 1024u; ++k) {
+            uint32_t pte = src[k];
+            if (!(pte & PTE_V))
+                continue;
+            if ((pte & PTE_DEV) || ((pte & PTE_W) && !(pte & PTE_OWNED))) {
+                status = FND_E_ACCESS;
+                break;
+            }
+            if (pte & PTE_OWNED) {
+                ++frame_refs[((pte & PTE_FRAME) - POOL_BASE) / MM_PAGE];
+                ++child->vm_pages;
+                if (pte & PTE_W)
+                    pte = (pte & ~PTE_W) | PTE_COW;
+            }
+            dst[k] = pte;
+        }
+        if (status != FND_OK)
+            break;
+    }
+    if (status != FND_OK) {
+        vm_destroy(child);
+        return status;
+    }
+    for (uint32_t i = 0; i < 1024u; ++i) {
+        if (!(root[i] & PTE_V))
+            continue;
+        uint32_t *src = table_at(root[i] & PTE_FRAME);
+        for (uint32_t k = 0; k < 1024u; ++k)
+            if ((src[k] & (PTE_V | PTE_OWNED | PTE_W)) == (PTE_V | PTE_OWNED | PTE_W))
+                src[k] = (src[k] & ~PTE_W) | PTE_COW;
+    }
+    mm_reload(parent);
+    return FND_OK;
+}
+
+/* Prepare the complete destination before copying, including page-crossing
+ * outputs. Checked syscall outputs cannot fail halfway through a copy.
+ * A single-threaded process cannot fork while blocked on a checked output. */
+static int vm_prepare_write(const struct fnd_proc *proc, uint32_t addr, uint32_t len) {
+    while (len) {
+        uint32_t *entry = proc->pt_root ? l2_entry(proc, addr, 0) : 0;
+        if (entry && (*entry & PTE_COW) && mm_vm_cow(proc, addr) != FND_OK)
+            return 0;
+        uint32_t run = MM_PAGE - (addr & MM_PAGE_MASK);
+        if (run >= len)
+            break;
+        addr += run;
+        len -= run;
+    }
+    return 1;
+}
+
 uint8_t *mm_vm_ptr(const struct fnd_proc *proc, uint32_t va, uint32_t *run) {
     if (!proc->pt_root)
         return 0;
@@ -356,18 +450,22 @@ uint8_t *mm_vm_ptr(const struct fnd_proc *proc, uint32_t va, uint32_t *run) {
 static int vm_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm) {
     uint32_t need = (perm & CPT32_PERM_R ? PTE_R : 0) | (perm & CPT32_PERM_W ? PTE_W : 0) |
                     (perm & CPT32_PERM_X ? PTE_X : 0);
+    uint32_t start = addr, bytes = len;
     while (len) {
         uint32_t *entry = proc->pt_root ? l2_entry(proc, addr, 0) : 0;
+        uint32_t flags = entry ? *entry : 0;
+        if (flags & PTE_COW)
+            flags |= PTE_W;
         /* A Device page is MMIO the kernel must not touch for a user. */
-        if (!entry || (*entry & (PTE_V | PTE_U | PTE_DEV)) != (PTE_V | PTE_U) || (*entry & need) != need)
+        if (!entry || (*entry & (PTE_V | PTE_U | PTE_DEV)) != (PTE_V | PTE_U) || (flags & need) != need)
             return 0;
         uint32_t covered = MM_PAGE - (addr & MM_PAGE_MASK);
         if (covered >= len)
-            return 1;
+            break;
         addr += covered;
         len -= covered;
     }
-    return 1;
+    return !(perm & CPT32_PERM_W) || vm_prepare_write(proc, start, bytes);
 }
 
 void mm_vm_copy_from(void *dst, const struct fnd_proc *proc, uint32_t src, uint32_t len) {
@@ -387,6 +485,8 @@ void mm_vm_copy_from(void *dst, const struct fnd_proc *proc, uint32_t src, uint3
 }
 
 void mm_vm_copy_to(const struct fnd_proc *proc, uint32_t dst, const void *src, uint32_t len) {
+    if (!vm_prepare_write(proc, dst, len))
+        return;
     uint32_t from = (uint32_t)(uintptr_t)src;
     while (len) {
         uint32_t run;
@@ -404,6 +504,8 @@ void mm_vm_copy_to(const struct fnd_proc *proc, uint32_t dst, const void *src, u
 
 void mm_vm_copy(const struct fnd_proc *to, uint32_t dst, const struct fnd_proc *from, uint32_t src,
                 uint32_t len) {
+    if (!vm_prepare_write(to, dst, len))
+        return;
     while (len) {
         uint32_t dst_run, src_run;
         uint8_t *d = mm_vm_ptr(to, dst, &dst_run);

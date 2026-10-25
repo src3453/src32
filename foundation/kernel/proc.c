@@ -542,6 +542,53 @@ int32_t proc_spawn(struct fnd_proc *caller, uint32_t addr) {
     return handle_add(caller, FND_OBJ_PROCESS, child);
 }
 
+/* VM-only fork. The calling thread is the child's only thread. Restrict
+ * fork to single-threaded callers so previously checked asynchronous output
+ * buffers cannot acquire COW mappings while another thread is blocked. */
+int32_t proc_fork(struct fnd_thread *thread) {
+    struct fnd_proc *parent = thread->proc;
+    if (!mm_vm)
+        return FND_E_UNSUPPORTED;
+    if (parent->threads != 1u)
+        return FND_E_BUSY;
+    for (uint32_t i = 0; i < parent->region_count; ++i)
+        if (parent->regions[i].mmio)
+            return FND_E_ACCESS; /* grants retain exclusive ownership */
+    for (uint32_t i = 0; i < FND_MAX_HANDLES; ++i)
+        if (parent->handles[i].kind == FND_OBJ_THREAD)
+            return FND_E_ACCESS; /* THREAD handles never cross processes */
+    if (!handle_free_count(parent))
+        return FND_E_LIMIT;
+    int32_t error;
+    struct fnd_proc *child = claim_record(VM_NO_SLOT, &error);
+    if (!child)
+        return error;
+    struct fnd_thread *first = sched_alloc_thread();
+    if (!first)
+        return FND_E_LIMIT;
+    error = mm_vm_clone(child, parent);
+    if (error != FND_OK)
+        return error;
+    child->parent = parent->pid;
+    child->caps = parent->caps;
+    child->region_count = parent->region_count;
+    for (uint32_t i = 0; i < parent->region_count; ++i)
+        child->regions[i] = parent->regions[i];
+    child->heap_start = parent->heap_start;
+    child->heap_end = parent->heap_end;
+    child->heap_limit = parent->heap_limit;
+    child->heap_region = parent->heap_region;
+    child->startup_len = parent->startup_len;
+    kmem_copy((uint32_t)(uintptr_t)startup_blocks[child - procs],
+              (uint32_t)(uintptr_t)startup_blocks[parent - procs], parent->startup_len);
+    start_proc(child, first, parent->name, VM_NO_SLOT, parent->priority,
+               thread->frame.epc, thread->frame.r[28], thread->frame.r[30]);
+    first->frame = thread->frame; /* SYSCALL saved EPC already points past it */
+    first->frame.r[1] = 0;
+    handle_clone(parent, child);
+    return handle_add(parent, FND_OBJ_PROCESS, child);
+}
+
 int32_t proc_startup(const struct fnd_proc *proc, uint32_t buf, uint32_t cap) {
     uint32_t len = proc->startup_len;
     if (cap > len)

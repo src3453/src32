@@ -55,6 +55,7 @@ void sched_cpu_snapshot(uint32_t info[4]);
 
 /* proc.c */
 void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc);
+int32_t proc_fork(struct fnd_thread *thread);
 int32_t proc_spawn(struct fnd_proc *caller, uint32_t spawn);
 int32_t proc_startup(const struct fnd_proc *proc, uint32_t buf, uint32_t cap);
 int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta);
@@ -63,6 +64,7 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
 
 /* ipc.c: handles (§6), IPC (§8) and services (§8.6). */
 int32_t handle_add(struct fnd_proc *proc, uint32_t kind, void *object);
+void handle_clone(struct fnd_proc *from, struct fnd_proc *to);
 void handle_close_all(struct fnd_proc *proc);
 uint32_t handle_free_count(const struct fnd_proc *proc);
 int32_t handle_dup_into(struct fnd_proc *from, uint32_t h, struct fnd_proc *to);

@@ -90,7 +90,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 | `kernel/blk.c` | `blk_io`（§10.4）。IDC と DMAC ch0、IDC 割り込み（IRQ2）で要求を 1 つずつ FIFO で処理 |
 | `kernel/fb.c`, `include/foundation/fb.h` | カーネル `/dev/fb0` ドライバとC helper（API §9.1）。ビットマップとCLUT |
 | `kernel/fndboot.c` | FNDBOOT のモジュール表の検査と、同梱モジュールの起動（§11） |
-| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.1（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/syncを追加 |
+| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.2（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/sync、1.2は `fnd_proc_fork` を追加 |
 | `services/console/` | console サービス（API 仕様 §8、PCG と PeC キーボード） |
 | `services/disk/` | disk サービス（`blk_io` を fs に IPC で渡す。プロトコルは `disk.h`） |
 | `fs/` | fs サービス（FS2 と DSFS、VFS、API 仕様 §5〜§7 のプロトコル）。次の節 |
@@ -124,7 +124,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 
 起動すると、カーネルが console（スロット 1）、disk（スロット 2）、fs（スロット 3）、init（スロット 0）を起動し、init が `/bin/shell.wax`（スロット 4）を起動します。シェルは [シェル仕様](../doc/spec_Foundation_shell.md) 0.2 のディスパッチャで、`cd`、`set`、`exit`、`help` 以外のコマンドは `PATH`（既定 `/bin`）から `<name>.wax` を探し、`fnd_proc_exec` でスロット 5 に起動して終了を待ちます。
 
-- **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.1（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
+- **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.2（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
 - **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir`、`ls`、`hex` は `/bin` にあります（`cp` の同一ファイル検出はパス文字列の比較だけです）。Ctrl+C はシェルの専用スレッドが `CON_BREAK_WAIT` で受け取り、実行中の外部プログラムを `proc_kill` で止めます（`$?` は `FND_E_KILLED`、STDERR に `^C`）。行編集中は保留中の `CON_READ_KEY` が `FND_E_INTERRUPTED` になり、入力中の行を捨てます。組み込みコマンドの中断とスクリプトの入れ子中断は、スクリプト（KAN-19）とともに未実装です。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
@@ -346,3 +346,9 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 `/dev/trng` は READ 専用で、ハードウェアの READY が落ちている間は呼び出したスレッドをブロックします。`/dev/prng` は READ 専用のノンブロッキング GFSR 乱数です（暗号用途向けではありません）。`/dev/uart0` はホスト標準入出力へつながるバイトストリームで、読み出しは受信待ち、書き込みはデータをそのまま送信します。通常の `fnd_file_open`／`fnd_read`／`fnd_write` で利用できます。複数 open は同じハードウェアを共有します。乱数列の seed 設定 API は公開しません。[API §9.4](../doc/spec_Foundation_API.md#94-pec-乱数uart-devtrngdevprngdevuart0)。
 
 検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=slot` でも実行してください。testbench には UART がないため、UART の正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
+
+### COW と fork
+
+VM バックエンドでは `fnd_sys_proc_fork()`（`<foundation/sys.h>`）または libfnd 1.2 の `fnd_proc_fork()` を使えます。親は子の PROCESS ハンドル、子は 0 を受け取り、同じ位置から実行を再開します。親は `fnd_sys_wait()` と `fnd_sys_handle_close()`、または `fnd_proc_wait()` で子を回収します。RW メモリは書き込み時に 4 KiB ごとに私有化されます。ファイル位置や fs セッションなどのサービス側状態は共有です。生存スレッド 1 本が必要で、THREAD ハンドルや MMIO 付与のあるプロセスは複製できません。slot 環境では `FND_E_UNSUPPORTED` です。詳細は [カーネル仕様 §9.6](../doc/spec_Foundation.md) を参照してください。
+
+回帰テストは `python -m unittest discover -s tools/llvm-src32 -p test_toolchain.py -k test_foundation_fork -v`。`SRC32_TESTBENCH` に release 版の絶対パスを渡すと実行時間を抑えられます。VM と slot、O0/O1/O2、scalar/cached/cached-relaxed/pipeline を検証します。

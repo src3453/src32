@@ -164,6 +164,16 @@ int32_t handle_add(struct fnd_proc *proc, uint32_t kind, void *object) {
     return FND_E_LIMIT;
 }
 
+/* Fork preserves handle numbers, including holes. THREAD handles are rejected
+ * by proc_fork before reaching here; all other objects share their lifetime. */
+void handle_clone(struct fnd_proc *from, struct fnd_proc *to) {
+    for (uint32_t i = 0; i < FND_MAX_HANDLES; ++i) {
+        to->handles[i] = from->handles[i];
+        if (to->handles[i].kind != FND_OBJ_NONE)
+            obj_ref(to->handles[i].kind, to->handles[i].object);
+    }
+}
+
 uint32_t handle_free_count(const struct fnd_proc *proc) {
     uint32_t n = 0;
     for (uint32_t i = 0; i < FND_MAX_HANDLES; ++i)

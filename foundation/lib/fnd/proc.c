@@ -277,3 +277,5 @@ fnd_status fnd_proc_wait(fnd_handle proc, int32_t *code) {
 }
 
 fnd_status fnd_proc_kill(fnd_handle proc) { return fnd_sys_proc_kill(proc); }
+
+int32_t fnd_proc_fork(void) { return fnd_sys_proc_fork(); }

@@ -32,6 +32,8 @@
 #define fnd_sys_wait(h, timeout, code)                                                \
     ((int32_t)CPT32_SYSCALL3(FND_SYS_WAIT, (h), (timeout), (uint32_t)(uintptr_t)(code)))
 #define fnd_sys_proc_spawn(spawn) ((int32_t)CPT32_SYSCALL1(FND_SYS_PROC_SPAWN, (uint32_t)(uintptr_t)(spawn)))
+/* Parent: PROCESS handle; child: 0. VM and a single live thread required. */
+#define fnd_sys_proc_fork() ((int32_t)CPT32_SYSCALL0(FND_SYS_PROC_FORK))
 #define fnd_sys_proc_kill(h) ((int32_t)CPT32_SYSCALL1(FND_SYS_PROC_KILL, (h)))
 #define fnd_sys_proc_startup(buf, cap)                                                \
     ((int32_t)CPT32_SYSCALL2(FND_SYS_PROC_STARTUP, (uint32_t)(uintptr_t)(buf), (cap)))

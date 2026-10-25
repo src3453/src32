@@ -9,7 +9,7 @@
 /* Supervisor-side interface of the kernel, for the image that links
  * it (boot code, demo, tests). User programs use <foundation/abi.h>. */
 
-#define FND_MAX_PROCS 7u    /* one per user slot */
+#define FND_MAX_PROCS 7u    /* process records; VM processes need no slot */
 #define FND_MAX_THREADS 8u  /* user threads; the idle thread is extra */
 #define FND_REGIONS 8u      /* Extension P regions: the slot backend's limit */
 /* The regions a process record holds: an image's (at most 8) and the MMIO
@@ -56,7 +56,7 @@ struct fnd_proc {
     uint32_t region_count;
     struct fnd_region regions[FND_PROC_REGIONS];
     uint32_t pt_root;  /* vm backend: physical address of the level-1 table, else 0 */
-    uint32_t vm_pages; /* vm backend: frames of memory the process holds */
+    uint32_t vm_pages; /* vm backend: mapped owned frames, including shared frames */
     uint32_t heap_start, heap_end, heap_limit, heap_region; /* mem_grow (§5.3) */
     uint32_t startup_len; /* bytes of its startup block (§9.3) */
     struct fnd_handle_entry handles[FND_MAX_HANDLES];

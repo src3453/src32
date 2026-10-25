@@ -165,6 +165,9 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_WAIT:
         result = sys_wait(thread, a1, a2, a3);
         break;
+    case FND_SYS_PROC_FORK:
+        result = proc_fork(thread);
+        break;
     case FND_SYS_PROC_SPAWN:
         result = proc_spawn(proc, a1);
         break;
@@ -212,6 +215,9 @@ cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame) {
         kernel_panic(cause, frame->epc); /* exception in the idle thread */
     } else if ((cause & 0xFFFF0000u) == CAUSE_SYSCALL) {
         handle_syscall(frame, cause);
+    } else if (mm_vm && cause == 0x8006000Au &&
+               mm_vm_cow(fnd_current->proc, cpt32_mfsr(CPT32_SR_VFAULT)) == FND_OK) {
+        /* Retry the precise store at the unchanged EPC with a private page. */
     } else {
         /* A user fault ends the process; the exit code is CAUSE as i32. */
         proc_exit(fnd_current->proc, (int32_t)cause, frame->epc);
