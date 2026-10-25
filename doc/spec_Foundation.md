@@ -483,11 +483,30 @@ CPU が Extension V を報告するとき（`CPU_FEATURES` bit 9）、カーネ�
 | 1, 2, 4 | カーネル専用（DMAC、IDC、timer） |
 | 13–15 | 予約 |
 
+`irq_bind(irq, port)` と `irq_ack(irq)` は `IRQ` capability が必要です。
+範囲外（16 以上）は `FND_E_BAD_ARG`、カーネル専用・予約 IRQ は `FND_E_ACCESS`、
+PORT 以外または無効なハンドルへの bind は `FND_E_BAD_HANDLE` です。
+IRQ は bind したプロセスが所有し、既に割り当てられた IRQ の bind は、同じ所有者・PORT でも
+`FND_E_BUSY` になります。bind は既存の PENDING を消さず ENABLE を 1 にします。
+1 つの PORT へ複数の IRQ を割り当てられます。
+
+PORT の最後のハンドルを閉じるか、所有プロセスが終了（kill・例外を含む）すると、
+割り当てと未受信の通知を破棄し、ENABLE を 0 にして PENDING を W1C します。
+PORT の複製・転送では IRQ 所有者は変わりません。所有プロセス終了時は、他プロセスが
+PORT を保持していても解放します。IRQ の割り当て自体は PORT の寿命を延ばしません。
+
 割り当て済みの IRQ は、次の手順で扱います。
 
 1. カーネルは IRQ を受けたら、その source の IRQC ENABLE bit を 0 にし、PENDING は残したまま `FND_NOTIFY_IRQ` を届けます。
 2. サービスは原因デバイスを ACK してから、`irq_ack` を呼びます。
 3. `irq_ack` で、カーネルは PENDING を W1C し、ENABLE を 1 に戻します。
+
+通知は受信待ちのスレッドを起こすか、次の `recv` まで IRQ ごとに 1 件保持します。
+`msg.a0` が IRQ 番号、`token`・`badge`・`reply_cap`・`total` は 0 で、データはありません。
+ACK するまでは同じ IRQ の通知を追加しません。`irq_ack` は未割り当てなら
+`FND_E_NOT_FOUND`、所有者以外なら `FND_E_ACCESS`、通知をまだ受信していない場合
+（ACK 済みも含む）は `FND_E_BAD_ARG` を返し、IRQ の状態を変えません。
+`IRQ` capability がない場合は引数にかかわらず `FND_E_ACCESS` を返します。
 
 edge latch の性質上、ACK から W1C までの間に発生した要因は失われることがあります。そのためサービスは、**`irq_ack` の後にデバイスの状態を再確認しなければなりません**。例えば IRQ3 では、入力 FIFO が空になるまで読みます。
 

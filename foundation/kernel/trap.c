@@ -45,8 +45,8 @@ static cpt32_ctx_frame *halt_machine(uint32_t code) {
     return &halt_frame;
 }
 
-/* Drain PENDING & ENABLE (IRQC §5). Only the timer is enabled in phase 1;
- * any other line is masked and acknowledged. A tick that fires between the
+/* Drain PENDING & ENABLE (IRQC §5). Bound lines stay pending until irq_ack;
+ * any unbound line is masked and acknowledged. A tick that fires between the
  * timer ACK and the IRQC W1C keeps the timer source high without a new edge,
  * so the sticky timer pending bit is checked again before returning. */
 static void handle_irqs(void) {
@@ -67,6 +67,8 @@ static void handle_irqs(void) {
                 stop_code = tick_hook(fnd_ticks());
         } else if (line == FND_IRQ_IDC) {
             blk_irq();
+        } else if (ipc_irq_notify(line)) {
+            continue; /* the service owns the W1C */
         } else {
             FND_REG16(FND_IRQC_ENABLE) = FND_REG16(FND_IRQC_ENABLE) & ~(1u << line);
         }
@@ -187,8 +189,11 @@ static void handle_syscall(cpt32_ctx_frame *frame, uint32_t cause) {
     case FND_SYS_THREAD_CREATE:
         result = sys_thread_create(thread, a1, a2, a3);
         break;
-    case FND_SYS_IRQ_BIND: case FND_SYS_IRQ_ACK:
-        result = FND_E_UNSUPPORTED; /* defined by the ABI, later phases */
+    case FND_SYS_IRQ_BIND:
+        result = sys_irq_bind(proc, a1, a2);
+        break;
+    case FND_SYS_IRQ_ACK:
+        result = sys_irq_ack(proc, a1);
         break;
     default:
         result = FND_E_BAD_CALL;

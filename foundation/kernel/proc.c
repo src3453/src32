@@ -51,6 +51,7 @@ void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
         return;
     sched_kill_proc(proc);
     blk_proc_exited(proc);
+    ipc_irq_proc_exited(proc);
     proc->threads = 0;
     proc->exit_code = code;
     proc->fault_epc = fault_epc;

@@ -68,7 +68,11 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 - **IPC**（§8）: `port_create`、`chan_create`、`ipc_call`、`ipc_recv`、`ipc_reply`、`ipc_reply_recv`、`svc_register`、`svc_lookup`（badge の bit31 付き）、タイムアウト（§7.1）、最後のハンドルが閉じた CHANNEL の `CLIENT_GONE` 通知、相手がいなくなったときの `FND_E_PEER_GONE`。実装は `kernel/ipc.c` です。
 - **プロセス**（§9）: `proc_spawn`（イメージと WAL の一覧 `libs` を staging に複製してから検証、ハンドルを子の 1 番から dup、PROCESS ハンドルを返す）、起動ブロック（§9.3）と `proc_startup`、`wait`、`proc_kill`、`mem_grow`（ヒープは最後の RW ブロックの末尾を 8 byte 境界に切り上げた位置から）、`sys_info` の `parent`。親が PROCESS ハンドルを閉じた終了済みのプロセスは、プロセス表から消えます。
 - **同梱モジュール**（§11）: `boot/main.c` が FNDBOOT のモジュール表（console、disk、fs、init）を `fnd_proc_spawn_module` で起動します（argv = [名前]、cwd = `/`、役割なし）。
-- `thread_create`、`thread_exit`（最後のスレッドの終了でプロセスも終了）を実装しています。まだないもの：`irq_bind`、`irq_ack`（`FND_E_UNSUPPORTED`）。`blk_io` は disk サービス向けに実装済みです。
+- `thread_create`、`thread_exit`（最後のスレッドの終了でプロセスも終了）、`irq_bind`、`irq_ack` を実装しています。IRQ capability を持つプロセスは IRQ 0、3、5〜12 を PORT に割り当てられます。`FND_NOTIFY_IRQ` を受信し、原因デバイスを ACK してから `fnd_sys_irq_ack` でマスクを解除し、デバイス状態を再確認します（仕様 §10.2）。`blk_io` は disk サービス向けに実装済みです。
+
+IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v` です。
+実際の VSync からの通知・ACK、複数 IRQ の通知保持、受信待ちの起床、権限と所有、
+最後の PORT クローズ・プロセス終了時の解放を VM／slot、cached／pipeline で確認します。
 
 `fnd_proc_create_builtin()` は、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。WAX から作る方法は次の節を参照してください。このとき `[code_start, code_end)` が R/X、スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
 
@@ -125,7 +129,7 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 - **まだできないこと**：ワイルドカードとスクリプト（`.fsh`）は `FND_E_UNSUPPORTED` です。`cat`、`cp`、`rm`、`mv`、`mkdir`、`rmdir`、`ls`、`hex` は `/bin` にあります（`cp` の同一ファイル検出はパス文字列の比較だけです）。Ctrl+C はシェルの専用スレッドが `CON_BREAK_WAIT` で受け取り、実行中の外部プログラムを `proc_kill` で止めます（`$?` は `FND_E_KILLED`、STDERR に `^C`）。行編集中は保留中の `CON_READ_KEY` が `FND_E_INTERRUPTED` になり、入力中の行を捨てます。組み込みコマンドの中断とスクリプトの入れ子中断は、スクリプト（KAN-19）とともに未実装です。
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
-- **console**：`services/console` が PCG（既定はSCREEN_MODE 1、80×30、8×8。`mode`で切替可能）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。`irq_bind` がないので、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
+- **console**：`services/console` が PCG（既定はSCREEN_MODE 1、80×30、8×8。`mode`で切替可能）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。console は引き続きポーリングを使い、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
 - `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、スロット方式では実在するユーザースロットのうち動いているプロセスが占めていないものの合計です。12 MiB のスロット方式では、サービス・init・シェル・実行中のコマンドで全スロットを使うため、`free` の `0 KiB free` は正常です。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh
@@ -327,7 +331,7 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 - RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
 - 仮想記憶では、権限はページ単位です。Foundation のイメージは `--page-align` でコード（RX）とデータ（RW）を別ページに置くので W^X です（`.rodata` は RW データの中で、R 専用ではありません）。MMIO の付与はページ単位で、窓の検査は byte 単位に加えてページ範囲が届く先も検査しますが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
 - 仮想記憶でもプロセスは 7 個、スレッドは 8 個までです。スロットの数に縛られなくなったので、`FND_MAX_PROCS` を増やせます。
-- スレッドは全体で `FND_MAX_THREADS`（8）個です。`irq_bind` はまだありません。
+- スレッドは全体で `FND_MAX_THREADS`（8）個です。IRQ の割り当ては PORT の最後のクローズまたは所有プロセスの終了で解放されます。
 - `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 230 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。

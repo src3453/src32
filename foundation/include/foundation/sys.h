@@ -36,6 +36,8 @@
 #define fnd_sys_proc_startup(buf, cap)                                                \
     ((int32_t)CPT32_SYSCALL2(FND_SYS_PROC_STARTUP, (uint32_t)(uintptr_t)(buf), (cap)))
 #define fnd_sys_mem_grow(delta) ((int32_t)CPT32_SYSCALL1(FND_SYS_MEM_GROW, (delta)))
+#define fnd_sys_irq_bind(irq, port) ((int32_t)CPT32_SYSCALL2(FND_SYS_IRQ_BIND, (irq), (port)))
+#define fnd_sys_irq_ack(irq) ((int32_t)CPT32_SYSCALL1(FND_SYS_IRQ_ACK, (irq)))
 #define fnd_sys_svc_register(name, port)                                              \
     ((int32_t)CPT32_SYSCALL2(FND_SYS_SVC_REGISTER, (uint32_t)(uintptr_t)(name), (port)))
 #define fnd_sys_blk_io(blk) ((int32_t)CPT32_SYSCALL1(FND_SYS_BLK_IO, (uint32_t)(uintptr_t)(blk)))

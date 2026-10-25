@@ -67,6 +67,10 @@ void handle_close_all(struct fnd_proc *proc);
 uint32_t handle_free_count(const struct fnd_proc *proc);
 int32_t handle_dup_into(struct fnd_proc *from, uint32_t h, struct fnd_proc *to);
 void ipc_proc_exited(struct fnd_proc *proc); /* wakes WAIT on it */
+int32_t sys_irq_bind(struct fnd_proc *proc, uint32_t irq, uint32_t port);
+int32_t sys_irq_ack(struct fnd_proc *proc, uint32_t irq);
+int ipc_irq_notify(uint32_t irq); /* masks bound IRQ, leaves PENDING latched */
+void ipc_irq_proc_exited(struct fnd_proc *proc);
 /* Kernel channel kinds for PeC streams; the factory kind is stream - 1. */
 enum { KDEV_TRNG = 8u, KDEV_PRNG = 10u, KDEV_UART0 = 12u };
 void ipc_pec_poll(void);

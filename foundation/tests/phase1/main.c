@@ -16,7 +16,7 @@ static int32_t pid_a, pid_b, pid_fault, pid_probe;
 static uint32_t failures, a_mid, b_mid;
 static uint32_t a_last, b_last, last_ran, clock_mid;
 /* Copy of the probe mailbox, refreshed every tick: its exit zeroes the slot. */
-static uint32_t probe[PROBE_UNSUPPORTED + 1];
+static uint32_t probe[PROBE_IRQ_ACCESS + 1];
 
 static volatile uint32_t *box(uint32_t slot) {
     return (volatile uint32_t *)(uintptr_t)(fnd_slot_end(slot) - TASK_RAM);
@@ -30,7 +30,7 @@ static void check(int ok) {
 static uint32_t on_tick(uint32_t ticks) {
     struct fnd_proc *p = fnd_proc_get((uint32_t)pid_probe);
     if (p && p->state == FND_PROC_LIVE) {
-        for (unsigned i = 0; i <= PROBE_UNSUPPORTED; ++i)
+        for (unsigned i = 0; i <= PROBE_IRQ_ACCESS; ++i)
             probe[i] = box(SLOT_PROBE)[i];
     }
     if (ticks == CHECK_TICK) {
@@ -51,7 +51,7 @@ static uint32_t on_tick(uint32_t ticks) {
         check(probe[PROBE_BAD_POINTER] == (uint32_t)FND_E_ACCESS);
         check(probe[PROBE_BAD_NUMBER] == (uint32_t)FND_E_BAD_CALL);
         check(probe[PROBE_BAD_CONTEXT] == (uint32_t)FND_E_BAD_CALL);
-        check(probe[PROBE_UNSUPPORTED] == (uint32_t)FND_E_UNSUPPORTED);
+        check(probe[PROBE_IRQ_ACCESS] == (uint32_t)FND_E_ACCESS);
         check(probe[PROBE_TICK_HZ] == FND_TICK_HZ);
         check(probe[PROBE_TICK_HZ] == 100u);
         check(probe[PROBE_WRITTEN] == 1u);

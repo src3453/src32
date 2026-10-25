@@ -5,8 +5,8 @@
  * takes DEV_OPEN, which makes a console stream: a channel of the service's
  * port whose badge names a stream object. Reads and CON_READ_KEY wait in one
  * FIFO (§8.3) and are answered when keys arrive; CON_READ_KEY with
- * FND_CON_NOWAIT answers at once. There is no irq_bind yet, so the keyboard
- * is polled whenever ipc_recv times out. */
+ * FND_CON_NOWAIT answers at once. The keyboard still uses polling whenever
+ * ipc_recv times out. */
 #include <foundation/fnd.h>
 #include <foundation/sys.h>
 
