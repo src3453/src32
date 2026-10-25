@@ -30,7 +30,7 @@ STOP_TICKS = 600  # 6 seconds at 100 Hz
 # The kernel starts after the 120-frame POST hold and the HDD read (~frame
 # 125) and stops STOP_TICKS later (360 frames at 60 Hz). fs checks the volume
 # before init can load /bin/shell.wax, so the banner appears ~115 frames later.
-FRAMES = 560
+FRAMES = 600  # the stop lands around frame 550; the margin covers codegen differences between Clang versions
 TYPE_FRAME = 320   # the shell has printed its banner by then
 FAIL_FRAMES = 200  # stage1 halts right after the POST hold
 BANNER = ['Foundation OS (kernel ABI 1.0)', 'Foundation shell 1.0']

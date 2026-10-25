@@ -1,7 +1,7 @@
 """Foundation C TinyBASIC: actual shell -> WAX/WAL -> console/fs IPC.
 
 Uses the shell harness to build a fresh disk and inspect the real PCG output.
-Run with FND_MM=slot as well to check private storage in the fixed-slot backend.
+Run with FND_MM=nommu as well to check private storage in the fixed-slot backend.
 """
 from pathlib import Path
 import sys

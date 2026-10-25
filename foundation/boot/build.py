@@ -3,27 +3,29 @@
     python foundation/boot/build.py OUT [--clang PATH] [-O0|-O1|-O2] [--stop-ticks N]
                                         [--root DIR] [--disk-blocks N]
 
-The programs, by slot (doc/spec_Foundation.md §5.2):
+The programs (doc/spec_Foundation.md §5.2). Every one is a relocatable WAX v3
+(driver --pie, doc/spec_WAX_v3.md §3.1), which the kernel loads into any free
+RAM, so none of them has an address of its own:
 
-    slot 0  init       starts /bin/shell.wax (services/init)
-    slot 1  console    the console service (services/console)
-    slot 2  disk       the disk service, blk_io for fs (services/disk)
-    slot 3  fs         the fs service (fs/)
-    slot 6  pipe       the pipe service (services/pipe); VM backend only
-    slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
-    slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
+    init       starts /bin/shell.wax (services/init)
+    console    the console service (services/console)
+    disk       the disk service, blk_io for fs (services/disk)
+    fs         the fs service (fs/)
+    pipe       the pipe service (services/pipe)
+    shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
+    /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
 libfnd is the WAL "fnd" 1.3 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
 and the shell and the commands are WAX v3 that import it; fnd_proc_exec
 reads it from /lib when it starts them (§9.5). init and the services are
-FNDBOOT modules (§11), PROTECTED WAX v2 with libfnd linked in, since the
-kernel starts them before there is an fs.
+FNDBOOT modules (§11) with libfnd linked in, since the kernel starts them
+before there is an fs.
 
-The four modules (slots 0 to 3) go into FNDBOOT (§11); /bin and /lib are
+The four modules (init, console, disk, fs) go into FNDBOOT (§11); /bin and /lib are
 files on the boot disk, which fs serves as "/".
 
-Environment: FND_MM=slot builds the kernel for fixed slots only, which is
-what a CPU without Extension V runs; otherwise it uses virtual memory when
+Environment: FND_MM=nommu builds the kernel for physical memory only, which
+is what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
@@ -60,14 +62,6 @@ import wide_font  # noqa: E402
 import fs2  # noqa: E402
 import wax  # noqa: E402
 
-# (origin, stack top) of the user slots used here.
-SLOT0 = (0x00400000, 0x00480000)
-SLOT1 = (0x00480000, 0x00500000)
-SLOT2 = (0x00500000, 0x00580000)
-SLOT3 = (0x00580000, 0x00600000)
-SLOT4 = (0x00600000, 0x00800000)
-SLOT5 = (0x00800000, 0x00C00000)
-SLOT6 = (0x00C00000, 0x01000000)
 STACK = 0x4000
 FS_STACK = 0x8000
 FND_PRIO_SERVICE = 1
@@ -118,20 +112,20 @@ def driver(sources, output, args, *extra):
     return output
 
 
-def layout(slot, stack=STACK):
-    origin, stack_top = slot
-    return ["--origin", hex(origin), "--stack-top", hex(stack_top), "--user-stack-size", hex(stack)]
+def layout(stack=STACK, heap=0):
+    return ["--pie", "--user-stack-size", hex(stack), *(["--heap-hint", hex(heap)] if heap else [])]
 
 
-def static(sources, output, args, slot, *extra, stack=STACK):
-    """A PROTECTED WAX v2 with libfnd linked in."""
-    return driver([*sources, *LIBFND], output, args, "--protected", "--page-align", *layout(slot, stack), *extra)
+def static(sources, output, args, *extra, stack=STACK, heap=0):
+    """A WAX v3 with libfnd linked in (no imports)."""
+    return driver([*sources, *LIBFND], output, args, "--wax3", "--page-align", *layout(stack, heap), *extra)
 
 
-def program(sources, output, args, slot, image_id, fnd, *libs):
+def program(sources, output, args, image_id, fnd, *libs, heap=0):
     """A WAX v3 that imports the WAL fnd, and any other WALs in libs."""
     imports = [arg for lib in (fnd, *libs) for arg in ("--import-wal", lib)]
-    return driver(sources, output, args, "--wax3", "--page-align", "--image-id", image_id, *imports, *layout(slot))
+    return driver(sources, output, args, "--wax3", "--page-align", "--image-id", image_id, *imports,
+                  *layout(heap=heap))
 
 
 def embed(name, data):
@@ -215,10 +209,10 @@ def main(argv=None):
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
         kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
-    if os.environ.get("FND_MM") == "slot":
-        # Ignore Extension V and run on fixed slots even on a CPU that has it
+    if os.environ.get("FND_MM") in ("nommu", "slot"):
+        # Ignore Extension V and run on physical memory even on a CPU that has it
         # (doc/foundation_vm_plan.md); the tests use this to check both backends.
-        kernel_args += ["-D", "FND_MM_SLOT_ONLY"]
+        kernel_args += ["-D", "FND_MM_NOMMU_ONLY"]
     image_job = pool.submit(driver, [HERE / "main.c", *KERNEL], out / "foundation.wax", args,
                             "-D", "FOUNDATION_BOOT_EMBEDDED", *kernel_args)
     kernel_job = pool.submit(driver, [HERE / "main.c", *KERNEL], out / "kernel.bin", args, *kernel_args)
@@ -228,19 +222,19 @@ def main(argv=None):
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
              image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c",
                                       services / "console/con_wide.c"],
-                               out / "console.wax", args, SLOT1, "-I", str(services / "console"),
+                               out / "console.wax", args, "-I", str(services / "console"),
                                "-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
              image=pool.submit(static, [services / "disk/main.c", services / "disk/cache.c"],
-                               out / "disk.wax", args, SLOT2)),
+                               out / "disk.wax", args)),
         dict(name="fs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
-             image=pool.submit(static, [*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
+             image=pool.submit(static, [*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args,
                                f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
                                "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
         dict(name="pipe", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
-             image=pool.submit(static, [services / "pipe/main.c"], out / "pipe.wax", args, SLOT6)),
+             image=pool.submit(static, [services / "pipe/main.c"], out / "pipe.wax", args)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
-             image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
+             image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args)),
     ]
 
     fnd = fnd_job.result()
@@ -249,7 +243,7 @@ def main(argv=None):
     sgc_build = importlib.util.module_from_spec(sgc_spec)
     sgc_spec.loader.exec_module(sgc_build)
     sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization)
-    program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args, SLOT4,
+    program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args,
                                 "foundation.shell", fnd)]
     # The commands that import libsgc go last, so the others start while it builds.
     for name in sorted(COMMANDS, key=lambda name: name in SGC_COMMANDS):
@@ -258,7 +252,7 @@ def main(argv=None):
         if name == "sgubplay":
             sources.append(ROOT / "sdk/cpt32/src/sgub.c")
         program_jobs.append(pool.submit(program, sources,
-                                        root / "bin" / f"{name}.wax", args, SLOT5, f"foundation.{name}", fnd, *libs))
+                                        root / "bin" / f"{name}.wax", args, f"foundation.{name}", fnd, *libs))
     shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
     shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
     shutil.copyfile(rle_job.result(), root / "lib/rle.1.wal")

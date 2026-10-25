@@ -66,6 +66,6 @@ python -m unittest discover -s foundation/tests/sgub -v
 ```
 
 ホスト試験にはCコンパイラ（`HOST_CC`で指定可能）、Foundation実行試験には
-Clangと `src32_testbench` が必要です。同じ試験を `FND_MM=slot` でも実行します。
+Clangと `src32_testbench` が必要です。同じ試験を `FND_MM=nommu` でも実行します。
 試験はv1/v2/v3、実Furnaceのpool付き出力、完了・繰り返し・停止・再オープン、
 不正ファイルと未対応targetの事前拒否、callbackの出力エラーを確認します。

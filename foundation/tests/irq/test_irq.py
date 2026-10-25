@@ -32,7 +32,7 @@ class IrqTests(unittest.TestCase):
                                '-I', str(foundation / 'include'), '-I', str(foundation / 'kernel'),
                                '--origin', '0x10000', '--stack-top', '0x100000', '-O1', '-o', str(image)]
                     if slot:
-                        command += ['-D', 'FND_MM_SLOT_ONLY']
+                        command += ['-D', 'FND_MM_NOMMU_ONLY']
                     result = subprocess.run(command, capture_output=True, text=True, timeout=180)
                     self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                     for cpu in ('cached', 'pipeline'):

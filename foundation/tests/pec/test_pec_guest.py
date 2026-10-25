@@ -1,6 +1,6 @@
 """Real shell -> fs -> transferred kernel CHANNEL -> PeC streams, in VM and slots.
 
-Run python -m unittest discover -s foundation/tests/pec -v, also FND_MM=slot.
+Run python -m unittest discover -s foundation/tests/pec -v, also FND_MM=nommu.
 Uses the shell harness's boot builder and workspace-local TEMP on Windows.
 """
 import os

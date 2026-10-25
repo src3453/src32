@@ -114,7 +114,7 @@ Foundation の `fnd_status`（負値）を `pkcl_errno` で errno に直しま�
 | `isatty` | `ST_STAT` の type = `CONSOLE` | 実装済み |
 | `fstat` | `ST_STAT` | 実装済み |
 | `pread`、`pwrite`、`readv`、`writev` | `lseek` ＋ read/write で代用できるが原子的ではない | 予定 |
-| `pipe`、`pipe2` | ユーザー空間の `pipe` サービス（API §9.5）。`read` は 1 回に 4096 bytes まで返す。端は `S_IFIFO`。VM のみ | 実装済み |
+| `pipe`、`pipe2` | ユーザー空間の `pipe` サービス（API §9.5）。`read` は 1 回に 4096 bytes まで返す。端は `S_IFIFO` | 実装済み |
 | `mkfifo` | 名前付き pipe は持たない | `ENOSYS` |
 | `select`、`poll` | コンソールは `CON_READ_KEY(NOWAIT)`、ファイルは常に ready、pipe はサービスの op | 予定 |
 | `mmap`、`munmap` | 無い。`MAP_PRIVATE` ファイル読み込みだけは read で模倣できるが、BusyBox は不要 | 不可 |
@@ -168,7 +168,7 @@ Foundation の `fnd_status`（負値）を `pkcl_errno` で errno に直しま�
 | `getuid` 系 | 常に 0 | 実装済み |
 | `setuid` 系、`chroot` | | 不可（`EPERM`／`ENOSYS`） |
 | `getenv`、`setenv` | libc。環境は起動ブロック version 2 から `environ` に作り、`execve` は `envp` を渡す。`fork` の子はメモリごと引き継ぐ | 実装済み |
-| `pipe`、`pipe2` | pipe サービス（API §9.5）。`fork` で端を共有できる | 実装済み（VM） |
+| `pipe`、`pipe2` | pipe サービス（API §9.5）。`fork`（VM）で端を共有できる | 実装済み |
 
 ### 6.5 シグナル
 

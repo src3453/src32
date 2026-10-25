@@ -468,7 +468,7 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `ST_READ` はデータが届くまで待ち、届いた分（最大 `a0`）を返します。書き端がすべて閉じていてデータがなければ、長さ 0（EOF）を返します。
 - `ST_WRITE`（4096 bytes まで）は、全体が入る空きができるまで待ち、まとめて書きます（原子的）。読み端がすべて閉じていれば `FND_E_PEER_GONE` です。待っている要求は端が閉じたときに答えます。
 - 容量は 1 つの pipe につき 4096 bytes、同時に待てる要求は 32 件、pipe は 32 本です。超えると `FND_E_LIMIT` です。
-- サービスは VM バックエンドでだけ起動します（スロット 6 の範囲に置くため。[Foundation §11](spec_Foundation.md)）。スロットでは `svc_lookup("pipe")` が失敗します。
+- サービスはどのバックエンドでも起動します。ただし `fork` で端を共有できるのは VM だけです（`proc_fork` が VM 専用のため）。
 
 ## 10. 構造体
 

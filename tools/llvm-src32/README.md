@@ -136,6 +136,7 @@ python tools/llvm-src32/driver.py lib.c --wal --image-id my.lib --abi-version 1.
 python tools/llvm-src32/driver.py app.c --wax3 --import-wal lib.wal --origin 0x800000 --stack-top 0xC00000 -o app.wax
 ```
 
+- `--pie` は WAX v3 を[再配置可能な実行形式](../../doc/spec_WAX_v3.md)（§3.1、nommu Linux の FLAT 形式に相当）にします。`--origin`／`--stack-top` は指定しません（内部の固定アドレス `0x100000` にリンクし、スタックはその直下）。ドライバーは `0x01000000` ずらした 2 回目のリンクと突き合わせて、アドレスを持つデータ語と `LDIH`／`LDIL` の組を見つけ、relocation table に書きます。突き合わせで説明のつかない差やアドレスの半端な使い方（例：アドレスの加算や切り捨て）はエラーです。Foundation のカーネルはこの画像を空いている場所に読み込み、再配置して起動します。`--heap-hint BYTES` は、プログラムが求めるヒープの大きさです（既定は OS の 128 KiB）。
 - `--exports FILE` は WAL が公開する記号の一覧です。1 行に 1 つ、関数は名前と [§6](../../doc/spec_WAX_v3.md) の signature（例：`fnd_write fn(u32,ptr,u32,ptr)->i32`）、オブジェクトは `名前 object` と書きます。`#` 以降と空行は無視します。一覧にない関数は外から見えません。
 - signature の型は C の型と対応していなければなりません。`u32`/`i32` は 32-bit 整数、`u64`/`i64` は 64-bit 整数、`ptr` はポインタ、戻り値の `void` です（符号は LLVM IR に残らないので、`u32` と `i32` の区別は一覧の記述に従います）。`char`、`short`、`bool`、`float`、`double` の引数や戻り値、構造体の値渡し、可変長引数は境界を越えられないのでエラーです（浮動小数点はビット列を `u32`／`u64` で渡します）。`fnptr`（関数記述子）はまだ対応していません。
 - `--import-wal WAL`（複数可）を指定すると、定義のない関数とグローバル変数のうち、その WAL が export しているものを import にします。使わなかった WAL は依存表に入りません。依存の `min_minor` は指定した WAL の `abi_minor` です。C 側は普通に `extern` で宣言して呼びます。

@@ -42,7 +42,7 @@ int main(void) {
     server = spawn(4, BENCH_SERVER_PRIORITY, bench_server);
     client = spawn(5, FND_PRIO_APP, bench_client);
     if (!server || !client) return 2;
-#ifdef FND_MM_SLOT_ONLY
+#ifdef FND_MM_NOMMU_ONLY
     if (mm_vm) return 4;
 #else
     if (!mm_vm) return 4; /* refuse to mislabel a CPU without Extension V */

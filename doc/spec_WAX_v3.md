@@ -1,6 +1,6 @@
 # WAX/WAL v3 — protected executables and library symbols
 
-Revision 3.0, 2026-10-21. Status: **specified; loaded by the Foundation kernel**. This document
+Revision 3.1, 2026-10-25. Status: **specified; loaded by the Foundation kernel**. This document
 defines the v3 wire format and the baseline OS loader contract. MUST, MUST NOT
 and MAY are normative. [Japanese translation](ja/spec_WAX_v3.md).
 
@@ -34,7 +34,7 @@ conversion.
 
 The baseline supports eager binding, function and object exports, private
 per-process WAL instances and an acyclic dependency graph. Lazy binding,
-weak/global/interposed symbols, TLS, relocations, automatic constructors,
+weak/global/interposed symbols, TLS, symbol relocations, automatic constructors,
 finalizers, runtime load/unload and cross-process sharing are not defined.
 Libraries needing setup/teardown expose ordinary explicit functions.
 
@@ -54,7 +54,7 @@ unless explicitly called image-relative. Reserved fields MUST be zero.
 | 4 | 2 | version = 3 |
 | 6 | 2 | type: 1 WAX, 2 WAL |
 | 8 | 2 | arch = 1 (SRC32) |
-| 10 | 2 | flags: bit 0 DEBUG_PRESENT, bit 1 PROTECTED; others zero |
+| 10 | 2 | flags: bit 0 DEBUG_PRESENT, bit 1 PROTECTED, bit 2 RELOCATABLE (§3.1); others zero |
 | 12 | 4 | header_size = 160 |
 | 16 | 4 | file_size = exact file length |
 | 20 | 4 | call_abi = 1 (§6) |
@@ -84,9 +84,12 @@ unless explicitly called image-relative. Reserved fields MUST be zero.
 | 116 | 4 | os_min_minor |
 | 120 | 4 | debug_offset: zero when absent |
 | 124 | 4 | debug_size: zero when absent |
-| 128 | 32 | reserved |
+| 128 | 4 | reloc_table_offset: file-relative; nonzero iff RELOCATABLE |
+| 132 | 4 | reloc_count: nonzero iff RELOCATABLE |
+| 136 | 4 | heap_hint: bytes of heap the program asks for, multiple of 8; zero when absent; only with RELOCATABLE |
+| 140 | 20 | reserved |
 
-Header, tables, string table, nonempty block payloads and optional debug are
+Header, tables (including the relocation table), string table, nonempty block payloads and optional debug are
 pairwise disjoint file ranges wholly inside `file_size`. All start offsets
 are multiples of 4. They may appear in any order after the header. Padding is
 zero. Debug is opaque, NOLOAD; DEBUG_PRESENT is set iff debug_size > 0.
@@ -141,6 +144,39 @@ WAX entry MUST be 4-byte aligned and its entire first 4-byte instruction must
 lie in initialized RX bytes. Stack top and size MUST be nonzero multiples of
 8, without underflow, and the stack MUST NOT overlap any image reservation.
 The OS zeros the entire stack before use. WAL stack and entry fields are zero.
+
+### 3.1 Relocatable executables
+
+A WAX with flag RELOCATABLE can be loaded at any address, as in a nommu
+system's FLAT format. `base_addr`, block addresses, the entry and the stack are
+the **link-time** layout; the loader may place the whole image at
+`base_addr + delta` for any `delta` that is a multiple of the maximum block
+alignment and keeps every range inside RAM, and then applies the relocation
+table. Only WAX can be relocatable.
+
+The relocation table is `reloc_count` u32 entries at `reloc_table_offset`,
+sorted by strictly increasing address. Each entry is a link-time address in
+the high 30 bits (4-byte aligned) and a kind in the low 2 bits:
+
+| Kind | Meaning |
+|---:|---|
+| 0 | a 32-bit big-endian data word in an R or RW block; add `delta` |
+| 1 | an `LDIH` rd, hi followed by `LDIL` rd, lo (same rd) in an RX block; the 32-bit value `hi:lo` is a link-time address; add `delta` and rewrite both immediates |
+
+Other kinds are reserved and MUST be rejected. Every entry MUST lie wholly in
+the initialized bytes of one block of the matching permission. The entry
+point, image-relative offsets, and the import slots are relative to the
+placed origin and need no entry. Relocation happens before the process runs
+and before the stack is cleared; it does not apply to WALs (which are
+position independent by construction).
+
+The stack of a relocatable WAX lies immediately below the lowest block
+(`user_stack_top == base_addr`), so the whole reservation stays one
+contiguous range `[base_addr - user_stack_size, highest block end)` that
+moves as a unit. The loader sets the initial `R30` to the placed origin
+(`base_addr + delta`), which lets position-independent start code find the
+image. A loader MAY give the process extra zeroed memory above the highest
+block for its heap (see `heap_hint`); that memory is not part of the image.
 
 ## 4. Dependencies and symbol tables
 

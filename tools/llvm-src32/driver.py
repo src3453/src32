@@ -15,6 +15,8 @@ import tempfile
 ROOT = Path(__file__).resolve().parent
 RUNTIME_NAMES = ("memcpy", "memmove", "memset", "memcmp", "strlen")
 CXX_SUFFIXES = (".cpp", ".cc", ".cxx")
+PIE_BASE = 0x00100000  # link address of a relocatable executable; its stack lies just below
+PIE_PROBE = 0x01000000  # how far the second link moves it to find the addresses
 # OS ABIs a WAX v3 can declare (doc/spec_WAX_v3.md §1): syscall ABI version
 # and the SYSCALL number the startup code exits with (spec_Foundation.md §12).
 V3_OSES = {"foundation": {"version": (1, 0), "exit": 0x11}}
@@ -79,6 +81,11 @@ def parser() -> argparse.ArgumentParser:
                       help="emit a protected WAX v3 executable at --origin (.wax)")
     kind.add_argument("--wal", action="store_true",
                       help="emit a position-independent WAX v3 library (.wal) exporting --exports")
+    v3.add_argument("--pie", action="store_true",
+                    help="with --wax3, emit a relocatable executable: linked at %#x with the stack just below, "
+                         "and a relocation table so the OS can load it anywhere (no-MMU loading)" % PIE_BASE)
+    v3.add_argument("--heap-hint", type=address, default=0,
+                    help="with --pie, the heap in bytes the program asks the OS to reserve (default: the OS's)")
     v3.add_argument("--image-id", help="image or library ID (default: the output file name)")
     v3.add_argument("--abi-version", default="1.0", metavar="MAJOR.MINOR",
                     help="library ABI version, or the executable's contract version (default 1.0)")
@@ -262,6 +269,16 @@ def run(args) -> Path:
             raise DriverError(f"unsupported input extension: {source} (expected .c, .cpp, .cc, .cxx, .ll, or .bc)")
         if not source.is_file():
             raise DriverError(f"input file not found: {source}")
+    if args.pie and not args.wax3:
+        raise DriverError("--pie applies to --wax3 only")
+    if args.pie and args.origin:
+        raise DriverError("--pie links at a fixed internal address; drop --origin")
+    if args.heap_hint and not args.pie:
+        raise DriverError("--heap-hint needs --pie")
+    if args.heap_hint % 8:
+        raise DriverError("--heap-hint must be a multiple of 8")
+    if args.pie:
+        args.origin = args.stack_top = PIE_BASE
     if args.origin % 4:
         raise DriverError("--origin must be 4-byte aligned")
     if not args.stack_top or args.stack_top % 8:
@@ -471,11 +488,14 @@ def run(args) -> Path:
                     raise DriverError(f"--import-wal {path}: different call ABI or OS ABI")
                 libraries.append(library)
             imports = v3_module.resolve_imports(linked, layout, libraries, wax3)
-            assembly = compile_module(linked, origin=0 if args.wal else args.origin, stack_top=args.stack_top,
+            def generate(origin, stack_top, info):
+                return compile_module(linked, origin=origin, stack_top=stack_top,
                                       entry=None if args.wal else args.entry, protected=True,
-                                      info=layout_info, pic=args.wal, imports=imports.kinds,
+                                      info=info, pic=args.wal, imports=imports.kinds,
                                       exit_syscall=V3_OSES[args.os]["exit"], page_align=args.page_align,
                                       prunable=prunable)
+
+            assembly = generate(0 if args.wal else args.origin, args.stack_top, layout_info)
         else:
             assembly = compile_module(linked, origin=args.origin, stack_top=args.stack_top, entry=args.entry,
                                       protected=args.protected, info=layout_info, data_origin=args.data_origin,
@@ -494,6 +514,17 @@ def run(args) -> Path:
                 options = dict(kind="wal", exports=v3_module.exports_table(specs, linked, layout, layout_info, wax3)) \
                     if args.wal else dict(kind="wax", origin=args.origin, stack_top=args.stack_top,
                                           stack_size=args.user_stack_size)
+                if args.pie:
+                    # Link again PIE_PROBE higher: what moved is an address (spec_WAX_v3.md §3.1).
+                    moved_assembly = generate(args.origin + PIE_PROBE, args.stack_top + PIE_PROBE, {})
+                    moved_assembler = assembler_module.Assembler(strip=True, sparse=True)
+                    moved_assembler.assemble(moved_assembly, source="<llvm-src32>", base_dir=str(ROOT))
+                    moved_blocks = protected_blocks(moved_assembler.blocks, layout_info["data_start"] + PIE_PROBE)
+                    try:
+                        options["relocs"] = v3_module.relocations(wax3, blocks, moved_blocks, PIE_PROBE)
+                    except v3_module.RelocationError as exc:
+                        raise DriverError(f"--pie: {exc}") from exc
+                    options["heap_hint"] = args.heap_hint
                 binary = v3_module.pack(wax3, image_id=image_id, abi=args.abi, blocks=blocks, info=layout_info,
                                         imports=imports, os_id=args.os, os_version=V3_OSES[args.os]["version"],
                                         **options)

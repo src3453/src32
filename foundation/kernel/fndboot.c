@@ -3,8 +3,6 @@
  * the module table before anything is spawned and starts the modules. */
 #include <foundation/kernel.h>
 
-#include "mm.h"
-
 #define FNDBOOT_MAGIC 0x464E4442u /* "FNDB" */
 #define FNDBOOT_HEADER 64u
 #define FNDBOOT_ENTRY 48u
@@ -55,9 +53,6 @@ int32_t fnd_boot_spawn(const void *fndboot, uint32_t index, const struct fnd_ima
     const uint8_t *boot = fndboot;
     const uint8_t *entry = entry_at(boot, index);
     const char *name = (const char *)entry + 32;
-    /* The pipe service lives in the slot 6 range, which only the VM backend can spare (§11). */
-    if (!mm_vm && name[0] == 'p' && name[1] == 'i' && name[2] == 'p' && name[3] == 'e' && !name[4])
-        return 0;
     const struct fnd_grant *grants = word(entry + 20) ? (const void *)(boot + word(entry + 16)) : 0;
     return fnd_proc_spawn_module(name, word(entry + 8), word(entry + 12), boot + word(entry),
                                  word(entry + 4), libs, lib_count, grants, word(entry + 20));

@@ -85,7 +85,7 @@ int main(void) {
     unpriv = spawn(4, irq_unprivileged);
     keeper = spawn(6, irq_keeper);
     if (!owner || !unpriv || !keeper) return 2;
-#ifdef FND_MM_SLOT_ONLY
+#ifdef FND_MM_NOMMU_ONLY
     if (mm_vm) return 3;
 #else
     if (!mm_vm) return 4; /* this test's default run explicitly checks VM */

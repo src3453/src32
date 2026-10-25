@@ -44,7 +44,7 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 
 カーソル移動・保存／復元、画面／行の消去、16色と高輝度化・反転、カーソル表示切替に対応します。色や解析状態は画面全体で共有されるため、終了前に `\033[0m`、カーソルを隠した場合は `\033[?25h` を送ってください。256色・RGB色、下線・点滅、スクロール領域、代替画面、端末応答は未対応です。詳細は [API §8.1.1](../doc/spec_Foundation_API.md#811-ansi-出力サブセット) を参照してください。
 
-検証: `python -m unittest discover -s foundation/tests/console -v`。ホスト C コンパイラと、ゲスト検証には Clang・llvmlite・`src32_testbench` が必要です。`FND_MM=slot` でも実行します。
+検証: `python -m unittest discover -s foundation/tests/console -v`。ホスト C コンパイラと、ゲスト検証には Clang・llvmlite・`src32_testbench` が必要です。`FND_MM=nommu` でも実行します。
 
 ## C版 TinyBASIC
 
@@ -59,7 +59,7 @@ fnd_con_write("\033[5;10Hposition\033[K"); /* 5行10桁、行末まで消去 */
 
 - **トラップ**（§3.4）: IRQ、SYSCALL、U モードの例外を `kernel_trap` で振り分けます。カーネルは割り込み禁止のまま、カーネルスタック1本で動きます。U モードで fault が起きたら、そのプロセスを終了させます。終了コードは CAUSE を i32 として扱った値で、fault の EPC も記録します。idle で例外が起きた場合、およびカーネル内で例外が起きた場合は `kernel_panic` になります。`kernel_panic` は PCG の文字面へ直接、原因・EPC・tick・実行中のプロセス・最後に保存したレジスタを描いてから UART へ出力し、停止します（[仕様 §3.4](../doc/spec_Foundation.md)）。
 - **スケジューラ**（§10.1）: 優先度は DRIVER / SERVICE / APP / IDLE の4段で、同じ優先度の中は FIFO のラウンドロビンです。tick は PeC timer ch0 の 100 Hz（IRQ4、1 tick = 10 ms）、タイムスライス（クオンタム）は 1 tick（10 ms）です。より高い優先度のスレッドが起きたら、カーネルからユーザーへ戻る時点で切り替えます。idle は S モードのスレッドで、`HALT` を繰り返します。
-- **プロセスと保護**（§5）: 7つのユーザースロットを使います。別プロセスへ切り替えるときは、§5.3 の順（全 FLAGS=0 → START/END → FLAGS）で8領域を書き換えます。終了時は全スレッドを DEAD にし、付与した RAM をゼロにします。ユーザーポインタは §5.4 の手順で検証します。
+- **プロセスと保護**（§5）: プロセスごとに連続したページの範囲（アリーナ）を割り当てます（V のない CPU。V のある CPU ではページ表）。別プロセスへ切り替えるときは、§5.3 の順（全 FLAGS=0 → START/END → FLAGS）で8領域を書き換えます。終了時は全スレッドを DEAD にし、付与した RAM をゼロにします。ユーザーポインタは §5.4 の手順で検証します。
 - **システムコール**（§7, §9）: `sys_info`（sel 0〜3。sel 3 は Main RAM・VRAM・PCMRAM の容量）、`yield`、`sleep`（`FND_FOREVER` を含む）、`thread_exit`、`proc_exit`、`time_get`、`debug_write` を実装しています。ABI で定義済みでも未実装のものは `FND_E_UNSUPPORTED`、未定義の番号と context byte が 0 でない呼び出しは `FND_E_BAD_CALL` を返します。フェーズ2の部分は次の節です。
 
 ## フェーズ2: ハンドル、IPC、プロセスの起動
@@ -74,7 +74,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 実際の VSync からの通知・ACK、複数 IRQ の通知保持、受信待ちの起床、権限と所有、
 最後の PORT クローズ・プロセス終了時の解放を VM／slot、cached／pipeline で確認します。
 
-`fnd_proc_create_builtin()` は、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。WAX から作る方法は次の節を参照してください。このとき `[code_start, code_end)` が R/X、スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
+`fnd_proc_create_builtin()` は、カーネルイメージにリンクしたユーザーコードからプロセスを作ります。WAX から作る方法は次の節を参照してください。このとき `[code_start, code_end)` が R/X、旧スロット上端の `ram_size` byte が R/W（スタックとデータ）になります。そのためユーザーコードでは、グローバル変数・文字列リテラル・範囲外の関数呼び出しを使えません（`examples/kernel-trap-c` と同じ制約）。システムコールは `<foundation/sys.h>` のマクロで呼ぶので、インライン展開されます。
 
 | ファイル | 内容 |
 |---|---|
@@ -83,7 +83,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 | `include/foundation/kernel.h` | カーネルをリンクするイメージ（起動コード・デモ・テスト）向けの S モード API |
 | `kernel/sched.c` | スレッド、優先度キュー、tick、sleep、idle |
 | `kernel/proc.c` | プロセス、起動（`proc_spawn`、WAX の読み込み）、`mem_grow`、`sys_info`、終了処理 |
-| `kernel/mm.c`, `mm.h` | メモリ管理層。スロット（保護領域の切り替え、ポインタ検証）と仮想記憶（Extension V：フレーム表、ページ表、ユーザーメモリの複写）の 2 つのバックエンド（[仕様 §5.5](../doc/spec_Foundation.md)） |
+| `kernel/mm.c`, `mm.h` | メモリ管理層。nommu（ページアロケータ、プロセスごとのアリーナ、保護領域の切り替え、ポインタ検証）と仮想記憶（Extension V：フレーム表、ページ表、ユーザーメモリの複写）の 2 つのバックエンド（[仕様 §5.5](../doc/spec_Foundation.md)） |
 | `kernel/trap.c` | `kernel_trap` / `kernel_panic`、IRQ、システムコール |
 | `kernel/wax.c`, `wax.h` | WAX ローダの本体（検証、依存解決、WAL の配置、領域の計画、束縛） |
 | `kernel/ipc.c`, `include/foundation/ipc.h` | ハンドル、IPC、サービス名、`wait`、`proc_kill`（§6〜§9） |
@@ -109,9 +109,9 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 
 ## WAX ローダ
 
-`fnd_proc_spawn_wax(name, priority, image, size, libs, lib_count, grants, grant_count)` は、カーネルメモリ上の WAX を、その `base_addr` を含むユーザースロットに読み込んで起動します（[仕様 §9.2・§9.5](../doc/spec_Foundation.md)）。
+`fnd_proc_spawn_wax(name, priority, image, size, libs, lib_count, grants, grant_count)` は、カーネルメモリ上の WAX を、アリーナに読み込んで起動します（固定アドレスの画像は `base_addr` を含む範囲を、再配置可能な画像は空きページを取り、再配置して読み込みます）（[仕様 §9.2・§9.5](../doc/spec_Foundation.md)）。
 
-- 形式は PROTECTED の [WAX v2](../doc/spec_WAX.md) と [WAX/WAL v3](../doc/spec_WAX_v3.md) です。v3 では、依存する WAL を `libs` から選び（同じ ID と major の中で最大の minor）、スロット内に first fit で置き、import スロットに記述子（アドレスと origin）を書きます。
+- 形式は PROTECTED の [WAX v2](../doc/spec_WAX.md) と [WAX/WAL v3](../doc/spec_WAX_v3.md) です。v3 では、依存する WAL を `libs` から選び（同じ ID と major の中で最大の minor）、アリーナ内に first fit で置き、import スロットに記述子（アドレスと origin）を書きます。
 - 保護領域は region 0 がスタック、その後が全画像のブロックをアドレス順に並べたものです。隣接していて権限が同じブロックだけをまとめ、8 を超えると `FND_E_REGION_LIMIT` です。
 - `grants` は MMIO の付与（§9.2 の `grants`、§10.3）で、画像の後の region になります（§5.3 の手順 4）。§10.3 の窓に収まらないものは `FND_E_ACCESS`、R（1）と RW（3）以外の perm は `FND_E_BAD_ARG` です。VRAM と PCMRAM は 1 プロセスにしか付与できず、動いている別のプロセスが持っていれば `FND_E_BUSY` です（§10.3 は誤りのコードを定めていないので、カーネルのコードから選んだ）。付与した範囲は §5.4 のポインタ検証の対象外で、終了時にゼロにもしません。
 - 起動は原子的です。検証、依存解決、配置、領域とシンボルの確認がすべて通るまで、メモリにもプロセス表にも書きません。
@@ -122,7 +122,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 
 ## シェルと起動の構成
 
-起動すると、カーネルが console（スロット 1）、disk（スロット 2）、fs（スロット 3）、init（スロット 0）を起動し、init が `/bin/shell.wax`（スロット 4）を起動します。シェルは [シェル仕様](../doc/spec_Foundation_shell.md) 0.2 のディスパッチャで、`cd`、`set`、`exit`、`help` 以外のコマンドは `PATH`（既定 `/bin`）から `<name>.wax` を探し、`fnd_proc_exec` でスロット 5 に起動して終了を待ちます。
+起動すると、カーネルが console、disk、fs、init を起動し、init が `/bin/shell.wax` を起動します（どれも再配置可能な WAX で、空いているアリーナに置かれます）。シェルは [シェル仕様](../doc/spec_Foundation_shell.md) 0.2 のディスパッチャで、`cd`、`set`、`exit`、`help` 以外のコマンドは `PATH`（既定 `/bin`）から `<name>.wax` を探し、`fnd_proc_exec` で起動して終了を待ちます。
 
 - **libfnd の共有**：シェルと `/bin` のコマンドは、libfnd を WAL「fnd」1.2（`/lib/fnd.1.wal`）として import する WAX v3 です。コマンドは 1 つ約 9 KiB です（静的リンクでは約 38 KiB でした）。init と各サービスは、fs より先にカーネルが起動するので、libfnd を静的にリンクした PROTECTED WAX v2 です。
 - **できること**：字句と構文（§3、§4）、変数（§5.1）、外部コマンドの解決と起動（§7。パス指定、`PATH`、大文字小文字を区別しない名前）、リダイレクトの解析と `2>&1`、行編集（§9.2）、エラーメッセージ（§11.1）、fault で終わったプロセスの報告。プロンプトは cwd と `> ` です。
@@ -130,7 +130,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 - **ファイル**：`/bin` と `/lib` はブートディスク（FS2）上のファイルで、fs サービスが `/` として見せます（次の節）。`boot/build.py` が `OUT/root` に書き出し、それをディスクイメージに入れます。
 - **起動イメージ**：`boot/main.c` は FNDBOOT（§11）のモジュール表（console、disk、fs、init の順）を spawn します。console の MMIO の付与と各モジュールの `caps` はモジュール表に書いてあります。ディスク起動では stage1 が読み込んだ FNDBOOT を使い、`foundation.wax` では `boot/build.py` がカーネルを含まない FNDBOOT を `0x00200000` の block として足します（stage1 が置く場所と同じ。次の節）。シェルの再起動は init が行うので、モジュールを起動した後は staging 領域を `proc_spawn` が使います。
 - **console**：`services/console` が PCG（既定はSCREEN_MODE 1、80×30、8×8。`mode`で切替可能）と PeC のキーボードを MMIO で扱います（API 仕様 §8）。console は引き続きポーリングを使い、キーは IPC の合間と 1 tick（10 ms）ごとに FIFO から読み、256 キーまで先行入力をためます。`CON_READ_KEY` の `NOWAIT`（`fnd_con_pollkey`、`top` が使う）は待たずに答えます。`CON_SET_COLOR` は ANSI 順の16色に対応します。
-- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、スロット方式では実在するユーザースロットのうち動いているプロセスが占めていないものの合計です。12 MiB のスロット方式では、サービス・init・シェル・実行中のコマンドで全スロットを使うため、`free` の `0 KiB free` は正常です。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
+- `uname`、`free`、`ps`、`top` と起動時の表示は `sys_info` を使います。`ram_bytes` は BMC が報告する Main RAM の容量（§5.1、報告がなければ 16 MiB）、`free_bytes` は仮想記憶では未使用の物理フレームの合計、nommu ではページプールの空きページの合計です（アリーナの末尾の余り＝ヒープの予備は、プロセスが持っているので含みません）。`free` は sel 3 で VRAM と PCMRAM の容量も表示、`boot_drive` はディスク起動では stage1 から渡された drive、`foundation.wax` では 0 です。
 
 ```sh
 python foundation/run.py
@@ -221,7 +221,7 @@ cmake --build target/foundation
 
 IPCの性能測定は [tests/perf/README.md](tests/perf/README.md) を参照してください。VM/slot、メッセージサイズ、整列、`reply_recv` を実際のUモード間通信で比較し、[基準値と改善候補](../doc/foundation_ipc_performance.md) を記録しています。
 
-カーネルは256 bytes以上の重ならないMain RAMコピーに同期DMA（専用ch1）を使用します。IPCのペイロードとディスク用bounce bufferのコピーが対象に含まれ、短いIPCやconsole内の文字描画はCPU処理です。[同期DMAの契約](../doc/spec_Foundation.md#541-カーネル内の同期dmaコピー)。境界・チャネル共存の確認は `python -m unittest discover -s foundation/tests/perf -p test_copy.py -v`、console/fsの大容量I/O確認は `python -m unittest foundation.tests.console.test_console_guest.ConsoleGuestTests.test_bulk_console_and_disk_io -v`（`FND_MM=slot`でも実行）です。
+カーネルは256 bytes以上の重ならないMain RAMコピーに同期DMA（専用ch1）を使用します。IPCのペイロードとディスク用bounce bufferのコピーが対象に含まれ、短いIPCやconsole内の文字描画はCPU処理です。[同期DMAの契約](../doc/spec_Foundation.md#541-カーネル内の同期dmaコピー)。境界・チャネル共存の確認は `python -m unittest discover -s foundation/tests/perf -p test_copy.py -v`、console/fsの大容量I/O確認は `python -m unittest foundation.tests.console.test_console_guest.ConsoleGuestTests.test_bulk_console_and_disk_io -v`（`FND_MM=nommu`でも実行）です。
 
 `tests/phase1` は、[実装案 §8](../doc/foundation_os_plan.md) のフェーズ1の条件を確認します。tick フックの中で検査し、成功すると R1=42、失敗すると `0x100 + 失敗数` で停止します。
 
@@ -251,10 +251,10 @@ python -m unittest discover -s foundation/tests/wax -v
 
 `tests/wax/main.c` は testbench 上の実行テストです。ローダの境界条件を細かく作るため、`tests/wax/build.py` が `*.asm` を `tools/asm` でアセンブルして v3 の WAX/WAL にし、`v2app.c` を `--protected` でビルドして、全部を `images.h` に書き出します。C から v3 を作る場合のテストは次の節です。
 
-- `app`/`app2`（スロット5と6）：`test.math` と `test.base` を記述子経由で呼びます。モジュール間呼び出しでの R30 の保存と復元、コールバック、64-bit 引数の順序、2 つのスロットに置いた繰り返し import、オブジェクトの import、SYSCALL 後のレジスタを確認し、成功すると 42 で終了します。WAL はプロセスごとに別の基底に置かれ、呼び出し回数のカウンタも別々です。
+- `app`/`app2`（固定アドレス 5 と 6 のスロット相当）：`test.math` と `test.base` を記述子経由で呼びます。モジュール間呼び出しでの R30 の保存と復元、コールバック、64-bit 引数の順序、2 つのスロットに置いた繰り返し import、オブジェクトの import、SYSCALL 後のレジスタを確認し、成功すると 42 で終了します。WAL はプロセスごとに別の基底に置かれ、呼び出し回数のカウンタも別々です。
 - `poke_write`/`poke_exec`：RX への書き込みと RW の実行が、それぞれ `0x80050002` と `0x80050004` で fault になること。
 - `v2app`：C で書いた PROTECTED WAX v2。
-- 失敗する起動（依存がない、minor が古い、PROTECTED でない、壊れた画像、不正な優先度）が何も変えないこと。終了後に領域がゼロになり、同じスロットへ 2 回再起動できること。
+- 失敗する起動（依存がない、minor が古い、PROTECTED でない、壊れた画像、不正な優先度）が何も変えないこと。終了後に領域がゼロになり、同じ範囲へ 2 回再起動できること。再配置可能な画像（`pie`）を 3 つ同時に起動して別々のアリーナに置かれ、終了後にアリーナがゼロになりプールへ戻ること。
 - `spin` は CPU を使い続けます。`src32_testbench` は idle スレッドの `HALT` をプログラムの終了とみなすためです。
 
 ```sh
@@ -262,7 +262,7 @@ python foundation/tests/wax/build.py target/foundation-wax
 python tools/llvm-src32/driver.py foundation/tests/wax/main.c foundation/kernel/sched.c \
   foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/sgu.c foundation/kernel/sgc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wax \
-  --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wax/test.wax
+  --origin 0x10000 --stack-top 0x100000 -D FND_MM_NOMMU_ONLY -O1 -o target/foundation-wax/test.wax
 src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline --frames 90
 ```
 
@@ -290,14 +290,14 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 - 出力の見積もりは `cpt_code_bound`。heap・libfnd・作業領域は使いません。
 - テストは `python3 -m unittest foundation.tests.code.test_code`（ホストは Clang、Foundation 上は `src32_testbench` も必要）です。
 
-`tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、スロット5と6）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
+`tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、固定アドレス 5 と 6 のスロット相当）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 
 ```sh
 python foundation/tests/wal/build.py target/foundation-wal
 python tools/llvm-src32/driver.py foundation/tests/wal/main.c foundation/kernel/sched.c \
   foundation/kernel/proc.c foundation/kernel/mm.c foundation/kernel/trap.c foundation/kernel/ipc.c foundation/kernel/fb.c foundation/kernel/sgu.c foundation/kernel/sgc.c foundation/kernel/blk.c foundation/kernel/wax.c \
   -I sdk/cpt32/include -I foundation/include -I target/foundation-wal \
-  --origin 0x10000 --stack-top 0x100000 -D FND_MM_SLOT_ONLY -O1 -o target/foundation-wal/test.wax
+  --origin 0x10000 --stack-top 0x100000 -D FND_MM_NOMMU_ONLY -O1 -o target/foundation-wal/test.wax
 src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline --frames 120
 ```
 
@@ -305,23 +305,23 @@ src32_testbench /absolute/path/target/foundation-wal/test.wax 42 --cpu pipeline 
 
 ### 仮想記憶のテスト
 
-カーネルは `CPUID` で Extension V を見つけると、スロットの代わりにページ表を使います（[仕様 §5.5](../doc/spec_Foundation.md)、設計は [foundation_vm_plan.md](../doc/foundation_vm_plan.md)）。V のない CPU を想定してスロット方式で動かすには、カーネルを `-D FND_MM_SLOT_ONLY` でビルドします（`boot/build.py` は環境変数 `FND_MM=slot`）。同じソースの 2 つのバックエンドを、次のように確かめます。
+カーネルは `CPUID` で Extension V を見つけると、nommu のアリーナの代わりにページ表を使います（[仕様 §5.5](../doc/spec_Foundation.md)、設計は [foundation_vm_plan.md](../doc/foundation_vm_plan.md)）。V のない CPU を想定して nommu（アリーナ方式）で動かすには、カーネルを `-D FND_MM_NOMMU_ONLY` でビルドします（`boot/build.py` は環境変数 `FND_MM=nommu`）。同じソースの 2 つのバックエンドを、次のように確かめます。
 
-- `tests/phase1`、`tests/wax`、`tests/wal` は物理スロットの中身を直接見るので、`FND_MM_SLOT_ONLY` でビルドします。
-- `tests/shell`、`tests/disk`、`tests/lzma` など、起動イメージを丸ごと動かすテストは、どちらのモードでも通ります。`tests/shell` は実際に使う testbench と CPU エンジンで `cpu_features.a` の CPUID を実行し、V がなくてもスロット方式の期待値を使います。`FND_MM=slot` は CPU の V の有無にかかわらずスロット方式です。仮想記憶では空き容量が正であることを検証し、スロット方式では正確な値（12 MiB 構成では 0 KiB）を比較します。
+- `tests/phase1`、`tests/wax`、`tests/wal` は物理メモリの中身を直接見るので、`FND_MM_NOMMU_ONLY` でビルドします。
+- `tests/shell`、`tests/disk`、`tests/lzma` など、起動イメージを丸ごと動かすテストは、どちらのモードでも通ります。`tests/shell` は実際に使う testbench と CPU エンジンで `cpu_features.a` の CPUID を実行し、free の空き容量は、どちらのモードでも値を N に正規化して比べます。`FND_MM=nommu` は CPU の V の有無にかかわらず nommu です。
 
 `tests/shell` は `SRC32_TESTBENCH` があればその実行ファイル、なければ `target/release`、`target/debug` の順で testbench を探します。古い release 版が残っていると新しい debug 版より優先されます。仮想記憶を検証するときは `cargo build --release --bin src32_testbench` で更新するか、`SRC32_TESTBENCH` に V 対応のビルドの絶対パスを指定してください。
 
 ```sh
 python -m unittest discover -s foundation/tests/shell          # 仮想記憶（V のある testbench）
-FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロット
+FND_MM=nommu python -m unittest discover -s foundation/tests/shell  # nommu（アリーナ）
 ```
 
-`tests/vm/main.c` は testbench 上の実行テストで、`tests/wax/build.py` の画像を使います。同じアドレスにリンクした `app` を 2 つ同時に起動してどちらも 42 で終了すること（スロットでは `FND_E_ADDRESS_CONFLICT`）、RX への書き込みと RW の実行がページフォルト（`0x8006000A`、`0x8006000C`）で終わること、拒否された起動と終了したプロセスがフレームを一つも残さないこと（未使用フレームの合計が起動前と一致）を確認します。`tools/llvm-src32/test_toolchain.py` の `test_foundation_vm_kernel` が `-O0`/`-O1`/`-O2` × 4 種の CPU で実行します。
+`tests/vm/main.c` は testbench 上の実行テストで、`tests/wax/build.py` の画像を使います。同じアドレスにリンクした `app` を 2 つ同時に起動してどちらも 42 で終了すること（nommu のアリーナでは、固定アドレスの画像どうしは `FND_E_ADDRESS_CONFLICT`。再配置可能な画像は別の場所に置かれます）、RX への書き込みと RW の実行がページフォルト（`0x8006000A`、`0x8006000C`）で終わること、拒否された起動と終了したプロセスがフレームを一つも残さないこと（未使用フレームの合計が起動前と一致）を確認します。`tools/llvm-src32/test_toolchain.py` の `test_foundation_vm_kernel` が `-O0`/`-O1`/`-O2` × 4 種の CPU で実行します。
 
 ## fs サービス
 
-`fs/`（スロット 3）は FS2（[仕様](../doc/spec_FS2.md)）を `/` として見せる fs サービスです。disk サービス（`services/disk/`、スロット 2）の IPC を通して、カーネルの `blk_io`（IDC + DMAC）でディスクを読み書きします。
+`fs/`は FS2（[仕様](../doc/spec_FS2.md)）を `/` として見せる fs サービスです。disk サービス（`services/disk/`）の IPC を通して、カーネルの `blk_io`（IDC + DMAC）でディスクを読み書きします。
 
 - **VFS**：`/` が FS2、`/tmp` と `/dev`（`/dev/con`、`/dev/null`、`/dev/fb0`、`/dev/sgu`、`/dev/sgc`、`/dev/trng`、`/dev/prng`、`/dev/uart0`）がメモリ上のノードです。`/dd/N` は dsfs が受け持ちます。`/dev` のノードでは TRUNC と APPEND を無視するので、`> /dev/null` が使えます。
 - **VDP bitmap**：`/dev/fb0` はカーネルドライバです。通常のopen/read/writeと `<foundation/fb.h>` で、320×240のINDEX8／RGB555／RGB888と全256色のCLUTを操作できます。openは排他で、最後のclose・プロセス終了時に表示設定・CLUT・重なったPCG文字領域を復元します。[実行例](../examples/foundation-fb/README.md)、[BMP 表示 `bmpview`](../examples/foundation-bmp/README.md)、[API仕様 §9.1](../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0)。
@@ -332,9 +332,9 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 ## 注意と未決事項
 
 - `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が UART へ出力したりすると、カーネル内でバスエラーになります（`kernel_panic` は PCG へ先に描くので画面には残り、再入は黙って停止します）。エミュレーター本体では UART に出力されます。
-- RAM 容量の取得方法（§4.1）はまだ決めていません。スロットは既定の 16 MiB を前提にしています。
+- RAM 容量の取得方法（§4.1）はまだ決めていません。nommu のページプールは [0x400000, RAM 末尾)、最大 256 MiB です。
 - 仮想記憶では、権限はページ単位です。Foundation のイメージは `--page-align` でコード（RX）とデータ（RW）を別ページに置くので W^X です（`.rodata` は RW データの中で、R 専用ではありません）。MMIO の付与はページ単位で、窓の検査は byte 単位に加えてページ範囲が届く先も検査しますが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
-- 仮想記憶でもプロセスは 12 個、スレッドは 16 個までです。
+- プロセスは（仮想記憶でも nommu でも）12 個、スレッドは 16 個までです。スロットにもアリーナにも縛られないので、`FND_MAX_PROCS` を増やせます。
 - スレッドは全体で `FND_MAX_THREADS`（16）個です。IRQ の割り当ては PORT の最後のクローズまたは所有プロセスの終了で解放されます。
 - `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 230 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
@@ -345,10 +345,10 @@ FND_MM=slot python -m unittest discover -s foundation/tests/shell  # スロッ�
 
 `/dev/trng` は READ 専用で、ハードウェアの READY が落ちている間は呼び出したスレッドをブロックします。`/dev/prng` は READ 専用のノンブロッキング GFSR 乱数です（暗号用途向けではありません）。`/dev/uart0` はホスト標準入出力へつながるバイトストリームで、読み出しは受信待ち、書き込みはデータをそのまま送信します。通常の `fnd_file_open`／`fnd_read`／`fnd_write` で利用できます。複数 open は同じハードウェアを共有します。乱数列の seed 設定 API は公開しません。[API §9.4](../doc/spec_Foundation_API.md#94-pec-乱数uart-devtrngdevprngdevuart0)。
 
-検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=slot` でも実行してください。testbench には UART がないため、UART の正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
+検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=nommu` でも実行してください。testbench には UART がないため、UART の正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
 
 ### COW と fork
 
-VM バックエンドでは `fnd_sys_proc_fork()`（`<foundation/sys.h>`）または libfnd 1.2 の `fnd_proc_fork()` を使えます。親は子の PROCESS ハンドル、子は 0 を受け取り、同じ位置から実行を再開します。親は `fnd_sys_wait()` と `fnd_sys_handle_close()`、または `fnd_proc_wait()` で子を回収します。RW メモリは書き込み時に 4 KiB ごとに私有化されます。ファイル位置や fs セッションなどのサービス側状態は共有です。生存スレッド 1 本が必要で、THREAD ハンドルや MMIO 付与のあるプロセスは複製できません。slot 環境では `FND_E_UNSUPPORTED` です。詳細は [カーネル仕様 §9.6](../doc/spec_Foundation.md) を参照してください。
+VM バックエンドでは `fnd_sys_proc_fork()`（`<foundation/sys.h>`）または libfnd 1.2 の `fnd_proc_fork()` を使えます。親は子の PROCESS ハンドル、子は 0 を受け取り、同じ位置から実行を再開します。親は `fnd_sys_wait()` と `fnd_sys_handle_close()`、または `fnd_proc_wait()` で子を回収します。RW メモリは書き込み時に 4 KiB ごとに私有化されます。ファイル位置や fs セッションなどのサービス側状態は共有です。生存スレッド 1 本が必要で、THREAD ハンドルや MMIO 付与のあるプロセスは複製できません。nommu（V のない CPU）では `FND_E_UNSUPPORTED` です。詳細は [カーネル仕様 §9.6](../doc/spec_Foundation.md) を参照してください。
 
-回帰テストは `python -m unittest discover -s tools/llvm-src32 -p test_toolchain.py -k test_foundation_fork -v`。`SRC32_TESTBENCH` に release 版の絶対パスを渡すと実行時間を抑えられます。VM と slot、O0/O1/O2、scalar/cached/cached-relaxed/pipeline を検証します。
+回帰テストは `python -m unittest discover -s tools/llvm-src32 -p test_toolchain.py -k test_foundation_fork -v`。`SRC32_TESTBENCH` に release 版の絶対パスを渡すと実行時間を抑えられます。VM と nommu、O0/O1/O2、scalar/cached/cached-relaxed/pipeline を検証します。

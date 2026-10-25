@@ -9,9 +9,9 @@
 #include <foundation/fnd.h>
 #include <foundation/sys.h>
 
-#define PIPES 32u
+#define PIPES 16u
 #define PIPE_SIZE FND_IPC_MAX_DATA /* a write of the largest request can always fit in the end */
-#define PENDING 32u
+#define PENDING 16u
 #define LOOKUP_BADGE 0x80000000u
 
 struct pipe {

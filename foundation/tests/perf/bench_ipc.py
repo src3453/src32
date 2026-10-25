@@ -99,7 +99,7 @@ def main():
                    '-O1', '-D', f'FND_COPY_DMA_MIN={args.dma_min}', '-D', f'BENCH_ROUNDS={args.rounds}', '-D',
                    'BENCH_SERVER_PRIORITY=' + ('1' if args.priority == 'service' else '2'), '-o', image]
         if mm == 'slot':
-            command += ['-D', 'FND_MM_SLOT_ONLY']
+            command += ['-D', 'FND_MM_NOMMU_ONLY']
         (work / 'build.txt').write_text(run(command, work, 300), encoding='utf-8')
         metadata['images'][mm] = hashlib.sha256(image.read_bytes()).hexdigest()
         repeats = []

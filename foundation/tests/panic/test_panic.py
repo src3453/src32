@@ -39,7 +39,7 @@ class PanicScreenTests(unittest.TestCase):
                        *(str(ROOT / 'foundation/kernel' / name) for name in KERNEL),
                        '-I', str(ROOT / 'sdk/cpt32/include'), '-I', str(ROOT / 'foundation/include'),
                        '--origin', '0x10000', '--stack-top', '0x100000',
-                       '-D', 'FND_MM_SLOT_ONLY', '-O1', '-o', str(image)]
+                       '-D', 'FND_MM_NOMMU_ONLY', '-O1', '-o', str(image)]
             if os.environ.get('CLANG'):
                 command += ['--clang', os.environ['CLANG']]
             subprocess.run(command, check=True, capture_output=True, text=True, timeout=300)

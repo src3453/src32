@@ -28,9 +28,17 @@ int main(void) {
     /* Fill the FIFO exactly: NOP words, then a full FIFO must not block. */
     uint32_t nops[FND_SGC_FIFO_WORDS + 8];
     for (uint32_t i = 0; i < FND_SGC_FIFO_WORDS + 8; ++i) nops[i] = FND_SGC_OP_NOP;
-    CHECK(fnd_sgc_submit(h, nops, FND_SGC_FIFO_WORDS + 8, &done) == FND_OK && done == FND_SGC_FIFO_WORDS);
-    CHECK(fnd_sgc_submit(h, nops, 1, &done) == FND_E_WOULD_BLOCK && done == 0);
-    CHECK(fnd_sgc_get_status(h, 0, &st) == FND_OK && st.fifo_free == 0 && !(st.status & FND_SGC_STATUS_FIFO_FULL));
+    /* A VDP frame drains the FIFO at any moment, so a frame that lands between the calls below makes this attempt
+     * meaningless (which frame the guest meets depends on how long the spawn took). Wait a frame and try again. */
+    int full = 0;
+    for (int attempt = 0; attempt < 4 && !full; ++attempt) {
+        if (attempt) fnd_sys_sleep(3);
+        full = fnd_sgc_submit(h, nops, FND_SGC_FIFO_WORDS + 8, &done) == FND_OK && done == FND_SGC_FIFO_WORDS &&
+               fnd_sgc_submit(h, nops, 1, &done) == FND_E_WOULD_BLOCK && done == 0 &&
+               fnd_sgc_get_status(h, 0, &st) == FND_OK && st.fifo_free == 0 &&
+               !(st.status & FND_SGC_STATUS_FIFO_FULL);
+    }
+    CHECK(full);
     CHECK(fnd_sgc_fifo_clear(h) == FND_OK);
     CHECK(fnd_sgc_get_status(h, FND_SGC_STATUS_FIFO_ERROR, &st) == FND_OK && (st.status & FND_SGC_STATUS_FIFO_ERROR));
     CHECK(fnd_sgc_get_status(h, 0, &st) == FND_OK && st.fifo_used == 0 && !(st.status & FND_SGC_STATUS_FIFO_ERROR));

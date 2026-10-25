@@ -1,7 +1,7 @@
 """Build/run an isolated, instrumented Foundation echo spawn (Issue #106).
 
 python foundation/tests/perf/profile_spawn.py target/spawn-profile --cpu cached
-Set FND_MM=slot to force slots. Production sources are never rewritten.
+Set FND_MM=nommu to force slots. Production sources are never rewritten.
 """
 import argparse
 import importlib.util
