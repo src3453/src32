@@ -47,7 +47,12 @@ def parser() -> argparse.ArgumentParser:
     mode = p.add_mutually_exclusive_group()
     mode.add_argument("-S", action="store_true", help="emit SRC32 assembly")
     mode.add_argument("--emit-llvm", action="store_true", help="emit linked, verified LLVM IR")
+    p.add_argument("-c", dest="compile_only", action="store_true",
+                   help="compile the one C/C++ input to LLVM IR (.ll) with this toolchain's flags and stop: no "
+                        "linking, no runtime; for build systems that link the pieces later")
     p.add_argument("-I", dest="includes", action="append", default=[])
+    p.add_argument("--include", dest="forced_includes", action="append", default=[], metavar="FILE",
+                   help="process FILE before the source, like Clang's -include (application code only)")
     p.add_argument("-D", dest="defines", action="append", default=[])
     opt = p.add_mutually_exclusive_group()
     for level in range(3):
@@ -130,7 +135,7 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-ffp-contract=off", "-fno-stack-protector", "-fno-pic", "-fno-pie",
                "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-G0", "-nostdinc",
-               "-std=c++17" if cxx else "-std=gnu11" if posix_library else "-std=c11",
+               "-std=c++17" if cxx else "-std=gnu11" if posix_library or (newlib and newlib.posix) else "-std=c11",
                optimization, "-S", "-emit-llvm"]
     if posix_library:
         if source.is_relative_to(newlib.root / "newlib" / "libm"):
@@ -152,6 +157,8 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     if not runtime:
         for include in args.includes:
             command.extend(["-I", include])
+        for forced in args.forced_includes:
+            command.extend(["-include", forced])
         for define in args.defines:
             command.extend(["-D", define])
     if softfloat:
@@ -165,6 +172,19 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
     if result.returncode:
         raise DriverError(f"Clang failed for {source}:\n{result.stderr.strip() or result.stdout.strip()}")
+
+
+def compile_only(args) -> Path:
+    clang = find_clang(args.clang)
+    args.newlib = None
+    if args.newlib_source:
+        from newlib import Newlib
+        args.newlib = Newlib(args.newlib_source, clang, args.newlib_heap_size, profile=args.newlib_profile,
+                             cache=args.newlib_cache, jobs=1)
+    source = args.inputs[0]
+    dependency_path = args.depfile.resolve() if args.depfile else None
+    compile_c(clang, source, args.output, args, depfile=dependency_path)
+    return args.output
 
 
 def newlib_posix_defines():
@@ -223,6 +243,14 @@ def run(args) -> Path:
                           f'"{ROOT / "requirements.txt"}"') from exc
     from data import Layout
 
+    if args.compile_only:
+        if len(args.inputs) != 1 or args.inputs[0].suffix.lower() not in SOURCE_SUFFIXES:
+            raise DriverError("-c takes exactly one C or C++ source")
+        if args.output is None:
+            args.output = args.inputs[0].with_suffix(".ll")
+        elif args.output.suffix.lower() != ".ll":
+            raise DriverError("-c writes a .ll file")
+        return compile_only(args)
     for source in args.inputs:
         if source.suffix.lower() not in (*SOURCE_SUFFIXES, ".ll", ".bc"):
             raise DriverError(f"unsupported input extension: {source} (expected .c, .cpp, .cc, .cxx, .ll, or .bc)")
