@@ -9,8 +9,8 @@
 /* Supervisor-side interface of the kernel, for the image that links
  * it (boot code, demo, tests). User programs use <foundation/abi.h>. */
 
-#define FND_MAX_PROCS 7u    /* process records; no longer tied to memory slots */
-#define FND_MAX_THREADS 8u  /* user threads; the idle thread is extra */
+#define FND_MAX_PROCS 10u  /* process records; no longer tied to memory slots */
+#define FND_MAX_THREADS 16u /* user threads; the idle thread is extra */
 #define FND_REGIONS 8u      /* Extension P regions: the nommu backend's limit */
 /* The regions a process record holds: an image's (at most 8) and the MMIO
  * grants (at most FND_MAX_GRANTS). The nommu backend keeps all in the 8 CPU

@@ -59,6 +59,9 @@
 #define FND_DIR_NEXT 0x0200u
 #define FND_DIR_REWIND 0x0201u
 
+/* §9a: the pipe service. */
+#define FND_PIPE_OPEN 0x0400u
+
 /* §9: device services. */
 #define FND_DEV_OPEN 0x0300u
 
@@ -68,6 +71,7 @@
 #define FND_TYPE_DIR 2u
 #define FND_TYPE_DEVICE 3u
 #define FND_TYPE_CONSOLE 4u
+#define FND_TYPE_PIPE 5u
 #define FND_STAT_READ_ONLY 1u
 #define FND_STAT_SEEKABLE 2u
 
@@ -102,7 +106,7 @@
 #define FND_CON_DISPLAY_8X16 3u /* 80x30, 8x16 */
 
 /* §11.6 */
-#define FND_EXEC_IMAGE_MAX 0x100000u
+#define FND_EXEC_IMAGE_MAX 0x180000u
 
 /* §11.1: the end of a listing or of the input. */
 #define FND_END 1

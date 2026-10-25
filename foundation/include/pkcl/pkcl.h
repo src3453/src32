@@ -19,6 +19,11 @@ int pkcl_fail(fnd_status status);
 /* fd が開いていれば Foundation のハンドル、そうでなければ 0（errno = EBADF）。 */
 fnd_handle pkcl_handle(int fd);
 
+/* 開いたハンドルを最小の空き記述子に据える。失敗なら -1（EMFILE）でハンドルはそのまま。
+ * status は F_GETFL の値で、pipe の端なら PKCL_FD_PIPE を足す。 */
+#define PKCL_FD_PIPE 0x40000000u
+int pkcl_fd_install(fnd_handle h, uint32_t status);
+
 /* 最初の POSIX 呼び出しで自動的に呼ばれる。fnd_init と fd 0〜2 の準備をする。 */
 void pkcl_init(void);
 

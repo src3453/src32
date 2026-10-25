@@ -64,6 +64,15 @@ static int fd_alloc(int from) {
     return -1;
 }
 
+int pkcl_fd_install(fnd_handle h, uint32_t status) {
+    pkcl_init();
+    int fd = fd_alloc(0);
+    if (fd < 0)
+        return -1;
+    fds[fd] = (struct fd_entry){h, status, 0};
+    return fd;
+}
+
 uint32_t pkcl_mode_to_fnd(uint32_t m) {
     /* FS2: bit 0〜2 が other の X/W/R、bit 3〜5 が owner の X/W/R。 */
     return ((m >> 6) & 7u) << 3 | (m & 7u);
@@ -71,7 +80,8 @@ uint32_t pkcl_mode_to_fnd(uint32_t m) {
 
 uint32_t pkcl_mode_from_fnd(uint32_t type, uint32_t f) {
     uint32_t owner = (f >> 3) & 7u, other = f & 7u;
-    uint32_t kind = type == FND_TYPE_DIR ? S_IFDIR : type == FND_TYPE_FILE ? S_IFREG : S_IFCHR;
+    uint32_t kind = type == FND_TYPE_DIR ? S_IFDIR : type == FND_TYPE_FILE ? S_IFREG
+                    : type == FND_TYPE_PIPE ? S_IFIFO : S_IFCHR;
     /* group は持たないので other と同じに見せる。 */
     return kind | owner << 6 | other << 3 | other;
 }
@@ -140,6 +150,9 @@ ssize_t read(int fd, void *buf, size_t len) {
     }
     if (len > 0x7FFFFFFFu)
         len = 0x7FFFFFFFu;
+    /* fnd_read は満杯の塊のあと次の塊を待つ。pipe は届いた分だけ返す（POSIX の短い read）。 */
+    if ((fds[fd].status & PKCL_FD_PIPE) && len > FND_IPC_MAX_DATA)
+        len = FND_IPC_MAX_DATA;
     uint32_t got = 0;
     if (pkcl_fail(fnd_read(h, buf, (uint32_t)len, &got)))
         return -1;
@@ -230,14 +243,15 @@ int fcntl(int fd, int cmd, ...) {
     int arg = va_arg(ap, int);
     va_end(ap);
     switch (cmd) {
-    case F_DUPFD: {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC: {
         int nfd = fd_alloc(arg < 0 ? 0 : arg);
         if (nfd < 0)
             return -1;
         int32_t copy = fnd_sys_handle_dup(h);
         if (copy <= 0)
             return pkcl_fail(copy);
-        fds[nfd] = (struct fd_entry){(fnd_handle)copy, fds[fd].status, 0};
+        fds[nfd] = (struct fd_entry){(fnd_handle)copy, fds[fd].status, cmd == F_DUPFD_CLOEXEC ? FD_CLOEXEC : 0};
         return nfd;
     }
     case F_GETFD:
@@ -246,7 +260,7 @@ int fcntl(int fd, int cmd, ...) {
         fds[fd].cloexec = (uint32_t)arg & FD_CLOEXEC;
         return 0;
     case F_GETFL:
-        return (int)fds[fd].status;
+        return (int)(fds[fd].status & ~PKCL_FD_PIPE);
     case F_SETFL:
         /* アクセスモードは変えられない。O_APPEND は開く時のストリームに固定なので、
          * 後から変えても効かない（記録も更新しない）。O_NONBLOCK は記録だけする。 */

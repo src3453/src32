@@ -90,7 +90,7 @@ IRQ の focused test は `python -m unittest discover -s foundation/tests/irq -v
 | `kernel/blk.c` | `blk_io`（§10.4）。IDC と DMAC ch0、IDC 割り込み（IRQ2）で要求を 1 つずつ FIFO で処理 |
 | `kernel/fb.c`, `include/foundation/fb.h` | カーネル `/dev/fb0` ドライバとC helper（API §9.1）。ビットマップとCLUT |
 | `kernel/fndboot.c` | FNDBOOT のモジュール表の検査と、同梱モジュールの起動（§11） |
-| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.2（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/sync、1.2は `fnd_proc_fork` を追加 |
+| `include/foundation/api.h`, `fnd.h`, `lib/fnd/` | libfnd（[API 仕様 §11](../doc/spec_Foundation_API.md)）のうち、今あるもの。WAL「fnd」1.3（`/lib/fnd.1.wal`）としてビルドし、export は `lib/fnd/fnd.exports`。1.1はディレクトリ列挙・作成/削除・file delete/sync、1.2は `fnd_proc_fork` を追加、1.3は環境変数（`fnd_envc`、`fnd_env`、`fnd_exec_t.envp`）を追加 |
 | `services/console/` | console サービス（API 仕様 §8、PCG と PeC キーボード） |
 | `services/disk/` | disk サービス（`blk_io` を fs に IPC で渡す。プロトコルは `disk.h`） |
 | `fs/` | fs サービス（FS2 と DSFS、VFS、API 仕様 §5〜§7 のプロトコル）。次の節 |
@@ -334,8 +334,8 @@ FND_MM=nommu python -m unittest discover -s foundation/tests/shell  # nommu（�
 - `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が UART へ出力したりすると、カーネル内でバスエラーになります（`kernel_panic` は PCG へ先に描くので画面には残り、再入は黙って停止します）。エミュレーター本体では UART に出力されます。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。nommu のページプールは [0x400000, RAM 末尾)、最大 256 MiB です。
 - 仮想記憶では、権限はページ単位です。Foundation のイメージは `--page-align` でコード（RX）とデータ（RW）を別ページに置くので W^X です（`.rodata` は RW データの中で、R 専用ではありません）。MMIO の付与はページ単位で、窓の検査は byte 単位に加えてページ範囲が届く先も検査しますが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
-- プロセスは（仮想記憶でも nommu でも）7 個、スレッドは 8 個までです。スロットにもアリーナにも縛られないので、`FND_MAX_PROCS` を増やせます。
-- スレッドは全体で `FND_MAX_THREADS`（8）個です。IRQ の割り当ては PORT の最後のクローズまたは所有プロセスの終了で解放されます。
+- プロセスは（仮想記憶でも nommu でも）10 個、スレッドは 16 個までです。スロットにもアリーナにも縛られないので、`FND_MAX_PROCS` を増やせます。
+- スレッドは全体で `FND_MAX_THREADS`（16）個です。IRQ の割り当ては PORT の最後のクローズまたは所有プロセスの終了で解放されます。
 - `--protected` の C プログラムでは、アセンブラが `.ORG` で分けたブロックのうち、同じ権限で並ぶものの隙間（整列の埋め草）をゼロで埋めて 1 つにします（PROTECTED WAX は 7 ブロックまで）。ゼロ初期化のグローバルもイメージに含まれるので、シェルのイメージは約 230 KiB です。
 - WAX の読み込み中は割り込み禁止です。`tests/wax` の起動 11 回（うち 5 回は失敗）は、-O0 の Scalar で約 16M サイクル（1 回あたり約 30 tick 分）かかります。-O2 では約 10M サイクルです。
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。

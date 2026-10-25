@@ -53,10 +53,10 @@ static int ready_eof;
 static uint8_t data[FND_IPC_MAX_DATA];
 static uint8_t out[FND_IPC_MAX_DATA];
 
-static void reply(uint32_t token, int32_t result, uint32_t a0, uint32_t a1, uint32_t a2, const void *buf,
-                  uint32_t len) {
+static int32_t reply(uint32_t token, int32_t result, uint32_t a0, uint32_t a1, uint32_t a2, const void *buf,
+                     uint32_t len) {
     fnd_msg msg = {(uint32_t)result, 0, a0, a1, a2, 0, (uint32_t)(uintptr_t)buf, len};
-    fnd_sys_ipc_reply(token, &msg); /* a client that is gone needs no answer */
+    return fnd_sys_ipc_reply(token, &msg); /* a client that is gone needs no answer */
 }
 
 static struct stream *find_stream(uint32_t badge) {
@@ -152,6 +152,13 @@ static void line_key(const fnd_key_t *k) {
     }
 }
 
+/* A key that was handed to a reader that no longer exists goes back to the front. */
+static void unget_key(const fnd_key_t *k) {
+    key_head = (key_head + KEYS - 1u) % KEYS;
+    keys[key_head] = *k;
+    ++key_count;
+}
+
 /* Gives queued keys to the waiting requests, oldest first. */
 static void dispatch(void) {
     for (;;) {
@@ -164,12 +171,14 @@ static void dispatch(void) {
         --key_count;
         struct pending *p = &pending[0];
         if (p->op == FND_CON_READ_KEY) {
-            reply(p->token, FND_OK, k.code, k.ch, k.mods, 0, 0);
+            if (reply(p->token, FND_OK, k.code, k.ch, k.mods, 0, 0) != FND_OK)
+                unget_key(&k); /* the reader was killed before CLIENT_GONE reached us */
             drop_pending(0);
         } else if (mode == FND_CON_RAW) {
             char buf[4];
             if (k.code == FND_KEY_CHAR && !(k.mods & FND_MOD_CTRL)) {
-                reply(p->token, FND_OK, 0, 0, 0, buf, encode(k.ch, buf));
+                if (reply(p->token, FND_OK, 0, 0, 0, buf, encode(k.ch, buf)) != FND_OK)
+                    unget_key(&k);
                 drop_pending(0);
             }
         } else {

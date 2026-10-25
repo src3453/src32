@@ -107,11 +107,11 @@ class DiskBootTests(unittest.TestCase):
         self.assertEqual((header['magic'], header['version'], header['size']), (fndboot.MAGIC, 1, len(boot)))
         self.assertEqual((header['kernel_load'], header['kernel_entry']), (0x10000, 0x10000))
         self.assertEqual(boot[header['kernel_off']:][:header['kernel_size']], kernel)
-        self.assertEqual([m['name'] for m in modules], ['console', 'disk', 'fs', 'init'])  # init last (§11)
+        self.assertEqual([m['name'] for m in modules], ['console', 'disk', 'fs', 'pipe', 'init'])  # init last (§11)
         for module in modules:
             image = (self.build / f"{module['name']}.wax").read_bytes()
             self.assertEqual(boot[module['offset']:][:module['size']], image)
-        self.assertEqual([m['caps'] for m in modules], [8, 12, 8, 0])  # SVC for the services, DISK for disk
+        self.assertEqual([m['caps'] for m in modules], [8, 12, 8, 8, 0])  # SVC for the services, DISK for disk
         self.assertEqual(len(modules[0]['grants']), 4)  # the console's MMIO windows (VDP, text, wide font, input)
         for path in ('/bin/shell.wax', '/bin/echo.wax', '/lib/fnd.1.wal', '/lib/lzma.1.wal', '/lib/rle.1.wal', '/lib/code.1.wal'):
             inode = volume.resolve(path)

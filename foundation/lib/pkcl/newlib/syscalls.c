@@ -25,32 +25,21 @@ int _unlink(const char *path) { return unlink(path); }
 int _mkdir(const char *path, mode_t mode) { return mkdir(path, mode); }
 int _fcntl(int fd, int cmd, int arg) { return fcntl(fd, cmd, arg); }
 
-/* FS2 にリンクはなく、pkcl はシグナルとプロセスの複製を持たない（§6.4、§6.5）。 */
-int _link(const char *old_path, const char *new_path) {
-    (void)old_path, (void)new_path;
-    errno = ENOSYS;
-    return -1;
-}
-int _kill(int pid, int sig) {
-    (void)pid, (void)sig;
-    errno = ENOSYS;
-    return -1;
-}
-int _fork(void) {
-    errno = ENOSYS;
-    return -1;
-}
-int _wait(int *status) {
-    (void)status;
-    errno = ECHILD;
-    return -1;
-}
-int _execve(const char *path, char *const argv[], char *const envp[]) {
-    (void)path, (void)argv, (void)envp;
-    errno = ENOSYS;
-    return -1;
-}
-int _getpid(void) { return 1; } /* §7 G1: 自分の pid を知る手段がまだない */
+/* pkcl-nolibc のヘッダには載っていない POSIX 関数（posix/ にある）。 */
+extern int link(const char *, const char *);
+extern int kill(int, int);
+extern int fork(void);
+extern int wait(int *);
+extern int execve(const char *, char *const[], char *const[]);
+extern int getpid(void);
+
+/* FS2 にリンクはない。プロセスは pkcl の posix/process.c（fork は VM のカーネルが必要）。 */
+int _link(const char *old_path, const char *new_path) { return link(old_path, new_path); }
+int _kill(int pid, int sig) { return kill(pid, sig); }
+int _fork(void) { return fork(); }
+int _wait(int *status) { return wait(status); }
+int _execve(const char *path, char *const argv[], char *const envp[]) { return execve(path, argv, envp); }
+int _getpid(void) { return getpid(); }
 
 /* カーネルの tick（10 ms）と RTC から。 */
 int _gettimeofday(struct timeval *tv, void *tz) {

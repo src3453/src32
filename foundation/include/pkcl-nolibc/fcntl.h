@@ -16,6 +16,7 @@
 #define O_DIRECTORY 0x200000
 
 #define F_DUPFD 0
+#define F_DUPFD_CLOEXEC 14
 #define F_GETFD 1
 #define F_SETFD 2
 #define F_GETFL 3

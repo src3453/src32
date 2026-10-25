@@ -681,6 +681,12 @@ static struct fnd_proc *process_handle(struct fnd_proc *proc, uint32_t h) {
     return e && e->kind == FND_OBJ_PROCESS ? e->object : 0;
 }
 
+/* sys_info sel 5: the pid behind a PROCESS handle, or a negative error. */
+int32_t ipc_process_handle_pid(struct fnd_proc *proc, uint32_t h) {
+    struct fnd_proc *target = process_handle(proc, h);
+    return target ? (int32_t)target->pid : FND_E_BAD_HANDLE;
+}
+
 int32_t sys_wait(struct fnd_thread *thread, uint32_t h, uint32_t timeout, uint32_t code_ptr) {
     struct fnd_proc *target = process_handle(thread->proc, h);
     struct fnd_handle_entry *e = entry(thread->proc, h);
