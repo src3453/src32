@@ -1,5 +1,14 @@
 # Foundation カーネル ABI 仕様 v1
 
+FPGA 専用ブランチの `--platform tang-console` は、UART コンソールと同期 CPU コピーの
+RAM ディスクを使うプラットフォーム実装である。既定は SDRAM0 を Main RAM 16 MiB と
+RAM ディスク 16 MiB に分割する。BMC の Main RAM 容量は前半の 16 MiB のみを報告し、
+後半はカーネル専用物理窓 `0x20000000..0x20FFFFFF` にマップする。
+`blk_io` のポインタ・権限・セクタ範囲検査と `mm_copy_*` は維持し、IDC／DMAC を使わず
+呼出し内で転送を完了する。起動ドライブは 0、FNDBOOT は `0x00200000` 固定である。
+最小構成に RTC はなく、RTC セレクタは起動からの秒数を返す。手順と未対応機能は
+[`foundation/README.md`](../foundation/README.md#tang-console-fpga-用ビルド) を参照。
+
 Revision 1.0、2026-10-22。Status: **仕様確定**。§3 のトラップスタブは `tools/llvm-src32` に実装済み（フェーズ 0）。§13 の sol 対応（solc の `!abi_compat`、`sol/foundation/fnd.sol`）も実装済み。§9.5 の WAX ローダ（PROTECTED WAX v2 と WAX/WAL v3）はカーネル内に実装済みで、S モードの `fnd_proc_spawn_wax` から使える（`proc_spawn` システムコールはハンドルの実装を待つ）。それ以外（カーネル本体、IPC、システムコール）は未実装。本書は Foundation OS のカーネル ABI を定めます。対象はトラップ、プロセス、スレッド、メモリ所有権、ハンドル、IPC、システムコール、起動の引き渡し、そして C と sol からの利用規約です。背景と開発順序は [実装案](foundation_os_plan.md) を参照してください。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。

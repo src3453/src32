@@ -189,6 +189,10 @@ def external_bins(directories):
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
+    parser.add_argument("--platform", choices=("cpt32", "tang-console"), default="cpt32",
+                        help="tang-console: UART-only console and SDRAM RAM disk; no IDC/DMAC")
+    parser.add_argument("--ramdisk", choices=("sdram0-split", "sdram1"), default="sdram0-split",
+                        help="Tang Console RAM disk: split SDRAM0 16+16 MiB (default), or separate 32 MiB SDRAM1")
     parser.add_argument("--clang")
     parser.add_argument("-j", "--jobs", type=int, default=0, metavar="N",
                         help="parallel driver processes (default: CPU count; the images do not depend on N)")
@@ -202,6 +206,10 @@ def main(argv=None):
         level.add_argument(f"-O{n}", dest="optimization", action="store_const", const=f"-O{n}")
     parser.set_defaults(optimization="-O1")
     args = parser.parse_args(argv)
+    fpga = args.platform == "tang-console"
+    ramdisk_bytes = 0x01000000 if args.ramdisk == "sdram0-split" else 0x02000000
+    if fpga and args.disk_blocks > ramdisk_bytes // 512:
+        parser.error("disk image exceeds the selected Tang Console RAM-disk capacity")
     try:
         bins = external_bins(args.bin_dir)
     except (OSError, ValueError) as error:
@@ -236,6 +244,9 @@ def main(argv=None):
     code_job = pool.submit(code_build.build, out / "code", args.clang, args.optimization)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
+    if fpga:
+        kernel_args += ["-D", "FND_PLATFORM_TANG", "-D", "FND_COPY_DMA_MIN=0",
+                        "-D", f"FND_RAMDISK_SECTORS={ramdisk_bytes // 512}u"]
     if args.stop_ticks is not None:
         kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
     if os.environ.get("FND_MM") in ("nommu", "slot"):
@@ -248,10 +259,13 @@ def main(argv=None):
 
     # §11: spawned in this order, init last.
     specs = [
-        dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
+        dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             grants=[(0x80040000, 0x80040010, 3)] if fpga else console_grants(),
              image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c",
-                                      services / "console/con_wide.c", services / "console/con_uart.c"],
+                                      *([] if fpga else [services / "console/con_wide.c"]),
+                                      services / "console/con_uart.c"],
                                out / "console.wax", args, "-I", str(services / "console"),
+                               *(["-D", "FND_CON_UART_ONLY"] if fpga else []),
                                "-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
              image=pool.submit(static, [services / "disk/main.c", services / "disk/cache.c"],
@@ -315,6 +329,14 @@ def main(argv=None):
     temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))
     os.replace(temporary, disk)
     print(f"Wrote {disk}")
+    if fpga:
+        import json
+        manifest = dict(platform="tang-console", entry=KERNEL_LOAD, ramdisk=args.ramdisk,
+                        ramdisk_bytes=ramdisk_bytes,
+                        segments=[dict(file="kernel.bin", address=KERNEL_LOAD),
+                                  dict(file="fndboot.bin", address=FNDBOOT_STAGING),
+                                  dict(file="foundation.img", address=0x20000000)])
+        (out / "fpga-boot.json").write_text(json.dumps(manifest, indent=2) + "\n", encoding="utf-8")
     return 0
 
 

@@ -1,5 +1,12 @@
 # Foundation API 仕様 v1
 
+FPGA 専用の `--platform tang-console` では `/dev/con` と UART を使う。console の MMIO
+grant は `0x80040000..0x8004000F` のみであり、PCG／VRAM／PeC 入力窓へアクセスしない。
+端末は 80×30、表示設定は 80 のみとし、40 列・8×16 の要求には `FND_E_UNSUPPORTED` を
+返す。カーソル座標と ANSI 解析状態は従来の処理で保持し、物理キーボード状態は空である。
+画面・音源・乱数デバイスの lookup は `FND_E_UNSUPPORTED` を返す。FS2 は RAM ディスク
+上で通常のファイル API を提供する。電源断・RAM ディスクの再ロードで内容は失われる。
+
 Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd は起動、ストリーム、ファイル・cwd、ディレクトリ列挙、プロセス、コンソールの一部を実装し、fs／consoleサービスをIPCで呼びます。現在の提供範囲は [`foundation/include/foundation/fnd.h`](../foundation/include/foundation/fnd.h) と [sol API](../sol/foundation/README.md) を参照してください。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。

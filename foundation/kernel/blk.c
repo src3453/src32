@@ -24,6 +24,38 @@ struct blk_req {
     uint32_t drive, op, lba, count, buf;
 };
 
+#ifdef FND_PLATFORM_TANG
+/* The disk has a separate physical window, never part of mm_ram_bytes()/the
+ * page pool. Only the kernel maps it. Sector buffers still pass through the
+ * normal user permission validation and mm_copy_* (including VM translation).
+ * Synchronous CPU copies need neither IDC, DMA nor a completion interrupt. */
+#define RAMDISK_BASE 0x20000000u
+#ifndef FND_RAMDISK_SECTORS
+#define FND_RAMDISK_SECTORS 32768u
+#endif
+#define RAMDISK_SECTORS FND_RAMDISK_SECTORS
+int blk_pending(void) { return 0; }
+void blk_irq(void) {}
+void blk_proc_exited(struct fnd_proc *proc) { (void)proc; }
+
+static int32_t ramdisk_io(const struct blk_req *r) {
+    if (r->drive != 0) return FND_E_NO_MEDIA;
+    struct fnd_proc *proc = r->thread->proc;
+    if (r->op == BLK_IDENTIFY) {
+        uint32_t info[4] = {2u, 512u, RAMDISK_SECTORS, 1u}; /* HDD, present, writable */
+        mm_copy_to_user(proc, r->buf, info, sizeof info);
+        return FND_OK;
+    }
+    if (r->lba >= RAMDISK_SECTORS || r->count > RAMDISK_SECTORS - r->lba)
+        return FND_E_BAD_ARG;
+    uint32_t address = RAMDISK_BASE + (r->lba << 9), bytes = r->count << 9;
+    if (r->op == BLK_READ)
+        mm_copy_to_user(proc, r->buf, (const void *)(uintptr_t)address, bytes);
+    else
+        mm_copy_from_user((void *)(uintptr_t)address, proc, r->buf, bytes);
+    return FND_OK;
+}
+#else
 /* The DMAC knows physical addresses only, and the pages of a user buffer
  * need not be adjacent: with V every transfer goes through the kernel's bounce
  * buffer (mm_bounce) and is copied to or from the process by software. */
@@ -156,6 +188,7 @@ void blk_proc_exited(struct fnd_proc *proc) {
     queued = keep;
     run_queue();
 }
+#endif
 
 int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk) {
     struct fnd_proc *proc = thread->proc;
@@ -180,6 +213,9 @@ int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk) {
         return FND_E_BAD_ARG;
     if (!proc_user_range_ok(proc, r.buf, bytes, r.op == BLK_WRITE ? CPT32_PERM_R : CPT32_PERM_W))
         return FND_E_ACCESS;
+#ifdef FND_PLATFORM_TANG
+    return ramdisk_io(&r);
+#else
     if (queued >= FND_MAX_THREADS)
         return FND_E_LIMIT;
     if (!queued && r.op == BLK_IDENTIFY)
@@ -188,4 +224,5 @@ int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk) {
     sched_block(thread, B_BLK_IO, FND_FOREVER);
     run_queue();
     return FND_OK; /* the result comes with sched_wake */
+#endif
 }

@@ -1,5 +1,47 @@
 # Foundation
 
+## Tang Console FPGA 用ビルド
+
+FPGA の作業は `fpga-foundation` ブランチの専用 worktree で行い、既存の
+`src32/main` を変更しません。この worktree ではユーザーの指示により Issue を
+作成・更新しません。
+
+```powershell
+python foundation/boot/build.py target/foundation-fpga --platform tang-console --clang 'C:/Program Files/LLVM/bin/clang.exe' -j 6
+```
+
+既定は SDRAM0 を **Main RAM 16 MiB + RAM ディスク 16 MiB** に分割します。
+RAM ディスクはカーネル専用の物理窓 `0x20000000..0x20FFFFFF` に置き、Main RAM の
+ページ割当て対象に含めません。SoC の BMC は Main RAM を 16 MiB と報告します。
+FS2 イメージは既定の 8 MiB で、最大 16 MiB です。
+
+- `--platform tang-console`: UART 専用コンソール（80×30）、同期 CPU コピーの
+  RAM ディスク。IDC、DMAC、PCG、PeC キーボードへアクセスしません。
+- `--ramdisk sdram1`: Main RAM 32 MiB + 別 SDRAM 32 MiB の構成。
+  RTL も `SRC32_SEPARATE_SDRAM=1` でビルドする必要があります。
+  SDRAM1 の実機読み戻しは未解決なので、既定の分割構成を使ってください。
+- Extension V は既存どおり CPUID で自動選択します。`FND_MM=nommu` も使用できます。
+- 画面・音源・乱数デバイスは `FND_E_UNSUPPORTED` を返します。
+  UART と `/dev/con` は使用できます。`mode 40` / `mode 8x16` は未対応です。
+- 最小 SoC に RTC はなく、RTC セレクタは起動からの秒数を返します。
+  ファイル時刻は実際の日付ではありません。panic は UART に表示します。
+
+出力 `fpga-boot.json` は、`kernel.bin`（`0x10000`）、`fndboot.bin`
+（`0x200000`）、`foundation.img`（`0x20000000`）のロード先を記録します。
+RTL リポジトリで次を実行すると、ゼロ領域を ROM の `Z` コマンドで初期化してから
+カーネルへジャンプします。DTR/RTS は low に保ちます。
+
+```powershell
+.venv/Scripts/python.exe scripts/uart_load.py COM7 --foundation ../foundation-fpga/target/foundation-fpga/fpga-boot.json
+```
+
+`--verify` は全転送領域を `R` コマンドで読み戻します（転送時間が増えます）。
+ローダは転送前に BMC 容量と manifest のレイアウトの一致を確認します。
+最小構成の受信 FIFO は 16 byte、console は 100 Hz ポーリングなので、ローダの
+端末入力は 1 byte ごとに 10 ms 待ちます。出力中の大量入力にはフロー制御がありません。
+通常の `--platform cpt32`（既定）は従来の PCG、IDC、DMAC の構成です。
+ホスト回帰は `python -m unittest discover -s foundation/tests/console -p test_headless.py -v`。
+
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 
 CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様と使い方](../doc/spec_Foundation_chip8.md) を参照してください。

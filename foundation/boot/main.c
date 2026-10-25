@@ -28,9 +28,12 @@ static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_T
 
 int main(uint32_t drive, uint32_t fndboot) {
     const void *boot_image;
-#ifdef FOUNDATION_BOOT_EMBEDDED
+#if defined(FOUNDATION_BOOT_EMBEDDED) || defined(FND_PLATFORM_TANG)
     (void)drive;
     (void)fndboot;
+#ifdef FND_PLATFORM_TANG
+    fnd_set_boot_drive(0);
+#endif
     boot_image = (const void *)(uintptr_t)FNDBOOT_STAGING;
 #else
     fnd_set_boot_drive(drive);
