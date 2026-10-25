@@ -64,7 +64,7 @@ def configure(args, build: Path):
             lines.append(line)
     lines += [f"{k}={v}" for k, v in wanted.items() if k not in seen and v != "n"]
     (build / ".config").write_text("\n".join(lines) + "\n", encoding="utf-8")
-    run(["sh", "-c", f"yes n | {shlex.join(make)} oldconfig"], log=build / "oldconfig.log")
+    run(["sh", "-c", f"yes '' | timeout 300 {shlex.join(make)} oldconfig"], log=build / "oldconfig.log")
     # Hard dependencies can switch an option back off; say so rather than build something else.
     final = (build / ".config").read_text(encoding="utf-8")
     for key, value in wanted.items():
@@ -120,6 +120,18 @@ def driver_args(args):
             "--newlib-cache", str(args.cache), *(["--clang", args.clang] if args.clang else [])]
 
 
+EMPTY_ASM = re.compile(r'^\s*(?:tail )?call void asm sideeffect "",.*\n', re.M)
+
+
+def strip_empty_asm(ir: Path):
+    """BusyBox の barrier() が出す空のインラインアセンブリを消す（バックエンドは inline asm を持たず、
+    SRC32 は 1 命令ずつ順に実行するのでコンパイラバリアは何もしなくてよい）。"""
+    text = ir.read_text()
+    stripped = EMPTY_ASM.sub("", text)
+    if stripped != text:
+        ir.write_text(stripped)
+
+
 def compile_all(args, build: Path, out: Path):
     out.mkdir(parents=True, exist_ok=True)
     units = target_sources(build)
@@ -144,6 +156,7 @@ def compile_all(args, build: Path, out: Path):
         if result.returncode:
             failures[obj] = (result.stderr or result.stdout).strip()
             return None
+        strip_empty_asm(ir)
         return ir
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
@@ -181,7 +194,7 @@ def main(argv=None):
     parser.add_argument("--config", type=Path, default=HERE / "busybox.config")
     parser.add_argument("--clang")
     parser.add_argument("--cache", type=Path, help="Newlib IR cache (default: tools/llvm-src32's)")
-    parser.add_argument("-O", dest="optimization", default="-O1", choices=["-O0", "-O1", "-O2"])
+    parser.add_argument("-O", dest="optimization", default="-Os", choices=["-O0", "-O1", "-O2", "-Os", "-Oz"])
     parser.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--only", help="regular expression: compile only the matching objects (debugging)")
     parser.add_argument("--stage", choices=["configure", "compile", "link"], default="link")

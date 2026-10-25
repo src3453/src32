@@ -3,6 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 import hashlib
 import json
 import os
+import re
 from pathlib import Path
 import subprocess
 
@@ -19,18 +20,39 @@ SOURCES.update({name: f"search/{name}.c" for name in ("qsort", "bsearch")})
 POSIX_DIRS = ("libc/argz", "libc/ctype", "libc/errno", "libc/locale", "libc/misc", "libc/reent",
               "libc/search", "libc/signal", "libc/stdio", "libc/stdlib", "libc/string", "libc/time",
               "libm/common", "libm/math")
-POSIX_EXCLUDE = ("nano-", "mallocr", "malloc.c", "mlock", "nano-mallocr", "sbrkr", "mstats", "malloc_r",
+POSIX_EXCLUDE = ("mallocr", "malloc.c", "mlock", "nano-mallocr", "sbrkr", "mstats", "malloc_r",
                  "/stdlib/cxa_", "/stdlib/callocr.c", "/stdlib/cfreer.c", "/stdlib/freer.c", "/stdlib/malignr.c",
                  "/stdlib/mallinfor.c", "/stdlib/malloptr.c", "/stdlib/mallstatsr.c", "/stdlib/msizer.c",
-                 "/stdlib/pvallocr.c", "/stdlib/reallocr.c", "/stdlib/vallocr.c", "/stdlib/mallocr.c", "/misc/ffs", "fdopen64", "/stdio64/",
+                 "/stdlib/pvallocr.c", "/stdlib/realloc.c", "/stdlib/calloc.c", "/stdlib/free.c", "/stdlib/valloc.c", "/stdlib/pvalloc.c", "/stdlib/memalign.c", "/stdlib/mallinfo.c", "/stdlib/malloc_usable_size.c", "/stdlib/reallocr.c", "/stdlib/vallocr.c", "/stdlib/mallocr.c", "/misc/ffs", "fdopen64", "/stdio64/",
                  # the driver's own string.c supplies these (it compiles them at -O2)
                  "/string/memcpy.c", "/string/memmove.c", "/string/memset.c", "/string/memcmp.c", "/string/strlen.c")
 # Files that Newlib compiles as variants of another file; compile only the first of a group.
-POSIX_PRIORITY = ("stdio/vfprintf.c", "stdio/vfscanf.c", "stdio/svfprintf.c", "stdio/svfscanf.c")
+POSIX_PRIORITY = ("stdio/nano-vfprintf.c", "stdio/nano-svfprintf.c", "stdio/nano-vfscanf.c", "stdio/nano-svfscanf.c",
+                  "stdio/nano-vfprintf_i.c", "stdio/nano-vfscanf_i.c")
 POSIX_DEFINES = ("_COMPILING_NEWLIB", "_GNU_SOURCE")
-CACHE_VERSION = "1"
+CACHE_VERSION = "5"  # 2: the library is compiled with -Os (it was -O0)
 REENT_ALLOCATORS = ("_malloc_r", "_free_r", "_realloc_r", "_calloc_r", "__malloc_lock", "__malloc_unlock")
 ALLOCATORS = ("malloc", "free", "calloc", "realloc", "malloc_usable_size")
+
+
+_ALIAS = re.compile(r"^@([\w.$]+) = (?:[a-z_]+ )*alias (\w+) \(([^)]*)\), ptr @([\w.$]+)$", re.M)
+
+
+def functions_for_aliases(text):
+    """The backend has no aliases or weak symbols. Newlib's nano printf and scanf make the integer-only entry points
+    (vfiprintf and the like) aliases of the full ones, so define them as forwarding functions."""
+    def forward(match):
+        name, result, parameters, target = match.groups()
+        types = [t.strip() for t in parameters.split(",") if t.strip()]
+        names = ", ".join(f"{t} %a{i}" for i, t in enumerate(types))
+        call = f"@{target}({names})"
+        if result == "void":
+            return f"define dso_local void @{name}({names}) {{\n  tail call void {call}\n  ret void\n}}"
+        return f"define dso_local {result} @{name}({names}) {{\n  %r = tail call {result} {call}\n  ret {result} %r\n}}"
+    text = _ALIAS.sub(forward, text)
+    # nano printf and scanf reach the floating-point code through weak references that the linker
+    # leaves null when it is absent. There are no weak symbols here: link the code in, always.
+    return re.sub(r"^(define|declare) (?:extern_weak|weak) ", r"\1 ", text, flags=re.M)
 
 
 class Newlib:
@@ -104,6 +126,7 @@ class Newlib:
             if not ir.is_file():
                 try:
                     self.compile_ir(path, ir)
+                    ir.write_text(functions_for_aliases(ir.read_text(encoding="utf-8")), encoding="utf-8")
                 except Exception as exc:  # a file the toolchain cannot compile just provides nothing
                     return path, None, str(exc).splitlines()[0]
             return path, ir, None

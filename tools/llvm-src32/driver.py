@@ -55,7 +55,7 @@ def parser() -> argparse.ArgumentParser:
                    help="process FILE before the source, like Clang's -include (application code only)")
     p.add_argument("-D", dest="defines", action="append", default=[])
     opt = p.add_mutually_exclusive_group()
-    for level in range(3):
+    for level in ("0", "1", "2", "s", "z"):
         opt.add_argument(f"-O{level}", dest="optimization", action="store_const", const=f"-O{level}")
     p.set_defaults(optimization="-O0")
     p.add_argument("--origin", type=address, default=0)
@@ -119,6 +119,9 @@ def find_clang(explicit: str | None) -> str:
     raise DriverError("Clang not found; install Clang and add it to PATH, or set --clang PATH / CLANG")
 
 
+POSIX_LIBRARY_OPTIMIZATION = "-Os"
+
+
 def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=False, depfile=None) -> None:
     # The bundled string loops are hot in every guest, including -O0 guests.
     # Keep the optional external Newlib profile's compilation policy separate.
@@ -129,6 +132,9 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     cxx = source.suffix.lower() in CXX_SUFFIXES
     newlib = getattr(args, "newlib", None)
     posix_library = bool(runtime and newlib and newlib.posix)
+    if posix_library and source.is_relative_to(newlib.root):
+        # The code size matters more than speed (Foundation runs an image from a 1 MiB buffer).
+        optimization = POSIX_LIBRARY_OPTIMIZATION
     if posix_library:
         # Newlib is written for GNU C and builds with the old implicit-declaration rules.
         defines = (*defines, *newlib_posix_defines())

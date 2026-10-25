@@ -75,6 +75,23 @@ struct termios {
 #define B9600 13
 #define B38400 15
 #define B115200 0x1002
+#define B50 1
+#define B75 2
+#define B110 3
+#define B134 4
+#define B150 5
+#define B200 6
+#define B300 7
+#define B600 8
+#define B1200 9
+#define B1800 10
+#define B2400 11
+#define B4800 12
+#define B19200 14
+#define B57600 4097
+#define B230400 4099
+#define B460800 4100
+#define B921600 4103
 
 int tcgetattr(int fd, struct termios *t);
 int tcsetattr(int fd, int actions, const struct termios *t);

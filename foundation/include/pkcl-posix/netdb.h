@@ -27,10 +27,19 @@ struct addrinfo {
 #define AI_NUMERICHOST 4
 #define NI_NUMERICHOST 1
 #define NI_NUMERICSERV 2
+#define NI_NAMEREQD 8
+extern int h_errno;
+#define HOST_NOT_FOUND 1
+#define TRY_AGAIN 2
+#define NO_RECOVERY 3
+#define NO_DATA 4
 #define EAI_NONAME (-2)
 #define EAI_FAIL (-4)
 #define EAI_SYSTEM (-11)
 
+struct servent { char *s_name; char **s_aliases; int s_port; char *s_proto; };
+struct servent *getservbyname(const char *name, const char *proto);
+const char *hstrerror(int err);
 struct hostent *gethostbyname(const char *name);
 int getaddrinfo(const char *node, const char *service, const struct addrinfo *hints, struct addrinfo **res);
 void freeaddrinfo(struct addrinfo *res);

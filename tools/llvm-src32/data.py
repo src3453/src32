@@ -374,7 +374,7 @@ class DataImage:
 
     def _resolve_expression(self, text: str) -> int:
         text = text.strip()
-        if text in {"null", "zeroinitializer", "false"}:
+        if text in {"null", "zeroinitializer", "false", "undef", "poison"}:
             return 0
         if text == "true":
             return 1

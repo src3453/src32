@@ -5,3 +5,4 @@
 #include_next <stdlib.h>
 #undef itoa
 #undef utoa
+int clearenv(void);
