@@ -10,7 +10,7 @@ extern int main(int argc, char **argv);
 extern void exit(int code) __attribute__((noreturn));
 #endif
 
-/* 環境変数。起動ブロックにはまだ環境がない（doc/spec_pkcl.md §7 G2）ので空から始める。 */
+/* 環境変数。起動ブロック（version 2）の env から作る。なければ空。 */
 static char *empty_environ[1];
 char **environ = empty_environ;
 
@@ -24,6 +24,16 @@ void pkcl_start(void) {
     for (uint32_t i = 0; i < argc; ++i)
         argv[i] = (char *)fnd_argv(i); /* 起動ブロックは書き換え可能なヒープ上にある */
     argv[argc] = 0;
+    uint32_t envc = fnd_envc();
+    if (envc) {
+        char **env = fnd_mem_alloc((envc + 1u) * sizeof(char *));
+        if (!env)
+            fnd_exit(FND_E_NO_MEMORY);
+        for (uint32_t i = 0; i < envc; ++i)
+            env[i] = (char *)fnd_env(i);
+        env[envc] = 0;
+        environ = env;
+    }
 #ifdef PKCL_LIBC
     exit(main((int)argc, argv)); /* atexit と stdio の flush を libc に任せる */
 #else

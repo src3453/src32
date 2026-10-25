@@ -519,16 +519,20 @@ class ShellTests(unittest.TestCase):
         # MEM depends on the build. After spawn, fnd__exec frees its images
         # before the shell calls wait. A time-slice expiry in that cleanup
         # lets ps snapshot the ready shell (RUN) before it blocks in wait.
+        # The VM backend also runs the pipe service (pid 4), which shifts the later pids by one.
+        pipe = [] if self.slot_mm else [r'    4      0 BLOCK    1 +[1-9][0-9]*K pipe']
+        shift = len(pipe)
         patterns = [r'    1      0 BLOCK    1 +[1-9][0-9]*K console',
                     r'    2      0 BLOCK    1 +[1-9][0-9]*K disk',
                     r'    3      0 BLOCK    1 +[1-9][0-9]*K fs',
-                    r'    4      0 BLOCK    1 +[1-9][0-9]*K init',
-                    r'    6      4 (RUN  |BLOCK)    2 +[1-9][0-9]*K shell',
-                    r'    7      6 RUN      2 +[1-9][0-9]*K ps']
-        self.assertEqual(len(rows), 14, rows)
-        for row, pattern in zip(rows[7:13], patterns):
+                    *pipe,
+                    r'    %d      0 BLOCK    1 +[1-9][0-9]*K init' % (4 + shift),
+                    r'    %d      %d (RUN  |BLOCK)    2 +[1-9][0-9]*K shell' % (6 + shift, 4 + shift),
+                    r'    %d      %d RUN      2 +[1-9][0-9]*K ps' % (7 + shift, 6 + shift)]
+        self.assertEqual(len(rows), 14 + shift, rows)
+        for row, pattern in zip(rows[7:], patterns):
             self.assertRegex(row, '^' + pattern + '$')
-        self.assertEqual(rows[13], '/>')
+        self.assertEqual(rows[-1], '/>')
 
     def test_top_snapshot_and_return_to_shell(self):
         rows = self.screen('top -n 1\\n', 'echo done\\n', at_frames=[30, 300], cpu='pipeline')
@@ -537,11 +541,12 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(rows[5:7], [self.mem_line(4096),
                                     '  CPU%   PID PARENT STATE PRIO     MEM NAME'])
         # /bin/top runs beside the services, init and the shell, busiest first.
-        names = sorted(row.split()[-1] for row in rows[7:13])
-        self.assertEqual(names, ['console', 'disk', 'fs', 'init', 'shell', 'top'])
-        for row in rows[7:13]:
+        shift = 0 if self.slot_mm else 1 # the pipe service
+        names = sorted(row.split()[-1] for row in rows[7:13 + shift])
+        self.assertEqual(names, sorted(['console', 'disk', 'fs', 'init', 'shell', 'top'] + ([] if self.slot_mm else ['pipe'])))
+        for row in rows[7:13 + shift]:
             self.assertRegex(row, r'^ +\d+\.\d% +\d+ +\d+ (RUN  |BLOCK) +[12] +[1-9][0-9]*K \w+$')
-        self.assertEqual(rows[13:], ['/> echo done', 'done', '/>'])
+        self.assertEqual(rows[13 + shift:], ['/> echo done', 'done', '/>'])
         # Check measured proportions, rather than pinning costs to one build.
         values = [float(v.rstrip('%')) for v in rows[4].split() if v.endswith('%')]
         self.assertTrue(all(0 <= v <= 100 for v in values))
@@ -567,7 +572,7 @@ class ShellTests(unittest.TestCase):
         # and ^C goes to STDERR. top ignores nothing here: the shell never
         # passes Ctrl+C to the child.
         rows = self.screen('top\\n', '\\C', 'echo $?\\n', at_frames=[30, 290, 320])
-        self.assertIn('^C', rows)
+        self.assertTrue(any('^C' in row for row in rows), rows)  # the row depends on where top was drawing
         self.assertEqual(rows[-3:], ['/> echo $?', '-20', '/>'])
 
     def test_ctrl_c_interrupts_a_blocked_read(self):

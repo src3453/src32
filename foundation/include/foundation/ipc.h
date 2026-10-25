@@ -71,12 +71,13 @@ typedef struct fnd_spawn_libs {
 
 /* §9.3 startup block header. */
 #define FND_STARTUP_MAGIC 0x464E4453u /* FNDS */
-#define FND_STARTUP_VERSION 1u
+#define FND_STARTUP_VERSION 2u /* 1: without env_count and env_off (a reader treats them as 0) */
 typedef struct fnd_startup {
     uint32_t magic, version, size;
     uint32_t argc, argv_off;
     uint32_t cwd_off;
     uint32_t role_count, roles_off; /* (role, handle) pairs */
+    uint32_t env_count, env_off;    /* version 2: "NAME=value" strings, like argv */
 } fnd_startup;
 
 /* §6: handle values are 1..63. */

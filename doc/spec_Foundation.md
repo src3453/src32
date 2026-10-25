@@ -349,6 +349,8 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
   - 2 = CPU 統計。16 bytes のヘッダ（`elapsed_cycles`、`kernel_cycles`、`idle_cycles`、`clock_hz`）に、プロセスごとの 8 bytes（`pid`、`user_cycles`）が続きます。すべて u32、カウンタは 2^32 で wrap します。レコード順は sel 1 と同じで、終了記録も含み、再利用時は新 PID のカウンタを 0 にします。PeC timer ch1 を IRQ なしの 48 MHz free-running clock としてカーネルが予約します。スケジューラの起動時から計測し、HALT 中の経過も idle に含みます。使用率はスナップショット間の符号なし差分で計算し、間隔は約89秒未満とします。
     - `kernel_cycles` は C の trap ハンドラ入口から scheduler 終了までの概算です。アセンブリの context save/restore と C 計測関数の境界外の命令は、前後の user/idle に含まれます。厳密な OS オーバーヘッドとは一致しません。`user_cycles` はプロセスの全スレッドの合計、syscall 処理時間は kernel 側です。ch1 による計測自体の実行コストもあります。
   - 3 = `fnd_meminfo`（16 bytes）。順に `ram_bytes`、`vram_bytes`、`pcmram_bytes`、予約（0）。ハードウェアの実装容量で、BMC のメモリ容量レジスタ（[BMC §1.5](spec_BMC_DMAC.md)）の値です。`ram_bytes` は sel 0 と同じ（容量不明なら 16 MiB）。`vram_bytes` と `pcmram_bytes` は BMC の値そのままで、0 は容量不明を表します
+  - 4 = 呼び出したプロセス自身の `pid` と `parent`（8 bytes、u32 が 2 つ）。POSIX の `getpid`／`getppid` 用
+  - 5 = PROCESS ハンドルの pid。ハンドル番号を `buf` に渡し（メモリは使わない。`cap` は無視）、結果が pid です。ハンドルが PROCESS でなければ `FND_E_BAD_HANDLE`。`proc_fork` や `proc_spawn` が返したハンドルから子の pid を知るのに使う
   - その他は `FND_E_BAD_ARG`
 
 ### 9.1 ケーパビリティ
@@ -404,13 +406,15 @@ v1 の実行形式は固定アドレスで、MMU もありません。そのた�
 | Off | 名前 | 意味 |
 |---:|---|---|
 | 0 | magic | `0x464E4453`（`FNDS`） |
-| 4 | version | 1 |
+| 4 | version | 2（1 は env_count、env_off を欠く。読み手は 0 として扱う） |
 | 8 | size | ブロック全体の byte 数 |
 | 12 | argc | 引数の数 |
 | 16 | argv_off | argc 個の u32 オフセットの配列（ブロック先頭から） |
 | 20 | cwd_off | カレントディレクトリ（絶対パス）の位置 |
 | 24 | role_count | 役割表の件数 |
 | 28 | roles_off | `(role, handle)` の組の配列 |
+| 32 | env_count | 環境変数の数（version 2） |
+| 36 | env_off | env_count 個の u32 オフセットの配列。指す先は `NAME=value`（version 2） |
 
 - 文字列は NUL で終わります。
 - role の値：1 `STDIN`、2 `STDOUT`、3 `STDERR`、4 `FS`（fs への CHANNEL）、5 `CONSOLE`。
@@ -431,7 +435,7 @@ CPU が Extension V を報告するとき（`CPU_FEATURES` bit 9）、カーネ�
 - **`blk_io`**（§10.4）：DMA は変換されないので、転送はカーネルのバッファを経由し、完了後に複写します。
 - **フォールトと COW**：`proc_fork`（§9.6）で共有した書き込み可能ページは、PTE の W を落として SW bit 9（COW）を立てます（SW bit 8 は所有フレーム）。書き込み保護フォールト `0x8006000A` が COW ページを指す場合、共有中なら新しいフレームへ 4 KiB をコピーし、最後の所有者ならコピーせず W を復元します。TLB を消去して同じ EPC の命令を再実行します。真の読み取り専用ページや未マップページへのアクセス、COW 解決のメモリ不足を含む、ほかの U モードフォールトはプロセスを終了します。終了コードは CAUSE です。需要ページングはないので、ページは `proc_spawn` と `mem_grow` が先にすべてマップします。
 - **`sys_info`**：sel 0 の `free_bytes` は未使用の物理フレームの合計、sel 1 のプロセスごとのメモリはマップされた所有フレーム（ページ表を除く）の合計です。共有フレームは各プロセスの値に含まれるため、プロセスの値の合計は物理使用量と一致しません。
-- **限界**：プロセスは 7 個、スレッドは 8 個までのままです（§9）。
+- **限界**：プロセスは 12 個、スレッドは 16 個までです（スロットでは、スロットの数 7 が先に上限になります）。pipe サービスが 1 つ使います。
 
 ### 9.4 終了と後始末
 
@@ -608,6 +612,8 @@ FNDBOOT のヘッダ（64 bytes）：
 stage1 は、`kernel_load` = `0x00010000`、`kernel_size` ≤ `0xE0000`（§5.1 のカーネルイメージ領域）、`kernel_entry` がカーネルの範囲内であること、`size` = FS2 の `boot_size` であることも検査します。stage1 が失敗したときは、割り込み禁止のまま R1 = 失敗した段階（1 = IDENTIFY か superblock の読み込み、2 = superblock の検査、3 = FNDBOOT の読み込みか検査）で HALT します。
 
 カーネルは同梱モジュールを表の順に spawn します。各モジュールには、argv = [name]、cwd = `/`、役割表なしの起動ブロックを与えます。表の最後は init でなければなりません。すべて spawn し終えたら、staging 領域を解放します。
+
+標準の構成は console（スロット 1）、disk（2）、fs（3）、pipe、init（0）の順です。pipe は名前 `pipe` のモジュールで、スロット 6 の範囲にリンクします（[API §9.5](spec_Foundation_API.md)）。スロットバックエンドではスロット 6 をアプリ B に残すため、カーネルは名前が `pipe` のモジュールを spawn せずに読み飛ばします。
 
 ## 12. C からの利用
 

@@ -17,9 +17,13 @@ static int32_t build_startup(uint32_t *block, const fnd_exec_t *ex, const char *
                              uint32_t role_count) {
     uint32_t argc = ex->argc ? ex->argc : 1u;
     uint32_t off = sizeof(fnd_startup);
+    uint32_t envc = 0;
+    while (ex->envp && ex->envp[envc])
+        ++envc;
     uint32_t argv_off = off, roles_off = argv_off + 4u * argc;
-    off = roles_off + 8u * role_count;
-    if (argc > FND_SPAWN_MAX_HANDLES * 64u || off > FND_STARTUP_MAX)
+    uint32_t env_off = roles_off + 8u * role_count;
+    off = env_off + 4u * envc;
+    if (argc > FND_SPAWN_MAX_HANDLES * 64u || envc > 128u || off > FND_STARTUP_MAX)
         return FND_E_LIMIT;
     char *bytes = (char *)block;
     for (uint32_t i = 0; i < argc; ++i) {
@@ -32,12 +36,21 @@ static int32_t build_startup(uint32_t *block, const fnd_exec_t *ex, const char *
             bytes[off + k] = arg[k];
         off += n;
     }
+    for (uint32_t i = 0; i < envc; ++i) {
+        uint32_t len = str_len(ex->envp[i]) + 1u;
+        if (len > FND_STARTUP_MAX - off)
+            return FND_E_LIMIT;
+        block[env_off / 4u + i] = off;
+        for (uint32_t k = 0; k < len; ++k)
+            bytes[off + k] = ex->envp[i][k];
+        off += len;
+    }
     uint32_t cwd_off = off, n = str_len(cwd) + 1u;
     if (n > FND_STARTUP_MAX - off)
         return FND_E_LIMIT;
     for (uint32_t k = 0; k < n; ++k)
         bytes[off + k] = cwd[k];
-    off = (off + n + 3u) & ~3u;
+    off = (off + n + 7u) & ~7u;
     if (off > FND_STARTUP_MAX)
         return FND_E_LIMIT;
     for (uint32_t i = 0; i < role_count; ++i) {
@@ -45,7 +58,7 @@ static int32_t build_startup(uint32_t *block, const fnd_exec_t *ex, const char *
         block[roles_off / 4u + 2u * i + 1u] = i + 1u; /* child handle 1 + index */
     }
     *(fnd_startup *)block =
-        (fnd_startup){FND_STARTUP_MAGIC, FND_STARTUP_VERSION, off, argc, argv_off, cwd_off, role_count, roles_off};
+        (fnd_startup){FND_STARTUP_MAGIC, FND_STARTUP_VERSION, off, argc, argv_off, cwd_off, role_count, roles_off, envc, env_off};
     return (int32_t)off;
 }
 

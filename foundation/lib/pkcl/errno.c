@@ -55,12 +55,14 @@ int pkcl_errno(fnd_status status) {
         return ENOTEMPTY;
     case FND_E_NAME_TOO_LONG:
         return ENAMETOOLONG;
+    case FND_E_PEER_GONE:
+        return EPIPE;
     case FND_E_NO_SPACE:
         return ENOSPC;
     case FND_E_CROSS_DEVICE:
         return EXDEV;
     default:
-        return status >= 0 ? 0 : EIO; /* PEER_GONE, IO, NEEDS_FSCK と未知のコード */
+        return status >= 0 ? 0 : EIO; /* IO, NEEDS_FSCK と未知のコード */
     }
 }
 

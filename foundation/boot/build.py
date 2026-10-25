@@ -9,10 +9,11 @@ The programs, by slot (doc/spec_Foundation.md §5.2):
     slot 1  console    the console service (services/console)
     slot 2  disk       the disk service, blk_io for fs (services/disk)
     slot 3  fs         the fs service (fs/)
+    slot 6  pipe       the pipe service (services/pipe); VM backend only
     slot 4  shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     slot 5  /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
-libfnd is the WAL "fnd" 1.2 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
+libfnd is the WAL "fnd" 1.3 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
 and the shell and the commands are WAX v3 that import it; fnd_proc_exec
 reads it from /lib when it starts them (§9.5). init and the services are
 FNDBOOT modules (§11), PROTECTED WAX v2 with libfnd linked in, since the
@@ -66,6 +67,7 @@ SLOT2 = (0x00500000, 0x00580000)
 SLOT3 = (0x00580000, 0x00600000)
 SLOT4 = (0x00600000, 0x00800000)
 SLOT5 = (0x00800000, 0x00C00000)
+SLOT6 = (0x00C00000, 0x01000000)
 STACK = 0x4000
 FS_STACK = 0x8000
 FND_PRIO_SERVICE = 1
@@ -192,7 +194,7 @@ def main(argv=None):
     # Every image below is an independent driver run, except that /bin programs import the fnd WAL.
     fnd_job = pool.submit(driver, [*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal",
                           "--page-align", "--image-id", "fnd",
-                          "--abi-version", "1.2", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+                          "--abi-version", "1.3", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     # /lib/lzma.1.wal: the LZMA SDK adapter (lib/lzma, WAL "lzma" 1.0). Self-contained: it needs
     # no libfnd and no heap, so it adds nothing to the fs heap; programs that import it pass an arena.
     lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
@@ -235,6 +237,8 @@ def main(argv=None):
              image=pool.submit(static, [*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args, SLOT3,
                                f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
                                "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
+        dict(name="pipe", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             image=pool.submit(static, [services / "pipe/main.c"], out / "pipe.wax", args, SLOT6)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
              image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args, SLOT0)),
     ]

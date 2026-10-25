@@ -21,7 +21,6 @@ extern char **environ;
  * exec 族は「子を起動して終了を待ち、その終了コードで自分も終わる」で置き換える。
  * 呼び出し元から見ると戻らない点が exec と同じで、違うのは pid とメモリが残ることだけ。 */
 int execve(const char *path, char *const argv[], char *const envp[]) {
-    (void)envp; /* §7 G2: 環境ブロックはまだ渡せない */
     pkcl_init();
     uint32_t argc = 0;
     while (argv && argv[argc])
@@ -29,6 +28,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
     fnd_exec_t ex = {0};
     ex.argc = argc;
     ex.argv = (const char *const *)argv;
+    ex.envp = (const char *const *)envp;
     ex.std_in = pkcl_handle(0);
     ex.std_out = pkcl_handle(1);
     ex.std_err = pkcl_handle(2);
@@ -67,24 +67,7 @@ int execvp(const char *file, char *const argv[]) {
     return -1;
 }
 
-pid_t vfork(void) {
-    errno = ENOSYS;
-    return -1;
-}
-pid_t wait(int *status) {
-    (void)status;
-    errno = ECHILD;
-    return -1;
-}
-pid_t waitpid(pid_t pid, int *status, int options) {
-    (void)pid, (void)status, (void)options;
-    errno = ECHILD;
-    return -1;
-}
-
-pid_t getpid(void) { return 1; }
-pid_t getppid(void) { return 0; }
-pid_t setsid(void) { return 1; }
+pid_t setsid(void) { return getpid(); }
 int setuid(uid_t uid) { return uid == 0 ? 0 : (errno = EPERM, -1); }
 int setgid(gid_t gid) { return gid == 0 ? 0 : (errno = EPERM, -1); }
 int seteuid(uid_t uid) { return setuid(uid); }

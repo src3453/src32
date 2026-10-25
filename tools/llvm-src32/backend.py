@@ -28,6 +28,7 @@ _INTRINSICS = ("cpt32_halt", "cpt32_syscall", "cpt32_mfsr", "cpt32_mtsr",
                "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_jump", "cpt32_ctx_resume",
                "cpt32_cpu_features")
 # Intrinsics that execute supervisor-only instructions (HALT, MFSR, MTSR, IRET).
+_SETJMP_NAMES = ("setjmp", "_setjmp", "__builtin_setjmp", "longjmp", "_longjmp", "siglongjmp")
 _SUPERVISOR_INTRINSICS = ("cpt32_halt", "cpt32_mfsr", "cpt32_mtsr",
                           "cpt32_run_user", "cpt32_return_to_kernel", "cpt32_ctx_resume")
 _KERNEL_CONTEXT = "__llvm_src32_kernel_context"
@@ -1002,6 +1003,9 @@ class _Function:
         if name in _INTRINSICS:
             self.privilege_intrinsic(inst, name, values)
             return
+        if name in _SETJMP_NAMES and name not in self.owner.definitions:
+            self.jump_buffer_call(inst, name, values)
+            return
         if name.startswith("llvm."):
             self.intrinsic(inst, name, values)
             return
@@ -1086,6 +1090,40 @@ class _Function:
         if number not in valid:
             self.fail(f"{what} {number:#x} is out of range")
         return number
+
+    def jump_buffer_call(self, inst, name, values):
+        """setjmp and longjmp, expanded at the call site (doc/spec_pkcl.md §7 G7).
+
+        Every value lives in the frame, addressed from FP, so a jump buffer only needs SP, FP
+        and the resume address: words 0, 1 and 2 of the buffer. setjmp stores the result slot
+        after the label, which longjmp reaches with R1 = the value.
+        """
+        c = self.c
+        if name in _SETJMP_NAMES[:3]:
+            if len(values) != 1 or str(inst.type) != "i32":
+                self.fail(f"{name} must take a jump buffer and return int")
+            resume = c.fresh("setjmp_resume")
+            self.load(values[0], 3)
+            c.mem("ST", 28, 3, 0)
+            c.mem("ST", 29, 3, 4)
+            c.imm(2, ("label", resume))
+            c.mem("ST", 2, 3, 8)
+            c.imm(1, 0)
+            c.label(resume)
+            self.store(inst)
+            return
+        if len(values) != 2:
+            self.fail(f"{name} must take a jump buffer and a value")
+        taken = c.fresh("longjmp_value")
+        self.load(values[1], 1)
+        self.load(values[0], 3)
+        c.emit(f"BNE R1, R0, {taken}")
+        c.imm(1, 1)
+        c.label(taken)
+        c.mem("LD", 2, 3, 8)
+        c.mem("LD", 29, 3, 4)
+        c.mem("LD", 28, 3, 0)
+        c.emit("JR R2")
 
     def privilege_intrinsic(self, inst, name, values):
         """SRC32 HALT and Extension P intrinsics (sdk/cpt32/include/cpt32/cpu.h)."""

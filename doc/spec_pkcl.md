@@ -58,7 +58,7 @@ python tools/llvm-src32/driver.py app.c foundation/lib/pkcl/*.c \
 
 ### 3.3 起動
 
-`--entry pkcl_start` を指定すると、`crt.c` の `pkcl_start` が `fnd_init`、`pkcl_init`（fd 0〜2 の準備）、argv の組み立てを行い、`int main(int argc, char **argv)` を呼んで、その戻り値で `fnd_exit` します。`environ` は現状空です（§7 G2）。`pkcl_init` は POSIX 呼び出しの先頭でも遅延して呼ばれるので、`main(void)` と `fnd_init` の既存形式のアプリでも pkcl の関数を使えます。
+`--entry pkcl_start` を指定すると、`crt.c` の `pkcl_start` が `fnd_init`、`pkcl_init`（fd 0〜2 の準備）、argv の組み立てを行い、`int main(int argc, char **argv)` を呼んで、その戻り値で `fnd_exit` します。`environ` は起動ブロック version 2 の環境から作ります（なければ空）。`pkcl_init` は POSIX 呼び出しの先頭でも遅延して呼ばれるので、`main(void)` と `fnd_init` の既存形式のアプリでも pkcl の関数を使えます。
 
 ## 4. 型と ABI の方針
 
@@ -114,7 +114,8 @@ Foundation の `fnd_status`（負値）を `pkcl_errno` で errno に直しま�
 | `isatty` | `ST_STAT` の type = `CONSOLE` | 実装済み |
 | `fstat` | `ST_STAT` | 実装済み |
 | `pread`、`pwrite`、`readv`、`writev` | `lseek` ＋ read/write で代用できるが原子的ではない | 予定 |
-| `pipe`、`pipe2`、`mkfifo` | ユーザー空間の `pipe` サービス（IPC ＋ハンドル転送。カーネル変更なし）。§7 G3 | 予定 |
+| `pipe`、`pipe2` | ユーザー空間の `pipe` サービス（API §9.5）。`read` は 1 回に 4096 bytes まで返す。端は `S_IFIFO`。VM のみ | 実装済み |
+| `mkfifo` | 名前付き pipe は持たない | `ENOSYS` |
 | `select`、`poll` | コンソールは `CON_READ_KEY(NOWAIT)`、ファイルは常に ready、pipe はサービスの op | 予定 |
 | `mmap`、`munmap` | 無い。`MAP_PRIVATE` ファイル読み込みだけは read で模倣できるが、BusyBox は不要 | 不可 |
 | `fcntl(F_SETLK)`、`flock` | ロックなし | 不可（`ENOSYS`） |
@@ -151,22 +152,23 @@ Foundation の `fnd_status`（負値）を `pkcl_errno` で errno に直しま�
 
 ### 6.4 プロセス
 
-Foundation のプロセスは `fnd_proc_exec`（= `proc_spawn`）で作る新しいイメージで、`fork` に相当する操作はありません（メモリのコピーも COW の仕組みもプロセスの複製にはない）。
+プロセスは `fnd_proc_exec`（= `proc_spawn`）で作る新しいイメージのほかに、VM バックエンドでは `proc_fork`（Foundation §9.6）で複製できます。`fork` は COW で、ハンドルは複製、ファイル位置は親子で共有です。生存スレッドが 1 本で、THREAD ハンドルと MMIO 付与がないことが条件です。slot バックエンドでは `fork` は `ENOSYS` です。
 
 | 関数 | 方式 | 状態 |
 |---|---|---|
 | `_exit`、`exit` | `fnd_exit`（`exit` と `atexit` は libc） | `_exit` 実装済み |
 | `posix_spawn`、`posix_spawnp` | `fnd_proc_exec`。file actions（`dup2`/`close`/`open`）は子の `std_in/out/err` に渡すハンドルへ翻訳（0〜2 だけ）。`posix_spawnp` は `PATH` を `fnd_path_stat` で探す | 予定（M2） |
-| `waitpid`、`wait` | pkcl の子プロセス表（pid → PROCESS ハンドル）と `fnd_proc_wait`。`WNOHANG` は `wait(h, 0, …)`（`WOULD_BLOCK`→0） | 予定（M2） |
+| `waitpid`、`wait` | pkcl の子プロセス表（32 件、pid → PROCESS ハンドル）と `wait`。`WNOHANG` は `wait(h, 0, …)`（`WOULD_BLOCK`→0）。終了コードは `WEXITSTATUS`、カーネルが殺したときは `SIGKILL`、フォールトは `SIGSEGV` | 実装済み |
 | `execve`、`execv`、`execvp` | **代理 exec**：子を spawn して待ち、その終了コードで `_exit`。fd の継承は 0〜2 のみ。自分のハンドル（fd 3 以上）は渡らない | 予定（M2） |
 | `system`、`popen` | `posix_spawn("/bin/sh")` ＋ `waitpid`（`popen` は pipe 後） | 予定 |
-| `fork`、`vfork` | **不可**（`ENOSYS`）。BusyBox は NOMMU 構成と `posix_spawn` への置き換えで回避する（§8.3） | 不可 |
-| `getpid`、`getppid` | カーネルに「自分の pid」を返す手段がない。§7 G1 | 要変更 |
-| `kill`、`signal`、`sigaction`、`raise` | 非同期シグナルはない。§6.5 | 予定（M4） |
+| `fork`、`vfork` | `proc_fork`（VM のみ）。`vfork` は `fork` と同じ（親の停止はしない）。子は pkcl の子プロセス表を空にして始まる | 実装済み（VM） |
+| `getpid`、`getppid` | `sys_info` sel 4（自分の pid と parent）。PROCESS ハンドルの pid は sel 5。`fork` の戻りの pid は sel 5 で得る | 実装済み |
+| `kill`、`signal`、`sigaction`、`raise` | `kill(子の pid, SIGKILL/SIGTERM)` は `proc_kill`、それ以外のシグナルの配送はない。§6.5 | `kill` は実装済み、他は予定（M4） |
 | `sleep`、`nanosleep`、`usleep` | `sleep`（tick は 10 ms 単位に切り上げ） | 予定（M4） |
 | `getuid` 系 | 常に 0 | 実装済み |
 | `setuid` 系、`chroot` | | 不可（`EPERM`／`ENOSYS`） |
-| `getenv`、`setenv` | libc。環境の継承は §7 G2 | 要変更 |
+| `getenv`、`setenv` | libc。環境は起動ブロック version 2 から `environ` に作り、`execve` は `envp` を渡す。`fork` の子はメモリごと引き継ぐ | 実装済み |
+| `pipe`、`pipe2` | pipe サービス（API §9.5）。`fork` で端を共有できる | 実装済み（VM） |
 
 ### 6.5 シグナル
 
@@ -199,17 +201,17 @@ Foundation のプロセスは `fnd_proc_exec`（= `proc_spawn`）で作る新し
 
 ## 7. Foundation 側のギャップ（pkcl が待つもの）
 
-pkcl の方針は「少しの変更なら入れる」です。次は、それぞれ独立した小さな変更の候補です。**この PR では実装しません**（Issue にします）。
+pkcl の方針は「少しの変更なら入れる」です。次は、それぞれ独立した小さな変更の候補です。G1・G2・G3・G7 は実装済みで、残りは Issue にします。
 
 | ID | 欠けているもの | 提案する最小の変更 | 影響する POSIX |
 |---|---|---|---|
-| G1 | 自分の pid を知る手段 | `sys_info` に sel を 1 つ足す（自プロセスの pid と parent） | `getpid`、`getppid`、`kill(getpid())` |
-| G2 | 環境変数の受け渡し | **カーネルは起動ブロックを解釈しない**（Foundation §9.3）ので、libfnd の規約として起動ブロック version 2 に `env_off`/`env_count` を足す。`fnd_exec_t` に `envp` を足す | `environ`、`getenv`、`execve` の環境 |
-| G3 | パイプ | ユーザー空間の `pipe` サービス（`svc_register`、`FS_OPEN` 風の op で 2 本のハンドルを `XFER_HANDLE` で返す）。カーネル変更なし | `pipe`、`|`、`popen`、`mkfifo` |
+| G1（済） | 自分の pid を知る手段 | `sys_info` に sel を 1 つ足す（自プロセスの pid と parent） | `getpid`、`getppid`、`kill(getpid())` |
+| G2（済） | 環境変数の受け渡し | **カーネルは起動ブロックを解釈しない**（Foundation §9.3）ので、libfnd の規約として起動ブロック version 2 に `env_off`/`env_count` を足す。`fnd_exec_t` に `envp` を足す | `environ`、`getenv`、`execve` の環境 |
+| G3（済） | パイプ | ユーザー空間の `pipe` サービス（`svc_register`、`FS_OPEN` 風の op で 2 本のハンドルを `XFER_HANDLE` で返す）。カーネル変更なし | `pipe`、`|`、`popen`、`mkfifo` |
 | G4 | inode 番号 | `fnd_stat` の予約欄（offset 60）に FS2 の inode を入れる（FS2 の inode 番号。実装時に FS2 仕様で確認する） | `st_ino`、`cp`/`mv` の同一ファイル判定 |
 | G5 | 時刻の更新 | `FS_UTIME` op（path、mtime、atime）。FS2 は mtime を持つ | `touch`、`cp -p`、`utimes` |
 | G6 | シンボリックリンク／ハードリンク | FS2 の拡張が必要（影響大）。当面入れない | `ln`、`readlink` |
-| G7 | `setjmp`/`longjmp` | `tools/llvm-src32` の README に言及がなく、対応は未確認。ash が必須。未対応なら runtime のアセンブリ関数で実装する | ash、`libc` 全般 |
+| G7（済） | `setjmp`/`longjmp` | バックエンドが呼び出しをインライン展開する（`tools/llvm-src32/backend.py`）。`sigsetjmp` は信号マスクを持たないので `setjmp` と同じ | ash、`libc` 全般 |
 | G8 | 64 bit のファイルオフセット | `off_t` を 64 bit にする（i64 は対応済み）。API の `fnd_seek` を libfnd に足す（現在は pkcl が `ST_SEEK` を直接呼ぶ） | 2 GiB 超のファイル |
 | G9 | `ST_READ` のノンブロッキング | コンソールはあるが、pipe と通常のストリームにない | `O_NONBLOCK`、`poll` |
 
@@ -228,16 +230,16 @@ BusyBox は GPL-2.0 なので、**リポジトリには含めません**。Newli
 | ファイル I/O、`stat`、`mkdir` 等 | 実装済み（§6.1〜6.3） |
 | `DIR`（`ls`、`cp -r`、`rm -r`） | 実装済み（`posix/dirent.c`） |
 | libc：`stdio`（`printf` 系、`fopen`、バッファ）、`strtol`、`qsort`、`getopt`、`regcomp`（`grep`、`sed`）、`locale` の最小 | 実装済み（Newlib の posix プロファイル、§9） |
-| `setjmp`/`longjmp`（ash が必須） | 未対応。`posix/setjmp.c` は `setjmp` が 0 を返し `longjmp` は終了する仮実装（G7） |
-| `posix_spawn`、`waitpid`（外部コマンド、`xargs`、`find -exec`） | `execve` 系は「子を起動して終了を待ち、終了コードで自分も終わる」代理実装。`vfork`／`waitpid` は失敗（M2 の残り） |
-| `pipe`（シェルのパイプ、`popen`） | `ENOSYS`（G3、M4） |
+| `setjmp`/`longjmp`（ash が必須） | 実装済み。バックエンドがインライン展開する（G7） |
+| `posix_spawn`、`waitpid`（外部コマンド、`xargs`、`find -exec`） | `waitpid`・`fork` は実装済み（VM）。`execve` 系は「子を起動して終了を待ち、終了コードで自分も終わる」代理実装。`posix_spawn` は予定 |
+| `popen` | `pipe` ＋ `posix_spawn`（予定） |
 | `termios`、`ioctl`、`signal`（対話シェル、`vi`、`top`） | termios／`TIOCGWINSZ` は console の LINE／RAW に対応。`sigaction` は登録を受け付けるだけで配送されない。`poll` は要求をそのまま準備済みとして返す（G9） |
 | `getpwnam` 等 | BusyBox の `USE_BB_PWD_GRP` で自前実装を使い、`/etc/passwd` を読む |
 | 浮動小数点 | `llvm-src32` が SoftFloat で対応済み。BusyBox は `awk`、`dc` 以外で不要 |
 
 ### 8.3 `fork` を使わない構成
 
-BusyBox の NOMMU 構成（`CONFIG_NOMMU`）と NOFORK／NOEXEC applet（`FEATURE_PREFER_APPLETS`、`FEATURE_SH_NOFORK`、`FEATURE_SH_STANDALONE`）を使い、`fork` を呼ぶ経路を無くします。外部コマンドは `posix_spawn("/bin/busybox", argv…)` の再実行（`BB_FORCE_APPLETS`風）で起動します。**パイプラインは複数プロセスを並行して動かし、pipe サービス越しにつなぐ**ことで実現します。ash の NOMMU サポートは「`vfork` ＋ exec」を前提としているため、`vfork` が使えない場合に ash を使えるかは M5 の調査項目です（hush は NOMMU でもより素直）。
+`proc_fork` が使える VM では BusyBox を MMU 構成（`fork` を使う）で組めます。`proc_exec` に相当する操作がないので、`execve` は代理 exec（子を作って待つ）のままで、`FEATURE_SH_STANDALONE` と NOEXEC／NOFORK applet が `execve` の回数を減らします。slot バックエンド向けには、BusyBox の NOMMU 構成と NOFORK／NOEXEC applet（`FEATURE_PREFER_APPLETS`、`FEATURE_SH_NOFORK`、`FEATURE_SH_STANDALONE`）を使い、`fork` を呼ぶ経路を無くします。外部コマンドは `posix_spawn("/bin/busybox", argv…)` の再実行（`BB_FORCE_APPLETS`風）で起動します。**パイプラインは複数プロセスを並行して動かし、pipe サービス越しにつなぐ**ことで実現します。ash の NOMMU サポートは「`vfork` ＋ exec」を前提としているため、`vfork` が使えない場合に ash を使えるかは M5 の調査項目です（hush は NOMMU でもより素直）。
 
 ### 8.4 ビルド
 
@@ -284,9 +286,9 @@ pkcl のヘッダは libc なしの `pkcl-nolibc`（`errno`、`fcntl`、`unistd`
 | M0 | 設計、ヘッダ、fd I/O、パス操作、errno、起動コード、ゲストテスト | 完了 |
 | M1 | ディレクトリ（`DIR`）、`O_DIRECTORY`、`statvfs`、`chown`、`dup3`、`pread`/`pwrite` | `DIR`・`chown` 縮退は完了。残りは予定 |
 | M2 | libc 統合（Newlib の posix プロファイル）、代理 `execve` | 完了。`posix_spawn`・`waitpid` は予定 |
-| M3 | 環境変数（G2）、`getpid`（G1）、時刻、`sleep` | 時刻・`sleep` は完了。G1・G2 は予定（`getpid` は 1 を返す仮実装） |
-| M4 | pipe サービス（G3）、`poll`、シグナル、termios | termios は完了。他は予定 |
-| M5 | BusyBox のビルド統合（`--busybox-source`）、最初の applet、ash／hush の調査、`setjmp`（G7） | ビルド統合と最初の applet は完了。ash／hush と `setjmp` は予定 |
+| M3 | 環境変数（G2）、`getpid`（G1）、時刻、`sleep` | 完了 |
+| M4 | pipe サービス（G3）、`poll`、シグナル、termios | pipe・termios は完了。`poll` の実装、シグナルの配送は予定 |
+| M5 | BusyBox のビルド統合（`--busybox-source`）、最初の applet、ash／hush の調査、`setjmp`（G7） | ビルド統合と最初の applet は完了。`setjmp` は完了。ash／hush は予定 |
 | M6 | 64 bit オフセット（G8）、`utime`（G5）、inode（G4） | 予定 |
 
 各 Issue は GitHub Issues にあります。GitHub のマイルストーンは分野の分類（Foundation OS）で、上の M は Issue タイトルの接頭辞に書きます。

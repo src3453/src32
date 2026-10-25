@@ -43,12 +43,15 @@ typedef struct {
     const char *cwd;         /* NULL: the current cwd */
     fnd_handle std_in, std_out, std_err; /* 0: pass our own */
     uint32_t flags;          /* reserved, 0 */
+    const char *const *envp; /* NULL-terminated "NAME=value" strings; NULL: an empty environment */
 } fnd_exec_t;
 
 /* §11.2 */
 fnd_status fnd_init(void);
 uint32_t fnd_argc(void);
 const char *fnd_argv(uint32_t i);
+uint32_t fnd_envc(void);
+const char *fnd_env(uint32_t i); /* "NAME=value" */
 fnd_handle fnd_std_in(void);
 fnd_handle fnd_std_out(void);
 fnd_handle fnd_std_err(void);
