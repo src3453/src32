@@ -1293,6 +1293,76 @@ class _Function:
             self.copy(values[1], self.slots[inst])
             c.label(done)
             return
+        if kind in ("fshl", "fshr") and bits == 64:
+            amount = values[2]
+            if amount.value_kind != llvm.ValueKind.constant_int:
+                self.fail("64-bit funnel shift needs a constant shift amount")
+            s = amount.get_constant_value() % 64
+            if kind == "fshr":
+                s = (64 - s) % 64
+            # fshl(A, B, s) = A << s | B >> (64 - s); words: R2/R4 high, R1/R3 low.
+            self.load(values[0], 1, 1)
+            self.load(values[0], 2, 0)
+            self.load(values[1], 3, 1)
+            self.load(values[1], 4, 0)
+            if s == 0:
+                c.move(5, 2 if kind == "fshl" else 4)
+                c.move(6, 1 if kind == "fshl" else 3)
+            else:
+                def shift(op, dst, src, n):
+                    c.imm(9, n)
+                    c.emit(f"{op} R{dst}, R{src}, R9")
+                # A << s
+                if s < 32:
+                    shift("SLL", 5, 2, s)
+                    shift("SRL", 7, 1, 32 - s)
+                    c.emit("OR R5, R5, R7")
+                    shift("SLL", 6, 1, s)
+                else:
+                    shift("SLL", 5, 1, s - 32)
+                    c.move(6, 0)
+                # B >> (64 - s)
+                t = 64 - s
+                if t < 32:
+                    shift("SRL", 7, 3, t)
+                    c.emit("OR R6, R6, R7")
+                    shift("SLL", 7, 4, 32 - t)
+                    c.emit("OR R6, R6, R7")
+                    shift("SRL", 7, 4, t)
+                    c.emit("OR R5, R5, R7")
+                else:
+                    shift("SRL", 7, 4, t - 32)
+                    c.emit("OR R6, R6, R7")
+            self.store(inst, 5, 0)
+            self.store(inst, 6, 1)
+            return
+        if kind in ("fshl", "fshr"):
+            if bits != 32:
+                self.fail(f"unsupported funnel shift width {bits}")
+            # fshl(a, b, s) = a << s | b >> (32 - s); fshr(a, b, s) = a << (32 - s) | b >> s; s is taken mod 32.
+            self.load(values[0], 1)
+            self.load(values[1], 2)
+            self.load(values[2], 3)
+            c.imm(9, 31)
+            c.emit("AND R3, R3, R9")
+            zero, done = c.fresh("funnel_zero"), c.fresh("funnel_done")
+            c.emit(f"BEQ R3, R0, {zero}")
+            c.imm(9, 32)
+            c.emit("SUB R4, R9, R3")  # 32 - s
+            if kind == "fshl":
+                c.emit("SLL R1, R1, R3")
+                c.emit("SRL R2, R2, R4")
+            else:
+                c.emit("SLL R1, R1, R4")
+                c.emit("SRL R2, R2, R3")
+            c.emit("OR R1, R1, R2")
+            c.emit(f"JMP {done}")
+            c.label(zero)
+            if kind == "fshr":
+                c.move(1, 2)
+            c.label(done)
+            self.store(inst)
+            return
         self.load(values[0], 1, 1 if wide else 0)
         if wide:
             self.load(values[0], 2, 0)
@@ -1400,6 +1470,73 @@ class _Function:
             c.mem("ST", 0, 29, self.slots[inst] + 4)
             c.mem("STB", 4, 29, self.slots[inst] + self.layout.offset(inst.type, 1))
             return
+        if name == "llvm.umul.with.overflow.i64":
+            # A = R2:R1, B = R4:R3. The product overflows 64 bits exactly when ahi and bhi are both
+            # non-zero, when either cross product ahi*blo, alo*bhi reaches 2^32, or when
+            # lo(ahi*blo) + lo(alo*bhi) + hi(alo*blo) carries out of the high word.
+            self.load(values[0], 1, 1)
+            self.load(values[0], 2, 0)
+            self.load(values[1], 3, 1)
+            self.load(values[1], 4, 0)
+
+            def unsigned_high(dst, x, y, tmp):
+                c.emit(f"MULH R{dst}, R{x}, R{y}")
+                c.imm(9, 31)
+                c.emit(f"SRA R{tmp}, R{x}, R9")
+                c.emit(f"AND R{tmp}, R{tmp}, R{y}")
+                c.emit(f"ADD R{dst}, R{dst}, R{tmp}")
+                c.emit(f"SRA R{tmp}, R{y}, R9")
+                c.emit(f"AND R{tmp}, R{tmp}, R{x}")
+                c.emit(f"ADD R{dst}, R{dst}, R{tmp}")
+
+            c.emit("SLTU R5, R0, R2")
+            c.emit("SLTU R6, R0, R4")
+            c.emit("AND R5, R5, R6")
+            for x, y in ((2, 3), (1, 4)):
+                unsigned_high(6, x, y, 7)
+                c.emit("SLTU R6, R0, R6")
+                c.emit("OR R5, R5, R6")
+            c.emit("MUL R6, R2, R3")
+            c.emit("MUL R7, R1, R4")
+            c.emit("ADD R6, R6, R7")
+            c.emit("SLTU R7, R6, R7")
+            c.emit("OR R5, R5, R7")
+            unsigned_high(7, 1, 3, 8)
+            c.emit("ADD R6, R6, R7")
+            c.emit("SLTU R6, R6, R7")
+            c.emit("OR R5, R5, R6")
+            slot = self.slots[inst]
+            c.mem("ST", 0, 29, slot + 8)
+            c.mem("STB", 5, 29, slot + self.layout.offset(inst.type, 1))
+            unsigned_high(5, 1, 3, 6)
+            c.emit("MUL R2, R2, R3")
+            c.emit("MUL R4, R4, R1")
+            c.emit("ADD R2, R2, R4")
+            c.emit("ADD R2, R2, R5")
+            c.emit("MUL R1, R1, R3")
+            self.store(inst, 2, 0)
+            self.store(inst, 1, 1)
+            return
+        if name.startswith("llvm.uadd.sat.") and _bits(inst.type) <= 32:
+            bits = _bits(inst.type)
+            self.load(values[0], 1)
+            self.load(values[1], 3)
+            self.narrow(1, bits)
+            self.narrow(3, bits)
+            c.emit("ADD R1, R1, R3")  # at most 33 bits only when bits == 32: detect through the carry
+            maximum = (1 << bits) - 1
+            done = c.fresh("uadd_sat_done")
+            if bits == 32:
+                self.load(values[0], 4)
+                c.emit("SLTU R5, R1, R4")  # wrapped: result < first operand
+            else:
+                c.imm(4, maximum)
+                c.emit("SLTU R5, R4, R1")  # result > max
+            c.emit(f"BEQ R5, R0, {done}")
+            c.imm(1, maximum)
+            c.label(done)
+            self.store(inst)
+            return
         if name.startswith("llvm.usub.sat."):
             bits = _bits(inst.type)
             wide = bits > 32
@@ -1438,7 +1575,7 @@ class _Function:
         if name.split(".")[1] in ("fabs", "copysign", "sqrt", "fma", "fmuladd"):
             self.float_intrinsic(inst, name, values)
             return
-        if name.split(".")[1] in ("smin", "smax", "umin", "umax", "abs", "bswap", "ctpop", "ctlz", "cttz"):
+        if name.split(".")[1] in ("smin", "smax", "umin", "umax", "abs", "bswap", "ctpop", "ctlz", "cttz", "fshl", "fshr"):
             self.integer_intrinsic(inst, name, values)
             return
         if name.startswith(("llvm.lifetime.", "llvm.dbg.")):
@@ -1484,6 +1621,12 @@ class _Function:
             self.load(values[1], 2)
             c.emit("AND R1, R1, R2")
             self.store(inst)
+            return
+        if name == "llvm.get.rounding":
+            c.imm(1, 1)  # FLT_ROUNDS: to nearest, the only mode SoftFloat here uses
+            self.store(inst)
+            return
+        if name == "llvm.set.rounding":
             return
         if name.startswith("llvm.expect."):
             self.copy(values[0], self.slots[inst])
