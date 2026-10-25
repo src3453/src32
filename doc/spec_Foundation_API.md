@@ -10,7 +10,7 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 |---|---|
 | プロトコル | [Foundation §8](spec_Foundation.md) の IPC（`fnd_msg`、`ipc_call`、ハンドル転送）の上に載る、サービスとクライアントの約束 |
 | サービス | fs（`svc_lookup("fs")`）、console（`svc_lookup("console")`）、デバイスサービス |
-| ライブラリ | libfnd（`foundation/lib/fnd`、C11、WAL `fnd` 1.2 または静的リンク） |
+| ライブラリ | libfnd（`foundation/lib/fnd`、C11、WAL `fnd` 1.3 または静的リンク） |
 | ヘッダ | `foundation/include/foundation/{fnd.h,api.h}`。`api.h` は本書の番号と構造体、`fnd.h` は libfnd の関数 |
 
 本書が定めないもの：
@@ -45,6 +45,7 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 | `0x0100–0x01FF` | fs セッション操作（§6） |
 | `0x0200–0x02FF` | ディレクトリ操作（§7） |
 | `0x0300–0x03FF` | デバイスサービスの操作（§9） |
+| `0x0400–0x04FF` | pipe サービスの操作（§9.5） |
 | `0x1000–0x10FF` | コンソール操作（§8） |
 | `0x1100–0x11FF` | VDPビットマップ／CLUT操作（§9.1） |
 | `0x1200–0x12FF` | SGC 状態・出力GP・リセット操作（§9.3） |
@@ -80,7 +81,7 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 | オブジェクト | 作る操作 | 使える操作 |
 |---|---|---|
 | fs セッション | `svc_lookup("fs")`、`FS_SESSION_NEW` | §6 |
-| ストリーム | `FS_OPEN`、`DEV_OPEN`（ファイル、コンソール、デバイス） | §5。コンソールなら §8 も |
+| ストリーム | `FS_OPEN`、`DEV_OPEN`（ファイル、コンソール、デバイス）、`PIPE_OPEN`（pipe の両端） | §5。コンソールなら §8 も |
 | ディレクトリ | `FS_DIR_OPEN` | §7 |
 
 - 開いたファイル 1 つが 1 つの CHANNEL です。libfnd のファイルハンドルは、カーネルのハンドル番号そのものです（実装案 §4.4 の「別の名前空間」という案は採らない）。
@@ -454,13 +455,28 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `ST_STAT` は DEVICE、上表の mode、UID 0、size 0 を返します。乱数デバイスの flags は READ_ONLY、UART は 0 です。`ST_SYNC` は成功する no-op、seek／truncate／その他の操作は UNSUPPORTED。権限のない read／write は ACCESS です。ユーザーバッファは IPC の検証後に `mm_copy_*` でコピーします。
 - C アプリは既存の `fnd_file_open`、`fnd_read`、`fnd_write`、`fnd_close` を使えます。たとえば `fnd_file_open("/dev/prng", FND_OPEN_READ, FND_MODE_DEFAULT, &h)` で開いて任意長を読み出せます。
 
+### 9.5 pipe サービス `pipe`
+
+名前なしの pipe（POSIX の `pipe(2)`）のためのサービスです。`svc_lookup("pipe")` で得た CHANNEL は `PIPE_OPEN` だけを受け付けます。pipe の両端は、サービスの PORT から作った CHANNEL 1 本ずつで、badge で端を区別します。端のハンドルは `dup`・`XFER_HANDLE`・`proc_fork` で増やせます。端の最後のハンドルが閉じる（`CLIENT_GONE`）と、その端が閉じたことになります。
+
+| op | 名前 | 要求 | 応答 |
+|---|---|---|---|
+| `0x0400` | `PIPE_OPEN` | `a0` = 0: 新しい pipe を作る。1: `a1` = pipe の id の書き端を付ける | `a0` = pipe の id、`a3` = 端のストリーム（`XFER_HANDLE`）。作る呼び出しは読み端を返す |
+
+- 書き端は pipe ごとに 1 回だけ付けられます（付け済みなら `FND_E_NOT_FOUND`）。読み端と書き端の両方が閉じると pipe は消えます。
+- 端のストリームは §5 のうち `ST_READ`（読み端）、`ST_WRITE`（書き端）、`ST_STAT`（`type` = 5 PIPE）、`ST_SYNC`（何もしない）を受け付けます。`ST_SEEK` と `ST_TRUNCATE` は `FND_E_UNSUPPORTED`、向きが違う端への読み書きは `FND_E_ACCESS` です。
+- `ST_READ` はデータが届くまで待ち、届いた分（最大 `a0`）を返します。書き端がすべて閉じていてデータがなければ、長さ 0（EOF）を返します。
+- `ST_WRITE`（4096 bytes まで）は、全体が入る空きができるまで待ち、まとめて書きます（原子的）。読み端がすべて閉じていれば `FND_E_PEER_GONE` です。待っている要求は端が閉じたときに答えます。
+- 容量は 1 つの pipe につき 4096 bytes、同時に待てる要求は 32 件、pipe は 32 本です。超えると `FND_E_LIMIT` です。
+- サービスはどのバックエンドでも起動します。ただし `fork` で端を共有できるのは VM だけです（`proc_fork` が VM 専用のため）。
+
 ## 10. 構造体
 
 ### 10.1 `fnd_stat`（64 bytes）
 
 | Off | 名前 | 意味 |
 |---:|---|---|
-| 0 | `type` | 1 FILE、2 DIR、3 DEVICE、4 CONSOLE |
+| 0 | `type` | 1 FILE、2 DIR、3 DEVICE、4 CONSOLE、5 PIPE |
 | 4 | `mode` | FS2 §8 の mode |
 | 8 | `uid` | 所有者 |
 | 12 | `flags` | bit 0 `READ_ONLY`（mount か媒体が書き込み禁止）、bit 1 `SEEKABLE`。その他は 0 |
@@ -602,7 +618,8 @@ typedef struct {
     const char *const *argv;      /* argv[0] を含む */
     const char        *cwd;       /* NULL なら現在の cwd */
     fnd_handle         std_in, std_out, std_err;   /* 0 なら自分のものを渡す */
-    uint32_t           flags;     /* 予約。0 */
+    uint32_t           flags;     /* FND_EXEC_KEEP_ARGV0（1）: argv[0] を置き換えずそのまま渡す。他は予約。0 */
+    const char *const *envp;      /* NULL 終端の "NAME=value"。NULL なら空の環境 */
 } fnd_exec_t;
 
 fnd_status fnd_proc_exec(const char *path, const fnd_exec_t *ex, fnd_handle *proc);
@@ -612,6 +629,8 @@ fnd_status fnd_proc_kill(fnd_handle proc);
 ```
 
 `fnd_proc_fork()` は WAL `fnd` 1.2 の追加 API です。カーネルの `proc_fork` を呼び、親に子の PROCESS ハンドル、子に 0、失敗時に負のエラーを返します。VM・単一スレッドなどの制約は [カーネル仕様 §9.6](spec_Foundation.md) を参照してください。ハンドルが指すファイル位置・fs セッション・cwd などのサービス側状態は親子で共有します。
+
+環境変数は `WAL fnd 1.3` で加わりました。`fnd_envc()` と `fnd_env(i)` が、起動ブロック（[Foundation §9.3](spec_Foundation.md)、version 2）の環境を返します。子へは `fnd_exec_t.envp` で渡し、`fork` した子は環境をメモリごと引き継ぎます。環境と引数は合わせて起動ブロックの 4096 bytes に収まらなければならず、環境は 128 件までです。
 
 `fnd_proc_exec` は次の手順で起動します。
 

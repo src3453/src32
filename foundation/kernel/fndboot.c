@@ -52,7 +52,8 @@ int32_t fnd_boot_check(const void *fndboot) {
 int32_t fnd_boot_spawn(const void *fndboot, uint32_t index, const struct fnd_image *libs, uint32_t lib_count) {
     const uint8_t *boot = fndboot;
     const uint8_t *entry = entry_at(boot, index);
+    const char *name = (const char *)entry + 32;
     const struct fnd_grant *grants = word(entry + 20) ? (const void *)(boot + word(entry + 16)) : 0;
-    return fnd_proc_spawn_module((const char *)entry + 32, word(entry + 8), word(entry + 12), boot + word(entry),
+    return fnd_proc_spawn_module(name, word(entry + 8), word(entry + 12), boot + word(entry),
                                  word(entry + 4), libs, lib_count, grants, word(entry + 20));
 }

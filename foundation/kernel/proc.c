@@ -705,11 +705,13 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
 }
 
 /* sys_info (§9): sel 0 is fnd_sysinfo, sel 1 the process list, sel 2 CPU
- * accounting, sel 3 fnd_meminfo. Copies up to cap bytes and returns the
+ * accounting, sel 3 fnd_meminfo, sel 4 the caller's pid and parent, sel 5 the
+ * pid of a PROCESS handle (passed in buf). Copies up to cap bytes and returns the
  * whole answer's size. */
 #define SYSINFO_BYTES 32u
 #define PROCINFO_BYTES 48u
 #define MEMINFO_BYTES 16u
+#define SELFINFO_BYTES 8u
 
 static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
     if (mm_vm)
@@ -729,6 +731,8 @@ static void put_word(const struct fnd_proc *proc, uint32_t buf, uint32_t cap, ui
 }
 
 int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf, uint32_t cap) {
+    if (sel == 5)
+        return ipc_process_handle_pid((struct fnd_proc *)caller, buf);
     uint32_t live = 0, records = 0;
     for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
         if (procs[i].state == FND_PROC_LIVE) {
@@ -746,6 +750,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         size = 16u + records * 8u;
     else if (sel == 3)
         size = MEMINFO_BYTES;
+    else if (sel == 4)
+        size = SELFINFO_BYTES;
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -767,6 +773,11 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
             put_word(caller, buf, cap, offset + 4u, procs[i].cpu_cycles);
             offset += 8u;
         }
+        return (int32_t)size;
+    }
+    if (sel == 4) {
+        put_word(caller, buf, cap, 0, caller->pid);
+        put_word(caller, buf, cap, 4u, caller->parent);
         return (int32_t)size;
     }
     if (sel == 3) {

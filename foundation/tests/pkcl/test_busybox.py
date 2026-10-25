@@ -85,5 +85,66 @@ class BusyboxTests(unittest.TestCase):
         self.assertIn('basename, cat, cp', screen)
 
 
+ASH_SCRIPT = """echo one | cat
+export Z=zed
+busybox sh -c 'echo Z=$Z'
+for i in 1 2 3; do echo n$i; done | wc -l
+echo hi > /tmp/o.txt; cat < /tmp/o.txt
+(echo sub; exit 3); echo rc=$?
+false || echo f-ok
+echo done-ash
+"""
+
+
+@unittest.skipUnless(BUSYBOX and NEWLIB, 'SRC32_BUSYBOX_SOURCE と SRC32_NEWLIB_SOURCE が必要')
+@unittest.skipIf(os.environ.get('FND_MM') in ('nommu', 'slot'), 'ash は fork を使うので VM バックエンドでだけ動く')
+class BusyboxAshTests(unittest.TestCase):
+    """MMU 構成の BusyBox（ash）。fork、pipe、環境変数、applet の自己 exec を通す。"""
+
+    @classmethod
+    def setUpClass(cls):
+        test_shell.STOP_TICKS = 3000
+        test_shell.ShellTests.setUpClass.__func__(cls)
+        out = cls.work / 'busybox-ash'
+        command = [sys.executable, str(ROOT / 'tools/pkcl/busybox.py'), '--busybox-source', BUSYBOX,
+                   '--newlib-source', NEWLIB, '--fnd-wal', str(cls.work / 'root/lib/fnd.1.wal'), '--out', str(out),
+                   '--config', str(ROOT / 'tools/pkcl/busybox.config'),
+                   '--config', str(ROOT / 'tools/pkcl/busybox_ash.config')]
+        if os.environ.get('CLANG'):
+            command += ['--clang', os.environ['CLANG']]
+        result = subprocess.run(command, capture_output=True, text=True, timeout=3000)
+        if result.returncode:
+            raise RuntimeError(result.stdout + result.stderr)
+        wax = (out / 'busybox.wax').read_bytes()
+        assert len(wax) < 0x180000, f'busybox.wax is {len(wax)} bytes'
+        volume = test_shell.fs2.Volume(bytearray(cls.disk))
+        volume.put('/bin/busybox.wax', wax, mode=0x3D)
+        volume.put('/bin/busybox', wax, mode=0x3D)  # BUSYBOX_EXEC_PATH: ash runs applets by exec'ing this
+        volume.put('/a.sh', ASH_SCRIPT.encode(), mode=0x3D)
+        cls.disk = bytes(volume.img)
+
+    @classmethod
+    def tearDownClass(cls):
+        test_shell.ShellTests.tearDownClass.__func__(cls)
+
+    def test_script_and_pipelines(self):
+        run = self.work / 'run'
+        run.mkdir(exist_ok=True)
+        (run / 'disk.img').write_bytes(self.disk)
+        (run / 'config.yaml').write_text(
+            'memory:\n  ram_mib: 16\n  vram_mib: 4\n'
+            'disk:\n  - slot: 0\n    type: hdd\n    image: disk.img\n    read_only: false\n', encoding='utf-8')
+        command = [str(self.harness), str(self.image), '42', '--frames', '3600', '--dump-pcg',
+                   '--cpu', os.environ.get('FOUNDATION_TEST_CPU', 'cached'),
+                   '--type', '30=busybox sh /a.sh\\n']
+        result = subprocess.run(command, cwd=run, capture_output=True, text=True,
+                                encoding='utf-8', errors='replace', timeout=1800)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        lines = result.stdout.splitlines()
+        screen = lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')]
+        for expected in ('one', 'Z=zed', '3', 'hi', 'sub', 'rc=3', 'f-ok', 'done-ash'):
+            self.assertIn(expected, screen)
+
+
 if __name__ == '__main__':
     unittest.main()

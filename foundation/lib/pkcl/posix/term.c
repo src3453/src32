@@ -1,13 +1,16 @@
 /* 端末・ioctl・poll・pipe（doc/spec_pkcl.md §6.6）。端末は console の LINE / RAW モードに対応づける。 */
 #define _GNU_SOURCE 1
 #include <errno.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/termios.h>
 #include <unistd.h>
 
+#include <foundation/api.h>
 #include <foundation/fnd.h>
+#include <foundation/sys.h>
 #include <pkcl/pkcl.h>
 
 static int is_console(int fd) {
@@ -114,8 +117,52 @@ int poll(struct pollfd *fds, nfds_t count, int timeout) {
     return ready;
 }
 
-int pipe(int fds[2]) {
-    (void)fds;
-    errno = ENOSYS; /* §7 G3: pipe サービスがまだない */
-    return -1;
+/* 2 つの端は pipe サービスの CHANNEL 1 本ずつ。読み端を開いて id を受け取り、その id で書き端を付ける。 */
+static int pipe_open(uint32_t mode, uint32_t id, uint32_t *out_id) {
+    int32_t svc = fnd_sys_svc_lookup("pipe");
+    if (svc <= 0) {
+        errno = ENOSYS; /* VM でない構成には pipe サービスがない */
+        return -1;
+    }
+    uint32_t args[4] = {mode, id, 0, 0};
+    fnd_msg rep;
+    fnd_status status = fnd_call((fnd_handle)svc, FND_PIPE_OPEN, args, 0, 0, 0, 0, &rep);
+    fnd_close((fnd_handle)svc);
+    if (pkcl_fail(status))
+        return -1;
+    if (!(rep.flags & FND_MSG_XFER_HANDLE) || !rep.a3) {
+        errno = EIO;
+        return -1;
+    }
+    if (out_id)
+        *out_id = rep.a0;
+    return (int)rep.a3;
 }
+
+int pipe2(int fds[2], int flags) {
+    pkcl_init();
+    uint32_t id = 0;
+    int32_t r = pipe_open(0, 0, &id);
+    if (r < 0)
+        return -1;
+    int32_t w = pipe_open(1, id, 0);
+    if (w < 0) {
+        fnd_close((fnd_handle)r);
+        return -1;
+    }
+    uint32_t nb = (uint32_t)flags & O_NONBLOCK;
+    int rfd = pkcl_fd_install((fnd_handle)r, O_RDONLY | PKCL_FD_PIPE | nb);
+    int wfd = rfd < 0 ? -1 : pkcl_fd_install((fnd_handle)w, O_WRONLY | PKCL_FD_PIPE | nb);
+    if (wfd < 0) {
+        fnd_close((fnd_handle)r);
+        fnd_close((fnd_handle)w);
+        if (rfd >= 0)
+            close(rfd);
+        return -1;
+    }
+    fds[0] = rfd;
+    fds[1] = wfd;
+    return 0;
+}
+
+int pipe(int fds[2]) { return pipe2(fds, 0); }

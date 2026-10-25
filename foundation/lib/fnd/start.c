@@ -5,10 +5,13 @@
 #include <foundation/sys.h>
 
 #define ARGS_MAX 64u
+#define ENV_MAX 128u
 
 static uint32_t *block; /* the startup block, on the heap */
 static uint32_t argc;
 static const char *argv[ARGS_MAX];
+static const char *env[ENV_MAX];
+static uint32_t envc;
 static fnd_handle roles[FND_ROLE_CONSOLE + 1u];
 
 /* CHANNEL は1..63。キャッシュは next の初回に確保し、close で解放する。
@@ -40,16 +43,27 @@ static const char *block_string(uint32_t off, uint32_t size) {
  * roles (§11.2). */
 static const char *read_startup(void) {
     int32_t size = fnd_sys_proc_startup(0, 0);
-    if (size < (int32_t)sizeof(fnd_startup) || size > (int32_t)FND_STARTUP_MAX ||
+    if (size < 32 || size > (int32_t)FND_STARTUP_MAX ||
         !(block = fnd_mem_alloc((uint32_t)size)) || fnd_sys_proc_startup(block, (uint32_t)size) != size)
         return 0;
     const fnd_startup *h = (const fnd_startup *)block;
     uint32_t n = (uint32_t)size;
-    if (h->magic != FND_STARTUP_MAGIC || h->version != FND_STARTUP_VERSION || h->size != n ||
+    uint32_t header = h->version == 1u ? 32u : sizeof(fnd_startup); /* version 1 stops at roles_off */
+    if (size < (int32_t)header || h->magic != FND_STARTUP_MAGIC || (h->version != 1u && h->version != 2u) ||
+        h->size != n ||
         h->argc > ARGS_MAX || (h->argv_off & 3u) || h->argv_off > n || h->argc * 4u > n - h->argv_off ||
         (h->roles_off & 3u) || h->roles_off > n || h->role_count * 8u > n - h->roles_off)
         return 0;
+    uint32_t env_count = h->version == 1u ? 0 : h->env_count, env_off = h->version == 1u ? 0 : h->env_off;
+    if (env_count > ENV_MAX || (env_off & 3u) || env_off > n || env_count * 4u > n - env_off)
+        return 0;
     const char *cwd = block_string(h->cwd_off, n);
+    for (uint32_t i = 0; i < env_count; ++i) {
+        env[i] = block_string(block[env_off / 4u + i], n);
+        if (!env[i])
+            return 0;
+    }
+    envc = env_count;
     for (uint32_t i = 0; i < h->argc; ++i) {
         argv[i] = block_string(block[h->argv_off / 4u + i], n);
         if (!argv[i])
@@ -72,6 +86,8 @@ fnd_status fnd_init(void) {
     return FND_OK;
 }
 
+uint32_t fnd_envc(void) { return envc; }
+const char *fnd_env(uint32_t i) { return i < envc ? env[i] : 0; }
 uint32_t fnd_argc(void) { return argc; }
 const char *fnd_argv(uint32_t i) { return i < argc ? argv[i] : 0; }
 fnd_handle fnd_std_in(void) { return roles[FND_ROLE_STDIN]; }

@@ -11,10 +11,11 @@ RAM, so none of them has an address of its own:
     console    the console service (services/console)
     disk       the disk service, blk_io for fs (services/disk)
     fs         the fs service (fs/)
+    pipe       the pipe service (services/pipe)
     shell      /bin/shell.wax (doc/spec_Foundation_shell.md)
     /bin/*     the standard commands (bin/, §10.3 of the shell spec)
 
-libfnd is the WAL "fnd" 1.2 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
+libfnd is the WAL "fnd" 1.3 (/lib/fnd.1.wal, exports in lib/fnd/fnd.exports),
 and the shell and the commands are WAX v3 that import it; fnd_proc_exec
 reads it from /lib when it starts them (§9.5). init and the services are
 FNDBOOT modules (§11) with libfnd linked in, since the kernel starts them
@@ -216,7 +217,7 @@ def main(argv=None):
     # Every image below is an independent driver run, except that /bin programs import the fnd WAL.
     fnd_job = pool.submit(driver, [*LIBFND, LIBFND_PROC, LIBFND_RENAME], root / "lib/fnd.1.wal", args, "--wal",
                           "--page-align", "--image-id", "fnd",
-                          "--abi-version", "1.2", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
+                          "--abi-version", "1.3", "--exports", FOUNDATION / "lib/fnd/fnd.exports")
     # /lib/lzma.1.wal: the LZMA SDK adapter (lib/lzma, WAL "lzma" 1.0). Self-contained: it needs
     # no libfnd and no heap, so it adds nothing to the fs heap; programs that import it pass an arena.
     lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
@@ -259,6 +260,8 @@ def main(argv=None):
              image=pool.submit(static, [*FS, FOUNDATION / "lib/fnd/name.c"], out / "fs.wax", args,
                                f"-DFS2_FULL_MOUNT_CHECK={FS2_FULL_MOUNT_CHECK}",
                                "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
+        dict(name="pipe", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             image=pool.submit(static, [services / "pipe/main.c"], out / "pipe.wax", args)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
              image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args)),
     ]

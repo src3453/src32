@@ -48,11 +48,12 @@ def configure(args, build: Path):
     make = ["make", "-C", str(args.busybox_source), f"O={build}"]
     run([*make, "allnoconfig"], log=build / "allnoconfig.log")
     wanted = {}
-    for line in args.config.read_text(encoding="utf-8").splitlines():
-        line = line.split("#", 1)[0].strip() if not line.startswith("CONFIG_") else line.strip()
-        if "=" in line:
-            key, value = line.split("=", 1)
-            wanted[key] = value
+    for config in args.config:  # later files override earlier ones
+        for line in config.read_text(encoding="utf-8").splitlines():
+            line = line.split("#", 1)[0].strip() if not line.startswith("CONFIG_") else line.strip()
+            if "=" in line:
+                key, value = line.split("=", 1)
+                wanted[key] = value
     lines, seen = [], set()
     for line in (build / ".config").read_text(encoding="utf-8").splitlines():
         match = re.match(r"# (CONFIG_\w+) is not set", line) or re.match(r"(CONFIG_\w+)=", line)
@@ -195,7 +196,9 @@ def main(argv=None):
     parser.add_argument("--newlib-source", type=Path, required=True)
     parser.add_argument("--fnd-wal", type=Path, required=True, help="/lib/fnd.1.wal built by foundation/boot/build.py")
     parser.add_argument("--out", type=Path, default=Path("build/busybox"))
-    parser.add_argument("--config", type=Path, default=HERE / "busybox.config")
+    parser.add_argument("--config", type=Path, action="append",
+                        help="option files applied in order on top of allnoconfig (default: busybox.config); "
+                             "add busybox_ash.config for the MMU configuration with ash")
     parser.add_argument("--clang")
     parser.add_argument("--cache", type=Path, help="Newlib IR cache (default: tools/llvm-src32's)")
     parser.add_argument("-O", dest="optimization", default="-Os", choices=["-O0", "-O1", "-O2", "-Os", "-Oz"])
@@ -203,6 +206,7 @@ def main(argv=None):
     parser.add_argument("--only", help="regular expression: compile only the matching objects (debugging)")
     parser.add_argument("--stage", choices=["configure", "compile", "link"], default="link")
     args = parser.parse_args(argv)
+    args.config = args.config or [HERE / "busybox.config"]
     args.busybox_source = args.busybox_source.resolve()
     args.out = args.out.resolve()
     build = args.out / "bb"
