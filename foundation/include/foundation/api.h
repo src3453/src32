@@ -102,7 +102,7 @@
 #define FND_CON_DISPLAY_8X16 3u /* 80x30, 8x16 */
 
 /* §11.6 */
-#define FND_EXEC_IMAGE_MAX 0x100000u
+#define FND_EXEC_IMAGE_MAX 0x300000u
 
 /* §11.1: the end of a listing or of the input. */
 #define FND_END 1

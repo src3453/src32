@@ -3,6 +3,7 @@
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 
 CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様と使い方](../doc/spec_Foundation_chip8.md) を参照してください。
+外部 DOOMGeneric と手元の WAD から `doom` をビルド・起動する手順は [DOOMGeneric 移植](../doc/spec_Foundation_doom.md) を参照してください。
 `/dev/sgc` は SGC の2Dコマンド FIFO を公開します（[API §9.3](../doc/spec_Foundation_API.md#93-sgc-2d-コマンド-fifo-devsgc)）。
 
 `/dev/sgu` は SGU 2基・16チャンネルと共有 PCMRAM を1ストリームで公開します（[API §9.2](../doc/spec_Foundation_API.md#92-sgu-2基と共有-pcmram-devsgu)）。

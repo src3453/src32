@@ -252,9 +252,9 @@ python3 tools/pkcl/busybox.py --busybox-source /path/to/busybox-1.36.1 \
 2. 各翻訳単位を `driver.py -c` で LLVM IR にする（`-Os`、`gnu11`）。`-D__clang_major__=0` で Clang 向けのインラインアセンブリの分岐を避け、`-DBB_GLOBAL_CONST=` で `ptr_to_globals` を rodata に置かせない（U モードで書込みフォルトになる）。バリアの空 asm は IR から消す。
 3. 全部を一度にリンクして `busybox.wax`（WAX v3、`fnd` WAL を import）を作る。
 
-`/bin/busybox.wax` を置いて `busybox echo hi` のように呼びます（シンボリックリンクがないので applet 名のファイルは作らない。必要なら小さな WAX か shell 側のディスパッチ）。WAX は 1 MiB の `FND_EXEC_IMAGE_MAX` に収まる必要があり、シェルのヒープ（スロット 4 は 2 MiB）に丸ごと読み込まれるので、**サイズが applet の数を決める**。現在の構成は 1.04 MB です。サイズの内訳と抑えている手段は §9 を参照。
+`/bin/busybox.wax` を置いて `busybox echo hi` のように呼びます（シンボリックリンクがないので applet 名のファイルは作らない。必要なら小さな WAX か shell 側のディスパッチ）。WAX は 3 MiB の `FND_EXEC_IMAGE_MAX` に収まる必要があり、依存 WAL を含む staging の合計上限も 3 MiB です。シェルのヒープにも丸ごと読み込まれるので、**サイズが applet の数を決める**。現在の構成は 1.04 MB です。サイズの内訳と抑えている手段は §9 を参照。
 
-**設定が選ぶもの**：`CONFIG_NOMMU=y`、`CONFIG_LFS=n`（`off_t` は 32 bit）、`CONFIG_STATIC=y`、シェル（ash／hush）なし。applet は `cat echo true false pwd basename dirname head wc mkdir rmdir rm cp mv ls sleep test printf`。applet を足すにはサイズを確認すること（`tools/pkcl/busybox.py` のあとで `busybox.wax` が 1 MiB 未満であること。テストも確認する）。
+**設定が選ぶもの**：`CONFIG_NOMMU=y`、`CONFIG_LFS=n`（`off_t` は 32 bit）、`CONFIG_STATIC=y`、シェル（ash／hush）なし。applet は `cat echo true false pwd basename dirname head wc mkdir rmdir rm cp mv ls sleep test printf`。applet を足すにはサイズを確認すること（`tools/pkcl/busybox.py` のあとで `busybox.wax` が WAL とともに staging に収まること。テストでは従来の 1 MiB 未満もサイズ回帰の基準として維持する）。
 
 ## 9. libc の方針
 
@@ -263,7 +263,7 @@ pkcl は libc を持たず、Newlib（`--newlib-source` の外部ソース。同
 - `portable`（既定）：文字列・整数・`qsort`・nano allocator だけを、必要なものだけコンパイルする。
 - `posix`（`--newlib-profile posix`）：`argz ctype errno locale misc reent search signal stdio stdlib string time` と `libm` のほぼ全部を一度 IR にして `--newlib-cache` に置き、**未解決シンボルの索引**から必要な翻訳単位だけをリンクする。OS 層（`posix/`、`sys/`、`machine/`）は pkcl（`foundation/lib/pkcl/newlib/syscalls.c`）が `_open` や `_sbrk` などを pkcl の POSIX 関数と `fnd_sys_mem_grow` に結ぶ。
 
-posix プロファイルの判断（サイズが 1 MiB の制約に直結するため）：
+posix プロファイルの判断（サイズが起動時のメモリ使用量に直結するため）：
 
 | 判断 | 理由 |
 |---|---|

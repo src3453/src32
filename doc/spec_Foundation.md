@@ -370,6 +370,8 @@ S モードの R30 は、常にスタブのアドレスでなければなりま�
 | 40 | `name` | 15 bytes 以下の名前（`/os/proc` 用） |
 | 44 | `libs` | WAL の一覧（§9.5）へのポインタ。0 なら一覧なし |
 
+`image_len` の上限は `FND_SPAWN_IMAGE_MAX`（3 MiB）。WAX と全 WAL の合計（各イメージ後の 4-byte 境界へのパディングを含む）は staging 領域 `0x00100000..0x00400000` に収めます。上限超過は、イメージをコピーする前に `FND_E_LIMIT` で拒否します。
+
 `libs` が指す一覧（`fnd_spawn_libs`、8 + 8 × `count` bytes）：
 
 | Off | 名前 | 意味 |

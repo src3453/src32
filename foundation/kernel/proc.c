@@ -13,6 +13,7 @@ static uint8_t startup_blocks[FND_MAX_PROCS][FND_STARTUP_MAX] __attribute__((ali
  * heap (§5.1), which FNDBOOT only uses before the first process runs. */
 #define STAGING 0x00100000u
 #define STAGING_END 0x00400000u /* the kernel heap (§5.1) */
+_Static_assert(FND_SPAWN_IMAGE_MAX <= STAGING_END - STAGING, "spawn image exceeds staging");
 static uint32_t next_pid = 1;
 static uint32_t boot_drive;
 

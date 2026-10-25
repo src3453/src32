@@ -38,7 +38,7 @@ class BusyboxTests(unittest.TestCase):
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
         wax = (out / 'busybox.wax').read_bytes()
-        # 実行形式は 1 MiB（FND_EXEC_IMAGE_MAX）まで。収まらないと proc_exec が FND_E_LIMIT になる。
+        # 起動上限は 3 MiB だが、既存構成の 1 MiB 未満をサイズ回帰の基準にする。
         assert len(wax) < 0x100000, f'busybox.wax is {len(wax)} bytes'
         volume = test_shell.fs2.Volume(bytearray(cls.disk))
         volume.put('/bin/busybox.wax', wax, mode=0x3D)
