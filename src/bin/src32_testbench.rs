@@ -194,6 +194,8 @@ fn main() {
     let mut frames = None;
     let mut irq_drain_cycles = 0;
     let mut profile_cpu = false;
+    let mut profile_pc: Option<String> = None;
+    let mut profile_pc_reset_frame: Option<usize> = None;
     let mut skip_render_checks = false;
     let mut memory_expectations = Vec::new();
     let mut final_memory_expectations = Vec::new();
@@ -225,6 +227,12 @@ fn main() {
                     integer(options.next().expect("--irq-drain-cycles requires N")) as usize;
             }
             "--profile-cpu" => profile_cpu = true,
+            // Pipeline CPU only: "user|kernel pc instructions cycles" per PC, written at exit.
+            "--profile-pc" => profile_pc = Some(options.next().expect("--profile-pc requires PATH").to_string()),
+            "--profile-pc-reset-frame" => {
+                profile_pc_reset_frame =
+                    Some(integer(options.next().expect("--profile-pc-reset-frame requires N")) as usize)
+            }
             "--skip-render-checks" => skip_render_checks = true,
             "--expect-mem-u8" | "--expect-final-mem-u8" => {
                 let (address, value) = options
@@ -337,6 +345,7 @@ fn main() {
     let mut cpu = AnyCpu::new_configured(cpu_kind, bus, Path::new("config.yaml"))
         .expect("Invalid CPU configuration");
     cpu.enable_profiling(profile_cpu);
+    cpu.enable_pc_profile(profile_pc.is_some());
     if cpt32::wax::is_wax(&image) {
         let img = cpt32::wax::parse(&image).expect("invalid WAX program");
         assert!(!img.is_lib, ".wal library is not runnable");
@@ -365,6 +374,9 @@ fn main() {
     let frame_count = frames.unwrap_or((cycle_budget + cycles_per_frame - 1) / cycles_per_frame);
     let mut cpu_profile = CpuProfile::default();
     for frame in 0..frame_count {
+        if profile_pc_reset_frame == Some(frame) {
+            let _ = cpu.take_pc_profile();
+        }
         for (_, bytes) in uart_rx.iter().filter(|(at, _)| *at == frame) {
             uart.borrow_mut().rx.extend(bytes);
         }
@@ -464,6 +476,14 @@ fn main() {
             }
             fs::write(output, ppm).expect("failed to dump framebuffer");
         }
+    }
+    if let Some(path) = &profile_pc {
+        let mut lines = String::new();
+        for (user, pc, count, cycles) in cpu.take_pc_profile() {
+            lines.push_str(&format!("{} {:08X} {} {}
+", if user { 'U' } else { 'K' }, pc, count, cycles));
+        }
+        fs::write(path, lines).expect("failed to write the PC profile");
     }
     if profile_cpu {
         let total = cpu_profile.total();

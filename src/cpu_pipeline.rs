@@ -295,6 +295,9 @@ pub struct PipelineCpu {
     spin: SpinDetector,
     cache: Rc<RefCell<crate::cpu_cache::L1Cache>>,
     cache_stall: u32,
+    /// (user mode, pc) -> (instructions, cycles since the previous commit).
+    pc_profile: Option<std::collections::HashMap<(bool, u32), (u64, u64)>>,
+    pc_profile_last: u128,
 }
 
 fn invalid_id_ex() -> IdEx {
@@ -410,6 +413,8 @@ impl PipelineCpu {
             },
             cache,
             cache_stall: 0,
+            pc_profile: None,
+            pc_profile_last: 0,
         };
         cpu.sync_register_block();
         cpu
@@ -554,6 +559,24 @@ impl PipelineCpu {
 
     pub fn take_profile(&mut self) -> Option<CpuProfile> {
         self.profile.as_mut().map(std::mem::take)
+    }
+
+    /// Count committed instructions and commit-to-commit cycles per (mode, pc).
+    pub fn enable_pc_profile(&mut self, enabled: bool) {
+        self.pc_profile = enabled.then(Default::default);
+        self.pc_profile_last = self.cycles;
+    }
+
+    /// Returns the histogram and starts a fresh one.
+    pub fn take_pc_profile(&mut self) -> Vec<(bool, u32, u64, u64)> {
+        let Some(profile) = self.pc_profile.as_mut() else {
+            return Vec::new();
+        };
+        self.pc_profile_last = self.cycles;
+        std::mem::take(profile)
+            .into_iter()
+            .map(|((user, pc), (count, cycles))| (user, pc, count, cycles))
+            .collect()
     }
 
     /// Charge `cycles` of stall per L1 miss (Extension C; default 0).
@@ -1768,6 +1791,12 @@ impl PipelineCpu {
         ) {
             // A denied fetch never executed, as on the scalar CPU.
             self.instructions_executed += 1;
+            if let Some(profile) = self.pc_profile.as_mut() {
+                let entry = profile.entry((self.sys.user, wb.pc)).or_insert((0, 0));
+                entry.0 += 1;
+                entry.1 += (self.cycles - self.pc_profile_last) as u64;
+                self.pc_profile_last = self.cycles;
+            }
         }
         if let Some(exception) = wb.exception {
             let epc = match exception {
