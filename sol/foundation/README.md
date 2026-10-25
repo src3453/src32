@@ -72,3 +72,5 @@ wire records を返します。cap は最大4096、1096以上なら最大エン�
 
 [実行可能なサンプル](../../examples/foundation-sol/README.md) はディスク上のFS2へ5001 bytesを
 書いて再読込し、複数応答に分かれる65件の列挙、途中のrewind、END、close時のキャッシュ再利用を確認します。
+
+`fnd_proc_fork`（SYSCALL 0x14）は、親で子の PROCESS ハンドル、子で 0 を返します。VM と生存スレッド 1 本が必要で、MMIO 付与や THREAD ハンドルは複製できません。RW ページは COW で分離し、ハンドルが指すオブジェクトは共有します（[カーネル仕様 §9.6](../../doc/spec_Foundation.md)）。ハンドルは sol の真偽値とは異なるので、負のエラー・0 の子・正の親を分けて判定してください。

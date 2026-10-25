@@ -15,6 +15,7 @@
 #define SERVICE_NAME_MAX 31u
 #define LOOKUP_BADGE 0x80000000u
 #define TOKEN_INDEX_BITS 8u
+#define BINDABLE_IRQS 0x1FE9u /* §10.2: 0, 3, 5..12 */
 
 struct fnd_port {
     uint32_t used, refs;
@@ -37,6 +38,28 @@ static struct {
     char name[SERVICE_NAME_MAX + 1u];
 } services[MAX_SERVICES];
 static uint32_t next_seq, next_lookup_badge;
+
+/* One notification per IRQ, independent of caller queues and handle numbers.
+ * The binding borrows the port: its final close must release the IRQ. */
+static struct {
+    struct fnd_proc *owner;
+    struct fnd_port *port;
+    uint32_t pending, delivered;
+} irqs[16];
+
+static void irq_release(uint32_t irq) {
+    FND_REG16(FND_IRQC_ENABLE) &= (uint16_t)~(1u << irq);
+    FND_REG16(FND_IRQC_PENDING) = (uint16_t)(1u << irq);
+    irqs[irq].owner = 0;
+    irqs[irq].port = 0;
+    irqs[irq].pending = irqs[irq].delivered = 0;
+}
+
+void ipc_irq_proc_exited(struct fnd_proc *proc) {
+    for (uint32_t irq = 0; irq < 16u; ++irq)
+        if (irqs[irq].owner == proc)
+            irq_release(irq);
+}
 
 /* A user struct of size bytes at addr: 4-byte aligned and inside regions
  * with perm. */
@@ -63,6 +86,9 @@ static struct fnd_thread *find_receiver(const struct fnd_port *port);
 static void deliver_gone(struct fnd_thread *receiver, struct fnd_port *port);
 
 static void port_destroy(struct fnd_port *port) {
+    for (uint32_t irq = 0; irq < 16u; ++irq)
+        if (irqs[irq].port == port)
+            irq_release(irq);
     for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
         struct fnd_thread *t = &fnd_threads[i];
         if (t->state == T_BLOCKED && t->port == port &&
@@ -138,6 +164,16 @@ int32_t handle_add(struct fnd_proc *proc, uint32_t kind, void *object) {
     return FND_E_LIMIT;
 }
 
+/* Fork preserves handle numbers, including holes. THREAD handles are rejected
+ * by proc_fork before reaching here; all other objects share their lifetime. */
+void handle_clone(struct fnd_proc *from, struct fnd_proc *to) {
+    for (uint32_t i = 0; i < FND_MAX_HANDLES; ++i) {
+        to->handles[i] = from->handles[i];
+        if (to->handles[i].kind != FND_OBJ_NONE)
+            obj_ref(to->handles[i].kind, to->handles[i].object);
+    }
+}
+
 uint32_t handle_free_count(const struct fnd_proc *proc) {
     uint32_t n = 0;
     for (uint32_t i = 0; i < FND_MAX_HANDLES; ++i)
@@ -178,6 +214,47 @@ int32_t handle_dup_into(struct fnd_proc *from, uint32_t h, struct fnd_proc *to) 
 }
 
 int32_t sys_handle_dup(struct fnd_proc *proc, uint32_t h) { return handle_dup_into(proc, h, proc); }
+
+static int32_t irq_access(const struct fnd_proc *proc, uint32_t irq) {
+    if (!(proc->caps & FND_CAP_IRQ))
+        return FND_E_ACCESS;
+    if (irq >= 16u)
+        return FND_E_BAD_ARG;
+    return ((1u << irq) & BINDABLE_IRQS) ? FND_OK : FND_E_ACCESS;
+}
+
+int32_t sys_irq_bind(struct fnd_proc *proc, uint32_t irq, uint32_t h) {
+    int32_t status = irq_access(proc, irq);
+    if (status != FND_OK)
+        return status;
+    struct fnd_handle_entry *e = entry(proc, h);
+    if (!e || e->kind != FND_OBJ_PORT)
+        return FND_E_BAD_HANDLE;
+    if (irqs[irq].owner)
+        return FND_E_BUSY;
+    irqs[irq].owner = proc;
+    irqs[irq].port = e->object;
+    irqs[irq].pending = irqs[irq].delivered = 0;
+    /* Keep any already latched edge, so binding cannot lose the first event. */
+    FND_REG16(FND_IRQC_ENABLE) |= (uint16_t)(1u << irq);
+    return FND_OK;
+}
+
+int32_t sys_irq_ack(struct fnd_proc *proc, uint32_t irq) {
+    int32_t status = irq_access(proc, irq);
+    if (status != FND_OK)
+        return status;
+    if (!irqs[irq].owner)
+        return FND_E_NOT_FOUND;
+    if (irqs[irq].owner != proc)
+        return FND_E_ACCESS;
+    if (!irqs[irq].delivered)
+        return FND_E_BAD_ARG;
+    irqs[irq].delivered = 0;
+    FND_REG16(FND_IRQC_PENDING) = (uint16_t)(1u << irq);
+    FND_REG16(FND_IRQC_ENABLE) |= (uint16_t)(1u << irq);
+    return FND_OK;
+}
 
 /* Moves handle h of from into to (§8.4). Returns the new number. */
 static int32_t handle_move(struct fnd_proc *from, uint32_t h, struct fnd_proc *to) {
@@ -270,6 +347,28 @@ static void write_recv(const struct fnd_proc *proc, uint32_t rcv, const fnd_msg 
     mm_copy_to_user(proc, rcv, &r, sizeof r);
 }
 
+static void deliver_irq(struct fnd_thread *receiver, uint32_t irq) {
+    fnd_msg msg = {FND_NOTIFY_IRQ, 0, irq, 0, 0, 0, 0, 0};
+    write_recv(receiver->proc, receiver->rcv, &msg, 0, 0, 0, 0);
+    irqs[irq].pending = 0;
+    irqs[irq].delivered = 1;
+}
+
+int ipc_irq_notify(uint32_t irq) {
+    if (irq >= 16u || !irqs[irq].owner)
+        return 0;
+    FND_REG16(FND_IRQC_ENABLE) &= (uint16_t)~(1u << irq);
+    if (!irqs[irq].pending && !irqs[irq].delivered) {
+        irqs[irq].pending = 1;
+        struct fnd_thread *receiver = find_receiver(irqs[irq].port);
+        if (receiver) {
+            deliver_irq(receiver, irq);
+            sched_wake(receiver, FND_OK);
+        }
+    }
+    return 1;
+}
+
 static void deliver_gone(struct fnd_thread *receiver, struct fnd_port *port) {
     struct fnd_chan *chan = port->gone_head;
     port->gone_head = chan->gone_next;
@@ -305,6 +404,12 @@ static int32_t deliver_call(struct fnd_thread *receiver, struct fnd_thread *call
 
 /* Gives receiver (blocked or not) the next item of port, if any. */
 static int take_next(struct fnd_thread *receiver, struct fnd_port *port) {
+    for (uint32_t irq = 0; irq < 16u; ++irq) {
+        if (irqs[irq].port == port && irqs[irq].pending) {
+            deliver_irq(receiver, irq);
+            return 1;
+        }
+    }
     if (port->gone_head) {
         deliver_gone(receiver, port);
         return 1;

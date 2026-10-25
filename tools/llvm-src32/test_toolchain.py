@@ -254,6 +254,75 @@ define i32 @main() {
         for cpu in ('scalar', 'pipeline'):
             self.execute(image, 42, cpu)
 
+    def test_funnel_shift_wide_multiply_overflow_and_unsigned_saturating_add(self):
+        # Intrinsics that optimized Newlib and BusyBox code reaches (doc/spec_pkcl.md §8).
+        declarations = ['declare i32 @llvm.fshl.i32(i32, i32, i32)', 'declare i32 @llvm.fshr.i32(i32, i32, i32)',
+                        'declare i64 @llvm.fshl.i64(i64, i64, i64)', 'declare i64 @llvm.fshr.i64(i64, i64, i64)',
+                        'declare { i64, i1 } @llvm.umul.with.overflow.i64(i64, i64)',
+                        'declare i32 @llvm.uadd.sat.i32(i32, i32)', 'declare i8 @llvm.uadd.sat.i8(i8, i8)']
+        functions = ["""define i32 @fshl32(i32 %a, i32 %b, i32 %s) {
+  %r = call i32 @llvm.fshl.i32(i32 %a, i32 %b, i32 %s)
+  ret i32 %r
+}""", """define i32 @fshr32(i32 %a, i32 %b, i32 %s) {
+  %r = call i32 @llvm.fshr.i32(i32 %a, i32 %b, i32 %s)
+  ret i32 %r
+}""", """define i32 @uadd32(i32 %a, i32 %b) {
+  %r = call i32 @llvm.uadd.sat.i32(i32 %a, i32 %b)
+  ret i32 %r
+}""", """define i8 @uadd8(i8 %a, i8 %b) {
+  %r = call i8 @llvm.uadd.sat.i8(i8 %a, i8 %b)
+  ret i8 %r
+}""", """define i64 @mulo(i64 %a, i64 %b, ptr %flag) {
+  %r = call { i64, i1 } @llvm.umul.with.overflow.i64(i64 %a, i64 %b)
+  %o = extractvalue { i64, i1 } %r, 1
+  %z = zext i1 %o to i8
+  store i8 %z, ptr %flag
+  %v = extractvalue { i64, i1 } %r, 0
+  ret i64 %v
+}"""]
+        checks, index = [], 0
+
+        def check(call, ty, expected):
+            nonlocal index
+            checks.extend([f'  %r{index} = {call}', f'  %ok{index} = icmp eq {ty} %r{index}, {expected}',
+                           f'  %all{index} = and i1 %ok{index}, ' + ('true' if index == 0 else f'%all{index - 1}')])
+            index += 1
+
+        mask32, mask64 = 0xffffffff, 0xffffffffffffffff
+        for a, b in ((0x12345678, 0x9abcdef0), (0x80000001, 0x7fffffff)):
+            for s in (0, 1, 7, 31, 32, 33):
+                n = s % 32
+                left = ((a << n) | (b >> (32 - n))) & mask32 if n else a
+                right = ((a << (32 - n)) | (b >> n)) & mask32 if n else b
+                check(f'call i32 @fshl32(i32 {a}, i32 {b}, i32 {s})', 'i32', left)
+                check(f'call i32 @fshr32(i32 {a}, i32 {b}, i32 {s})', 'i32', right)
+        for a, b in ((0, 0), (1, 2), (mask32, 1), (mask32, mask32), (0x7fffffff, 0x7fffffff), (0x80000000, 0x80000000)):
+            check(f'call i32 @uadd32(i32 {a}, i32 {b})', 'i32', min(a + b, mask32))
+        for a, b in ((0, 0), (100, 100), (200, 55), (200, 56), (255, 255)):
+            check(f'call i8 @uadd8(i8 {a}, i8 {b})', 'i8', min(a + b, 255))
+        # The 64-bit funnel shift needs a constant amount.
+        wide = 0x0123456789abcdef, 0xfedcba9876543210
+        for s in (1, 5, 31, 32, 33, 63):
+            left = ((wide[0] << s) | (wide[1] >> (64 - s))) & mask64
+            right = ((wide[0] << (64 - s)) | (wide[1] >> s)) & mask64
+            check(f'call i64 @llvm.fshl.i64(i64 {wide[0]}, i64 {wide[1]}, i64 {s})', 'i64', left)
+            check(f'call i64 @llvm.fshr.i64(i64 {wide[0]}, i64 {wide[1]}, i64 {s})', 'i64', right)
+        for a, b in ((0, 0), (1, 1), (0xffffffff, 0xffffffff), (0x100000000, 0xffffffff), (0x100000000, 0x100000000),
+                     (0x10000, 0x100000000), (0xffffffff, 0x100000001), (0x7fffffffffffffff, 2), (mask64, 1),
+                     (1 << 63, 2), (0x123456789, 0x1fffffff), (3, 0x5555555555555555), (3, 0x5555555555555556)):
+            product = a * b
+            check(f'call i64 @mulo(i64 {a}, i64 {b}, ptr %flag)', 'i64', product & mask64)
+            checks.extend([f'  %fl{index} = load i8, ptr %flag', f'  %fok{index} = icmp eq i8 %fl{index}, {int(product > mask64)}',
+                           f'  %all{index} = and i1 %fok{index}, %all{index - 1}'])
+            index += 1
+        source = self.ir('\n'.join(declarations + functions) + '\n' +
+                         'define i32 @main() {\n  %flag = alloca i8\n' + '\n'.join(checks) +
+                         f'\n  %result = select i1 %all{index - 1}, i32 42, i32 1\n  ret i32 %result\n}}\n')
+        image = self.work / 'intrinsics.wax'
+        self.driver(source, '-o', image)
+        for cpu in ('scalar', 'pipeline'):
+            self.execute(image, 42, cpu)
+
     def test_softfloat_c_example(self):
         example = ROOT / 'examples/softfloat-c'
         library = example / 'vendor/softfloat/source'
@@ -852,6 +921,44 @@ int main(void) {
                             errors='replace', timeout=120)
                         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                         self.assertIn('PASS:', result.stdout)
+
+    def test_foundation_fork(self):
+        foundation = ROOT / 'foundation'
+        sources = [foundation / 'tests/fork/main.c',
+                   *(foundation / 'kernel' / name for name in
+                     ('sched.c', 'proc.c', 'mm.c', 'trap.c', 'ipc.c', 'fb.c',
+                      'sgu.c', 'sgc.c', 'pec.c', 'blk.c', 'wax.c'))]
+        for slot in (False, True):
+            (self.work / 'config.yaml').write_text(
+                f'memory:\n  ram_mib: {16 if slot else 5}\n', encoding='utf-8')
+            for opt in ('-O0', '-O1', '-O2'):
+                with self.subTest(slot=slot, optimization=opt):
+                    guest = self.work / 'guest.wax'
+                    self.driver(foundation / 'tests/fork/guest.c',
+                                '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
+                                '--protected', '--page-align', '--origin', '0x800000',
+                                '--stack-top', '0xC00000', '--user-stack-size', '0x4000',
+                                opt, *(['-D', 'SLOT_TEST'] if slot else []), '-o', guest)
+                    data = guest.read_bytes()
+                    padded = data + bytes(-len(data) % 4)
+                    words = ','.join(hex(int.from_bytes(padded[i:i + 4], 'big')) + 'u'
+                                     for i in range(0, len(padded), 4))
+                    (self.work / 'images.h').write_text(
+                        f'static const uint32_t img_guest[] = {{{words}}};\n'
+                        f'#define img_guest_size {len(data)}u\n', encoding='utf-8')
+                    image = self.work / 'fork.wax'
+                    self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
+                                '-I', foundation / 'include', '-I', foundation / 'kernel',
+                                '-I', self.work, '--origin', '0x10000', '--stack-top', '0x100000',
+                                opt, *(['-D', 'FND_MM_NOMMU_ONLY'] if slot else []), '-o', image)
+                    for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
+                        with self.subTest(cpu=cpu):
+                            result = subprocess.run(
+                                [str(self.harness), str(image), '42', '--cpu', cpu, '--frames', '600'],
+                                cwd=self.work, capture_output=True, text=True, encoding='utf-8',
+                                errors='replace', timeout=300)
+                            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+                            self.assertIn('PASS:', result.stdout)
 
     def test_foundation_vm_kernel(self):
         # Foundation on Extension V (doc/foundation_vm_plan.md): the images of

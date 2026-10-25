@@ -296,6 +296,16 @@ fn fnd_proc_spawn (spawn) :
     r ret
 ;
 
+# SYSCALL 0x14 proc_fork() -> 親: PROCESS ハンドル、子: 0
+fn fnd_proc_fork () :
+    local r
+!asm
+    SYSCALL 0x14
+    ST R1, [R26 + 8]
+!end
+    r ret
+;
+
 # SYSCALL 0x11 proc_exit(code) -> 戻らない
 fn fnd_proc_exit (code) :
 !asm

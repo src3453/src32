@@ -10,7 +10,7 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 |---|---|
 | プロトコル | [Foundation §8](spec_Foundation.md) の IPC（`fnd_msg`、`ipc_call`、ハンドル転送）の上に載る、サービスとクライアントの約束 |
 | サービス | fs（`svc_lookup("fs")`）、console（`svc_lookup("console")`）、デバイスサービス |
-| ライブラリ | libfnd（`foundation/lib/fnd`、C11、WAL `fnd` 1.1 または静的リンク） |
+| ライブラリ | libfnd（`foundation/lib/fnd`、C11、WAL `fnd` 1.2 または静的リンク） |
 | ヘッダ | `foundation/include/foundation/{fnd.h,api.h}`。`api.h` は本書の番号と構造体、`fnd.h` は libfnd の関数 |
 
 本書が定めないもの：
@@ -606,9 +606,12 @@ typedef struct {
 } fnd_exec_t;
 
 fnd_status fnd_proc_exec(const char *path, const fnd_exec_t *ex, fnd_handle *proc);
+int32_t fnd_proc_fork(void);
 fnd_status fnd_proc_wait(fnd_handle proc, int32_t *code);
 fnd_status fnd_proc_kill(fnd_handle proc);
 ```
+
+`fnd_proc_fork()` は WAL `fnd` 1.2 の追加 API です。カーネルの `proc_fork` を呼び、親に子の PROCESS ハンドル、子に 0、失敗時に負のエラーを返します。VM・単一スレッドなどの制約は [カーネル仕様 §9.6](spec_Foundation.md) を参照してください。ハンドルが指すファイル位置・fs セッション・cwd などのサービス側状態は親子で共有します。
 
 `fnd_proc_exec` は次の手順で起動します。
 

@@ -8,7 +8,7 @@ src32_add_library(foundation_kernel
     SOURCES kernel/sched.c kernel/proc.c kernel/mm.c kernel/trap.c kernel/ipc.c kernel/fb.c kernel/sgu.c kernel/sgc.c kernel/pec.c kernel/blk.c kernel/wax.c
     # The phase 1 test reads the slots as physical memory, so it needs the slot
     # backend (doc/foundation_vm_plan.md); the demo runs on either.
-    DEFINITIONS FND_MM_SLOT_ONLY
+    DEFINITIONS FND_MM_NOMMU_ONLY
     INCLUDE_DIRECTORIES include "${CMAKE_CURRENT_LIST_DIR}/../sdk/cpt32/include")
 
 # user_code_begin and user_code_end, the first and last functions of each

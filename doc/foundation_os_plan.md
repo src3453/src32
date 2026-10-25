@@ -126,7 +126,7 @@ doc/spec_Foundation.md, spec_Foundation_API.md, spec_FS2.md （各フェーズ�
 | 1 DMAC, 2 IDC | カーネル | blk_io の完了処理 |
 | 3 PeC 入力 | カーネル → console への通知 | 通知した時点で mask し、`irq_ack` で unmask する |
 | 4 timer / RTC | カーネル | tick と sleep。RTC alarm は後で考える |
-| 5–12 拡張カード | `irq_bind` したサービス | IRQ ハンドルが必要 |
+| 5–12 拡張カード | `irq_bind` したサービス | IRQ capability が必要 |
 
 MMIO の付与は、起動設定で許可したサービスにだけ、byte 単位の最小範囲で行います。例えば console には PCG/VDP の窓と、PeC 入力レジスタ `0x100–0x17F` 相当だけを渡します。DMAC・BMC・IDC・VPU の窓は誰にも渡しません。VDP と PCG がバスマスタでないことは、フェーズ 2 で確認します。
 

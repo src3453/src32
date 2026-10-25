@@ -194,7 +194,9 @@ SIMD・ベクトル、`half`/`fp128`、atomic、例外、inline asm、TLS、alia
 LLVM IR 全仕様／C11 全仕様を実装したという意味ではありません。
 
 既定ではstdio、malloc、ファイル、OS API は付属しません。標準ヘッダーも `stddef.h/stdint.h/stdbool.h/stdarg.h/limits.h/string.h` の freestanding 用です。
-`--newlib-source PATH`（CMake: `NEWLIB_SOURCE PATH`）を明示すると、別途用意したNewlibのヘッダーとportable Cソースを使用し、文字列・整数・ソート・nano allocatorを利用できます。Newlib本体は同梱・自動取得しません。対応API、ヒープ設定、取得方法、配布上の注意は[外部Newlibサンプル](../../examples/newlib-c/README.md)を参照してください。printf/stdio、ファイルI/O、locale、libmなどのNewlib全体は未対応です。
+`--newlib-source PATH`（CMake: `NEWLIB_SOURCE PATH`）を明示すると、別途用意したNewlibのヘッダーとportable Cソースを使用し、文字列・整数・ソート・nano allocatorを利用できます。Newlib本体は同梱・自動取得しません。対応API、ヒープ設定、取得方法、配布上の注意は[外部Newlibサンプル](../../examples/newlib-c/README.md)を参照してください。既定の `portable` プロファイルでは printf/stdio、ファイルI/O、locale、libmなどのNewlib全体は使えません。
+
+`--newlib-profile posix`（`--newlib-cache DIR` でIRのキャッシュ先を指定）は、`argz ctype errno locale misc reent search signal stdio stdlib string time` と `libm` を一度IRにしてキャッシュし、未解決シンボルの索引から必要な翻訳単位だけをリンクします。ライブラリは `-Os`、printfはfull版（`%lld`対応）、scanfはnano版です。OS層（`_open`、`_sbrk`など）は利用側が用意します（Foundationでは pkcl、[doc/spec_pkcl.md](../../doc/spec_pkcl.md) §9）。バックエンドにエイリアスと弱いシンボルがないため、キャッシュするIRでエイリアスは転送関数に、弱いシンボルは強いシンボルに書き換えます。ユーザーコードは `-std=gnu11` でコンパイルされます。`-Os`／`-Oz` も指定できます。
 追加の API はCで実装して一緒にリンクするか、同じ ABI を守る SRC32 ランタイムとして用意してください。
 外部 C ライブラリの組み込み例は [`Berkeley SoftFloat デモ`](../../examples/softfloat-c/README.md)。Release 3e のソースを同梱し、整数演算で binary32 を実装するライブラリを `-O2` でリンクします（C の `float` 演算そのものはコンパイラが同じ SoftFloat へ変換するので、このデモのようにビット列を直接扱う必要はありません）。
 既存 sol / csc の関数呼出 ABI とはバイナリ互換ではありません。

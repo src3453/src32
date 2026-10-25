@@ -155,7 +155,7 @@ def test_fnd_library_declares_foundation_and_wraps_every_syscall():
     program = compile_program(text + "\n", source_path=str(FND_SOL), remove_unused_functions=False)
     assert program.abi == "Foundation"
     numbers = {0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08, 0x09, 0x0A, 0x0B, 0x0C, 0x0D,
-               0x10, 0x11, 0x12, 0x13, 0x18, 0x20, 0x21, 0x28, 0x30, 0x31, 0x32, 0x3F}
+               0x10, 0x11, 0x12, 0x13, 0x14, 0x18, 0x20, 0x21, 0x28, 0x30, 0x31, 0x32, 0x3F}
     assert {int(line.split()[1], 16) for line in text.splitlines()
             if line.strip().startswith("SYSCALL")} == numbers
     with pytest.raises(SolVMError, match="main program"):
@@ -224,13 +224,14 @@ def test_fnd_wrappers_run_in_user_mode(tmp_path, cpu):
     source = (
         '!abi_compat "Foundation"\n'
         f'!include "{FND_SOL.as_posix()}"\n'
-        '!var total 39\n'
+        '!var total 38\n'
         'fn bump (n) : total n add >total retn ;\n'
         # sleep succeeds (0 = sol true), debug_write returns its length, an unknown
         # syscall result is negative, and globals/strings live in RW/R blocks.
         '10 fnd_sleep if 1 bump end\n'
         '"ab" 2 fnd_debug_write 2 eq if 1 bump end\n'
         'fnd_port_create 0 lt if 1 bump end\n'
+        'fnd_proc_fork 0 lt if 1 bump end\n'
         'total fnd_proc_exit\n'
         '99 >total\n'
     )

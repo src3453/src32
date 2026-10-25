@@ -509,8 +509,8 @@ static int decode(uint32_t event, fnd_key_t *key) {
     return 1;
 }
 
-/* Takes one key press from the PeC event FIFO; 0 when it is empty. No
- * irq_bind yet, so the service polls this between messages. */
+/* Takes one key press from the PeC event FIFO; 0 when it is empty.
+ * The console service polls this between messages. */
 int con_pcg_poll_key(fnd_key_t *key) {
     for (;;) {
         uint32_t status = MMIO32(PEC_EVENT_STATUS);

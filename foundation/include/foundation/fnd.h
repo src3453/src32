@@ -95,6 +95,8 @@ fnd_status fnd_con_size(uint32_t *cols, uint32_t *rows);
 
 /* §11.6 */
 fnd_status fnd_proc_exec(const char *path, const fnd_exec_t *ex, fnd_handle *proc);
+/* Parent: child PROCESS handle; child: 0; error: negative FND_E_*. */
+int32_t fnd_proc_fork(void);
 fnd_status fnd_proc_wait(fnd_handle proc, int32_t *code);
 fnd_status fnd_proc_kill(fnd_handle proc);
 

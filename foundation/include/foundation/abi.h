@@ -28,6 +28,7 @@
 #define FND_SYS_PROC_EXIT 0x11u
 #define FND_SYS_PROC_KILL 0x12u
 #define FND_SYS_PROC_STARTUP 0x13u
+#define FND_SYS_PROC_FORK 0x14u
 #define FND_SYS_MEM_GROW 0x18u
 #define FND_SYS_IRQ_BIND 0x20u
 #define FND_SYS_IRQ_ACK 0x21u

@@ -1,0 +1,44 @@
+{
+  "metadata": {
+    "cpu": "pipeline",
+    "rounds": 64,
+    "repeats": 1,
+    "priority": "service",
+    "copy_dma_min": 256,
+    "clock_hz": 48000000,
+    "optimization": "-O1",
+    "warmup": 8,
+    "git": "df011eea8e4dd6709d8a7677622d3263062ccd1e",
+    "dirty": true,
+    "clang": "clang version 20.0.0git (git@github.com:Compute-Mirrors/llvm-project 33ab2c2f7838239f1e2e5c06432bbb8d887e8cb2)",
+    "testbench_sha256": "723beb6c8bbbc1d2c4df727ed5d5b4066e600e2931bc409cafee518c27987579",
+    "images": {
+      "vm": "0fc61843a4319e449fa78bc36191844cf0628d50c53730caae2a9cf9687d8c92",
+      "slot": "0686a2c10086cd36c4029d3308c279a07f251a23b08721064fea942cadec2eb5"
+    }
+  },
+  "results": [
+    {"mm": "vm", "mode": "time_get", "bytes": 0, "offset": 0, "samples": [{"elapsed": 65627, "kernel": 44393, "idle": 0}], "ticks_per_op_median": 1025.421875, "ticks_per_op_min": 1025.421875, "ticks_per_op_max": 1025.421875, "us_per_op": 21.362955729166668, "ops_per_second": 46810.00198089201, "kernel_ticks_per_op": 693.640625, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 1596798, "kernel": 1501842, "idle": 0}], "ticks_per_op_median": 24949.96875, "ticks_per_op_min": 24949.96875, "ticks_per_op_max": 24949.96875, "us_per_op": 519.791015625, "ops_per_second": 1923.8501050226766, "kernel_ticks_per_op": 23466.28125, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 1803183, "kernel": 1707973, "idle": 0}], "ticks_per_op_median": 28174.734375, "ticks_per_op_min": 28174.734375, "ticks_per_op_max": 28174.734375, "us_per_op": 586.9736328125, "ops_per_second": 1703.6540384420216, "kernel_ticks_per_op": 26687.078125, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 1833046, "kernel": 1737836, "idle": 0}], "ticks_per_op_median": 28641.34375, "ticks_per_op_min": 28641.34375, "ticks_per_op_max": 28641.34375, "us_per_op": 596.6946614583334, "ops_per_second": 1675.8990227195607, "kernel_ticks_per_op": 27153.6875, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 1884834, "kernel": 1789624, "idle": 0}], "ticks_per_op_median": 29450.53125, "ticks_per_op_min": 29450.53125, "ticks_per_op_max": 29450.53125, "us_per_op": 613.552734375, "ops_per_second": 1629.851753523122, "kernel_ticks_per_op": 27962.875, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 2099886, "kernel": 2004422, "idle": 0}], "ticks_per_op_median": 32810.71875, "ticks_per_op_min": 32810.71875, "ticks_per_op_max": 32810.71875, "us_per_op": 683.556640625, "ops_per_second": 1462.9365594132253, "kernel_ticks_per_op": 31319.09375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 1550346, "kernel": 1473950, "idle": 0}], "ticks_per_op_median": 24224.15625, "ticks_per_op_min": 24224.15625, "ticks_per_op_max": 24224.15625, "us_per_op": 504.669921875, "ops_per_second": 1981.4931634615757, "kernel_ticks_per_op": 23030.46875, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 1752638, "kernel": 1676242, "idle": 0}], "ticks_per_op_median": 27384.96875, "ticks_per_op_min": 27384.96875, "ticks_per_op_max": 27384.96875, "us_per_op": 570.5201822916666, "ops_per_second": 1752.7863711730545, "kernel_ticks_per_op": 26191.28125, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 1782578, "kernel": 1706182, "idle": 0}], "ticks_per_op_median": 27852.78125, "ticks_per_op_min": 27852.78125, "ticks_per_op_max": 27852.78125, "us_per_op": 580.2662760416666, "ops_per_second": 1723.3467483610816, "kernel_ticks_per_op": 26659.09375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 1838807, "kernel": 1762157, "idle": 0}], "ticks_per_op_median": 28731.359375, "ticks_per_op_min": 28731.359375, "ticks_per_op_max": 28731.359375, "us_per_op": 598.5699869791666, "ops_per_second": 1670.6484149777546, "kernel_ticks_per_op": 27533.703125, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 2049727, "kernel": 1973077, "idle": 0}], "ticks_per_op_median": 32026.984375, "ticks_per_op_min": 32026.984375, "ticks_per_op_max": 32026.984375, "us_per_op": 667.2288411458334, "ops_per_second": 1498.7361731586693, "kernel_ticks_per_op": 30829.328125, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "time_get", "bytes": 0, "offset": 0, "samples": [{"elapsed": 64141, "kernel": 42907, "idle": 0}], "ticks_per_op_median": 1002.203125, "ticks_per_op_min": 1002.203125, "ticks_per_op_max": 1002.203125, "us_per_op": 20.879231770833332, "ops_per_second": 47894.482468312, "kernel_ticks_per_op": 670.421875, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply+recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 1480686, "kernel": 1385730, "idle": 0}], "ticks_per_op_median": 23135.71875, "ticks_per_op_min": 23135.71875, "ticks_per_op_max": 23135.71875, "us_per_op": 481.994140625, "ops_per_second": 2074.7140176917997, "kernel_ticks_per_op": 21652.03125, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply+recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 1597498, "kernel": 1502542, "idle": 0}], "ticks_per_op_median": 24960.90625, "ticks_per_op_min": 24960.90625, "ticks_per_op_max": 24960.90625, "us_per_op": 520.0188802083334, "ops_per_second": 1923.0071023563096, "kernel_ticks_per_op": 23477.21875, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply+recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 1627438, "kernel": 1532482, "idle": 0}], "ticks_per_op_median": 25428.71875, "ticks_per_op_min": 25428.71875, "ticks_per_op_max": 25428.71875, "us_per_op": 529.7649739583334, "ops_per_second": 1887.629513382384, "kernel_ticks_per_op": 23945.03125, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply+recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 1679226, "kernel": 1584270, "idle": 0}], "ticks_per_op_median": 26237.90625, "ticks_per_op_min": 26237.90625, "ticks_per_op_max": 26237.90625, "us_per_op": 546.623046875, "ops_per_second": 1829.4142658581989, "kernel_ticks_per_op": 24754.21875, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply+recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 1715783, "kernel": 1620827, "idle": 0}], "ticks_per_op_median": 26809.109375, "ticks_per_op_min": 26809.109375, "ticks_per_op_max": 26809.109375, "us_per_op": 558.5231119791666, "ops_per_second": 1790.4362031795397, "kernel_ticks_per_op": 25325.421875, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply_recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 1434427, "kernel": 1358031, "idle": 0}], "ticks_per_op_median": 22412.921875, "ticks_per_op_min": 22412.921875, "ticks_per_op_max": 22412.921875, "us_per_op": 466.9358723958333, "ops_per_second": 2141.621706786055, "kernel_ticks_per_op": 21219.234375, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply_recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 1551239, "kernel": 1474843, "idle": 0}], "ticks_per_op_median": 24238.109375, "ticks_per_op_min": 24238.109375, "ticks_per_op_max": 24238.109375, "us_per_op": 504.9606119791667, "ops_per_second": 1980.3524795341013, "kernel_ticks_per_op": 23044.421875, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply_recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 1584969, "kernel": 1508319, "idle": 0}], "ticks_per_op_median": 24765.140625, "ticks_per_op_min": 24765.140625, "ticks_per_op_max": 24765.140625, "us_per_op": 515.9404296875, "ops_per_second": 1938.2082551772305, "kernel_ticks_per_op": 23567.484375, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply_recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 1637105, "kernel": 1560455, "idle": 0}], "ticks_per_op_median": 25579.765625, "ticks_per_op_min": 25579.765625, "ticks_per_op_max": 25579.765625, "us_per_op": 532.9117838541666, "ops_per_second": 1876.4831822027297, "kernel_ticks_per_op": 24382.109375, "idle_ticks_per_op": 0.0},
+    {"mm": "slot", "mode": "reply_recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 1669563, "kernel": 1593167, "idle": 0}], "ticks_per_op_median": 26086.921875, "ticks_per_op_min": 26086.921875, "ticks_per_op_max": 26086.921875, "us_per_op": 543.4775390625, "ops_per_second": 1840.0024437532456, "kernel_ticks_per_op": 24893.234375, "idle_ticks_per_op": 0.0}
+  ]
+}

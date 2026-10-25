@@ -1,0 +1,31 @@
+{
+  "metadata": {
+    "cpu": "cached",
+    "rounds": 128,
+    "repeats": 1,
+    "priority": "service",
+    "clock_hz": 48000000,
+    "optimization": "-O1",
+    "warmup": 8,
+    "git": "07f4e4a37780ca5a983aaf450024ca8a32ef9a1e",
+    "dirty": true,
+    "clang": "clang version 20.0.0git (git@github.com:Compute-Mirrors/llvm-project 33ab2c2f7838239f1e2e5c06432bbb8d887e8cb2)",
+    "testbench_sha256": "723beb6c8bbbc1d2c4df727ed5d5b4066e600e2931bc409cafee518c27987579",
+    "images": {
+      "vm": "6e234f314d6258b9cda11ffd413f7e96a22a1010c8f778065e60e053b99c3e98"
+    }
+  },
+  "results": [
+    {"mm": "vm", "mode": "time_get", "bytes": 0, "offset": 0, "samples": [{"elapsed": 95289, "kernel": 63699, "idle": 0}], "ticks_per_op_median": 744.4453125, "ticks_per_op_min": 744.4453125, "ticks_per_op_max": 744.4453125, "us_per_op": 15.50927734375, "ops_per_second": 64477.53675660359, "kernel_ticks_per_op": 497.6484375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 2454838, "kernel": 2316560, "idle": 0}], "ticks_per_op_median": 19178.421875, "ticks_per_op_min": 19178.421875, "ticks_per_op_max": 19178.421875, "us_per_op": 399.5504557291667, "ops_per_second": 2502.8128129025213, "kernel_ticks_per_op": 18098.125, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 2759782, "kernel": 2621312, "idle": 0}], "ticks_per_op_median": 21560.796875, "ticks_per_op_min": 21560.796875, "ticks_per_op_max": 21560.796875, "us_per_op": 449.1832682291667, "ops_per_second": 2226.262799018183, "kernel_ticks_per_op": 20479.0, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 3182326, "kernel": 3043664, "idle": 0}], "ticks_per_op_median": 24861.921875, "ticks_per_op_min": 24861.921875, "ticks_per_op_max": 24861.921875, "us_per_op": 517.9567057291666, "ops_per_second": 1930.663294709593, "kernel_ticks_per_op": 23778.625, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 10420769, "kernel": 10279227, "idle": 0}], "ticks_per_op_median": 81412.2578125, "ticks_per_op_min": 81412.2578125, "ticks_per_op_max": 81412.2578125, "us_per_op": 1696.0887044270833, "ops_per_second": 589.5918045971463, "kernel_ticks_per_op": 80306.4609375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply+recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 54681141, "kernel": 54521935, "idle": 0}], "ticks_per_op_median": 427196.4140625, "ticks_per_op_min": 427196.4140625, "ticks_per_op_max": 427196.4140625, "us_per_op": 8899.92529296875, "ops_per_second": 112.36049372122648, "kernel_ticks_per_op": 425952.6171875, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 0, "offset": 0, "samples": [{"elapsed": 2383028, "kernel": 2273038, "idle": 0}], "ticks_per_op_median": 18617.40625, "ticks_per_op_min": 18617.40625, "ticks_per_op_max": 18617.40625, "us_per_op": 387.8626302083333, "ops_per_second": 2578.232400122869, "kernel_ticks_per_op": 17758.109375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 32, "offset": 0, "samples": [{"elapsed": 2684724, "kernel": 2574734, "idle": 0}], "ticks_per_op_median": 20974.40625, "ticks_per_op_min": 20974.40625, "ticks_per_op_max": 20974.40625, "us_per_op": 436.966796875, "ops_per_second": 2288.5033992321, "kernel_ticks_per_op": 20115.109375, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 256, "offset": 0, "samples": [{"elapsed": 3107331, "kernel": 2997149, "idle": 0}], "ticks_per_op_median": 24276.0234375, "ticks_per_op_min": 24276.0234375, "ticks_per_op_max": 24276.0234375, "us_per_op": 505.75048828125, "ops_per_second": 1977.259583867956, "kernel_ticks_per_op": 23415.2265625, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 4096, "offset": 0, "samples": [{"elapsed": 10346842, "kernel": 10233780, "idle": 0}], "ticks_per_op_median": 80834.703125, "ticks_per_op_min": 80834.703125, "ticks_per_op_max": 80834.703125, "us_per_op": 1684.0563151041667, "ops_per_second": 593.8043704542894, "kernel_ticks_per_op": 79951.40625, "idle_ticks_per_op": 0.0},
+    {"mm": "vm", "mode": "reply_recv", "bytes": 4096, "offset": 1, "samples": [{"elapsed": 54617777, "kernel": 54486859, "idle": 0}], "ticks_per_op_median": 426701.3828125, "ticks_per_op_min": 426701.3828125, "ticks_per_op_max": 426701.3828125, "us_per_op": 8889.612141927084, "ops_per_second": 112.49084707347207, "kernel_ticks_per_op": 425678.5859375, "idle_ticks_per_op": 0.0}
+  ]
+}
