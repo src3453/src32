@@ -113,7 +113,8 @@ static void out_entry(int long_format, uint32_t type, uint32_t size, uint32_t mt
         cmd_out("  ");
     }
     cmd_out(name);
-    cmd_out("\n");
+    if (long_format)
+        cmd_out("\n");
 }
 
 static int32_t list_dir(const char *path, int long_format) {
@@ -149,8 +150,13 @@ static int32_t list_dir(const char *path, int long_format) {
     if (status < 0)
         return status;
     sort_items();
-    for (uint32_t i = 0; i < item_count; ++i)
+    for (uint32_t i = 0; i < item_count; ++i) {
+        if (!long_format && i > 0)
+            cmd_out("\t");
         out_entry(long_format, items[i]->type, items[i]->size, items[i]->mtime, items[i]->name);
+    }
+    if (!long_format && item_count > 0)
+        cmd_out("\n");
     free_items();
     return FND_OK;
 }
@@ -163,6 +169,8 @@ static int32_t list_path(const char *path, int long_format) {
     if (st.type == FND_TYPE_DIR)
         return list_dir(path, long_format);
     out_entry(long_format, st.type, st.size_lo, st.modified_sec_lo, path);
+    if (!long_format)
+        cmd_out("\n");
     return FND_OK;
 }
 

@@ -256,11 +256,25 @@ class ShellTests(unittest.TestCase):
                            'ls /nope\\n', 'ls -x\\n')
         self.assertEqual(rows[:2], BANNER)
         self.assertIn('/> ls', rows)
-        self.assertIn('a.txt', rows)
-        self.assertLess(rows.index('a.txt'), rows.index('B.txt'))
+        self.assertTrue(any(row.startswith('a.txt   B.txt   ') for row in rows), rows)
         self.assertIn('/bin/echo.wax', rows)
         self.assertIn('ls: /nope: not found (-10)', rows)
         self.assertIn('usage: ls [-l] [path...]', rows)
+
+    def test_ls_tab_output(self):
+        # Check actual HT/LF bytes as well as console expansion and boundaries.
+        rows = self.screen('mkdir /names\\n', 'mkdir /empty\\n',
+                           'echo a > /names/B.txt\\n', 'echo a > /names/a.txt\\n',
+                           'ls /names > /list.txt\\n', 'ls /empty > /empty.txt\\n',
+                           'ls /names /empty /names/a.txt\\n')
+        self.assertEqual(rows[-9:], [
+            '/> ls /names /empty /names/a.txt',
+            '/names:', 'a.txt   B.txt', '', '/empty:', '',
+            '/names/a.txt:', '/names/a.txt', '/>',
+        ])
+        vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
+        self.assertEqual(vol.read(vol.resolve('/list.txt')), b'a.txt\tB.txt\n')
+        self.assertEqual(vol.read(vol.resolve('/empty.txt')), b'')
 
     def test_hex(self):
         # Cursor edit both nibbles, ASCII edit, exact goto, legacy command,
