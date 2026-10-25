@@ -249,6 +249,8 @@ python3 tools/pkcl/busybox.py --busybox-source /path/to/busybox-1.36.1 \
 ```
 
 1. `allnoconfig` に `tools/pkcl/busybox.config` の差分を重ね、ホストの gcc で `make V=1` して生成ヘッダとコンパイルコマンド（`-I`／`-D`／`-include`）を集める。
+   BusyBox 1.36.1 は `MAKEFLAGS` 内の任意の `s` を silent 指定と見なすため、GNU make 4.4 の jobserver オプションでも詳細ログが消える。スクリプトは `quiet=` も渡してコンパイルコマンドの出力を維持する。WSL では FIFO を作れない Windows 側のディレクトリを `TMPDIR` に指定せず、Linux 側の `/tmp` を使う。
+   Clang 21 では Newlib 4.4／4.5 の `_strtod_l` に未対応の `llvm.is.fpclass.f64` が現れる（#183）。この場合は Newlib と最終リンクに Clang 20 を使う。
 2. 各翻訳単位を `driver.py -c` で LLVM IR にする（`-Os`、`gnu11`）。`-D__clang_major__=0` で Clang 向けのインラインアセンブリの分岐を避け、`-DBB_GLOBAL_CONST=` で `ptr_to_globals` を rodata に置かせない（U モードで書込みフォルトになる）。バリアの空 asm は IR から消す。
 3. 全部を一度にリンクして `busybox.wax`（WAX v3、`fnd` WAL を import）を作る。
 

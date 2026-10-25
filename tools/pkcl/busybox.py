@@ -70,7 +70,9 @@ def configure(args, build: Path):
     for key, value in wanted.items():
         if value != "n" and f"{key}={value}" not in final:
             print(f"warning: {key}={value} was not accepted by BusyBox's dependency rules", file=sys.stderr)
-    run([*make, "V=1", f"-j{args.jobs}"], log=build / "host-build.log", check=False)
+    # BusyBox 1.36 tests MAKEFLAGS for any 's', including GNU make 4.4's
+    # --jobserver-auth. Override quiet so V=1 still records compile commands.
+    run([*make, "V=1", "quiet=", f"-j{args.jobs}"], log=build / "host-build.log", check=False)
     if not (build / "include/autoconf.h").is_file():
         raise SystemExit(f"BusyBox's host build failed; see {build / 'host-build.log'}")
 
