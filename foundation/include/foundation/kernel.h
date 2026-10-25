@@ -9,19 +9,21 @@
 /* Supervisor-side interface of the kernel, for the image that links
  * it (boot code, demo, tests). User programs use <foundation/abi.h>. */
 
-#define FND_MAX_PROCS 7u    /* one per user slot */
+#define FND_MAX_PROCS 7u    /* process records; no longer tied to memory slots */
 #define FND_MAX_THREADS 8u  /* user threads; the idle thread is extra */
-#define FND_REGIONS 8u      /* Extension P regions: the slot backend's limit */
+#define FND_REGIONS 8u      /* Extension P regions: the nommu backend's limit */
 /* The regions a process record holds: an image's (at most 8) and the MMIO
- * grants (at most FND_MAX_GRANTS). The slot backend keeps all in the 8 CPU
+ * grants (at most FND_MAX_GRANTS). The nommu backend keeps all in the 8 CPU
  * regions; the vm backend only records them. */
 #define FND_PROC_REGIONS 16u
 #define FND_TICK_HZ 100u
 #define FND_TICK_CYCLES (48000000u / FND_TICK_HZ) /* PeC timer ch0 RELOAD at 48 MHz */
 #define FND_SLICE_TICKS 1u /* 10 ms, one scheduler tick */
 
-/* User slots (§5.2): the slot backend's fixed physical areas. With
- * Extension V the same numbers are only link-time addresses. */
+/* The fixed ranges of the old slot layout. Only processes that run code
+ * linked into the kernel image (fnd_proc_create_builtin) and tests that link
+ * executables to fixed addresses still use them; the nommu backend has no
+ * slots (§5.2) and takes any free range. */
 #define FND_SLOTS 7u
 uint32_t fnd_slot_base(uint32_t slot);
 uint32_t fnd_slot_end(uint32_t slot);
@@ -45,7 +47,7 @@ struct fnd_proc {
     uint32_t state;
     uint32_t pid;
     uint32_t parent; /* pid of the spawner, 0 for the kernel */
-    uint32_t slot;
+    uint32_t arena_lo, arena_hi; /* nommu backend: the pages it owns (§5.2), else 0 */
     uint32_t priority;
     uint32_t caps;    /* FND_CAP_* (§9.1) */
     uint32_t threads; /* live threads */
@@ -64,8 +66,8 @@ struct fnd_proc {
 };
 
 /* A process that runs user code linked into the kernel image. [code_start, code_end) is granted R/X, and the top ram_size
- * bytes of the slot ([fnd_slot_end(slot) - ram_size, fnd_slot_end(slot)),
- * zeroed) R/W for stack and data. The thread starts at entry in U mode with
+ * bytes of the old slot range ([fnd_slot_end(slot) - ram_size, fnd_slot_end(slot)),
+ * zeroed, claimed as the arena) R/W for stack and data. The thread starts at entry in U mode with
  * USP = slot end - 8, where the argument word arg is stored (C stack ABI:
  * first argument at SP), UFP = 0, UGP = slot base. Returns the pid (>= 1) or
  * a negative FND_E_* code. */
@@ -86,16 +88,16 @@ struct fnd_grant {
 };
 #define FND_MAX_GRANTS 8u
 
-/* Loads a PROTECTED WAX into the user slot that contains its base_addr and
- * starts it as §9.2 describes: v2, or v3 with the WAL graph it needs, chosen
+/* Loads a PROTECTED WAX into free RAM (the pages it reserves, or anywhere
+ * for a relocatable one) and starts it as §9.2 describes: v2, or v3 with the WAL graph it needs, chosen
  * from libs (doc/spec_WAX_v3.md §4.1, §7). The image and the libraries must
  * stay unchanged during the call; the kernel does not copy them first.
  * grants become the last regions (§5.3 step 4); a grant outside the §10.3
  * windows is FND_E_ACCESS, and VRAM or PCMRAM already granted to a live
  * process is FND_E_BUSY. Atomic: on failure nothing is allocated or written.
  * Returns the pid (>= 1) or FND_E_FORMAT, FND_E_UNSUPPORTED,
- * FND_E_DEPENDENCY, FND_E_REGION_LIMIT, FND_E_ADDRESS_CONFLICT (slot in
- * use), FND_E_LIMIT, FND_E_ACCESS, FND_E_BUSY or FND_E_BAD_ARG. */
+ * FND_E_DEPENDENCY, FND_E_REGION_LIMIT, FND_E_ADDRESS_CONFLICT (its fixed
+ * range is taken), FND_E_NO_MEMORY, FND_E_LIMIT, FND_E_ACCESS, FND_E_BUSY or FND_E_BAD_ARG. */
 int32_t fnd_proc_spawn_wax(const char *name, uint32_t priority, const void *image, uint32_t size,
                            const struct fnd_image *libs, uint32_t lib_count,
                            const struct fnd_grant *grants, uint32_t grant_count);

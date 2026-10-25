@@ -4,12 +4,16 @@
  *   test.base, each process with its own instances at different bases;
  * - poke_write / poke_exec: a store to RX and a jump into RW, both faults;
  * - v2app: a PROTECTED WAX v2 program in C;
+ * - pie: a relocatable executable (driver --pie) spawned three times at once,
+ *   each copy in an arena of its own;
  * - spin: keeps the CPU busy, as src32_testbench treats the idle HALT as
  *   the end of the program.
  * Rejected spawns change nothing. After the first round app is spawned again
  * into its freed slot. Ends with R1 = 42 at a HALT, or 0x100 + the number of
  * failed checks. */
 #include <foundation/kernel.h>
+
+#include "../../kernel/mm.h"
 
 #include "images.h"
 
@@ -26,7 +30,17 @@ static const struct fnd_image libs[] = {{IMAGE(math_old)}, {IMAGE(math)}, {IMAGE
 static const struct fnd_image base_only[] = {{IMAGE(base)}};
 static const struct fnd_image old_math[] = {{IMAGE(math_old)}, {IMAGE(base)}};
 
-static int32_t pid_app, pid_app2, pid_v2, pid_write, pid_exec;
+#define PIES 3u
+
+static int32_t pid_app, pid_app2, pid_v2, pid_write, pid_exec, pid_pie[PIES];
+static int32_t pid_spin;
+static uint32_t pie_lo[PIES], pie_hi[PIES], pool_bytes;
+
+/* The bytes of arena the live process pid holds. */
+static uint32_t held(int32_t pid) {
+    struct fnd_proc *p = fnd_proc_get((uint32_t)pid);
+    return p && p->state == FND_PROC_LIVE ? p->arena_hi - p->arena_lo : 0;
+}
 static uint32_t failures, rounds;
 
 static void check(int ok) {
@@ -68,11 +82,37 @@ static uint32_t on_tick(uint32_t ticks) {
         check(exited(pid_exec, (int32_t)0x80050004u) && x->fault_epc == POKE_EXEC_DATA);
         check(slot_clear(SLOT_APP2));
     }
+    if (rounds == 1) {
+        /* The relocatable copies: the last one grew in place (42), the others
+         * were boxed in by the next arena (43); every arena was zeroed and
+         * went back to the pool. */
+        for (uint32_t i = 0; i < PIES; ++i)
+            check(exited(pid_pie[i], i + 1u == PIES ? 42 : 43) && zero(pie_lo[i], pie_hi[i]));
+        check(mm_arena_free_bytes() + held(pid_spin) == pool_bytes);
+    }
     if (++rounds == ROUNDS)
         return failures == 0u ? 42u : 0x100u + failures;
     /* Spawn and exit again: the slot, records and threads are reused. */
     pid_app = fnd_proc_spawn_wax("app", FND_PRIO_APP, IMAGE(app), libs, 3, 0, 0);
     check(pid_app > 0);
+    if (rounds == 1) {
+        /* Three copies of one relocatable executable at once (the records of
+         * the programs that have exited are reused). */
+        for (uint32_t i = 0; i < PIES; ++i) {
+            pid_pie[i] = fnd_proc_spawn_wax("pie", FND_PRIO_APP, IMAGE(pie), 0, 0, 0, 0);
+            check(pid_pie[i] > 0);
+            struct fnd_proc *p = fnd_proc_get((uint32_t)pid_pie[i]);
+            if (!p)
+                continue;
+            pie_lo[i] = p->arena_lo;
+            pie_hi[i] = p->arena_hi;
+            /* One arena each, above the one before: nothing overlaps. */
+            check(p->arena_lo && p->arena_hi > p->arena_lo && (i == 0 || p->arena_lo >= pie_hi[i - 1u]));
+        }
+        /* Everything alive now, plus what is free, is the whole pool. */
+        pool_bytes = mm_arena_free_bytes() + held(pid_app) + held(pid_spin) + held(pid_pie[0]) +
+                     held(pid_pie[1]) + held(pid_pie[2]);
+    }
     return 0;
 }
 
@@ -91,7 +131,8 @@ int main(void) {
     pid_v2 = fnd_proc_spawn_wax("v2app", FND_PRIO_APP, IMAGE(v2app), 0, 0, 0, 0);
     pid_write = fnd_proc_spawn_wax("poke-write", FND_PRIO_APP, IMAGE(poke_write), 0, 0, 0, 0);
     pid_exec = fnd_proc_spawn_wax("poke-exec", FND_PRIO_APP, IMAGE(poke_exec), 0, 0, 0, 0);
-    if (fnd_proc_spawn_wax("spin", FND_PRIO_APP, IMAGE(spin), 0, 0, 0, 0) < 0)
+    pid_spin = fnd_proc_spawn_wax("spin", FND_PRIO_APP, IMAGE(spin), 0, 0, 0, 0);
+    if (pid_spin < 0)
         return 2;
     if (pid_app < 0 || pid_app2 < 0 || pid_v2 < 0 || pid_write < 0 || pid_exec < 0)
         return 2;

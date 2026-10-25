@@ -41,6 +41,9 @@ struct wax_image {
     uint32_t span;    /* reservation: highest block end - lowest address */
     uint32_t align;   /* largest block alignment */
     uint32_t entry_offset, stack_top, stack_size;
+    uint32_t relocatable;                    /* WAX flag RELOCATABLE (§3.1) */
+    uint32_t reloc_table, reloc_count;       /* 4-byte entries, link-time address | kind */
+    uint32_t heap_hint;                      /* bytes of heap the program asks for, 0 = OS default */
     uint32_t block_count, block_table, block_entry_size;
     uint32_t dep_count, dep_table;
     uint32_t export_count, export_table;
@@ -65,6 +68,10 @@ struct wax_target {
     const char *os_id;
     uint32_t os_major, os_minor;
     uint32_t window_start, window_end; /* all blocks, libraries and the stack */
+    /* Where a relocatable executable (v3 §3.1) is to run: its lowest block
+     * goes to load_base and its stack, which lies just below, moves with it.
+     * 0 keeps the link address. Other executables always keep theirs. */
+    uint32_t load_base;
 };
 
 struct wax_launch {
@@ -72,6 +79,8 @@ struct wax_launch {
     struct wax_image image[WAX_MAX_IMAGES]; /* libraries in placement order */
     uint32_t entry, stack_top, stack_size;
     uint32_t top; /* end of the highest block: where the heap starts (§5.3) */
+    uint32_t delta; /* load address minus link address of the executable (relocation) */
+    uint32_t heap_hint; /* of the executable, 0 if it has none */
     uint32_t region_count;
     struct wax_region region[WAX_REGIONS]; /* [0] is the stack */
     /* Diagnostics for a failed plan: the requesting image (launch index or,
@@ -86,6 +95,16 @@ struct wax_launch {
  * version, so the caller can pick the window before wax_plan. */
 enum wax_error wax_base_addr(const void *data, uint32_t size, uint32_t *base);
 
+/* What the caller needs to choose where an executable goes before wax_plan:
+ * the link-time range its blocks and stack reserve ([low, high), holes
+ * included), whether it is relocatable (v3 §3.1), the stack it needs and the
+ * heap it asks for. Validates the executable alone. */
+struct wax_info {
+    uint32_t base, low, high;
+    uint32_t relocatable, stack_size, heap_hint;
+};
+enum wax_error wax_inspect(const void *data, uint32_t size, struct wax_info *info);
+
 /* Validates the executable and every library it needs, selects providers,
  * places the libraries inside the window, plans the regions and checks every
  * import. Writes nothing outside *launch. */
@@ -93,8 +112,14 @@ enum wax_error wax_plan(struct wax_launch *launch, const void *data, uint32_t si
                         const struct wax_library *libs, uint32_t lib_count,
                         const struct wax_target *target);
 
+/* Moves a successful plan of a relocatable executable by shift bytes (a
+ * multiple of every image's alignment): the plan is made once at a trial
+ * address and then rebased onto the memory it is given. */
+enum wax_error wax_rebase(struct wax_launch *launch, uint32_t shift);
+
 /* Copies the blocks of a successful plan, zeroes their tails and the stack,
- * and writes the import descriptors. Address a is written at bias + a. */
+ * applies the relocations of a relocatable executable and writes the import
+ * descriptors. Address a is written at bias + a. */
 void wax_load(const struct wax_launch *launch, uintptr_t bias);
 
 /* The same through a mapping, for an address space the loader cannot write

@@ -1,10 +1,10 @@
 /* Foundation kernel entry: spawns the FNDBOOT modules (doc/spec_Foundation.md
  * §11) in table order, init last. build.py packs
  *
- *   console  slot 1, SERVICE, SVC, MMIO grants for the PCG and PeC input
- *   disk     slot 2, SERVICE, DISK | SVC (blk_io for fs)
- *   fs       slot 3, SERVICE, SVC (FS2 on the boot drive, /dd, /dev, /tmp)
- *   init     slot 0, SERVICE, starts /bin/shell.wax and restarts it
+ *   console  SERVICE, SVC, MMIO grants for the PCG and PeC input
+ *   disk     SERVICE, DISK | SVC (blk_io for fs)
+ *   fs       SERVICE, SVC (FS2 on the boot drive, /dd, /dev, /tmp)
+ *   init     SERVICE, starts /bin/shell.wax and restarts it
  *
  * Disk boot: stage1 enters with R1 = boot drive and R2 = the FNDBOOT image
  * staged at 0x00200000. FOUNDATION_BOOT_EMBEDDED builds a WAX that the host

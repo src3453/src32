@@ -21,8 +21,8 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / "tools/wax"))
 import wax  # noqa: E402  (v2 packer)
-from wax3 import (FUNCTION, OBJECT, PERM_R, PERM_RW, PERM_RX, Block, Dependency,  # noqa: E402
-                  Export, Import, build)
+from wax3 import (FUNCTION, OBJECT, PERM_R, PERM_RW, PERM_RX, RELOC_DATA, RELOC_PAIR, Block,  # noqa: E402
+                  Dependency, Export, Import, build)
 
 (OK, FORMAT, UNSUPPORTED, DEPENDENCY_MISSING, ABI_MISMATCH, DEPENDENCY_CONFLICT,
  DEPENDENCY_CYCLE, SYMBOL_MISSING, SYMBOL_MISMATCH, REGION_LIMIT, RESOURCE_LIMIT) = range(11)
@@ -69,6 +69,30 @@ def imp(dep=0, name="write", slot=0x100, kind=FUNCTION, signature=SIG, size=0):
     return Import(dep, name, kind, slot, size, signature if kind == FUNCTION else None)
 
 
+LDIH, LDIL = 0x3D << 26, 0x3C << 26
+PIE_BASE = 0x110000
+
+
+def word(value):
+    return value.to_bytes(4, "big")
+
+
+def pie(*, base=PIE_BASE, code=None, data=None, relocs=None, stack_size=0x1000, **kw):
+    """A relocatable executable: the stack lies just below base (spec_WAX_v3.md
+    §3.1). At base + 4 an LDIH/LDIL pair loads base + 0x104 into R2, and at
+    base + 0x100 a data word holds base + 0x100."""
+    if code is None:
+        code = word(0) + word(LDIH | 2 << 21 | (base + 0x104) >> 16) \
+            + word(LDIL | 2 << 21 | (base + 0x104) & 0xFFFF) + bytes(0xF4)
+    if data is None:
+        data = word(base + 0x100) + word(0x1234) + bytes(0x78)
+    if relocs is None:
+        relocs = [(base + 4) | RELOC_PAIR, (base + 0x100) | RELOC_DATA]
+    return build("wax", image_id="app", blocks=[Block(base, code, perm=PERM_RX),
+                                                 Block(base + 0x100, data, perm=PERM_RW)],
+                 entry_offset=0, stack_top=base, stack_size=stack_size, relocs=relocs, **kw)
+
+
 class LoaderTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -83,6 +107,7 @@ class LoaderTests(unittest.TestCase):
                         str(HERE / "host.c"), "-o", str(library)], check=True)
         cls.lib = ctypes.CDLL(str(library))
         cls.lib.host_diag_name.restype = ctypes.c_char_p
+        cls.lib.host_set_load_base.argtypes = [ctypes.c_uint32]
 
     @classmethod
     def tearDownClass(cls):
@@ -100,6 +125,9 @@ class LoaderTests(unittest.TestCase):
                            ram, WINDOW[0], out)
         name = self.lib.host_diag_name()
         return Result(list(out), ram.raw, name.decode() if name else None)
+
+    def tearDown(self):
+        self.lib.host_set_load_base(0)
 
     def ok(self, exe, libs=(), **kw):
         result = self.plan(exe, libs, **kw)
@@ -251,7 +279,7 @@ class LoaderTests(unittest.TestCase):
 
     def test_header_identity(self):
         for offset, value, error in ((4, 4, UNSUPPORTED), (6, 3, UNSUPPORTED), (8, 2, UNSUPPORTED),
-                                     (10, 6, UNSUPPORTED), (10, 0, FORMAT)):
+                                     (10, 10, UNSUPPORTED), (10, 6, FORMAT), (10, 0, FORMAT)):
             image = app()
             image.data[offset:offset + 2] = value.to_bytes(2, "big")
             self.rejects(error, image)
@@ -449,6 +477,91 @@ class LoaderTests(unittest.TestCase):
                                          imports=[Import(0, "deep", FUNCTION, 0x100, 0, "fn()->void")]),
                      [outer, inner])
 
+    # --- relocatable executables (spec_WAX_v3.md §3.1) ---
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_reloc_linked_address_without_load_base(self):
+        r = self.ok(pie())
+        self.assertEqual((r.entry, r.stack_top), (PIE_BASE, PIE_BASE))
+        self.assertEqual(r.regions[0], (PIE_BASE - 0x1000, PIE_BASE, PERM_RW))
+        self.assertEqual(r.word(PIE_BASE + 4), LDIH | 2 << 21 | 0x11)  # unchanged
+        self.assertEqual(r.word(PIE_BASE + 0x100), PIE_BASE + 0x100)
+
+    def test_reloc_load_base_moves_everything(self):
+        self.lib.host_set_load_base(0x150000)
+        r = self.ok(pie())
+        self.assertEqual((r.entry, r.stack_top, r.origins[0]), (0x150000, 0x150000, 0x150000))
+        self.assertEqual(r.regions, [(0x14F000, 0x150000, PERM_RW), (0x150000, 0x150100, PERM_RX),
+                                     (0x150100, 0x150180, PERM_RW)])
+        self.assertEqual(r.top, 0x150180)
+        # The pair now names 0x150104 and the data word 0x150100; the rest is as linked.
+        self.assertEqual(r.word(0x150004), LDIH | 2 << 21 | 0x15)
+        self.assertEqual(r.word(0x150008), LDIL | 2 << 21 | 0x0104)
+        self.assertEqual(r.word(0x150100), 0x150100)
+        self.assertEqual(r.word(0x150104), 0x1234)
+        self.assertEqual(r.ram[0x4F000:0x50000], bytes(0x1000))  # the moved stack is zeroed
+
+    def test_reloc_pair_carries_into_the_high_half(self):
+        # Linked at 0x10FFFC + 0x104 = 0x110100 -> low half 0x0100; moving by 0xFF00 wraps it.
+        self.lib.host_set_load_base(PIE_BASE + 0xFF00)
+        r = self.ok(pie())
+        value = PIE_BASE + 0x104 + 0xFF00
+        self.assertEqual(r.word(PIE_BASE + 0xFF00 + 4) & 0xFFFF, value >> 16)
+        self.assertEqual(r.word(PIE_BASE + 0xFF00 + 8) & 0xFFFF, value & 0xFFFF)
+
+    def test_reloc_load_base_is_ignored_for_fixed_executables(self):
+        self.lib.host_set_load_base(0x150000)
+        self.assertEqual(self.ok(app()).entry, 0x100000)
+
+    def test_reloc_libraries_follow_the_moved_image(self):
+        self.lib.host_set_load_base(0x150000)
+        exe = pie(deps=[Dependency("a")], imports=[imp(slot=0x120)],
+                  data=word(PIE_BASE + 0x100) + bytes(0x1C) + bytes(8) + bytes(0x58))
+        r = self.ok(exe, [lib("a")], window=(0x14F000, 0x1F0000))
+        self.assertEqual(r.count, 2)
+        self.assertGreaterEqual(r.origins[1], 0x150180)            # after the executable's blocks
+        self.assertEqual(r.word(0x150120), r.origins[1] + 0x20)  # the import slot
+        self.assertEqual(r.word(0x150124), r.origins[1])
+
+    def test_reloc_inspect(self):
+        out = (ctypes.c_uint32 * 7)()
+        image = bytes(pie(heap_hint=0x4000).data)
+        self.assertEqual(self.lib.host_inspect(image, len(image), out), OK)
+        self.assertEqual(list(out), [OK, PIE_BASE, PIE_BASE - 0x1000, PIE_BASE + 0x180, 1, 0x1000, 0x4000])
+        fixed = bytes(app().data)
+        self.assertEqual(self.lib.host_inspect(fixed, len(fixed), out), OK)
+        self.assertEqual(out[4], 0)
+
+    def test_reloc_rejections(self):
+        base = PIE_BASE
+        bad = {
+            "reloc outside every block": dict(relocs=[(base + 0x400) | RELOC_DATA]),
+            "pair in data": dict(relocs=[(base + 0x100) | RELOC_PAIR]),
+            "data word in code": dict(relocs=[(base + 4) | RELOC_DATA]),
+            "pair that is not LDIH/LDIL": dict(relocs=[base | RELOC_PAIR]),
+            "pair at the end of the code": dict(relocs=[(base + 0xFC) | RELOC_PAIR]),
+            "duplicate": dict(relocs=[(base + 4) | RELOC_PAIR, (base + 4) | RELOC_PAIR]),
+            "unknown kind": dict(relocs=[(base + 0x100) | 2]),
+            "unaligned heap hint": dict(heap_hint=12),
+        }
+        for name, kw in bad.items():
+            with self.subTest(name):
+                self.rejects(FORMAT, pie(**kw))
+
+    def test_reloc_must_be_sorted(self):
+        image = pie(relocs=[(PIE_BASE + 4) | RELOC_PAIR, (PIE_BASE + 0x100) | RELOC_DATA])
+        first, second = image.layout["relocs"], image.layout["relocs"] + 4
+        a, b = image.get32(first), image.get32(second)
+        image.put32(first, b)
+        image.put32(second, a)
+        self.rejects(FORMAT, image)
+
+    def test_reloc_flag_needs_a_table_and_a_stack_below_the_image(self):
+        self.rejects(FORMAT, pie(relocs=[]) if False else build(
+            "wax", image_id="app", blocks=[Block(PIE_BASE, bytes(0x100), perm=PERM_RX)],
+            stack_top=PIE_BASE, stack_size=0x1000, relocs=[]))
+        self.rejects(FORMAT, build(
+            "wax", image_id="app", blocks=[Block(PIE_BASE, bytes(0x100), perm=PERM_RX),
+                                           Block(PIE_BASE + 0x100, bytes(4), perm=PERM_RW)],
+            stack_top=0x1FF000, stack_size=0x1000, relocs=[(PIE_BASE + 0x100) | RELOC_DATA]))
+
+

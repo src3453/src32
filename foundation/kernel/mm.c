@@ -1,7 +1,10 @@
 /* Memory management backends (doc/foundation_vm_plan.md); the interface is
- * mm.h. The slot backend programs the Extension P protection regions
- * (spec_Foundation.md §5.3). The vm backend keeps a page table per process for
- * Extension V (doc/spec_CPU_vm.md) and a frame pool above the kernel area. */
+ * mm.h. The nommu backend (no Extension V) works like Linux without an MMU:
+ * a process gets one contiguous arena of RAM from a page allocator, and the
+ * Extension P protection regions (spec_Foundation.md §5.3) keep it inside
+ * it. The vm backend keeps a page table per process for Extension V
+ * (doc/spec_CPU_vm.md) and a frame pool above the kernel area. Both draw on
+ * the one page bitmap below. */
 #include "internal.h"
 #include <cpt32/bmc.h>
 
@@ -46,7 +49,104 @@ uint32_t mm_ram_bytes(void) {
     return bytes ? bytes : RAM_BYTES_FALLBACK;
 }
 
-/* ---- slot backend ---- */
+/* ---- the page pool of both backends ---- */
+
+/* Pages come from [POOL_BASE, installed RAM): the area below holds the
+ * kernel, its heap and the staged boot image (§5.1), which the processes
+ * never see. 64K pages are 256 MiB. */
+#define POOL_BASE MM_USER_BASE
+#define MAX_FRAMES 65536u
+
+static uint32_t frame_used[MAX_FRAMES / 32u]; /* bit set: handed out */
+static uint32_t pool_frames, free_frames, next_hint;
+
+static void pool_init(uint32_t reserved) {
+    uint32_t ram = mm_ram_bytes();
+    pool_frames = ram > POOL_BASE ? (ram - POOL_BASE) / MM_PAGE : 0;
+    if (pool_frames > MAX_FRAMES)
+        pool_frames = MAX_FRAMES;
+    free_frames = pool_frames;
+    for (uint32_t i = 0; i < MAX_FRAMES / 32u; ++i)
+        frame_used[i] = 0;
+    for (uint32_t f = 0; f < reserved && f < pool_frames; ++f) {
+        frame_used[f >> 5] |= 1u << (f & 31u);
+        --free_frames;
+    }
+    next_hint = reserved;
+}
+
+static int frame_taken(uint32_t f) { return (frame_used[f >> 5] >> (f & 31u)) & 1u; }
+
+/* ---- nommu backend: the arena allocator ---- */
+
+static uint32_t first_page(uint32_t addr) { return (addr - POOL_BASE) / MM_PAGE; }
+
+/* Whether the pages of [lo, hi) all exist and are free. */
+static int range_free(uint32_t lo, uint32_t hi) {
+    if (lo < POOL_BASE || hi <= lo || (hi - POOL_BASE) / MM_PAGE > pool_frames || ((lo | hi) & MM_PAGE_MASK))
+        return 0;
+    for (uint32_t f = first_page(lo); f < first_page(hi); ++f) {
+        if (frame_taken(f))
+            return 0;
+    }
+    return 1;
+}
+
+static void range_take(uint32_t lo, uint32_t hi) {
+    for (uint32_t f = first_page(lo); f < first_page(hi); ++f)
+        frame_used[f >> 5] |= 1u << (f & 31u);
+    free_frames -= (hi - lo) / MM_PAGE;
+}
+
+int32_t mm_arena_claim(uint32_t lo, uint32_t hi) {
+    lo &= ~MM_PAGE_MASK;
+    hi = (hi + MM_PAGE_MASK) & ~MM_PAGE_MASK;
+    if (lo < POOL_BASE || hi <= lo || (hi - POOL_BASE) / MM_PAGE > pool_frames)
+        return FND_E_NO_MEMORY; /* outside the installed RAM or the user area */
+    if (!range_free(lo, hi))
+        return FND_E_ADDRESS_CONFLICT;
+    range_take(lo, hi);
+    return FND_OK;
+}
+
+uint32_t mm_arena_alloc(uint32_t bytes) {
+    uint32_t pages = (bytes + MM_PAGE_MASK) / MM_PAGE;
+    if (pages == 0 || pages > free_frames)
+        return 0;
+    /* First fit from the bottom. */
+    uint32_t run = 0;
+    for (uint32_t f = 0; f < pool_frames; ++f) {
+        run = frame_taken(f) ? 0 : run + 1u;
+        if (run == pages) {
+            uint32_t lo = POOL_BASE + (f + 1u - pages) * MM_PAGE;
+            range_take(lo, lo + pages * MM_PAGE);
+            return lo;
+        }
+    }
+    return 0;
+}
+
+void mm_arena_free(uint32_t lo, uint32_t hi) {
+    if (lo < POOL_BASE || hi <= lo)
+        return;
+    for (uint32_t f = first_page(lo); f < first_page((hi + MM_PAGE_MASK) & ~MM_PAGE_MASK); ++f) {
+        if (frame_taken(f)) {
+            frame_used[f >> 5] &= ~(1u << (f & 31u));
+            ++free_frames;
+        }
+    }
+}
+
+int mm_arena_extend(uint32_t hi, uint32_t new_hi) {
+    if (new_hi <= hi || ((hi | new_hi) & MM_PAGE_MASK) || !range_free(hi, new_hi))
+        return 0;
+    range_take(hi, new_hi);
+    return 1;
+}
+
+uint32_t mm_arena_free_bytes(void) { return free_frames * MM_PAGE; }
+
+/* ---- nommu backend: the protection regions ---- */
 
 static struct fnd_proc *active; /* process whose memory the CPU enforces */
 static uint32_t active_regions; /* regions with nonzero FLAGS on the CPU */
@@ -123,12 +223,6 @@ static int slot_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t le
 
 /* ---- vm backend ---- */
 
-/* Frames come from [POOL_BASE, installed RAM): the area below holds the
- * kernel, its heap and the staged boot image (§5.1), which the processes
- * never see. 64K frames are 256 MiB. */
-#define POOL_BASE 0x00400000u
-#define MAX_FRAMES 65536u
-
 #define PTE_V 0x01u
 #define PTE_R 0x02u
 #define PTE_W 0x04u
@@ -139,25 +233,9 @@ static int slot_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t le
 #define PTE_FRAME 0xFFFFF000u
 #define PTE_RWX (PTE_R | PTE_W | PTE_X)
 
-static uint32_t frame_used[MAX_FRAMES / 32u]; /* bit set: handed out */
-static uint32_t pool_frames, free_frames, next_hint;
-
 static void vm_init(void) {
-    uint32_t ram = mm_ram_bytes();
-    pool_frames = ram > POOL_BASE ? (ram - POOL_BASE) / MM_PAGE : 0;
-    if (pool_frames > MAX_FRAMES)
-        pool_frames = MAX_FRAMES;
-    free_frames = pool_frames;
-    next_hint = 0;
-    for (uint32_t i = 0; i < MAX_FRAMES / 32u; ++i)
-        frame_used[i] = 0;
     /* The first frames are the DMA bounce buffer for good. */
-    uint32_t reserved = MM_BOUNCE_BYTES / MM_PAGE;
-    for (uint32_t f = 0; f < reserved && f < pool_frames; ++f) {
-        frame_used[f >> 5] |= 1u << (f & 31u);
-        --free_frames;
-    }
-    next_hint = reserved;
+    pool_init(MM_BOUNCE_BYTES / MM_PAGE);
 }
 
 uint32_t mm_bounce(void) { return POOL_BASE; }
@@ -363,14 +441,16 @@ void mm_init(void) {
     if (mm_decided)
         return;
     mm_decided = 1;
-#ifndef FND_MM_SLOT_ONLY
+#ifndef FND_MM_NOMMU_ONLY
     if (cpt32_cpu_features() & CPT32_FEATURE_V) {
         vm_init();
         mm_vm = 1;
         /* U mode is translated from now on; S mode never is. */
         cpt32_mtsr(CPT32_SR_VCTL, CPT32_VCTL_EN);
+        return;
     }
 #endif
+    pool_init(0);
 }
 
 void proc_activate(struct fnd_proc *proc) {

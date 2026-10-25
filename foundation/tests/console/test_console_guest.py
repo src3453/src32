@@ -1,6 +1,6 @@
 """ST_WRITE over real libfnd/IPC with PCG text and attribute checks.
 
-Run also with FND_MM=slot. Uses the shell boot builder and testbench.
+Run also with FND_MM=nommu. Uses the shell boot builder and testbench.
 """
 import os
 from pathlib import Path

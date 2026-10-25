@@ -1,4 +1,4 @@
-"""SGUB output backend and Foundation command. Run with FND_MM=slot too."""
+"""SGUB output backend and Foundation command. Run with FND_MM=nommu too."""
 import ctypes as C
 import os
 from pathlib import Path

@@ -1,7 +1,7 @@
 """Shell -> CHIP-8 WAX -> fb/SGU, plus real held/released PeC input.
 
 Build cargo build --release --bin src32_testbench before running this suite.
-Run again with FND_MM=slot. Temporary files must be writable on Windows.
+Run again with FND_MM=nommu. Temporary files must be writable on Windows.
 """
 import os
 from pathlib import Path

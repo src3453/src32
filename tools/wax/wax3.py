@@ -13,7 +13,8 @@ MAGIC = b"WAX\x00"
 VERSION = 3
 TYPE_WAX, TYPE_WAL = 1, 2
 ARCH_SRC32 = 1
-FLAG_DEBUG, FLAG_PROTECTED = 1, 2
+FLAG_DEBUG, FLAG_PROTECTED, FLAG_RELOCATABLE = 1, 2, 4
+RELOC_DATA, RELOC_PAIR = 0, 1  # kinds in the low two bits of a relocation entry
 HEADER_SIZE = 160
 CALL_ABI = 1
 PERM_R, PERM_RW, PERM_RX = 1, 3, 5
@@ -87,8 +88,13 @@ class _Strings:
 
 def build(kind="wax", *, image_id, blocks, abi_major=1, abi_minor=0, entry_offset=0,
           stack_top=0, stack_size=0, deps=(), exports=(), imports=(), os_id="foundation",
-          os_major=1, os_min_minor=0, debug=b"", call_abi=CALL_ABI, protected=True):
-    """Returns an Image. Tables are written in the order given."""
+          os_major=1, os_min_minor=0, debug=b"", call_abi=CALL_ABI, protected=True,
+          relocs=None, heap_hint=0):
+    """Returns an Image. Tables are written in the order given.
+
+    relocs makes a WAX relocatable (spec §3.1): a list of link-time addresses,
+    each with its kind (RELOC_DATA or RELOC_PAIR) in the low two bits;
+    heap_hint is the heap the program asks for in bytes."""
     file_type = {"wax": TYPE_WAX, "wal": TYPE_WAL}[kind]
     strings = _Strings()
     image_id_offset = strings.add(image_id)
@@ -105,6 +111,9 @@ def build(kind="wax", *, image_id, blocks, abi_major=1, abi_minor=0, entry_offse
                               ("exports", len(export_rows), 24), ("imports", len(import_rows), 24)):
         layout[name] = at if count else 0
         at += count * size
+    reloc_rows = sorted(relocs) if relocs is not None else []
+    layout["relocs"] = at if reloc_rows else 0
+    at += 4 * len(reloc_rows)
     layout["strings"] = at
     at = _align4(at + len(strings.table))
     layout["payloads"] = []
@@ -116,7 +125,8 @@ def build(kind="wax", *, image_id, blocks, abi_major=1, abi_minor=0, entry_offse
 
     out = bytearray(at)
     base = blocks[0].address if file_type == TYPE_WAX and blocks else 0
-    flags = (FLAG_PROTECTED if protected else 0) | (FLAG_DEBUG if debug else 0)
+    flags = (FLAG_PROTECTED if protected else 0) | (FLAG_DEBUG if debug else 0) | \
+        (FLAG_RELOCATABLE if relocs is not None else 0)
     struct.pack_into(">4sHHHHIIIIIII", out, 0, MAGIC, VERSION, file_type, ARCH_SRC32, flags,
                      HEADER_SIZE, at, call_abi, base, entry_offset, stack_top, stack_size)
     struct.pack_into(">" + "I" * 22, out, 40,
@@ -127,6 +137,9 @@ def build(kind="wax", *, image_id, blocks, abi_major=1, abi_minor=0, entry_offse
                      layout["strings"], len(strings.table),
                      image_id_offset, abi_major, abi_minor, os_id_offset, os_major, os_min_minor,
                      layout["debug"], len(debug))
+    struct.pack_into(">3I", out, 128, layout["relocs"], len(reloc_rows), heap_hint)
+    if reloc_rows:
+        struct.pack_into(">%dI" % len(reloc_rows), out, layout["relocs"], *reloc_rows)
     for i, block in enumerate(blocks):
         memory_size = len(block.data) if block.memory_size is None else block.memory_size
         struct.pack_into(">6I", out, layout["blocks"] + 24 * i, block.address,

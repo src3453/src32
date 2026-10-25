@@ -158,7 +158,7 @@ VM では静的バッファ増加分の物理ページも消費する。
 
 - `python -m unittest discover -s foundation/tests/disk_cache -v`: 1 test / 7シナリオ通過。
 - `python -m unittest discover -s foundation/tests/shell -v`: VMで24件通過。
-- 同じシェルテストを `FND_MM=slot` で実行: 24件通過。
+- 同じシェルテストを `FND_MM=nommu` で実行: 24件通過。
 - `python -m unittest discover -s foundation/tests/disk -v`: 7件通過（BIOS→stage1→kernel→shellを含む）。
 - 計測用イメージの cached/VM、pipeline/VM、cached/slot で両echoの正常終了とR1=42停止を確認。
 - `git diff --check` と変更したPythonの `py_compile` 通過。

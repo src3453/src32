@@ -16,4 +16,4 @@ APIは `<foundation/fb.h>`。通常の `fnd_file_open`、`fnd_write`、`fnd_read
 
 openは排他で、複製ハンドルは位置と寿命を共有します。最後のcloseまたはプロセス終了時、表示設定・CLUT・重なったPCG文字領域をopen時へ戻します。描画中のコンソール出力はこの復元で失われるため避けてください。`ST_SYNC` は表示完了を待ちません。
 
-検証: `python -m unittest discover -s foundation/tests/fb -v`。`FND_MM=slot` でも実行します。仕様は [Foundation API §9.1](../../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0)。
+検証: `python -m unittest discover -s foundation/tests/fb -v`。`FND_MM=nommu` でも実行します。仕様は [Foundation API §9.1](../../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0)。

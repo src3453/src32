@@ -53,7 +53,7 @@ CLS は CONSOLE の役割があれば画面を消します。実行中の無限�
 
 プログラム行・AST・文字列・制御スタックは `fnd_mem_alloc` で確保した約1.9 MiB の私有領域に置きます。
 固定物理アドレス、PCG/PeC/IDC/DMAC MMIO、独自 IRQ ハンドラや HALT は使用しません。
-仮想記憶と `FND_MM=slot` のどちらでも、標準コマンドのスロット5で動きます。
+仮想記憶と `FND_MM=nommu` のどちらでも、標準コマンドのスロット5で動きます。
 
 ## ビルドと検証
 
@@ -61,7 +61,7 @@ CLS は CONSOLE の役割があれば画面を消します。実行中の無限�
 python foundation/boot/build.py target/foundation-boot
 python foundation/run.py --root examples/tinybasic-c/foundation-root
 python -m unittest discover -s foundation/tests/tinybasic -v
-# 同じテストを環境変数 FND_MM=slot でも実行する
+# 同じテストを環境変数 FND_MM=nommu でも実行する
 ```
 
 起動ディスクには `/bin/tinybasic.wax` が自動的に入ります。

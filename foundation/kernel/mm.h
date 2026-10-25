@@ -7,15 +7,17 @@
  * Two backends sit behind this interface and the kernel picks one at its first
  * process start from CPUID (CPU_FEATURES bit 9, Extension V):
  *
- *   slot  No V. Every process owns a fixed physical slot (§5.2) and the CPU
- *         checks it with the Extension P protection regions (§5.3).
+ *   nommu No V, like Linux without an MMU. Addresses are physical. Every
+ *         process owns one contiguous arena that a page allocator hands out
+ *         (§5.2) and the CPU checks it with the Extension P protection
+ *         regions (§5.3). Relocatable executables load anywhere in it.
  *   vm    V present. Every process has its own page table; user addresses are
  *         virtual and the kernel (S mode, untranslated) reaches them through
  *         the page table in software. No slots, no region limit.
  *
  * Kernel code never dereferences a user address. It checks it with
  * proc_user_range_ok and moves data with the mm_copy_* helpers, which are the
- * plain loads and stores of the slot backend. */
+ * plain loads and stores of the nommu backend. */
 
 struct fnd_proc;
 
@@ -92,10 +94,29 @@ static inline uint32_t mm_read8(const struct fnd_proc *proc, uint32_t addr) {
     return value;
 }
 
-/* ---- vm backend: building an address space (proc.c, only when mm_vm) ---- */
+/* ---- nommu backend: the arena allocator (mm.c) ---- */
 
+/* Where user RAM starts: below it are the stage1, the kernel, its stack and
+ * heap (§5.1). The allocator hands out whole pages above it, up to the RAM
+ * the BMC reports. Free pages are zero. */
+#define MM_USER_BASE 0x00400000u
 #define MM_PAGE 4096u
 #define MM_PAGE_MASK (MM_PAGE - 1u)
+
+/* Takes exactly the pages of [lo, hi) (rounded out to pages): FND_E_NO_MEMORY
+ * if they are not RAM of the user area, FND_E_ADDRESS_CONFLICT if any is
+ * taken. */
+int32_t mm_arena_claim(uint32_t lo, uint32_t hi);
+/* The lowest free run of bytes (rounded up to pages), or 0. */
+uint32_t mm_arena_alloc(uint32_t bytes);
+/* Returns [lo, hi) to the pool. The caller has zeroed what it wrote. */
+void mm_arena_free(uint32_t lo, uint32_t hi);
+/* Takes the free pages [hi, new_hi) right above an arena (both page
+ * aligned); 0 if any is taken or missing. */
+int mm_arena_extend(uint32_t hi, uint32_t new_hi);
+uint32_t mm_arena_free_bytes(void);
+
+/* ---- vm backend: building an address space (proc.c, only when mm_vm) ---- */
 
 /* The page table of a new process: FND_E_NO_MEMORY if no frame is free. */
 int32_t mm_vm_create(struct fnd_proc *proc);

@@ -165,7 +165,7 @@ def exports_table(specs, module, layout, info, wax3):
 
 
 def pack(wax3, *, kind, image_id, abi, blocks, info, imports, exports=(), origin=0,
-         stack_top=0, stack_size=0, os_id="foundation", os_version=(1, 0)):
+         stack_top=0, stack_size=0, os_id="foundation", os_version=(1, 0), relocs=None, heap_hint=0):
     """blocks: (address, data, perm) from the driver, absolute for a WAX and
     image-relative (origin 0) for a WAL."""
     used = sorted({entry[0] for entry in imports.entries})
@@ -180,4 +180,53 @@ def pack(wax3, *, kind, image_id, abi, blocks, info, imports, exports=(), origin
     return wax3.build(kind, image_id=image_id, abi_major=abi[0], abi_minor=abi[1], blocks=v3_blocks,
                       entry_offset=0, stack_top=stack_top, stack_size=stack_size, deps=deps,
                       exports=list(exports), imports=table, os_id=os_id, os_major=os_version[0],
-                      os_min_minor=os_version[1]).data
+                      os_min_minor=os_version[1], relocs=relocs, heap_hint=heap_hint).data
+
+
+class RelocationError(Exception):
+    pass
+
+
+def relocations(wax3, blocks, moved, probe):
+    """The relocation entries of a relocatable WAX (spec_WAX_v3.md §3.1).
+
+    `blocks` is the image linked at some origin and `moved` the same program
+    linked `probe` bytes higher (a multiple of 64 KiB): wherever the two
+    differ, the word holds an address. A data word must differ by exactly
+    `probe`. In code, the difference must be in an LDIH whose LDIL follows
+    unchanged, which is how the backend builds every address. Anything else
+    cannot be moved by the loader and is an error."""
+    LDIH, LDIL = 0x3D, 0x3C
+    if probe & 0xFFFF:
+        raise ValueError("the probe must be a multiple of 64 KiB")
+    if len(blocks) != len(moved):
+        raise RelocationError("the image changes shape when moved")
+    entries = []
+    for (address, data, perm), (other_address, other, other_perm) in zip(blocks, moved):
+        if other_address != address + probe or len(other) != len(data) or other_perm != perm:
+            raise RelocationError("the image changes shape when moved")
+        executable = perm == wax3.PERM_RX
+        for at in range(0, len(data) - len(data) % 4, 4):
+            a, b = data[at:at + 4], other[at:at + 4]
+            if a == b:
+                continue
+            old, new = int.from_bytes(a, "big"), int.from_bytes(b, "big")
+            where = address + at
+            if executable:
+                nxt = int.from_bytes(data[at + 4:at + 8], "big") if at + 8 <= len(data) else -1
+                if (old >> 26 != LDIH or new >> 26 != LDIH or (old ^ new) >> 16
+                        or ((new & 0xFFFF) - (old & 0xFFFF)) & 0xFFFF != probe >> 16
+                        or nxt < 0 or nxt >> 26 != LDIL
+                        or nxt >> 21 & 31 != old >> 21 & 31 or data[at + 4:at + 8] != other[at + 4:at + 8]):
+                    raise RelocationError(f"code at 0x{where:08X} depends on the load address in a way "
+                                          "the loader cannot relocate")
+                entries.append(where | wax3.RELOC_PAIR)
+            else:
+                if (new - old) & 0xFFFFFFFF != probe:
+                    raise RelocationError(f"data at 0x{where:08X} depends on the load address in a way "
+                                          "the loader cannot relocate")
+                entries.append(where | wax3.RELOC_DATA)
+        tail = len(data) % 4
+        if tail and data[-tail:] != other[-tail:]:
+            raise RelocationError("an address is not word aligned in the data")
+    return entries
