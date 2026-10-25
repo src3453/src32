@@ -492,29 +492,35 @@ static enum wax_error parse_v3(struct wax_image *im) {
 
     /* Relocations (§3.1): ascending, each a whole data word or an LDIH/LDIL
      * pair in initialized bytes of a block that may hold it. */
-    uint32_t previous_at = 0;
+    uint32_t previous_at = 0, k = 0, loaded = ~0u;
+    struct block b = {0};
     for (uint32_t i = 0; i < im->reloc_count; ++i) {
         uint32_t entry = word(im, im->reloc_table + 4u * i), at = entry & ~3u, kind = entry & 3u;
         if (kind > RELOC_PAIR || (i && at <= previous_at) || at < im->base || at - im->base > 0xFFFFFFF0u)
             return WAX_E_FORMAT;
         previous_at = at;
-        uint32_t len = kind == RELOC_PAIR ? 8u : 4u, found = 0;
-        for (uint32_t k = 0; k < im->block_count && !found; ++k) {
-            struct block b;
-            get_block(im, k, &b);
-            if (b.address <= at && at - b.address <= b.file_size && len <= b.file_size - (at - b.address) &&
-                (kind == RELOC_PAIR ? b.perm == PERM_RX : b.perm != PERM_RX)) {
-                found = 1;
-                if (kind == RELOC_PAIR) {
-                    const uint8_t *code = d + b.file_offset + (at - b.address);
-                    if (rd32(code) >> 26 != OP_LDIH || rd32(code + 4) >> 26 != OP_LDIL ||
-                        ((rd32(code) ^ rd32(code + 4)) & 0x03E00000u))
-                        return WAX_E_FORMAT;
-                }
+        uint32_t len = kind == RELOC_PAIR ? 8u : 4u;
+        /* Entries and blocks both ascend, so one cursor walks the blocks (a
+         * search per entry costs thousands of entries a scan each). */
+        while (k < im->block_count) {
+            if (loaded != k) {
+                get_block(im, k, &b);
+                loaded = k;
             }
+            if (at >= b.address && at - b.address >= b.file_size)
+                ++k;
+            else
+                break;
         }
-        if (!found)
+        if (k >= im->block_count || at < b.address || len > b.file_size - (at - b.address) ||
+            (kind == RELOC_PAIR ? b.perm != PERM_RX : b.perm == PERM_RX))
             return WAX_E_FORMAT;
+        if (kind == RELOC_PAIR) {
+            const uint8_t *code = d + b.file_offset + (at - b.address);
+            if (rd32(code) >> 26 != OP_LDIH || rd32(code + 4) >> 26 != OP_LDIL ||
+                ((rd32(code) ^ rd32(code + 4)) & 0x03E00000u))
+                return WAX_E_FORMAT;
+        }
     }
     return WAX_OK;
 }
