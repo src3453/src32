@@ -9,7 +9,7 @@
 - `setjmp`/`longjmp` は `tools/llvm-src32/backend.py` がインライン展開する（このバックエンドは inline asm も weak も alias もないので、C やアセンブリ関数では書けない）。`sigsetjmp` は `pkcl-posix/setjmp.h` で `setjmp` に倒す。
 - pipe サービス（`foundation/services/pipe`、名前 `pipe`、API §9.5）。端は badge 付き CHANNEL で、`fork`／`dup` で共有できる。EOF と EPIPE は `CLIENT_GONE`（端の最後のハンドルが閉じた）で決まる。どのバックエンドでも起動する（`fork` が VM 専用なので、端の共有は VM だけ）。
 - 環境変数: 起動ブロック version 2（`env_count`、`env_off`）、`fnd_envc()`／`fnd_env(i)`（WAL fnd 1.3）、`fnd_exec_t.envp`。`pkcl_start` が `environ` を作り、`execve` が `envp` を渡す。
-- プロセス上限を 7/8 から 12/16（`FND_MAX_PROCS`／`FND_MAX_THREADS`）に増やした。pipe サービスが 1 つ使い、`fork` の子に余地が要るため。
+- プロセス上限を 7/8 から 10/16（`FND_MAX_PROCS`／`FND_MAX_THREADS`）に増やした。pipe サービスが 1 つ使い、`fork` の子に余地が要るため。 12 にすると `tests/wax` の PIE 配置の期待（42/43）が崩れるので、10 までにしてある。
 
 ## 落とし穴
 
