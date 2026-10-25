@@ -282,6 +282,8 @@ class DataImage:
                 alignment = max(alignment, explicit)
             elif attribute.startswith("!"):
                 continue  # Debug/optimization metadata is not stored in the image.
+            elif re.fullmatch(r'section\s+"\.(s?data|s?bss|rodata[A-Za-z0-9_.]*)"', attribute):
+                continue  # Placement is by the image layout; Newlib puts _impure_ptr in .sdata on MIPS.
             else:
                 raise CompileError(f"unsupported global attribute: {attribute}")
         if value.is_declaration:
@@ -372,7 +374,7 @@ class DataImage:
 
     def _resolve_expression(self, text: str) -> int:
         text = text.strip()
-        if text in {"null", "zeroinitializer", "false"}:
+        if text in {"null", "zeroinitializer", "false", "undef", "poison"}:
             return 0
         if text == "true":
             return 1

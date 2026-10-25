@@ -5,10 +5,13 @@
 
 static _Alignas(8) unsigned char heap[CPT32_NEWLIB_HEAP_SIZE];
 static size_t used;
+
+#ifndef CPT32_NEWLIB_NO_ERRNO
 static int error_number;
 
 /* 単一実行コンテキストの errno の格納先を返す。 */
 int *__errno(void) { return &error_number; }
+#endif
 
 /* 静的に予約したヒープ内で break を移動し、範囲外では ENOMEM を返す。 */
 void *cpt32_newlib_sbrk(ptrdiff_t increment)
