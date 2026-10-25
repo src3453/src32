@@ -21,12 +21,12 @@
 
 - console は、読み手が `kill` された直後（`CLIENT_GONE` が届く前）に渡したキーを失っていた。`ipc_reply` が失敗したらキーをキューの先頭へ戻す（`unget_key`）。`test_ctrl_c_interrupts_a_blocked_read` が起動ブロックの大きさ（8 の倍数かどうか）で落ちる形で見つかった。
 - 起動ブロックの大きさは 8 byte 境界に切り上げる（`lib/fnd/proc.c`）。上の失敗の引き金だったタイミング差を減らすためで、原因そのものは console 側。
-- 新しいサービスを足すと `ps`／`top`、FNDBOOT のモジュール表を数えるテスト（`test_shell.py`、`test_disk_boot.py`）の期待値が変わる。VM と slot で行数が違う（slot は pipe を起動しない）。
+- 新しいサービスを足すと `ps`／`top`、FNDBOOT のモジュール表を数えるテスト（`test_shell.py`、`test_disk_boot.py`）の期待値が変わる。pipe は全バックエンドで起動するので行数は同じ。
 
 ## 検証
 
 - `SRC32_NEWLIB_SOURCE=... python3 -m unittest discover -s foundation/tests/pkcl -k posix`（`guest_posix.c`: fork の COW、waitpid、execve と環境、6 KB の pipe、EOF、EPIPE、setjmp）。
-- `python3 -m unittest discover -s foundation/tests/shell`（VM と `FND_MM=slot` の両方）、`foundation/tests/wax`、`tools/llvm-src32` の `test_toolchain -k foundation`。
+- `python3 -m unittest discover -s foundation/tests/shell`（VM と `FND_MM=nommu` の両方）、`foundation/tests/wax`、`tools/llvm-src32` の `test_toolchain -k foundation`。
 
 ## 残り（#169 ほか）
 
