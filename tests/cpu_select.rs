@@ -280,7 +280,7 @@ fn any_cpu_runs_the_same_program_on_scalar_cached_and_pipeline_modes() {
     assert_eq!(pipelined[3], 30);
     assert_eq!(scalar[2], 0x33F);
     assert_eq!(cached[2], scalar[2]);
-    assert_eq!(pipelined[2], 0x33F | 0x80);
+    assert_eq!(pipelined[2], 0x33F | 0x80 | 0x400);
 }
 
 static CONFIG_SEQ: AtomicU64 = AtomicU64::new(0);

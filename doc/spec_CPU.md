@@ -1,7 +1,10 @@
 # SRC32 Specification
-Revision 3.1 (2026-10-21)
+Revision 3.2 (2026-10-26)
 
 # Changelog
+- 3.2 (2026-10-26): Added Extension C (split L1 instruction/data cache, micro-architectural,
+  no ISA change). See `doc/spec_CPU_cache.md`. CPUID bit 10; the pipeline CPU reports `0x7BF`.
+  CPU-reserved MMIO `0xFFFF0300..0xFFFF033F` holds the cache registers.
 - 3.1 (2026-10-21): Added Extension P (privilege levels and system calls):
   `SYSCALL`/`MFSR`/`MTSR`, S/U modes, banked R28–R30, user-mode protection
   regions, and exception CAUSE codes. See `doc/spec_CPU_priv.md`. CPUID bit 8;
@@ -306,9 +309,10 @@ Bit positions:
   - Bit 7: Extension p (pipelining; pipeline CPU only)
   - Bit 8: Extension P (privilege levels and system calls)
   - Bit 9: Extension V (virtual memory; see `doc/spec_CPU_vm.md`)
+  - Bit 10: Extension C (L1 cache; pipeline CPU only; see `doc/spec_CPU_cache.md`)
 
 The current CPU implements Base and Extensions A, L, M, S, I, P and V. It reports
-`CPU_FEATURES = 0x0000033F` (pipeline: `0x000003BF`); Extension F remains a
+`CPU_FEATURES = 0x0000033F` (pipeline, with Extension C: `0x000007BF`); Extension F remains a
 future instruction-set definition and is not decoded or executed by the
 current CPU.
 ### 4.6 Extension I (Interrupts)
@@ -496,6 +500,7 @@ byte order; accesses may be byte, halfword, or word sized and may be unaligned.
 are Extension P `PIE`, `U`, `PU`, `PSM`. The register view shows the R28–R30
 bank of the current mode. Guest code changes STATUS/EPC/CAUSE with `MTSR`.
 User mode cannot access `0xFFFF0000..0xFFFFFFFF` at all.
+`0xFFFF0300..0xFFFF033F`: Extension C cache registers (`doc/spec_CPU_cache.md`).
 `INSTR_MODE` bit 0 is 0 for Normal mode and 1 for Short mode; writes retain
 only bit 0. CPU-owned state is published at instruction commit, so a CPU store
 to CPU state registers is overwritten by that commit; stores to vector words
@@ -580,7 +585,7 @@ Planned (future):
 
 Planning extensions:
 V: Virtual Memory, MMU, TLB
-C: L1 Cache
+C: L1 Cache (implemented in the pipeline CPU, see doc/spec_CPU_cache.md)
 P: Protection/Privilege Levels (implemented, see doc/spec_CPU_priv.md)
 p: Pipelining (implemented as Extension p, see doc/spec_CPU_p.md)
 v: Vector instructions, SIMD

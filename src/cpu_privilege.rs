@@ -635,7 +635,7 @@ impl SystemState {
     }
 
     /// Physical address of a byte that `check_access` just validated.
-    fn physical(&self, va: u32) -> u32 {
+    pub fn physical(&self, va: u32) -> u32 {
         if !self.translating() {
             return va;
         }

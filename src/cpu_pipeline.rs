@@ -30,9 +30,10 @@ const EXT_L: u32 = 0x04;
 const EXT_M: u32 = 0x08;
 const EXT_S: u32 = 0x10;
 const EXT_I: u32 = 0x20;
+const EXT_C: u32 = 0x400; // Extension C: split L1 instruction/data cache (doc/spec_CPU_cache.md)
 const EXT_P_SMALL: u32 = 0x80; // Extension p (lowercase): pipelining (micro-arch only, no ISA change)
 const CPU_FEATURES: u32 =
-    EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL | EXT_P | EXT_V;
+    EXT_BASE | EXT_A | EXT_L | EXT_M | EXT_S | EXT_I | EXT_P_SMALL | EXT_P | EXT_V | EXT_C;
 const CPU_ID: u32 = 0x5352_4332;
 
 const INSN_SIZE: u32 = 4;
@@ -292,6 +293,8 @@ pub struct PipelineCpu {
     ex_armed: bool,
     profile: Option<CpuProfile>,
     spin: SpinDetector,
+    cache: Rc<RefCell<crate::cpu_cache::L1Cache>>,
+    cache_stall: u32,
 }
 
 fn invalid_id_ex() -> IdEx {
@@ -362,6 +365,7 @@ impl PipelineCpu {
     pub fn new(bus: Bus) -> Self {
         let mut bus = bus;
         let register_block = crate::devices::cpu::connect_cpu_registers(&mut bus);
+        let cache = crate::cpu_cache::connect_cache(&mut bus);
         let irq_controller = crate::devices::irqc::irqc::connect_irqc(&mut bus);
         bus.attach_irq_controller(Rc::clone(&irq_controller));
         let mut cpu = Self {
@@ -404,6 +408,8 @@ impl PipelineCpu {
                 enabled: true,
                 ..SpinDetector::default()
             },
+            cache,
+            cache_stall: 0,
         };
         cpu.sync_register_block();
         cpu
@@ -422,6 +428,8 @@ impl PipelineCpu {
         self.running_cycles = 0;
         self.instructions_executed = 0;
         self.sys = SystemState::default();
+        self.cache.borrow_mut().reset();
+        self.cache_stall = 0;
         self.irq_pending = false;
         self.irq_pending_number = 0;
         self.irq_line = false;
@@ -546,6 +554,17 @@ impl PipelineCpu {
 
     pub fn take_profile(&mut self) -> Option<CpuProfile> {
         self.profile.as_mut().map(std::mem::take)
+    }
+
+    /// Charge `cycles` of stall per L1 miss (Extension C; default 0).
+    pub fn set_cache_miss_penalty(&mut self, cycles: u32) {
+        self.cache.borrow_mut().miss_penalty = cycles;
+    }
+
+    /// L1 counters: (I hits, I misses, D hits, D misses).
+    pub fn cache_stats(&self) -> (u32, u32, u32, u32) {
+        let c = self.cache.borrow();
+        (c.read_reg(0x10), c.read_reg(0x14), c.read_reg(0x18), c.read_reg(0x1C))
     }
 
     pub fn stall_cycles(&self) -> u128 {
@@ -1876,6 +1895,14 @@ impl PipelineCpu {
                 self.record_profile_time::<PROFILE>(CpuProfileStage::Other, start.elapsed());
             }
         }
+        if self.cache_stall > 0 {
+            // L1 miss penalty: the pipeline is frozen while the line fills.
+            self.cache_stall -= 1;
+            self.cycles += 1;
+            self.running_cycles += 1;
+            self.stall_cycles += 1;
+            return;
+        }
         if !self.running {
             let idle_start = Self::profile_start::<PROFILE>();
             if !self.accept_pending_irq() {
@@ -1950,6 +1977,8 @@ impl PipelineCpu {
             if em.is_load && em.mem_size != 0 {
                 let v = match em.mem_size {
                     1 | 2 | 4 => {
+                        let pa = self.sys.physical(em.mem_addr);
+                        self.cache_stall += self.cache.borrow_mut().load(pa);
                         self.sys
                             .read_data(&mut self.bus, em.mem_addr, u32::from(em.mem_size))
                     }
@@ -1958,6 +1987,8 @@ impl PipelineCpu {
                 next_mem_wb.value = v;
                 next_mem_wb.writeback = true;
             } else if em.is_store && em.mem_size != 0 {
+                let pa = self.sys.physical(em.mem_addr);
+                self.cache.borrow_mut().store(pa);
                 match em.mem_size {
                     4 => self
                         .sys
@@ -2133,6 +2164,8 @@ impl PipelineCpu {
             } else {
                 match self.fetch_mode {
                     InstructionMode::Normal => {
+                        let pa = self.sys.physical(self.fetch_pc);
+                        self.cache_stall += self.cache.borrow_mut().fetch(pa);
                         let raw = self.sys.read_data(&mut self.bus, self.fetch_pc, 4);
                         next_if_id = IfId {
                             valid: true,
@@ -2144,6 +2177,8 @@ impl PipelineCpu {
                         self.fetch_pc = self.fetch_pc.wrapping_add(INSN_SIZE);
                     }
                     InstructionMode::Short => {
+                        let pa = self.sys.physical(self.fetch_pc);
+                        self.cache_stall += self.cache.borrow_mut().fetch(pa);
                         let half = self.sys.read_data(&mut self.bus, self.fetch_pc, 2) as u16;
                         next_if_id = IfId {
                             valid: true,

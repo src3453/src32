@@ -4,6 +4,7 @@ pub mod bus;
 pub mod cartridge;
 pub mod cow;
 pub mod cpu;
+pub mod cpu_cache;
 pub mod cpu_pipeline;
 pub mod cpu_privilege;
 pub mod cpu_select;
