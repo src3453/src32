@@ -1,6 +1,6 @@
 """Real shell -> fs -> transferred kernel CHANNEL -> SGC, in VM and slots.
 
-Run python -m unittest discover -s foundation/tests/sgc -v, also FND_MM=slot.
+Run python -m unittest discover -s foundation/tests/sgc -v, also FND_MM=nommu.
 Uses the shell harness's boot builder and workspace-local TEMP on Windows.
 """
 import os

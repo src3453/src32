@@ -12,4 +12,4 @@ python foundation/boot/build.py target/fb-demo
 python foundation/run.py --root target/fb-demo/root
 ```
 
-シェルで `bmpview /sample.bmp` を実行します（`--root` の中身はディスクのルートに置かれます）。検証は `python -m unittest discover -s foundation/tests/bmpview -v`（`FND_MM=slot` でも）。`/dev/fb0` の仕様は [Foundation API §9.1](../../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0) です。
+シェルで `bmpview /sample.bmp` を実行します（`--root` の中身はディスクのルートに置かれます）。検証は `python -m unittest discover -s foundation/tests/bmpview -v`（`FND_MM=nommu` でも）。`/dev/fb0` の仕様は [Foundation API §9.1](../../doc/spec_Foundation_API.md#91-カーネル-vdp-ビットマップドライバ-devfb0) です。

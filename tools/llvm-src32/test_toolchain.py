@@ -882,7 +882,7 @@ int main(void) {
                 image = self.work / ('foundation' + opt[1:] + '.wax')
                 self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
                             '-I', foundation / 'include', '--origin', '0x10000',
-                            '--stack-top', '0x100000', '-D', 'FND_MM_SLOT_ONLY', opt, '-o', image)
+                            '--stack-top', '0x100000', '-D', 'FND_MM_NOMMU_ONLY', opt, '-o', image)
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
@@ -912,7 +912,7 @@ int main(void) {
                 image = self.work / ('wax' + opt[1:] + '.wax')
                 self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
                             '-I', images, '--origin', '0x10000', '--stack-top', '0x100000',
-                            '-D', 'FND_MM_SLOT_ONLY', opt, '-o', image)
+                            '-D', 'FND_MM_NOMMU_ONLY', opt, '-o', image)
                 for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(
@@ -950,7 +950,7 @@ int main(void) {
                     self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include',
                                 '-I', foundation / 'include', '-I', foundation / 'kernel',
                                 '-I', self.work, '--origin', '0x10000', '--stack-top', '0x100000',
-                                opt, *(['-D', 'FND_MM_SLOT_ONLY'] if slot else []), '-o', image)
+                                opt, *(['-D', 'FND_MM_NOMMU_ONLY'] if slot else []), '-o', image)
                     for cpu in ('scalar', 'cached', 'cached-relaxed', 'pipeline'):
                         with self.subTest(cpu=cpu):
                             result = subprocess.run(
@@ -1006,7 +1006,7 @@ int main(void) {
                 image = images / 'kernel.wax'
                 self.driver(*kernel, '-I', ROOT / 'sdk/cpt32/include', '-I', foundation / 'include',
                             '-I', images, '--origin', '0x10000', '--stack-top', '0x100000', '-O1',
-                            '-D', 'FND_MM_SLOT_ONLY', '-o', image)
+                            '-D', 'FND_MM_NOMMU_ONLY', '-o', image)
                 for cpu in ('scalar', 'pipeline'):
                     with self.subTest(cpu=cpu):
                         result = subprocess.run(

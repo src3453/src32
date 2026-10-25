@@ -56,7 +56,7 @@ cargo build --release --bin src32_testbench
 python -m unittest discover -s foundation/tests/wav -v
 ```
 
-`FND_MM=slot` でも同じテストを実行します。WindowsではTEMP/TMPを書き込み可能な場所へ設定してください。
+`FND_MM=nommu` でも同じテストを実行します。WindowsではTEMP/TMPを書き込み可能な場所へ設定してください。
 ホストテストは符号・エンディアン・レート変換・チャンク境界を検証します。
 ゲストテストはFoundation上の実コマンドとDAC APIを実行し、左右の分離、再生完了、停止・再オープン、
 権限拒否、FIFO満杯・再試行を検証します。

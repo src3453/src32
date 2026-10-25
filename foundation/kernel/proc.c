@@ -1,4 +1,4 @@
-/* Processes, user slots and protection regions (doc/spec_Foundation.md §5,
+/* Processes, their memory and protection regions (doc/spec_Foundation.md §5,
  * §9.2, §9.4). Processes come from code linked into the kernel image
  * (phase 1) or from a PROTECTED WAX loaded by wax.c. */
 #include "internal.h"
@@ -18,6 +18,7 @@ static uint32_t boot_drive;
 
 void fnd_set_boot_drive(uint32_t drive) { boot_drive = drive; }
 
+/* The old slot layout: the fixed ranges builtin processes ask for by index. */
 static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
     0x00400000u, 0x00480000u, 0x00500000u, 0x00580000u,
     0x00600000u, 0x00800000u, 0x00C00000u, 0x01000000u};
@@ -25,9 +26,12 @@ static const uint32_t slot_bounds[FND_SLOTS + 1u] = {
 uint32_t fnd_slot_base(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot] : 0; }
 uint32_t fnd_slot_end(uint32_t slot) { return slot < FND_SLOTS ? slot_bounds[slot + 1u] : 0; }
 
-/* §5.2: a slot that does not lie wholly in the installed RAM is unusable.
- * With V the slots are only address ranges and need no RAM of their own. */
-static int slot_present(uint32_t slot) { return mm_vm || slot_bounds[slot + 1u] <= mm_ram_bytes(); }
+/* The default heap a relocatable executable gets with its arena when it does
+ * not ask for one (heap_hint): more grows in place while the pages above are
+ * free, as the brk of Linux without an MMU does. */
+#define DEFAULT_HEAP 0x20000u
+#define RELOC_WINDOW 0x08000000u /* how far above the sizing load address pass 1 may place libraries */
+#define RELOC_PROBE_BASE 0x01000000u /* the load address pass 1 sizes a relocatable executable at */
 
 /* The vm backend's user address space (doc/foundation_vm_plan.md §3): images
  * and libraries are placed below VM_WINDOW_END, which keeps clear of the
@@ -36,14 +40,13 @@ static int slot_present(uint32_t slot) { return mm_vm || slot_bounds[slot + 1u] 
 #define VM_WINDOW_START 0x00001000u
 #define VM_WINDOW_END 0x10000000u
 #define VM_HEAP_TOP 0x80000000u
-#define VM_NO_SLOT FND_SLOTS /* proc->slot of a process that has none */
 
 #define zero_range kmem_zero
 
 static void maybe_free(struct fnd_proc *proc);
 
 /* §9.4: threads DEAD, handles closed (PEER_GONE, CLIENT_GONE, services),
- * owned ranges zeroed, slot released, waiters woken. The record stays
+ * owned ranges zeroed, arena released, waiters woken. The record stays
  * readable (state EXITED) until its PROCESS handles are closed and the
  * record is reused. */
 void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
@@ -62,6 +65,9 @@ void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc) {
         if (proc->regions[i].owned)
             zero_range(proc->regions[i].start, proc->regions[i].end);
     }
+    if (!mm_vm)
+        mm_arena_free(proc->arena_lo, proc->arena_hi); /* free pages are zero */
+    proc->arena_lo = proc->arena_hi = 0;
     ipc_proc_exited(proc);
     maybe_free(proc);
 }
@@ -88,14 +94,10 @@ struct fnd_proc *fnd_proc_get(uint32_t pid) {
     return 0;
 }
 
-/* A free process record for slot, or NULL with *error set. */
-static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
+/* A free process record, or NULL with *error set. */
+static struct fnd_proc *claim_record(int32_t *error) {
     struct fnd_proc *proc = 0;
     for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
-        if (!mm_vm && procs[i].state == FND_PROC_LIVE && procs[i].slot == slot) {
-            *error = FND_E_ADDRESS_CONFLICT;
-            return 0;
-        }
         if (!proc && procs[i].state == FND_PROC_FREE)
             proc = &procs[i];
     }
@@ -107,6 +109,7 @@ static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
     if (proc) {
         proc->pt_root = 0;
         proc->vm_pages = 0;
+        proc->arena_lo = proc->arena_hi = 0;
     }
     return proc;
 }
@@ -114,9 +117,8 @@ static struct fnd_proc *claim_record(uint32_t slot, int32_t *error) {
 /* Fills in a claimed record whose regions are set and readies its thread:
  * U mode at entry with IE = 1, R1..R27 and R31 zero (§9.2). */
 static int32_t start_proc(struct fnd_proc *proc, struct fnd_thread *thread, const char *name,
-                          uint32_t slot, uint32_t priority, uint32_t entry, uint32_t usp, uint32_t ugp) {
+                          uint32_t priority, uint32_t entry, uint32_t usp, uint32_t ugp) {
     proc->pid = next_pid++;
-    proc->slot = slot;
     proc->priority = priority;
     proc->threads = 1;
     proc->refs = 0;
@@ -153,19 +155,25 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
         return FND_E_BAD_ARG;
     if (code_start >= code_end || entry < code_start || entry >= code_end || (entry & 3u))
         return FND_E_BAD_ARG;
-    if (!slot_present(slot))
-        return FND_E_NO_MEMORY;
     uint32_t end = slot_bounds[slot + 1u], ram = end - ram_size;
     if (code_start < end && slot_bounds[slot] < code_end)
         return FND_E_ADDRESS_CONFLICT; /* code must not lie in the writable slot */
     int32_t error;
-    struct fnd_proc *proc = claim_record(slot, &error);
+    struct fnd_proc *proc = claim_record(&error);
     if (!proc)
         return error;
     struct fnd_thread *thread = sched_alloc_thread();
     if (!thread)
         return FND_E_LIMIT;
 
+    if (!mm_vm) {
+        /* The data and stack at the top of the slot's range. */
+        int32_t status = mm_arena_claim(ram, end);
+        if (status != FND_OK)
+            return status;
+        proc->arena_lo = ram & ~MM_PAGE_MASK;
+        proc->arena_hi = (end + MM_PAGE_MASK) & ~MM_PAGE_MASK;
+    }
     if (mm_vm) {
         /* The code stays where the kernel image put it (VA = PA); the data
          * is private frames at the slot's addresses. */
@@ -192,7 +200,7 @@ int32_t fnd_proc_create_builtin(const char *name, uint32_t slot, uint32_t priori
     proc->region_count = 2;
     uint32_t sp = end - 8u;
     mm_write32(proc, sp, arg);
-    return start_proc(proc, thread, name, slot, priority, entry, sp, slot_bounds[slot]);
+    return start_proc(proc, thread, name, priority, entry, sp, slot_bounds[slot]);
 }
 
 /* Loader categories to kernel codes (doc/spec_Foundation.md §9.2). */
@@ -297,10 +305,9 @@ static struct wax_launch launch;
 
 /* Plans the heap of a loaded image (§5.3 step 3): it starts at the end of
  * the highest WAX block and may grow up to the next reservation above it
- * (stack or a library) or the end of the slot. */
-static void plan_heap(struct fnd_proc *proc, uint32_t slot, const struct fnd_grant *grants,
-                      uint32_t grant_count) {
-    uint32_t top = launch.top, limit = mm_vm ? VM_HEAP_TOP : slot_bounds[slot + 1u];
+ * (stack, library or MMIO grant) or the end of the process's arena. */
+static void plan_heap(struct fnd_proc *proc, const struct fnd_grant *grants, uint32_t grant_count) {
+    uint32_t top = launch.top, limit = mm_vm ? VM_HEAP_TOP : proc->arena_hi;
     proc->heap_region = FND_PROC_REGIONS; /* none yet */
     for (uint32_t i = 0; i < launch.region_count; ++i) {
         const struct wax_region *r = &launch.region[i];
@@ -330,6 +337,60 @@ static uint8_t *vm_load_map(void *context, uint32_t address, uint32_t *run) {
     return mm_vm_ptr(context, address, run);
 }
 
+static uint32_t page_up(uint32_t n) { return (n + MM_PAGE_MASK) & ~MM_PAGE_MASK; }
+
+/* nommu (§5.2): plans the launch and takes the pages it needs. A relocatable
+ * executable is first planned at a trial address to learn how much room the
+ * executable, its libraries and its stack need; the arena (with the heap on
+ * top) comes from the allocator and the launch is planned again inside it.
+ * An executable linked to fixed addresses takes exactly the pages it
+ * reserves. On success proc has its arena and `launch` is final. */
+static int32_t plan_arena(struct fnd_proc *proc, const void *image, uint32_t size,
+                          const struct wax_library *table, uint32_t lib_count) {
+    struct wax_info info;
+    enum wax_error error = wax_inspect(image, size, &info);
+    if (error != WAX_OK)
+        return wax_status(error);
+    struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR, 0, 0, 0};
+    if (!info.relocatable) {
+        /* The window of the old slot: what the image reserves, stack included. */
+        target.window_start = info.low & ~MM_PAGE_MASK;
+        target.window_end = page_up(info.high);
+        if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
+            return wax_status(error);
+        int32_t status = mm_arena_claim(target.window_start, target.window_end);
+        if (status != FND_OK)
+            return status;
+        proc->arena_lo = target.window_start;
+        proc->arena_hi = target.window_end;
+        return FND_OK;
+    }
+    /* Pass 1: the stack is just below the image; the window starts at the
+     * stack's page so that libraries land where they will in pass 2. */
+    uint32_t below = page_up(info.stack_size);
+    target.load_base = RELOC_PROBE_BASE;
+    target.window_start = RELOC_PROBE_BASE - below;
+    target.window_end = target.window_start + RELOC_WINDOW;
+    if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
+        return wax_status(error);
+    uint32_t reserve = page_up(info.heap_hint ? info.heap_hint : DEFAULT_HEAP);
+    uint32_t used = launch.top - target.window_start;
+    if (used > RELOC_WINDOW - reserve)
+        return FND_E_NO_MEMORY;
+    uint32_t length = page_up(used + reserve);
+    uint32_t arena = mm_arena_alloc(length);
+    if (!arena)
+        return FND_E_NO_MEMORY;
+    /* The same plan, moved: the stack's page is the arena's first. */
+    if ((error = wax_rebase(&launch, arena - target.window_start)) != WAX_OK) {
+        mm_arena_free(arena, arena + length); /* a library alignment above a page */
+        return wax_status(error);
+    }
+    proc->arena_lo = arena;
+    proc->arena_hi = arena + length;
+    return FND_OK;
+}
+
 /* The common part of every WAX launch. startup is kernel memory, copied into
  * the new process's startup block. */
 static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, uint32_t parent,
@@ -337,7 +398,6 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
                            uint32_t lib_count, const struct fnd_grant *grants, uint32_t grant_count,
                            const void *startup, uint32_t startup_len) {
     struct wax_library table[FND_MAX_LIBRARIES];
-    uint32_t base, slot = 0;
     mm_init();
     if (priority > FND_PRIO_APP || lib_count > FND_MAX_LIBRARIES || (lib_count && !libs) ||
         startup_len > FND_STARTUP_MAX)
@@ -345,36 +405,33 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
     int32_t status = check_grants(grants, grant_count);
     if (status != FND_OK)
         return status;
-    enum wax_error error = wax_base_addr(image, size, &base);
-    if (error != WAX_OK)
-        return wax_status(error);
-    if (mm_vm) {
-        slot = VM_NO_SLOT; /* any address in the window will do */
-    } else {
-        while (slot < FND_SLOTS && !(slot_bounds[slot] <= base && base < slot_bounds[slot + 1u]))
-            ++slot;
-        if (slot == FND_SLOTS)
-            return FND_E_FORMAT; /* §5.2: the image must lie in one user slot */
-        if (!slot_present(slot))
-            return FND_E_NO_MEMORY;
-    }
-    struct fnd_proc *proc = claim_record(slot, &status);
+    struct fnd_proc *proc = claim_record(&status);
     if (!proc)
         return status;
     for (uint32_t i = 0; i < lib_count; ++i) {
         table[i].data = libs[i].data;
         table[i].size = libs[i].size;
     }
-    struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR,
-                                mm_vm ? VM_WINDOW_START : slot_bounds[slot],
-                                mm_vm ? VM_WINDOW_END : slot_bounds[slot + 1u]};
-    if ((error = wax_plan(&launch, image, size, table, lib_count, &target)) != WAX_OK)
-        return wax_status(error);
-    if (!mm_vm && launch.region_count + grant_count > FND_REGIONS)
+    if (mm_vm) {
+        struct wax_target target = {"foundation", FND_ABI_MAJOR, FND_ABI_MINOR, VM_WINDOW_START, VM_WINDOW_END, 0};
+        enum wax_error error = wax_plan(&launch, image, size, table, lib_count, &target);
+        if (error != WAX_OK)
+            return wax_status(error);
+    } else if ((status = plan_arena(proc, image, size, table, lib_count)) != FND_OK) {
+        return status;
+    }
+    if (!mm_vm && launch.region_count + grant_count > FND_REGIONS) {
+        mm_arena_free(proc->arena_lo, proc->arena_hi);
+        proc->arena_lo = proc->arena_hi = 0;
         return FND_E_REGION_LIMIT; /* §5.3: the grants come after the image */
+    }
     struct fnd_thread *thread = sched_alloc_thread();
-    if (!thread)
+    if (!thread) {
+        if (!mm_vm)
+            mm_arena_free(proc->arena_lo, proc->arena_hi);
+        proc->arena_lo = proc->arena_hi = 0;
         return FND_E_LIMIT;
+    }
 
     if (mm_vm) {
         /* The whole address space is built before anything is loaded, so
@@ -407,11 +464,12 @@ static int32_t spawn_image(const char *name, uint32_t priority, uint32_t caps, u
     proc->region_count = launch.region_count + grant_count;
     proc->parent = parent;
     proc->caps = caps;
-    plan_heap(proc, slot, grants, grant_count);
+    plan_heap(proc, grants, grant_count);
     uint32_t index = (uint32_t)(proc - procs);
     kmem_copy((uint32_t)(uintptr_t)startup_blocks[index], (uint32_t)(uintptr_t)startup, startup_len);
     proc->startup_len = startup_len;
-    return start_proc(proc, thread, name, slot, priority, launch.entry, launch.stack_top, base);
+    return start_proc(proc, thread, name, priority, launch.entry, launch.stack_top,
+                      launch.image[0].origin);
 }
 
 /* The startup block of a bundled module (§11): argv = [name], cwd = "/",
@@ -560,7 +618,7 @@ int32_t proc_fork(struct fnd_thread *thread) {
     if (!handle_free_count(parent))
         return FND_E_LIMIT;
     int32_t error;
-    struct fnd_proc *child = claim_record(VM_NO_SLOT, &error);
+    struct fnd_proc *child = claim_record(&error);
     if (!child)
         return error;
     struct fnd_thread *first = sched_alloc_thread();
@@ -581,7 +639,7 @@ int32_t proc_fork(struct fnd_thread *thread) {
     child->startup_len = parent->startup_len;
     kmem_copy((uint32_t)(uintptr_t)startup_blocks[child - procs],
               (uint32_t)(uintptr_t)startup_blocks[parent - procs], parent->startup_len);
-    start_proc(child, first, parent->name, VM_NO_SLOT, parent->priority,
+    start_proc(child, first, parent->name, parent->priority,
                thread->frame.epc, thread->frame.r[28], thread->frame.r[30]);
     first->frame = thread->frame; /* SYSCALL saved EPC already points past it */
     first->frame.r[1] = 0;
@@ -607,8 +665,16 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
     uint32_t old = proc->heap_end;
     if (delta == 0)
         return (int32_t)old;
-    if (!proc->heap_limit || old > proc->heap_limit || delta > proc->heap_limit - old)
+    if (!proc->heap_limit || old > proc->heap_limit)
         return FND_E_NO_MEMORY;
+    if (delta > proc->heap_limit - old) {
+        /* nommu: a heap that ends the arena grows into the free pages above
+         * it, like brk without an MMU; there is no moving it. */
+        uint32_t want = page_up(old + delta);
+        if (mm_vm || proc->heap_limit != proc->arena_hi || want < old || !mm_arena_extend(proc->arena_hi, want))
+            return FND_E_NO_MEMORY;
+        proc->arena_hi = proc->heap_limit = want;
+    }
     if (mm_vm) {
         /* Frames are zeroed when handed out, and need not be adjacent. */
         int32_t status = mm_vm_map(proc, old, old + delta, CPT32_PERM_R | CPT32_PERM_W);
@@ -662,11 +728,10 @@ static void put_word(const struct fnd_proc *proc, uint32_t buf, uint32_t cap, ui
 }
 
 int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf, uint32_t cap) {
-    uint32_t live = 0, used = 0, records = 0;
+    uint32_t live = 0, records = 0;
     for (uint32_t i = 0; i < FND_MAX_PROCS; ++i) {
         if (procs[i].state == FND_PROC_LIVE) {
             ++live;
-            used += mm_vm ? 0 : slot_bounds[procs[i].slot + 1u] - slot_bounds[procs[i].slot];
         }
         if (procs[i].state != FND_PROC_FREE)
             ++records;
@@ -710,13 +775,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         return (int32_t)size;
     }
     if (sel == 0) {
-        uint32_t user = 0;
-        for (uint32_t slot = 0; !mm_vm && slot < FND_SLOTS; ++slot) {
-            if (slot_present(slot))
-                user += slot_bounds[slot + 1u] - slot_bounds[slot];
-        }
         uint32_t info[8] = {FND_ABI_MAJOR, FND_ABI_MINOR, FND_TICK_HZ, mm_ram_bytes(),
-                            mm_vm ? mm_vm_free_bytes() : user - used, live,
+                            mm_vm ? mm_vm_free_bytes() : mm_arena_free_bytes(), live,
                             boot_drive, 0};
         for (uint32_t w = 0; w < 8u; ++w)
             put_word(caller, buf, cap, 4u * w, info[w]);

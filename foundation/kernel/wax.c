@@ -9,6 +9,10 @@
 #define TYPE_WAL 2u
 #define FLAG_DEBUG 1u
 #define FLAG_PROTECTED 2u
+#define FLAG_RELOCATABLE 4u
+#define RELOC_PAIR 1u
+#define OP_LDIH 0x3Du
+#define OP_LDIL 0x3Cu
 #define PERM_R 1u
 #define PERM_RW 3u
 #define PERM_RX 5u
@@ -317,14 +321,22 @@ static enum wax_error parse_v3(struct wax_image *im) {
     if (size < HEADER_V3)
         return WAX_E_FORMAT;
     uint32_t type = rd16(d + 6), flags = rd16(d + 10);
-    if (rd16(d + 8) != 1u || type < TYPE_WAX || type > TYPE_WAL || (flags & ~3u) || word(im, 20) != 1u)
+    if (rd16(d + 8) != 1u || type < TYPE_WAX || type > TYPE_WAL || (flags & ~7u) || word(im, 20) != 1u)
         return WAX_E_UNSUPPORTED; /* arch, type, flags, call_abi */
     if (!(flags & FLAG_PROTECTED) || word(im, 12) != HEADER_V3 || word(im, 16) != size)
         return WAX_E_FORMAT;
-    for (uint32_t offset = 128; offset < HEADER_V3; offset += 4u) {
+    for (uint32_t offset = 140; offset < HEADER_V3; offset += 4u) {
         if (word(im, offset))
             return WAX_E_FORMAT;
     }
+    /* §3.1: the relocation table and heap hint belong to relocatable executables. */
+    im->relocatable = (flags & FLAG_RELOCATABLE) != 0;
+    im->reloc_table = word(im, 128);
+    im->reloc_count = word(im, 132);
+    im->heap_hint = word(im, 136);
+    if (im->relocatable ? type != TYPE_WAX || !im->reloc_count || (im->heap_hint & 7u)
+                        : im->reloc_table || im->reloc_count || im->heap_hint)
+        return WAX_E_FORMAT;
     im->type = type;
     im->base = word(im, 24);
     im->entry_offset = word(im, 28);
@@ -366,6 +378,7 @@ static enum wax_error parse_v3(struct wax_image *im) {
         !add_table(&spans, im->dep_table, im->dep_count, 16u, size) ||
         !add_table(&spans, im->export_table, im->export_count, 24u, size) ||
         !add_table(&spans, im->import_table, im->import_count, 24u, size) ||
+        !add_table(&spans, im->reloc_table, im->reloc_count, 4u, size) ||
         !add_table(&spans, im->strings, 1u, im->string_size, size) ||
         !add_span(&spans, debug_offset, debug_size, size))
         return WAX_E_FORMAT;
@@ -416,6 +429,8 @@ static enum wax_error parse_v3(struct wax_image *im) {
             return WAX_E_FORMAT;
         if (top - stack < end && im->base < top)
             return WAX_E_FORMAT; /* stack overlaps the image reservation */
+        if (im->relocatable && top != im->base)
+            return WAX_E_FORMAT; /* §3.1: the stack lies just below the image */
     }
 
     /* Dependencies (§4.1). */
@@ -474,6 +489,39 @@ static enum wax_error parse_v3(struct wax_image *im) {
     }
     if (used != (1u << im->dep_count) - 1u)
         return WAX_E_FORMAT;
+
+    /* Relocations (§3.1): ascending, each a whole data word or an LDIH/LDIL
+     * pair in initialized bytes of a block that may hold it. */
+    uint32_t previous_at = 0, k = 0, loaded = ~0u;
+    struct block b = {0};
+    for (uint32_t i = 0; i < im->reloc_count; ++i) {
+        uint32_t entry = word(im, im->reloc_table + 4u * i), at = entry & ~3u, kind = entry & 3u;
+        if (kind > RELOC_PAIR || (i && at <= previous_at) || at < im->base || at - im->base > 0xFFFFFFF0u)
+            return WAX_E_FORMAT;
+        previous_at = at;
+        uint32_t len = kind == RELOC_PAIR ? 8u : 4u;
+        /* Entries and blocks both ascend, so one cursor walks the blocks (a
+         * search per entry costs thousands of entries a scan each). */
+        while (k < im->block_count) {
+            if (loaded != k) {
+                get_block(im, k, &b);
+                loaded = k;
+            }
+            if (at >= b.address && at - b.address >= b.file_size)
+                ++k;
+            else
+                break;
+        }
+        if (k >= im->block_count || at < b.address || len > b.file_size - (at - b.address) ||
+            (kind == RELOC_PAIR ? b.perm != PERM_RX : b.perm == PERM_RX))
+            return WAX_E_FORMAT;
+        if (kind == RELOC_PAIR) {
+            const uint8_t *code = d + b.file_offset + (at - b.address);
+            if (rd32(code) >> 26 != OP_LDIH || rd32(code + 4) >> 26 != OP_LDIL ||
+                ((rd32(code) ^ rd32(code + 4)) & 0x03E00000u))
+                return WAX_E_FORMAT;
+        }
+    }
     return WAX_OK;
 }
 
@@ -491,6 +539,51 @@ static enum wax_error parse(struct wax_image *im, const void *data, uint32_t siz
     if (im->version == 3u)
         return parse_v3(im);
     return WAX_E_UNSUPPORTED;
+}
+
+/* A light read of the header and block table: the plan validates the image
+ * properly, and this runs first on every spawn, so it only guards its own
+ * reads. */
+enum wax_error wax_inspect(const void *data, uint32_t size, struct wax_info *info) {
+    const uint8_t *d = data;
+    if (!d || size < HEADER_V2 || d[0] != 'W' || d[1] != 'A' || d[2] != 'X' || d[3] != 0)
+        return WAX_E_FORMAT;
+    uint32_t version = rd16(d + 4), base, stack_top, stack_size, blocks, count, entry_size, flags = rd16(d + 10);
+    if (version == 2u) {
+        base = rd32(d + 16);
+        blocks = rd32(d + 24), count = rd32(d + 28), entry_size = rd32(d + 32);
+        stack_top = rd32(d + 48), stack_size = rd32(d + 52);
+        flags = 0;
+    } else if (version == 3u && size >= HEADER_V3) {
+        base = rd32(d + 24);
+        stack_top = rd32(d + 32), stack_size = rd32(d + 36);
+        blocks = rd32(d + 40), count = rd32(d + 44), entry_size = 24u;
+        info->heap_hint = rd32(d + 136);
+    } else {
+        return version == 2u || version == 3u ? WAX_E_FORMAT : WAX_E_UNSUPPORTED;
+    }
+    uint32_t block_size = version == 2u ? 16u : 24u;
+    if (entry_size != block_size || !count || count > WAX_MAX_BLOCKS || blocks > size ||
+        count * block_size > size - blocks || stack_size > stack_top)
+        return WAX_E_FORMAT;
+    uint32_t end = base;
+    for (uint32_t i = 0; i < count; ++i) {
+        const uint8_t *e = d + blocks + i * block_size;
+        uint32_t address = rd32(e), len = version == 2u ? rd32(e + 8) : rd32(e + 12);
+        if (address < base || len > CPU_RESERVED - address)
+            return WAX_E_FORMAT;
+        if (address + len > end)
+            end = address + len;
+    }
+    uint32_t stack_low = stack_top - stack_size;
+    info->base = base;
+    info->low = stack_low < base ? stack_low : base;
+    info->high = stack_top > end ? stack_top : end;
+    info->relocatable = (flags & FLAG_RELOCATABLE) != 0;
+    info->stack_size = stack_size;
+    if (version != 3u)
+        info->heap_hint = 0;
+    return WAX_OK;
 }
 
 enum wax_error wax_base_addr(const void *data, uint32_t size, uint32_t *base) {
@@ -660,10 +753,10 @@ static enum wax_error place(struct wax_launch *launch, const struct resolver *r)
     struct span taken[WAX_MAX_IMAGES + 1u];
     uint32_t n = 0;
     const struct wax_image *exe = &launch->image[0];
-    taken[n].start = exe->base;
-    taken[n++].end = exe->base + exe->span;
-    taken[n].start = exe->stack_top - exe->stack_size;
-    taken[n++].end = exe->stack_top;
+    taken[n].start = exe->origin;
+    taken[n++].end = exe->origin + exe->span;
+    taken[n].start = exe->stack_top - exe->stack_size + r->launch->delta;
+    taken[n++].end = exe->stack_top + r->launch->delta;
     for (uint32_t i = 0; i < n; ++i) {
         if (taken[i].start < t->window_start || taken[i].end > t->window_end)
             return fail(launch, WAX_E_FORMAT, 0, 0, 0);
@@ -701,8 +794,8 @@ static enum wax_error place(struct wax_launch *launch, const struct resolver *r)
 static enum wax_error plan_regions(struct wax_launch *launch) {
     const struct wax_image *exe = &launch->image[0];
     uint32_t next[WAX_MAX_IMAGES] = {0}, n = 1;
-    launch->region[0].start = exe->stack_top - exe->stack_size;
-    launch->region[0].end = exe->stack_top;
+    launch->region[0].start = exe->stack_top - exe->stack_size + launch->delta;
+    launch->region[0].end = exe->stack_top + launch->delta;
     launch->region[0].flags = PERM_RW;
     launch->top = 0;
     for (;;) {
@@ -758,6 +851,16 @@ enum wax_error wax_plan(struct wax_launch *launch, const void *data, uint32_t si
     if (exe->version == 3u && !abi_ok(exe, target))
         return WAX_E_ABI_MISMATCH;
     exe->origin = exe->base;
+    launch->delta = 0;
+    launch->heap_hint = exe->heap_hint;
+    if (exe->relocatable && target->load_base) {
+        /* §3.1: the stack moves with the image. */
+        if (target->load_base < exe->stack_size || (target->load_base & 3u) ||
+            exe->span > CPU_RESERVED - target->load_base)
+            return WAX_E_FORMAT;
+        exe->origin = target->load_base;
+        launch->delta = target->load_base - exe->base;
+    }
     launch->count = 1;
     r.launch = launch;
     r.libs = libs;
@@ -767,9 +870,27 @@ enum wax_error wax_plan(struct wax_launch *launch, const void *data, uint32_t si
     if ((error = resolve(&r, 0)) != WAX_OK || (error = check_imports(launch)) != WAX_OK ||
         (error = place(launch, &r)) != WAX_OK || (error = plan_regions(launch)) != WAX_OK)
         return error;
-    launch->entry = exe->base + exe->entry_offset;
-    launch->stack_top = exe->stack_top;
+    launch->entry = exe->origin + exe->entry_offset;
+    launch->stack_top = exe->stack_top + launch->delta;
     launch->stack_size = exe->stack_size;
+    return WAX_OK;
+}
+
+enum wax_error wax_rebase(struct wax_launch *launch, uint32_t shift) {
+    for (uint32_t i = 0; i < launch->count; ++i) {
+        if (launch->image[i].align > 1u && (shift & (launch->image[i].align - 1u)))
+            return WAX_E_FORMAT;
+    }
+    for (uint32_t i = 0; i < launch->count; ++i)
+        launch->image[i].origin += shift;
+    for (uint32_t i = 0; i < launch->region_count; ++i) {
+        launch->region[i].start += shift;
+        launch->region[i].end += shift;
+    }
+    launch->entry += shift;
+    launch->stack_top += shift;
+    launch->top += shift;
+    launch->delta += shift;
     return WAX_OK;
 }
 
@@ -843,6 +964,55 @@ static void put32(wax_map_fn map, void *context, uint32_t address, uint32_t valu
     put_bytes(map, context, address, bytes, 4u);
 }
 
+static uint32_t get32(wax_map_fn map, void *context, uint32_t address) {
+    uint32_t run;
+    return rd32(map(context, address, &run)); /* aligned: a run is at least 4 bytes */
+}
+
+/* The instruction word insn with its 16-bit immediate replaced. */
+static __attribute__((noinline)) uint32_t imm_of(uint32_t insn, uint32_t imm) {
+    return insn - (insn & 0xFFFFu) + (imm & 0xFFFFu);
+}
+
+/* §3.1: adds the load offset to every address the executable holds. */
+static void relocate(const struct wax_launch *launch, wax_map_fn map, void *context) {
+    const struct wax_image *exe = &launch->image[0];
+    if (!exe->relocatable || launch->delta == 0)
+        return;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_BIG_ENDIAN__
+    /* The kernel's own memory, and words in the byte order of the image: a
+     * relocation is a few operations (this runs for thousands of them per
+     * spawn, and the generated code does not keep values in registers). */
+    if (map == bias_map && !((uintptr_t)exe->data & 3u)) {
+        const uint32_t *table = (const uint32_t *)(exe->data + exe->reloc_table);
+        uint32_t delta = launch->delta;
+        for (uint32_t i = 0; i < exe->reloc_count; ++i) {
+            uint32_t entry = table[i];
+            volatile uint32_t *at = (volatile uint32_t *)((uintptr_t)context + (entry & ~3u) + delta);
+            if (entry & RELOC_PAIR) {
+                uint32_t value = (at[0] << 16) + (at[1] & 0xFFFFu) + delta;
+                at[0] = (at[0] & 0xFFFF0000u) | value >> 16;
+                at[1] = (at[1] & 0xFFFF0000u) | (value & 0xFFFFu);
+            } else {
+                *at += delta;
+            }
+        }
+        return;
+    }
+#endif
+    for (uint32_t i = 0; i < exe->reloc_count; ++i) {
+        uint32_t entry = word(exe, exe->reloc_table + 4u * i), at = (entry & ~3u) + launch->delta;
+        if (entry & RELOC_PAIR) {
+            uint32_t high = get32(map, context, at), low = get32(map, context, at + 4u);
+            uint32_t value = (high & 0xFFFFu) * 0x10000u + (low & 0xFFFFu) + launch->delta;
+            put32(map, context, at, imm_of(high, value / 0x10000u));
+            put32(map, context, at + 4u, imm_of(low, value));
+        } else {
+            put32(map, context, at, get32(map, context, at) + launch->delta);
+        }
+    }
+}
+
 void wax_load_mapped(const struct wax_launch *launch, wax_map_fn map, void *context) {
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];
@@ -855,6 +1025,7 @@ void wax_load_mapped(const struct wax_launch *launch, wax_map_fn map, void *cont
         }
     }
     put_zeros(map, context, launch->stack_top - launch->stack_size, launch->stack_size);
+    relocate(launch, map, context);
     /* Import descriptors (§4.3): resolved address, provider origin. */
     for (uint32_t i = 0; i < launch->count; ++i) {
         const struct wax_image *im = &launch->image[i];

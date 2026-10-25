@@ -1,6 +1,6 @@
 """libsgc: the command builder on the host, and the WAL "sgc" in Foundation.
 
-Run python -m unittest discover -s foundation/tests/libsgc -v, also FND_MM=slot.
+Run python -m unittest discover -s foundation/tests/libsgc -v, also FND_MM=nommu.
 The guest tests need src32_testbench and Clang (see tests/shell).
 """
 import os

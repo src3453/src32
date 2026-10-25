@@ -4,7 +4,7 @@ translation_of: ../spec_WAX_v3.md
 ---
 # WAX/WAL v3 — CPU 保護とライブラリシンボル
 
-Revision 3.0、2026-10-21。状態: **仕様策定済み・Foundation カーネルが読み込み可能**。
+Revision 3.1、2026-10-25。状態: **仕様策定済み・Foundation カーネルが読み込み可能**。
 v3 のバイナリ形式と基本 OS ローダー契約を定義します。
 「必須」「禁止」は規範要件です。[英語版](../spec_WAX_v3.md)。
 
@@ -55,7 +55,7 @@ header は固定 160 byte。空 table でも entry_size は規定値です。
 | 4 | 2 | version = 3 |
 | 6 | 2 | type: 1 WAX、2 WAL |
 | 8 | 2 | arch = 1 (SRC32) |
-| 10 | 2 | flags: bit0 DEBUG_PRESENT、bit1 PROTECTED、他は 0 |
+| 10 | 2 | flags: bit0 DEBUG_PRESENT、bit1 PROTECTED、bit2 RELOCATABLE（§3.1）、他は 0 |
 | 12 | 4 | header_size = 160 |
 | 16 | 4 | file_size = 実ファイル長 |
 | 20 | 4 | call_abi = 1（§6） |
@@ -85,7 +85,10 @@ header は固定 160 byte。空 table でも entry_size は規定値です。
 | 116 | 4 | os_min_minor |
 | 120 | 4 | debug_offset: 不在なら 0 |
 | 124 | 4 | debug_size: 不在なら 0 |
-| 128 | 32 | reserved |
+| 128 | 4 | reloc_table_offset: ファイル先頭からの位置。RELOCATABLE のときだけ非ゼロ |
+| 132 | 4 | reloc_count: RELOCATABLE のときだけ非ゼロ |
+| 136 | 4 | heap_hint: プログラムが求めるヒープの byte 数（8 の倍数）。無ければ 0。RELOCATABLE のときだけ指定可 |
+| 140 | 20 | reserved |
 
 header、各 table、string table、非空 payload、debug のファイル範囲は
 相互に重ならず、file_size 内に収まる必要があります。開始 offset はすべて 4 の倍数。
@@ -138,6 +141,34 @@ VRAM/device/ROM/CPU 予約領域を要求することは禁止、W+X も禁止�
 WAX entry は 4-byte 整列、先頭命令 4 byte 全体が初期化済み RX に収まる必要があります。
 stack top/size は非ゼロの 8 の倍数、減算で underflow せず、image 予約範囲と重複不可。
 OS はスタック全体をゼロ化します。WAL の stack/entry フィールドはすべて 0 です。
+
+### 3.1 再配置可能な実行形式
+
+flags の RELOCATABLE を立てた WAX は、nommu システムの FLAT 形式のように、
+どのアドレスにでも読み込めます。`base_addr`、block の address、entry、スタックは
+**リンク時**の配置で、ローダーは最大 alignment の倍数で、すべての範囲が RAM に収まる
+`delta` を選び、image 全体を `base_addr + delta` に置いて relocation table を適用します。
+再配置可能にできるのは WAX だけです（WAL は構造上すでに位置独立）。
+
+relocation table は `reloc_table_offset` にある u32 を `reloc_count` 個並べたもので、
+address の厳密な昇順です。各エントリは上位 30 bit がリンク時アドレス（4 byte 整列）、
+下位 2 bit が種類です。
+
+| 種類 | 意味 |
+|---:|---|
+| 0 | R/RW block にある 32 bit big-endian のデータ語。`delta` を足す |
+| 1 | RX block にある `LDIH rd, hi` とそれに続く `LDIL rd, lo`（rd は同じ）。`hi:lo` の 32 bit 値はリンク時アドレスで、`delta` を足して両方の即値を書き直す |
+
+それ以外の種類は予約で、拒否します。各エントリは、対応する権限の block の
+初期化済み領域に完全に収まらなければなりません。entry や image-relative offset、
+import slot は配置後の origin からの相対なので、エントリは要りません。
+再配置はプロセスの実行前、スタックのゼロ化より前に行います。
+
+再配置可能な WAX のスタックは最下位の block の直下にあり（`user_stack_top == base_addr`）、
+予約範囲 `[base_addr - user_stack_size, 最上位 block の終端)` は 1 つの連続領域として
+まとめて動きます。ローダーは初期の `R30` に配置後の origin（`base_addr + delta`）を入れ、
+位置独立な開始コードが image を見つけられるようにします。ローダーは最上位 block の上に
+ヒープ用のゼロ化メモリを足してよい（`heap_hint` を参照）。それは image には含まれません。
 
 ## 4. 依存とシンボル
 

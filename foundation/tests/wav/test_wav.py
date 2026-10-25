@@ -1,6 +1,6 @@
 """WAV parsing/conversion and real Foundation -> FIFO -> stereo capture.
 
-Run with FND_MM=slot too. --dump-audio advances the SGU at 48 kHz; without
+Run with FND_MM=nommu too. --dump-audio advances the SGU at 48 kHz; without
 it the historical testbench never drains a DAC FIFO.
 """
 import ctypes as C

@@ -1,6 +1,6 @@
 """Shell -> /bin/bmpview -> /dev/fb0: pixels of 8-bit and 24-bit BMPs reach the screen.
 
-Build cargo build --release --bin src32_testbench first; run again with FND_MM=slot.
+Build cargo build --release --bin src32_testbench first; run again with FND_MM=nommu.
 """
 from pathlib import Path
 import subprocess
