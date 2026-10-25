@@ -319,6 +319,7 @@ WAX v3 の WAL を必要とするプログラムでは、`fnd_proc_exec` と同�
 | `echo` | `echo [word...]` | 語を空白 1 つでつなぎ、改行を付けて書く。引数がなければ改行だけ |
 | `chip8` | `chip8 [-c N\|--cycles N] ROM.ch8` | オリジナル CHIP-8 を /dev/fb0 と /dev/sgu で実行。Nは60 Hz換算の1 VSyncあたりの命令数（1〜10000）、省略時700命令/秒。1234/QWER/ASDF/ZXCV、Esc で終了。[詳細](spec_Foundation_chip8.md) |
 | `sgubplay` | `sgubplay FILE` | FS2のSGUB v1/v2/v3（SGU/PCM target）を /dev/sgu へ再生。repeatフラグに従い、Esc/qで停止。拡張カードtargetは事前拒否。[詳細](spec_Foundation_sgubplay.md) |
+| `wavplay` | `wavplay FILE` | PCM WAV（8/16bit、mono/stereo）をSGU v2.1 FIFO DACへ再生。ステレオは2chを左右へ振り切る。Esc/qで停止。[詳細](spec_Foundation_wavplay.md) |
 | `uname` | `uname` | OS の版 `Foundation OS (kernel ABI <major>.<minor>)`（`sys_info` sel 0）を 1 行表示する |
 | `free` | `free` | Main RAM の容量と空き容量、VRAM と PCMRAM の容量を KiB で表示する（`sys_info` sel 0, 3） |
 | `ps` | `ps` | プロセス一覧を表示する（`sys_info` sel 1）。列は PID、PARENT、STATE、PRIO、MEM、NAME |

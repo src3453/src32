@@ -99,7 +99,7 @@ class ShellTests(unittest.TestCase):
     def mem_line(self, kib):
         return 'Mem: 16384K total, %sK free' % (kib if self.slot_mm else 'N')
 
-    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached', final=(), keys=()):
+    def screen(self, *batches, step=STEP_FRAMES, at_frames=None, config=None, cpu='cached', final=(), keys=(), audio=False):
         """Types each batch STEP frames after the previous one; returns the
         screen rows without the trailing blank rows. config is the text of a
         config.yaml for this run only."""
@@ -123,6 +123,8 @@ class ShellTests(unittest.TestCase):
         self.slot_mm = SLOT_MM or not self.cpu_vm[cpu]
         command = [str(self.harness), str(self.image), '42', '--cpu', cpu,
                    '--frames', str(FRAMES), '--dump-pcg']
+        if audio:
+            command += ['--dump-audio', str(run / 'audio.pcm')]
         for i, text in enumerate(batches):
             frame = at_frames[i] if at_frames is not None else FIRST_FRAME + step * i
             command += ['--type', f'{frame}={text}']

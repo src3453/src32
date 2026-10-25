@@ -2,7 +2,7 @@
 #include "internal.h"
 #include <foundation/sgu.h>
 #define BYTE(a) (*(volatile uint8_t *)(uintptr_t)(a))
-static uint32_t opened, rights, position;
+static uint32_t opened, rights, position, dac_channels;
 static uint32_t address(uint32_t off) {
     return off < FND_SGU_PCM ? 0x80020000u + off : 0x18000000u + off - FND_SGU_PCM;
 }
@@ -17,7 +17,7 @@ static void silence(void) {
 int32_t sgu_open(uint32_t flags) {
     if (!flags || (flags & ~(FND_OPEN_READ | FND_OPEN_WRITE))) return FND_E_BAD_ARG;
     if (opened) return FND_E_BUSY;
-    opened = 1; rights = flags; position = 0;
+    opened = 1; rights = flags; position = 0; dac_channels = 0;
     if (rights & FND_OPEN_WRITE) silence();
     return FND_OK;
 }
@@ -28,6 +28,58 @@ void sgu_close(void) {
 int32_t sgu_call(struct fnd_proc *proc, const fnd_msg *m, fnd_msg *r, uint32_t cap) {
     uint8_t data[FND_IPC_MAX_DATA];
     switch (m->op) {
+    case FND_SGU_DAC_CONFIG:
+        if (!(rights & FND_OPEN_WRITE)) return FND_E_ACCESS;
+        if (m->a0 != 1 && m->a0 != 2) return FND_E_BAD_ARG;
+        silence(); dac_channels = 0;
+        for (uint32_t ch = 0; ch < m->a0; ++ch) {
+            uint32_t base = 0x80020800u + ch * 32u;
+            BYTE(base) = 0; BYTE(base + 1) = 0;
+            BYTE(base + 2) = 5;
+            if (BYTE(base + 2) != 5) return FND_E_UNSUPPORTED;
+            BYTE(base + 3) = 255;
+            BYTE(base + 4) = m->a0 == 1 ? 0xFF : ch == 0 ? 0xF0 : 0x0F;
+            BYTE(base + 5) = 0;
+            BYTE(base + 10) = 0;
+        }
+        dac_channels = m->a0;
+        return FND_OK;
+    case FND_SGU_DAC_START:
+        if (!(rights & FND_OPEN_WRITE)) return FND_E_ACCESS;
+        if (!dac_channels) return FND_E_BAD_ARG;
+        for (uint32_t ch = 0; ch < dac_channels; ++ch)
+            BYTE(0x80020819u + ch * 32u) = 1;
+        return FND_OK;
+    case FND_SGU_DAC_SUBMIT: {
+        if (!(rights & FND_OPEN_WRITE)) return FND_E_ACCESS;
+        if (!dac_channels || m->len > FND_IPC_MAX_DATA || m->len % (dac_channels * 2u))
+            return FND_E_BAD_ARG;
+        uint32_t used = 0;
+        for (uint32_t ch = 0; ch < dac_channels; ++ch) {
+            uint32_t base = 0x80020800u + ch * 32u;
+            /* Rendering can drain the FIFO between byte reads. Retry a
+             * high-byte rollover rather than interpreting a torn count. */
+            uint32_t hi, lo, again;
+            do {
+                hi = BYTE(base + 14); lo = BYTE(base + 15); again = BYTE(base + 14);
+            } while (hi != again);
+            uint32_t n = (hi << 8) | lo;
+            if (n > used) used = n;
+        }
+        if (used > 2048u) return FND_E_IO;
+        uint32_t frames = m->len / (dac_channels * 2u);
+        if (frames > 2048u - used) frames = 2048u - used;
+        uint32_t bytes = frames * dac_channels * 2u;
+        if (bytes) mm_copy_from_user(data, proc, m->buf, bytes);
+        for (uint32_t i = 0; i < frames; ++i)
+            for (uint32_t ch = 0; ch < dac_channels; ++ch) {
+                uint32_t base = 0x80020800u + ch * 32u;
+                uint32_t off = (i * dac_channels + ch) * 2u;
+                BYTE(base + 12) = data[off]; BYTE(base + 13) = data[off + 1];
+            }
+        r->a0 = bytes; r->a1 = used + frames;
+        return m->len && !bytes ? FND_E_WOULD_BLOCK : FND_OK;
+    }
     case FND_ST_SEEK: {
         int64_t off = (int64_t)(int32_t)m->a1 * 4294967296LL + m->a2;
         if (m->a0 > FND_SEEK_END) return FND_E_BAD_ARG;

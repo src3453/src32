@@ -10,6 +10,10 @@ CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様�
 `sgubplay /music/song.sgub` でディスク上のSGUBを再生できます。Esc/qで停止します。
 曲の組み込み方と対応形式は [SGUBプレイヤー](../doc/spec_Foundation_sgubplay.md) を参照してください。
 
+`wavplay /music/song.wav` はFIFO DACで8/16bit PCM WAVを再生します（SGU v2.1）。
+ステレオは2chを左右に振り切り、モノラルは中央へ出力します。Esc/qで停止します。
+対応形式・レート変換・組み込み方は [WAVプレイヤー](../doc/spec_Foundation_wavplay.md) を参照してください。
+
 sol ゲストから libfnd を使う実行例は [`examples/foundation-sol`](../examples/foundation-sol/README.md) にあります。
 `boot/build.py --root DIR` は追加ファイルをFS2ディスクに組み込みます。
 起動時はIDC slot 0へそのディスクを接続してください。実fsサービスがマウントするため、

@@ -3,7 +3,7 @@ use std::env;
 use std::fs;
 
 use cpt32::bus::Bus;
-use cpt32::bus::connect_devices_with_sgu_version;
+use cpt32::bus::connect_bmc_dmac;
 use cpt32::cpu::{CPU_PROFILE_STAGE_NAMES, CYCLES_PER_FRAME, CpuProfile};
 use cpt32::cpu_select::{AnyCpu, resolve_cpu_kind, split_cpu_arg};
 
@@ -134,7 +134,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--expect-pixel X:Y=0xRRGGBB] [--dump-framebuffer PATH.ppm] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--dump-audio PATH] [--expect-pixel X:Y=0xRRGGBB] [--dump-framebuffer PATH.ppm] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -157,10 +157,15 @@ fn main() {
     let mut framebuffer_dump = None;
     let mut typed: Vec<(usize, Vec<HostInputEvent>)> = Vec::new();
     let mut dump_pcg = false;
+    let mut audio_dump = None;
+    let mut audio_bytes = Vec::new();
     let mut options = args.iter().skip(1);
     while let Some(option) = options.next() {
         match option.as_str() {
             "--allow-running" => allow_running = true,
+            "--dump-audio" => {
+                audio_dump = Some(options.next().expect("--dump-audio requires PATH"));
+            }
             "--expect-sgc-overlay" => expect_sgc_overlay = true,
             "--expect-gp-noise-background" => expect_gp_noise_background = true,
             "--music-stream" => {
@@ -256,7 +261,10 @@ fn main() {
             .expect("Invalid memory configuration");
     let sgu_version = cpt32::devices::sgu::sgu::sgu_version_from_config(Path::new("config.yaml"))
         .expect("Invalid SGU configuration");
-    let vdp = connect_devices_with_sgu_version(&mut bus, ram_size, vram_size, sgu_version);
+    cpt32::devices::ram::connect_ram_with_size(&mut bus, ram_size);
+    connect_bmc_dmac(&mut bus);
+    let sgus = cpt32::devices::sgu::sgu::connect_sgu_with_version(&mut bus, sgu_version);
+    let vdp = cpt32::devices::vdp::vdp::connect_vdp_with_vram_size(&mut bus, vram_size);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
         .expect("Invalid expansion-card configuration");
@@ -308,6 +316,27 @@ fn main() {
         cpu.set_irq_source(0, true);
         cpu.set_irq_source(0, false);
         cpu.run(cycles_per_frame);
+        // Opt-in deterministic 48 kHz sink: 800 stereo frames per VSync.
+        // Keep the historical no-audio behavior unless capture is requested.
+        if audio_dump.is_some() {
+            let mut mixed_left = [0i32; 800];
+            let mut mixed_right = [0i32; 800];
+            for sgu in &sgus {
+                let mut left = [0i16; 800];
+                let mut right = [0i16; 800];
+                sgu.borrow_mut().clock_mixed_into(&mut left, &mut right);
+                for i in 0..800 {
+                    mixed_left[i] += i32::from(left[i]);
+                    mixed_right[i] += i32::from(right[i]);
+                }
+            }
+            for i in 0..800 {
+                for sample in [mixed_left[i], mixed_right[i]] {
+                    audio_bytes
+                        .extend_from_slice(&(sample.clamp(-32768, 32767) as i16).to_le_bytes());
+                }
+            }
+        }
         // Optional completed-handler checks, not a real-time playback budget.
         // Dense unoptimized SGUB frames can outlive one CPU frame. Drain only
         // the current IRQ, without ticking VDP or delivering another VSYNC.
@@ -333,6 +362,9 @@ fn main() {
         }
     }
 
+    if let Some(path) = audio_dump {
+        fs::write(path, audio_bytes).expect("cannot write audio capture (stereo PCM16 LE, 48 kHz)");
+    }
     for &(address, expected) in &final_memory_expectations {
         let actual = cpu.read_mem_u8(address);
         assert_eq!(actual, expected, "final memory 0x{address:08X}");

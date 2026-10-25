@@ -384,6 +384,24 @@ WRITE で open したときと、そのストリームの最後のハンドル�
 READ-only の open/close は音を変更しません。既存の特権 MMIO grant を持つプログラムとの排他調停は行いません。
 `<foundation/sgu.h>` は offset 定数と `fnd_sgu_seek` を提供するヘッダーで、WAL ABI の追加はありません。
 
+#### FIFO DAC（SGU v2.1）
+
+同ヘッダーの `fnd_sgu_dac_config` / `fnd_sgu_dac_submit` / `fnd_sgu_dac_start` は
+既存の `fnd_call` を使い、追加のWAL exportを必要としません。全opはWRITE権限が必要です。
+
+| op | 値 | 契約 |
+|---|---|---|
+| `FND_SGU_DAC_CONFIG` | `0x1300` | a0=1（mono）/2（stereo）。両SGUを消音し、SGU0 ch0/1をFIFO DAC、48kHz、音量255に設定。monoはPAN=0xFF、stereoはch0=0xF0/ch1=0x0F。FIFO・保持値をリセットし、再生停止状態にする。旧SGUはUNSUPPORTED |
+| `FND_SGU_DAC_SUBMIT` | `0x1301` | buf/len=符号付きBE PCM16、stereoはL,Rの順でインターリーブ。lenは4096以下かつフレームサイズの倍数。両FIFOの空きがあるフレームだけ投入し、応答a0=受理byte数、a1=投入後の最大FIFO残量（フレーム数）。全く入らなければWOULD_BLOCK。len=0は状態照会で常にOK |
+| `FND_SGU_DAC_START` | `0x1302` | CONFIGした全chのPCM_CONTROLを同じカーネル呼び出し内で1にする |
+
+CONFIG前のSUBMIT/STARTはBAD_ARGです。CONFIG/START/SUBMITはストリーム位置を変えません。
+SUBMITは待機せず、左右同数のフレームを投入します。アプリは受理したbyte数だけ進め、未送信分を再試行します。
+`fnd_sgu_dac_submit(h, pcm, bytes, &done, &queued)` は上のa0/a1を返し、エラー時done=0です。
+FIFO DAC操作中に生のST_WRITEで関連レジスタを変更する使い方は対象外です。
+START前に先行充填し、終了時は0フレームを送り、残量0を確認してcloseします。
+close（強制終了を含む）は従来通り全chを消音・停止します。
+
 ### 9.3 SGC 2D コマンド FIFO `/dev/sgc`
 
 `foundation/kernel/sgc.c` が提供するカーネルドライバです。UID 0、mode `0x0036`。fs が予約サービス `dev.sgc`（`svc_register` は EXISTS）へ `DEV_OPEN` を送り、ストリーム CHANNEL を転送します。ハードウェアは [SGC 仕様](spec_SGC.md)。`READ`／`WRITE` のどちらか一方以上で開け、同時に開けるストリームは1個（2個目は BUSY）。dup・転送は権限と寿命を共有します。SGC の ID が `SGC1` でなければ NO_MEDIA です。
