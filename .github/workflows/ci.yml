@@ -191,6 +191,10 @@ jobs:
         run: python -m unittest discover -s foundation/tests/wax -v
       - name: FS2 host tool
         run: python -m unittest discover -s tools/fs2 -v
+      - name: Shared glyph ROM
+        run: |
+          python -m unittest discover -s tools -p test_unifont_hex_to_chr.py -v
+          python tools/unifont_hex_to_chr.py --check assets/unifont-18.0.01.hex.gz assets/unifont-bmp.chr
 
   wasm-sdk:
     name: WASM expansion card SDK

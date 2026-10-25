@@ -95,7 +95,7 @@ GPレイヤー順はGP番号で決まり、供給元内の順序は各供給元�
 - 共通レジスタ `0x04` は `BITMAP_COLOR_MODE`。`0`=256色パレット、`1`=RGB555、`2`=RGB888。`0`～`2`以外の書き込みは現在の色形式を維持し、STATUSのerror bitを立てる。
 - PCG `SCROLL_X` はレジスタ `0xF00C`（low byte）/`0xF00D`（high byte）、`SCROLL_Y` は `0xF00E`（low byte）/`0xF00F`（high byte）で設定する。いずれも16-bit unsigned pixel offsetで、reset値は0。PCGは各画面座標から `(X + dX) mod W`, `(Y + dY) mod H` のタイルマップ画素を表示し、`W`/`H` は `SCREEN_MODE` の解像度。
 - PCG `SCREEN_MODE=2`ではVRAM `0x00000`～`0x004AF`を文字セルに使う。600セル分を `row * 20 + column` 順に並べ、各セルをUTF-16BE（上位byte先行）の2 byteで格納する。FG/BG属性baseは従来どおり`0x01000`/`0x02000`で、各600 byteの下位6 bitをCLUT indexとする。mode 0/1のフォントバンクとraw 2/4 KiBファイル読込み契約は変更しない。mode 3は2400セルを1 byteずつ格納し、glyphデータは専用領域`0x21000`～`0x21FFF`から読む。既存8×8用バンク`0x20000`～`0x20FFF`はmode 3から書換え・参照しない。
-- PCGとSGC仕様の`GLYPH`コマンドは、読み取り専用のGNU Unifont 18.0.01 Plane 0 ROMを共有する。ROMは`assets/unifont-bmp.chr`として実行ファイルへ埋め込み、CPU可視VRAMには配置しない。BMP code unit順の65,536 slot（各32 byte、合計2 MiB）を持ち、各glyphは行優先の16行×2 byte、左pixelを最上位bitとする。8×16 glyphは左byteに置き右byteを0にし、16×16 glyphは2 byteを使う。未収録code unitとUTF-16 surrogateはU+FFFD glyphへ置換する。入力、変換ツール、ライセンス情報は`assets/unifont-18.0.01.hex.gz`、`tools/unifont_hex_to_chr.py`、`assets/UNIFONT-LICENSE.txt`に記録する。
+- PCGとSGC仕様の`GLYPH`コマンドは、読み取り専用のGNU Unifont 18.0.01 Plane 0 + Jiskan16 ROMを共有する。Jiskan16（X.Org font-jis-misc 1.0.4）の JIS X 0208 収録6,877字形は、JIS区点をEUC-JPでUnicodeへ対応付けてUnifontの同一code unitを置き換える（CP932の互換マッピングは使わない）。対象外の字形はUnifontを維持する。ROMは`assets/unifont-bmp.chr`として実行ファイルへ埋め込み、CPU可視VRAMには配置しない。BMP code unit順の65,536 slot（各32 byte、合計2 MiB）を持ち、各glyphは行優先の16行×2 byte、左pixelを最上位bitとする。8×16 glyphは左byteに置き右byteを0にし、16×16 glyphは2 byteを使う。未収録code unitとUTF-16 surrogateはU+FFFD glyphへ置換する。入力、変換ツール、ライセンス情報は`assets/unifont-18.0.01.hex.gz`、`assets/jiskan16.bdf`、`tools/unifont_hex_to_chr.py`、`assets/UNIFONT-LICENSE.txt`、`assets/JISKAN16-LICENSE.txt`に記録する。
 - 既存VRAMオフセットとPCGフォント/セルデータを直ちに移動しない。GP追加時の割当は各供給元のbase/stride設定と共に後方互換性を確認して定義する。
 - 既存の `DISPLAY_MODE=Graphics/PCG` は互換レジスタとして読み書きできるが、新合成経路では供給元の有効/無効とGP割当へ変換する。新仕様でGraphics/PCGを画面全体の排他的モードにはしない。
 - 初期移行ではbitmapはGP0、PCGの出力GPはVDPレジスタ `0xF00A`（0～7、reset値0）、PCGの重ね描き有効は `0xF00B`（reset値0）、SCのGPはSC `OUTPUT_GP`（reset値1）、VPUのGPはVPUレジスタ `0x0014`（reset値7）で選択する。Graphics modeでは `PCG_OVERLAY_ENABLE` を立てるとbitmapとPCGを同時に出力できる。旧PCG modeはPCGを画面ベースとして使う互換動作を維持する。
@@ -108,3 +108,12 @@ VDPは走査位置ごとに全供給元の同一座標を合成する。初版�
 ## 7. 実装境界
 
 VDPのcompositorは純粋なRGBA合成処理として切り出し、供給元の状態機械/MMIO実装と分離する。SGC/VPUが未実装または無効のときは透明供給として扱い、既存GP0/PCGの画素出力を壊さない。VPUのカラーターゲットは最終画面へ直接混ぜず、設定されたGPの供給元として扱う。
+
+共有ROMの再生成・一致確認（リポジトリルートから）:
+
+```sh
+python tools/unifont_hex_to_chr.py assets/unifont-18.0.01.hex.gz assets/unifont-bmp.chr
+python tools/unifont_hex_to_chr.py --check assets/unifont-18.0.01.hex.gz assets/unifont-bmp.chr
+```
+
+Jiskan16 BDF は既定で同梱ソースを使用する。別の同形式BDFを指定する場合は `--jiskan PATH` を使う。

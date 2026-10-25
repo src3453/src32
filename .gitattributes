@@ -1,5 +1,7 @@
 # Preserve the upstream font bytes so the recorded source hash survives checkout.
 assets/unscii-8.hex -text
+assets/jiskan16.bdf -text
+licenses/JISKAN16-UPSTREAM.txt -text
 THIRD_PARTY_NOTICES.txt text eol=lf
 tools/vscode-sol-syntax/THIRD_PARTY_NOTICES.txt text eol=lf
 # Keep the SDK subset byte-for-byte identical to its official archive.

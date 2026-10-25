@@ -27,6 +27,7 @@ CPT32 のオリジナル実装・ドキュメントにはルートの `LICENSE`�
 | Berkeley SoftFloat 3e | BSD-3-Clause。既存の COPYING、ソースのヘッダー、UPSTREAM.md を保持。ゲストバイナリだけを配る場合も通知全文を同梱する。 |
 | LZMA SDK 26.05 | Igor Pavlov による public domain の C 部分を `foundation/lib/lzma/vendor/` に収録。原文 `lzma-sdk.txt`、各ソースの宣言、取得元・アーカイブ SHA-256 を保持。CPT32 のアダプターと区別し、SDK を MIT に再ライセンスしない。 |
 | UNSCII-8 | 上流の PD / CC0 宣言を保存。CGA.F08 を削除し、UNSCII.F08 に置換。CP437 の256スロット、1文字8 byte、合計2048 byte。図柄は変わるが、文字コード・VRAM・MMIOの契約は変更しない。上流にない4文字（0x0F、0x7F、0xA9、0xF9）は `?` で代替。 |
+| Jiskan16 | パブリックドメイン。X.Org font-jis-misc 1.0.4 の未変更BDFと COPYING を同梱。JIS X 0208 の6,877字形を共通ROMへ上書き。出典・SHA-256は `assets/JISKAN16-LICENSE.txt` を参照。 |
 | GNU Unifont | MIT 対象外。OFL-1.1 の選択肢を利用。公式18.0.01アーカイブの標準BDFから著作権表示を保存し、同梱HEXとの一致を確認。リリースのOFL全文も同梱。変換したROMもOFL-1.1を維持。 |
 | SVG 内の Source Sans Pro | `doc/cpt32-architecture.svg` の埋め込み WOFF の name table で Adobe 2010–2018、Reserved Font Name “Source”、OFL-1.1 を確認。`licenses/SOURCE-SANS-PRO.txt` を同梱。 |
 
@@ -75,3 +76,5 @@ VSIX は拡張フォルダー内の LICENSE / THIRD_PARTY_NOTICES.txt を含め�
 - `cargo test --test unscii_font --offline --all-features`: 1件通過。NUL、ASCII A、CP437ブロック、両8×8バンクへのロード、専用8×16領域を保持することを確認。
 - 通知とフォントの `--check`: 通過。未審査のライセンス文字列をCargoメタデータへ注入する検査で、生成器がエラーにすることも確認。
 - `rustfmt --edition 2024 --check src/main.rs`、`git diff --check`: 通過。
+
+2026-10-25: 共通ROMの JIS X 0208 収録字形は Jiskan16 に差し替えた。同梱Unifontの元HEXは未変更。その他の字形はUnifontを維持し、混合ROMはOFL-1.1で配布する。Jiskan16単体のBDFはパブリックドメインで、上流の表示を保存する。再生成コマンドは `doc/spec_VDP.md` を参照。

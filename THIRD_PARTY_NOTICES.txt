@@ -2276,7 +2276,7 @@ Source: https://registry.npmjs.org/vscode-languageserver-types/-/vscode-language
 GNU Unifont bitmap data
 License: OFL-1.1 (selected alternative)
 Source: assets/UNIFONT-LICENSE.txt
-  assets/UNIFONT-LICENSE.txt: f307f52c34de25143cffb7727dc8eee4bc1b0881c0b5917269c4a0dfabdef00d
+  assets/UNIFONT-LICENSE.txt: 3973215249143ad83ab5743c8bcbfc1983659a82b5d046d4d449ba73771a55da
 
 GNU Unifont 18.0.01 release attribution
 License: OFL-1.1 (selected alternative)
@@ -2287,6 +2287,16 @@ GNU Unifont official OFL terms
 License: OFL-1.1
 Source: licenses/UNIFONT-OFL-1.1.txt
   licenses/UNIFONT-OFL-1.1.txt: ddd1809be6c7da406c9969515f6877ecdccf2bc194a2ff21088398565c2863fd
+
+Jiskan16 JIS X 0208 font
+License: public domain
+Source: assets/JISKAN16-LICENSE.txt
+  assets/JISKAN16-LICENSE.txt: 52e379097c0757e97c92daedfc04ccf7dbca81479e94b0d1a5702a0e643dccfb
+
+X.Org Jiskan16 upstream notice
+License: public domain
+Source: licenses/JISKAN16-UPSTREAM.txt
+  licenses/JISKAN16-UPSTREAM.txt: 7a94eaf8f051c95232d64b24b082eb02f827e1361c03b82e9bc7252263ea66c1
 
 UNSCII-8 CP437 font bank
 License: CC0-1.0 / public domain
@@ -6100,6 +6110,48 @@ have been licensed under extremely permissive terms.
 
 Copyright notices are retained in src/* files where relevant.
 
+--- 3973215249143ad83ab5743c8bcbfc1983659a82b5d046d4d449ba73771a55da ---
+GNU Unifont Plane 0 bitmap data
+================================
+
+Version: GNU Unifont 18.0.01
+Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
+Project and license information: https://unifoundry.com/unifont/index.html
+
+SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
+SHA-256 (generated ROM): 001c5f940a87996096e9fa6b00c91e02ef7cb70f0d9062a75280bbfa41fc3edb
+
+GNU Unifont fonts are dual-licensed under the SIL Open Font License (OFL)
+version 1.1 and the GNU General Public License version 2 or later (GPL-2+)
+with the GNU Font Embedding Exception. The OFL 1.1 and the complete GPL-2+
+Font Embedding Exception terms are published in the GNU Unifont project's
+LICENSE.txt. Consult that upstream license file for the complete legal text.
+
+This repository includes the unmodified upstream gzip-compressed Plane 0
+.hex source and a generated fixed-size glyph ROM. The converter maps source
+records by Unicode code point, then replaces the 6,877 mapped JIS X 0208
+glyphs with Jiskan16 (see assets/JISKAN16-LICENSE.txt); absent BMP code points and UTF-16 surrogate
+code units use the U+FFFD replacement glyph.
+
+Verified release attribution (2026-10-21)
+-----------------------------------------
+Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception.
+
+CPT32 distributes the font data under the OFL-1.1 alternative.
+The complete official OFL text is included in licenses/UNIFONT-OFL-1.1.txt.
+Release attribution and the original BDF header are preserved in
+licenses/UNIFONT-18.0.01-NOTICE.txt. The upstream common LICENSE.txt,
+including the alternative GPL terms, is in licenses/UNIFONT-UPSTREAM.txt.
+
+The original HEX glyph data is unchanged. CPT32 converts it into a
+fixed-size ROM and overlays public-domain Jiskan16 glyphs as described above;
+the combined ROM remains under OFL-1.1. The Jiskan16 source is public domain.
+The verified BDF header and release OFL text do not declare a Reserved Font Name.
+
+Verified against the official 18.0.01 source archive linked from:
+https://unifoundry.com/unifont/unifont-utilities.html
+The archive HEX and bundled decompressed HEX are byte-identical.
+
 --- 3c125f249fc6fb19f2415d027a0d9a170860583960ea53d08ea1d2b3f269d153 ---
 Copyright (c) 2017 Robert Grosse
 
@@ -7659,6 +7711,37 @@ CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
 OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR
 IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
 DEALINGS IN THE SOFTWARE.
+
+--- 52e379097c0757e97c92daedfc04ccf7dbca81479e94b0d1a5702a0e643dccfb ---
+Jiskan16 16x16 JIS X 0208 bitmap font (public domain)
+==================================================
+
+Source: X.Org font-jis-misc 1.0.4
+Archive: https://xorg.freedesktop.org/archive/individual/font/font-jis-misc-1.0.4.tar.xz
+Archive SHA-256: 78d1eff6c471f7aa6802a26d62cccf51d8e5185586406d9b6e1ee691b0bffad0
+File: font-jis-misc-1.0.4/jiskan16.bdf (bundled unchanged as assets/jiskan16.bdf)
+BDF SHA-256: e9ee1273ce9d6675e8f4a24e49e0d89ec49f003f464d22828af48915dd8f6dbf
+
+Upstream COPYING is preserved verbatim in licenses/JISKAN16-UPSTREAM.txt:
+from Japanese Industrial Standard, JIS X 9051-1984
+named "16-dots Matrix Character Patterns for Display Devices"
+"from JIS X 9051-1984, by permission to use"
+
+The BDF also retains that permission in its COPYRIGHT property.
+Unifoundry describes Jiskan16 as public domain:
+https://unifoundry.com/japanese/
+
+tools/unifont_hex_to_chr.py maps all 6,877 BDF glyphs from JIS X 0208
+positions to Unicode via EUC-JP and overlays them on the Unifont BMP ROM.
+This includes JIS punctuation, kana, kanji, symbols and full-width Latin,
+Greek and Cyrillic characters; it does not replace unrelated Unicode slots.
+The rows are stored unchanged (16 rows, two bytes per row, MSB on the left).
+No CP932 compatibility aliases are added. Unifont supplies the remaining
+slots, including U+FFFD and characters absent from this JIS X 0208 font.
+The shared ROM feeds PCG mode 2, SGC GLYPH and Foundation's wide console font.
+
+The Jiskan16 BDF is public domain. The combined ROM retains Unifont's
+OFL-1.1 distribution terms; see assets/UNIFONT-LICENSE.txt.
 
 --- 553fffcd9b1cb158bc3e9edc35da85ca5c3b3d7d2e61c883ebcfa8a65814b583 ---
 Copyright 2015 Nicholas Allegra (comex).
@@ -10146,6 +10229,11 @@ Apache License
    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
    See the License for the specific language governing permissions and
    limitations under the License.
+
+--- 7a94eaf8f051c95232d64b24b082eb02f827e1361c03b82e9bc7252263ea66c1 ---
+from Japanese Industrial Standard, JIS X 9051-1984
+named "16-dots Matrix Character Patterns for Display Devices"
+"from JIS X 9051-1984, by permission to use"
 
 --- 7b63ecd5f1902af1b63729947373683c32745c16a10e8e6292e2e2dcd7e90ae0 ---
 Copyright (c) 2015 The Rust Project Developers
@@ -15333,46 +15421,6 @@ DEALINGS IN THE SOFTWARE.
 The above is the version of the MIT "Expat" License used by X.org:
 
     http://cgit.freedesktop.org/xorg/xserver/tree/COPYING
-
---- f307f52c34de25143cffb7727dc8eee4bc1b0881c0b5917269c4a0dfabdef00d ---
-GNU Unifont Plane 0 bitmap data
-================================
-
-Version: GNU Unifont 18.0.01
-Source: https://unifoundry.com/pub/unifont/unifont-18.0.01/font-builds/unifont-18.0.01.hex.gz
-Project and license information: https://unifoundry.com/unifont/index.html
-
-SHA-256 (source): e66385c79a0b8b24a466f3129930e08a966a935b4bf3b28c6bb17a9df9bf791d
-SHA-256 (generated ROM): 0787d651d2f0b6353aaa924ca5b4c569e56f9ad339462c0f04d80733ccb7368f
-
-GNU Unifont fonts are dual-licensed under the SIL Open Font License (OFL)
-version 1.1 and the GNU General Public License version 2 or later (GPL-2+)
-with the GNU Font Embedding Exception. The OFL 1.1 and the complete GPL-2+
-Font Embedding Exception terms are published in the GNU Unifont project's
-LICENSE.txt. Consult that upstream license file for the complete legal text.
-
-This repository includes the unmodified upstream gzip-compressed Plane 0
-.hex source and a generated fixed-size glyph ROM. The converter maps source
-records by Unicode code point; absent BMP code points and UTF-16 surrogate
-code units use the U+FFFD replacement glyph.
-
-Verified release attribution (2026-10-21)
------------------------------------------
-Copyright (C) 1998-2026 Roman Czyborra, Paul Hardy, Qianqian Fang, Andrew Miller, Johnnie Weaver, David Corbett, Ælla Chiana Moskopp, Rebecca Bettencourt, Minseo Lee, Ho-Seok Ee, et al. License: SIL Open Font License version 1.1 and GPLv2+: GNU GPL version 2 or later <http://gnu.org/licenses/gpl.html> with the GNU Font Embedding Exception.
-
-CPT32 distributes the font data under the OFL-1.1 alternative.
-The complete official OFL text is included in licenses/UNIFONT-OFL-1.1.txt.
-Release attribution and the original BDF header are preserved in
-licenses/UNIFONT-18.0.01-NOTICE.txt. The upstream common LICENSE.txt,
-including the alternative GPL terms, is in licenses/UNIFONT-UPSTREAM.txt.
-
-The original HEX glyph data is unchanged. CPT32 converts it into a
-fixed-size ROM as described above; the ROM remains under OFL-1.1.
-The verified BDF header and release OFL text do not declare a Reserved Font Name.
-
-Verified against the official 18.0.01 source archive linked from:
-https://unifoundry.com/unifont/unifont-utilities.html
-The archive HEX and bundled decompressed HEX are byte-identical.
 
 --- f428305bbf2e70fbd807af0f3c7ac1b7acfb95311640f451e9d2e48db6d7e96b ---
 MIT License

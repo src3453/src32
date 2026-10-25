@@ -90,6 +90,8 @@ def generate() -> str:
         ("assets/UNIFONT-LICENSE.txt", "GNU Unifont bitmap data", "OFL-1.1 (selected alternative)"),
         ("licenses/UNIFONT-18.0.01-NOTICE.txt", "GNU Unifont 18.0.01 release attribution", "OFL-1.1 (selected alternative)"),
         ("licenses/UNIFONT-OFL-1.1.txt", "GNU Unifont official OFL terms", "OFL-1.1"),
+        ("assets/JISKAN16-LICENSE.txt", "Jiskan16 JIS X 0208 font", "public domain"),
+        ("licenses/JISKAN16-UPSTREAM.txt", "X.Org Jiskan16 upstream notice", "public domain"),
         ("assets/UNSCII-LICENSE.txt", "UNSCII-8 CP437 font bank", "CC0-1.0 / public domain"),
         ("licenses/UNSCII-UPSTREAM.md", "UNSCII upstream declaration", "CC0-1.0 / public domain"),
         ("licenses/CC0-1.0.txt", "CC0 standard terms", "CC0-1.0"),

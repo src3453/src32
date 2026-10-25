@@ -746,9 +746,9 @@ mod tests {
     fn pcg_mode2_utf16be_selects_unifont_glyph_and_colors() {
         let vdp = mode2_vdp();
         let fb = vdp.framebuffer();
-        assert_eq!(fb.get_pixel(5, 1), (255, 0, 0));
+        assert_eq!(fb.get_pixel(6, 1), (255, 0, 0)); // Jiskan16 あ, row 1 = 0x0200
         assert_eq!(fb.get_pixel(0, 1), (0, 0, 200));
-        assert_eq!(fb.get_pixel(8, 7), (255, 0, 0));
+        assert_eq!(fb.get_pixel(9, 7), (255, 0, 0)); // row 7 = 0x3444
         assert_eq!(fb.get_pixel(15, 7), (0, 0, 200));
     }
 

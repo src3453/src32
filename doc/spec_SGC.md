@@ -97,7 +97,7 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 | `0x14` | SCREEN_FILL | 1 word。320×240の描画plane全体を現在のCLUT色で塗りつぶす |
 | `0xFF` | NOP | 1 word。予約・整列用 |
 
-`GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
+`GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont + Jiskan16 BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
 
 座標payload wordはbit31:16を0、bit15:0をsigned座標とする。三角形は各整数座標位置をsampleし、辺を含めて塗りつぶす。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。既知opcodeの不正コマンドはそのopcodeの宣言word数を消費し、後続の解釈を継続する。長さを定義していないopcodeはheader 1 wordのみを消費する。
 

@@ -1,7 +1,7 @@
-"""Generates the console's wide font data (services/console/con_wide.c) from the Unifont ROM.
+"""Generates the console's wide font data (services/console/con_wide.c) from the shared Unifont + Jiskan16 ROM.
 
 The set is the characters of JIS X 0208 plus U+FFFD. Each is shown in two cells of the
-PCG mode 3 (doc/spec_VDP.md), so even a narrow Unifont glyph takes two cells.
+PCG mode 3 (doc/spec_VDP.md), using Jiskan16 where available and Unifont for the remaining glyphs.
 
 Output: a C header with `con_wide_runs` (start << 16 | count, ascending, merged) and
 `con_wide_glyphs` (32 bytes per code unit in run order, big-endian words).

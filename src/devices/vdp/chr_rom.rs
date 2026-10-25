@@ -3,6 +3,7 @@ pub const UNIFONT_GLYPH_SIZE: usize = 32;
 pub const UNIFONT_ROM_SIZE: usize = UNIFONT_CODEPOINT_COUNT * UNIFONT_GLYPH_SIZE;
 pub const UNIFONT_REPLACEMENT_CODE_UNIT: u16 = 0xFFFD;
 
+// Unifont BMP with Jiskan16 JIS X 0208 glyphs; see tools/unifont_hex_to_chr.py.
 pub static UNIFONT_BMP_ROM: &[u8; UNIFONT_ROM_SIZE] =
     include_bytes!("../../../assets/unifont-bmp.chr");
 

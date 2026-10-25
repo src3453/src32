@@ -1,0 +1,29 @@
+Jiskan16 16x16 JIS X 0208 bitmap font (public domain)
+==================================================
+
+Source: X.Org font-jis-misc 1.0.4
+Archive: https://xorg.freedesktop.org/archive/individual/font/font-jis-misc-1.0.4.tar.xz
+Archive SHA-256: 78d1eff6c471f7aa6802a26d62cccf51d8e5185586406d9b6e1ee691b0bffad0
+File: font-jis-misc-1.0.4/jiskan16.bdf (bundled unchanged as assets/jiskan16.bdf)
+BDF SHA-256: e9ee1273ce9d6675e8f4a24e49e0d89ec49f003f464d22828af48915dd8f6dbf
+
+Upstream COPYING is preserved verbatim in licenses/JISKAN16-UPSTREAM.txt:
+from Japanese Industrial Standard, JIS X 9051-1984
+named "16-dots Matrix Character Patterns for Display Devices"
+"from JIS X 9051-1984, by permission to use"
+
+The BDF also retains that permission in its COPYRIGHT property.
+Unifoundry describes Jiskan16 as public domain:
+https://unifoundry.com/japanese/
+
+tools/unifont_hex_to_chr.py maps all 6,877 BDF glyphs from JIS X 0208
+positions to Unicode via EUC-JP and overlays them on the Unifont BMP ROM.
+This includes JIS punctuation, kana, kanji, symbols and full-width Latin,
+Greek and Cyrillic characters; it does not replace unrelated Unicode slots.
+The rows are stored unchanged (16 rows, two bytes per row, MSB on the left).
+No CP932 compatibility aliases are added. Unifont supplies the remaining
+slots, including U+FFFD and characters absent from this JIS X 0208 font.
+The shared ROM feeds PCG mode 2, SGC GLYPH and Foundation's wide console font.
+
+The Jiskan16 BDF is public domain. The combined ROM retains Unifont's
+OFL-1.1 distribution terms; see assets/UNIFONT-LICENSE.txt.

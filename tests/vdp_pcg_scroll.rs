@@ -98,6 +98,7 @@ fn pcg_scroll_wraps_both_axes_and_exposes_sixteen_bit_mmio_registers() {
     bus.write_u8(VDP_VRAM_BASE + 0x12C07, 0);
     bus.write_u8(VDP_VRAM_BASE + 0x12C08, 200);
 
+    // Jiskan16 あ has a set bit at (6, 1); scroll moves it to (7, 2).
     // Offsets near the right and bottom edges force both coordinates to wrap.
     for (offset, value) in [(0xF00C, 0x3F), (0xF00D, 0x01), (0xF00E, 0xEF), (0xF00F, 0)] {
         bus.write_u8(VDP_REG_BASE + offset, value);
@@ -111,15 +112,15 @@ fn pcg_scroll_wraps_both_axes_and_exposes_sixteen_bit_mmio_registers() {
     {
         let vdp = vdp.borrow();
         let framebuffer = vdp.framebuffer();
-        assert_eq!(framebuffer.get_pixel(6, 2), (255, 0, 0));
+        assert_eq!(framebuffer.get_pixel(7, 2), (255, 0, 0));
     }
 
     bus.write_u8(VDP_REG_BASE + 0x01, 0); // Graphics mode
     bus.write_u8(VDP_REG_BASE + 0xF00B, 1); // Enable the PCG overlay
-    assert_eq!(vdp.borrow().framebuffer().get_pixel(6, 2), (255, 0, 0));
+    assert_eq!(vdp.borrow().framebuffer().get_pixel(7, 2), (255, 0, 0));
     // The cursor stays at tilemap cell (0, 0) through scroll and GP overlay.
     bus.write_u8(VDP_REG_BASE + 0xF007, 1);
-    assert_eq!(vdp.borrow().framebuffer().get_pixel(6, 2), (0, 0, 200));
+    assert_eq!(vdp.borrow().framebuffer().get_pixel(7, 2), (0, 0, 200));
     bus.write_u8(VDP_REG_BASE + 0xF002, 1);
-    assert_eq!(vdp.borrow().framebuffer().get_pixel(6, 2), (255, 0, 0));
+    assert_eq!(vdp.borrow().framebuffer().get_pixel(7, 2), (255, 0, 0));
 }
