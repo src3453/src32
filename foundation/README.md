@@ -143,11 +143,29 @@ python foundation/run.py
 
 `--arg` 以降の引数は、そのままエミュレーターへ渡します。`run.py` のオプションは `--arg` より前に指定してください。空白を含む値は通常のシェル引数と同様に引用符で囲みます。
 
+外部でビルドしたコマンドは `--bin-dir DIR` で毎回ディスクへ追加できます。
+
+```sh
+python foundation/run.py --bin-dir target/foundation-doom --bin-dir target/busybox
+```
+
+指定ディレクトリ直下の `.wax`（拡張子の大文字小文字は不問）を `/bin/<ファイル名>` に実行可能な mode `0x003D` で取り込みます。サブディレクトリ、WAL、WAD などは対象外です。存在しないディレクトリや WAX のないディレクトリは、コンパイル開始前にエラーになります。標準ファイル、`--root`、`--bin-dir` の順に適用し、同名のファイルは後の指定を優先します。元の WAX はビルド開始時に読み取るため、ビルドで生成先が上書きされる場合も取り込めます。標準コマンドも上書きできるので、専用の外部コマンド出力ディレクトリを指定してください。
+
+RAM は `--ram-mib N`（既定 16、1〜256）、ディスクは `--disk-blocks N`（512-byte block、既定 16384 = 8 MiB）で設定できます。例えば DOOM 用の WAX と WAD を追加する場合：
+
+```powershell
+New-Item -ItemType Directory -Force target/doom-root | Out-Null
+Copy-Item C:/Users/y2k34/Downloads/doom/DOOM.WAD target/doom-root/doom.wad
+python foundation/run.py --bin-dir target/foundation-doom --root target/doom-root --ram-mib 64 --disk-blocks 131072
+```
+
+Foundation のシェルで `doom -iwad /doom.wad` を実行します。外部 WAX 自体のビルドは行わないため、先に [DOOMGeneric のビルド](../doc/spec_Foundation_doom.md)などで用意してください。追加 WAL が必要なコマンドでは `--root DIR` の `DIR/lib/` も使います。`boot/build.py OUT` にも同じ `--bin-dir` を指定できます。
+
 ```sh
 python foundation/run.py --disk --arg --debug-gui --start-paused --cpu pipeline
 ```
 
-このコマンドはシェルとカーネルを `target/foundation-boot/foundation.wax` にビルドし、release エミュレーターをビルドして起動します。作業用一時ファイルも同ディレクトリ内に置きます。`target/foundation-boot/run/config.yaml` に 16 MiB RAM と付属の `assets/UNSCII.F08` フォントを設定し、そのディレクトリをエミュレーターの作業ディレクトリにします。普段使うルートの `config.yaml` は変更しません。
+このコマンドはシェルとカーネルを `target/foundation-boot/foundation.wax` にビルドし、release エミュレーターをビルドして起動します。作業用一時ファイルも同ディレクトリ内に置きます。`target/foundation-boot/run/config.yaml` に指定した RAM 容量（既定 16 MiB）と付属の `assets/UNSCII.F08` フォントを設定し、そのディレクトリをエミュレーターの作業ディレクトリにします。普段使うルートの `config.yaml` は変更しません。
 
 手動で起動する場合は `python foundation/boot/build.py target/foundation-boot` で画像を作り、BIOS 未設定の作業ディレクトリから画像の絶対パスをエミュレーターへ渡してください。`bios.image` があると WAX の入口より BIOS が優先されます。PCG の文字を表示するには、作業ディレクトリの `config.yaml` に `pcg.font`（例：`assets/UNSCII.F08` の絶対パス）が必要です。
 
@@ -177,6 +195,7 @@ python -m unittest discover -s foundation/tests/shell -v
 | 予約ブート領域 | `fndboot.bin`：ヘッダ、モジュール表（console、disk、fs、init。優先度 SERVICE、console には MMIO 付与）、`kernel.bin`（`0x10000` の raw image）、各モジュールのイメージ |
 | `/bin/*.wax`、`/lib/fnd.1.wal` | シェル、標準コマンド、libfnd（mode `0x003D`）。`OUT/root` と同じもの。fs サービスがディスクから読んで返します |
 | `--root DIR` | ホストの `DIR` の中身をそのままルートへ置きます（例：`DIR/bin/*.wax`、`DIR/etc/startup`）。`/bin` の下は mode `0x003D` です |
+| `--bin-dir DIR` | ホストの `DIR` 直下の `.wax` を `/bin` に追加します。複数指定でき、`--root` より優先します |
 
 ```sh
 python foundation/run.py --disk

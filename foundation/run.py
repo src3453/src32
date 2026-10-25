@@ -42,11 +42,17 @@ def main():
     parser.add_argument("-j", "--jobs", type=int, metavar="N",
                         help="parallel compiler processes (default: physical core count)")
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
+    parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
+                        help="add direct *.wax children to /bin; repeatable, later directories win")
+    parser.add_argument("--ram-mib", type=int, default=16, help="Main RAM in MiB (default: 16)")
+    parser.add_argument("--disk-blocks", type=int, help="boot disk size in 512-byte blocks (default: 16384)")
     parser.add_argument("--disk", action="store_true",
                         help="boot foundation.img through the BIOS and stage1 instead of loading the WAX")
     parser.add_argument("--arg", nargs=argparse.REMAINDER, default=[], metavar="ARG",
                         help="pass all remaining arguments to the emulator (place this option last)")
     args = parser.parse_args()
+    if not 1 <= args.ram_mib <= 256:
+        parser.error("--ram-mib must be between 1 and 256")
 
     output = ROOT / "target/foundation-boot"
     runtime = output / "run"
@@ -60,12 +66,16 @@ def main():
     command += ["-j", str(args.jobs if args.jobs and args.jobs > 0 else physical_cores())]
     if args.root:
         command += ["--root", str(args.root.resolve())]
+    for directory in args.bin_dir:
+        command += ["--bin-dir", str(directory.resolve())]
+    if args.disk_blocks is not None:
+        command += ["--disk-blocks", str(args.disk_blocks)]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
     subprocess.run(["cargo", "build", "--release", "--bin", "cpt32"],
                    cwd=ROOT, env=environment, check=True)
 
     # Config is relative to the emulator's cwd. Keep Foundation's font and
-    # 16 MiB RAM, without the user's BIOS overriding the WAX entry point.
+    # requested RAM, without the user's BIOS overriding the WAX entry point.
     # foundation.img is always the HDD in dd0: fs mounts it as "/" and init
     # starts /bin/shell.wax from it, and the fs service writes to it. --disk
     # also configures the BIOS and passes a zero word as the program, so the
@@ -74,7 +84,7 @@ def main():
     if not font.is_file():
         raise FileNotFoundError(font)
     config = ("cpu:\n  microarchitecture: cached-relaxed\n"
-              "memory:\n  ram_mib: 16\n"
+              f"memory:\n  ram_mib: {args.ram_mib}\n"
               f"pcg:\n  font: {json.dumps(str(font))}\n")
     image = output / "foundation.wax"
     if args.disk:

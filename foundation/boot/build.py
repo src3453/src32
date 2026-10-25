@@ -1,7 +1,7 @@
 """Builds the Foundation boot images into OUT.
 
     python foundation/boot/build.py OUT [--clang PATH] [-O0|-O1|-O2] [--stop-ticks N]
-                                        [--root DIR] [--disk-blocks N]
+                                        [--root DIR] [--bin-dir DIR ...] [--disk-blocks N]
 
 The programs (doc/spec_Foundation.md §5.2). Every one is a relocatable WAX v3
 (driver --pie, doc/spec_WAX_v3.md §3.1), which the kernel loads into any free
@@ -162,6 +162,29 @@ def disk_image(stage1, boot, files, blocks):
     return img
 
 
+def overlay_files(files, additions):
+    """Apply precedence using the disk's Unicode case folding, before sorting."""
+    for path, payload in additions.items():
+        key = fs2.fold(path)
+        for old in list(files):
+            if fs2.fold(old) == key:
+                del files[old]
+        files[path] = payload
+
+
+def external_bins(directories):
+    """Snapshot direct .wax children before the build can overwrite outputs."""
+    files = {}
+    for directory in directories:
+        if not directory.is_dir():
+            raise ValueError(f"--bin-dir is not a directory: {directory}")
+        programs = sorted(p for p in directory.iterdir() if p.is_file() and p.suffix.lower() == ".wax")
+        if not programs:
+            raise ValueError(f"--bin-dir contains no .wax files: {directory}")
+        overlay_files(files, {"/bin/" + program.name: (program.read_bytes(), MODE_EXEC) for program in programs})
+    return files
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
@@ -170,12 +193,18 @@ def main(argv=None):
                         help="parallel driver processes (default: CPU count; the images do not depend on N)")
     parser.add_argument("--stop-ticks", type=int)
     parser.add_argument("--root", type=Path, help="host directory copied into the disk root (e.g. root/bin/*.wax)")
+    parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
+                        help="add direct *.wax children to /bin after --root; repeatable, later directories win")
     parser.add_argument("--disk-blocks", type=int, default=DISK_BLOCKS, help=f"disk size in blocks (default {DISK_BLOCKS})")
     level = parser.add_mutually_exclusive_group()
     for n in range(3):
         level.add_argument(f"-O{n}", dest="optimization", action="store_const", const=f"-O{n}")
     parser.set_defaults(optimization="-O1")
     args = parser.parse_args(argv)
+    try:
+        bins = external_bins(args.bin_dir)
+    except (OSError, ValueError) as error:
+        parser.error(str(error))
     out = args.out
     root = out / "root"
     (root / "bin").mkdir(parents=True, exist_ok=True)
@@ -277,6 +306,7 @@ def main(argv=None):
         for host in sorted(p for p in tree.rglob("*") if p.is_file()) if tree else ():
             path = "/" + host.relative_to(tree).as_posix()
             files[path] = (host.read_bytes(), MODE_EXEC if path.startswith(("/bin/", "/lib/")) else None)
+    overlay_files(files, bins)
     disk = out / "foundation.img"
     temporary = disk.with_name(disk.name + ".tmp")
     temporary.write_bytes(disk_image(stage1.read_bytes(), boot, files, args.disk_blocks))
