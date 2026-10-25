@@ -67,7 +67,7 @@ typedef struct fnd_spawn_libs {
 #define FND_SPAWN_MAX_HANDLES 16u
 #define FND_STARTUP_MAX 4096u
 /* Largest image proc_spawn copies to its staging area. */
-#define FND_SPAWN_IMAGE_MAX 0x100000u
+#define FND_SPAWN_IMAGE_MAX 0x180000u
 
 /* §9.3 startup block header. */
 #define FND_STARTUP_MAGIC 0x464E4453u /* FNDS */

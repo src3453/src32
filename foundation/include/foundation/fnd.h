@@ -37,12 +37,13 @@ typedef struct {
 } fnd_dirent_t;
 
 /* §11.6 */
+#define FND_EXEC_KEEP_ARGV0 1u /* argv[0] is passed as given, not replaced by the path */
 typedef struct {
     uint32_t argc;
     const char *const *argv; /* argv[0] included */
     const char *cwd;         /* NULL: the current cwd */
     fnd_handle std_in, std_out, std_err; /* 0: pass our own */
-    uint32_t flags;          /* reserved, 0 */
+    uint32_t flags;          /* FND_EXEC_* */
     const char *const *envp; /* NULL-terminated "NAME=value" strings; NULL: an empty environment */
 } fnd_exec_t;
 

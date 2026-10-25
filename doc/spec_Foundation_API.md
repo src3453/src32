@@ -618,7 +618,7 @@ typedef struct {
     const char *const *argv;      /* argv[0] を含む */
     const char        *cwd;       /* NULL なら現在の cwd */
     fnd_handle         std_in, std_out, std_err;   /* 0 なら自分のものを渡す */
-    uint32_t           flags;     /* 予約。0 */
+    uint32_t           flags;     /* FND_EXEC_KEEP_ARGV0（1）: argv[0] を置き換えずそのまま渡す。他は予約。0 */
     const char *const *envp;      /* NULL 終端の "NAME=value"。NULL なら空の環境 */
 } fnd_exec_t;
 
@@ -634,7 +634,7 @@ fnd_status fnd_proc_kill(fnd_handle proc);
 
 `fnd_proc_exec` は次の手順で起動します。
 
-1. `path` を `EXEC` で開き（X 権限の検査）、全体を `fnd_mem_alloc` の領域に読み込んで閉じる。大きさの上限は `FND_EXEC_IMAGE_MAX`（1 MiB）で、超えれば `FND_E_LIMIT`。
+1. `path` を `EXEC` で開き（X 権限の検査）、全体を `fnd_mem_alloc` の領域に読み込んで閉じる。大きさの上限は `FND_EXEC_IMAGE_MAX`（1.5 MiB。カーネルの `FND_SPAWN_IMAGE_MAX` も同じ）で、超えれば `FND_E_LIMIT`。
 2. `FS_SESSION_NEW` で子のための fs セッションを作る。
 3. 起動ブロックを作る。cwd は `ex->cwd`、なければ `fnd_cwd_get` の値。役割表は 1 `STDIN`、2 `STDOUT`、3 `STDERR`、4 `FS`、5 `CONSOLE` で、`handles` にこの順に並べる（CONSOLE の役割がなければ 5 は省く）。
 4. イメージが依存を持つ WAX v3 なら、依存する WAL を集める（[Foundation §9.5](spec_Foundation.md)）。依存表の各 `(library_id, abi_major)` について `/lib/<library_id>.<abi_major>.wal` を `EXEC` で開いて読み込み、その WAL の依存表も同じようにたどる。同じ ID と major は 1 回だけ読む。ファイルがなければ `FND_E_DEPENDENCY`、合計が WAX を含めて 8 個を超えれば `FND_E_LIMIT` で、起動しない。WAL の中身の検証と minor の確認はカーネルが行う。
@@ -714,7 +714,7 @@ init は、各サービスの起動後にシェルなどのアプリを起動す
 | UID の認証 | v1 は全セッション UID 0。カーネル ABI に資格情報を加えてから、`FS_SESSION_NEW` で UID を下げる操作などを定める |
 | `DEV_OPEN` の呼び出し元の確認 | v1 では確認できない（§9）。カーネル ABI でサービスにケーパビリティ付きの CHANNEL を渡す方法を決めてから閉じる |
 | 時刻の取得 | FS2 §7 の「一貫した時計のスナップショット」が未定義。libfnd の `fnd_time_now` はそれを待つ |
-| 大きいイメージの起動 | `FND_EXEC_IMAGE_MAX` は 1 MiB。親のスロットより大きい子は、fs がカーネルへ直接渡す方式（将来）まで起動できない |
+| 大きいイメージの起動 | `FND_EXEC_IMAGE_MAX` は 1.5 MiB。親のスロットより大きい子は、fs がカーネルへ直接渡す方式（将来）まで起動できない |
 | WAL の一覧 | **決定（2026-10-22）**：`/lib/<image_id>.<abi_major>.wal` に置き、`fnd_proc_exec` が依存をたどって読み、`proc_spawn` の `libs` で渡す（§11.6、[Foundation §9.2・§9.5](spec_Foundation.md)） |
 | sol のライブラリ | `sol/foundation/libfnd.sol` と `tools/solc/build_foundation.py` でC操作を利用可能。`examples/foundation-sol` は実FS2で5001 bytesのwrite/read/close、65件の列挙、rewind、ENDと資源解放、子の起動/待機を検証する |
 | 64-bit 整数 | `tools/llvm-src32` での `int64_t` の対応を実装時に確認する。使えなければ、libfnd の 64-bit 引数を上位・下位の組に置き換える |

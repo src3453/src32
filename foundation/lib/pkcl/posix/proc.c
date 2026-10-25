@@ -29,6 +29,7 @@ int execve(const char *path, char *const argv[], char *const envp[]) {
     ex.argc = argc;
     ex.argv = (const char *const *)argv;
     ex.envp = (const char *const *)envp;
+    ex.flags = FND_EXEC_KEEP_ARGV0; /* BusyBox picks the applet from argv[0] */
     ex.std_in = pkcl_handle(0);
     ex.std_out = pkcl_handle(1);
     ex.std_err = pkcl_handle(2);

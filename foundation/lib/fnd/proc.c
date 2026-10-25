@@ -27,7 +27,7 @@ static int32_t build_startup(uint32_t *block, const fnd_exec_t *ex, const char *
         return FND_E_LIMIT;
     char *bytes = (char *)block;
     for (uint32_t i = 0; i < argc; ++i) {
-        const char *arg = i == 0 ? argv0 : ex->argv[i];
+        const char *arg = i == 0 && !((ex->flags & FND_EXEC_KEEP_ARGV0) && ex->argv && ex->argv[0]) ? argv0 : ex->argv[i];
         uint32_t n = str_len(arg) + 1u;
         if (n > FND_STARTUP_MAX - off)
             return FND_E_LIMIT;

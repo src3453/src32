@@ -243,14 +243,15 @@ int fcntl(int fd, int cmd, ...) {
     int arg = va_arg(ap, int);
     va_end(ap);
     switch (cmd) {
-    case F_DUPFD: {
+    case F_DUPFD:
+    case F_DUPFD_CLOEXEC: {
         int nfd = fd_alloc(arg < 0 ? 0 : arg);
         if (nfd < 0)
             return -1;
         int32_t copy = fnd_sys_handle_dup(h);
         if (copy <= 0)
             return pkcl_fail(copy);
-        fds[nfd] = (struct fd_entry){(fnd_handle)copy, fds[fd].status, 0};
+        fds[nfd] = (struct fd_entry){(fnd_handle)copy, fds[fd].status, cmd == F_DUPFD_CLOEXEC ? FD_CLOEXEC : 0};
         return nfd;
     }
     case F_GETFD:

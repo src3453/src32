@@ -31,3 +31,11 @@
 ## 残り（#169 ほか）
 
 `poll`／`O_NONBLOCK`（pipe と通常ストリーム）、シグナルの配送（SIGINT、SIGCHLD）、`posix_spawn`、`proc_exec`（in-place exec）、BusyBox の MMU 構成（ash／hush）での不足シンボルの洗い出しと 1 MiB 制限。
+
+## BusyBox の MMU 構成と ash（同じ作業の続き）
+
+- `busybox.py --config busybox.config --config busybox_ash.config`（複数指定は後勝ち）。ash 入りは 1.39 MB なので、`FND_EXEC_IMAGE_MAX` と `FND_SPAWN_IMAGE_MAX` を 1.5 MiB にした（kernel の staging は 3 MiB で、WAL と合わせて収まる）。
+- ash が要求した不足は `times`、`WCOREDUMP`、`fcntl(F_DUPFD_CLOEXEC)`（スクリプトを開くと `sh: 3: m` のような壊れたメッセージで落ちる）だけだった。
+- applet の自己 exec は `BUSYBOX_EXEC_PATH`。既定の `/proc/self/exe` は Foundation にないので `/bin/busybox` にし、WAX を拡張子なしでも置く。`fnd_proc_exec` は argv[0] をパスで上書きするため、applet 名が消えて `a.sh: applet not found` になる。`FND_EXEC_KEEP_ARGV0` で防ぐ。
+- 設定ファイルを更新しても `--stage link` は `.config` を作り直さない。出力ディレクトリを変えるか消す。
+- 確認済み: `busybox sh /a.sh`（`|`、`()`、`export`、`<` `>`、`||`）、対話の `busybox sh`。未確認: ジョブ制御、`read`、`trap`（シグナルがない）、`wait`、`kill`。

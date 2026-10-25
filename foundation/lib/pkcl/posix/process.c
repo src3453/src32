@@ -6,6 +6,7 @@
 #include <errno.h>
 #include <signal.h>
 #include <string.h>
+#include <sys/times.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
@@ -144,4 +145,12 @@ int kill(pid_t pid, int sig) {
     }
     errno = ESRCH;
     return -1;
+}
+
+/* CPU 時間は取れないので 0。戻り値は起動からの tick（10 ms 単位、sysconf(_SC_CLK_TCK) = tick_hz）。 */
+clock_t times(struct tms *buf) {
+    if (buf) {
+        buf->tms_utime = buf->tms_stime = buf->tms_cutime = buf->tms_cstime = 0;
+    }
+    return (clock_t)(uint32_t)fnd_sys_time_get(0);
 }
