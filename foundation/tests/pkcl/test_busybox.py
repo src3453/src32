@@ -95,6 +95,15 @@ false || echo f-ok
 echo done-ash
 """
 
+ASH_EXTERNAL_SCRIPT = """/bin/cat.wax /sample.txt
+echo cat-ok=$?
+/bin/cat.wax
+echo cat-usage=$?
+/bin/cat.wax /sample.txt /nonexistent
+echo cat-missing=$?
+echo done-external
+"""
+
 
 @unittest.skipUnless(BUSYBOX and NEWLIB, 'SRC32_BUSYBOX_SOURCE と SRC32_NEWLIB_SOURCE が必要')
 @unittest.skipIf(os.environ.get('FND_MM') in ('nommu', 'slot'), 'ash は fork を使うので VM バックエンドでだけ動く')
@@ -121,13 +130,15 @@ class BusyboxAshTests(unittest.TestCase):
         volume.put('/bin/busybox.wax', wax, mode=0x3D)
         volume.put('/bin/busybox', wax, mode=0x3D)  # BUSYBOX_EXEC_PATH: ash runs applets by exec'ing this
         volume.put('/a.sh', ASH_SCRIPT.encode(), mode=0x3D)
+        volume.put('/external.sh', ASH_EXTERNAL_SCRIPT.encode(), mode=0x3D)
+        volume.put('/sample.txt', b'external-wax-ok\n', mode=0x3D)
         cls.disk = bytes(volume.img)
 
     @classmethod
     def tearDownClass(cls):
         test_shell.ShellTests.tearDownClass.__func__(cls)
 
-    def test_script_and_pipelines(self):
+    def run_script(self, path):
         run = self.work / 'run'
         run.mkdir(exist_ok=True)
         (run / 'disk.img').write_bytes(self.disk)
@@ -136,14 +147,26 @@ class BusyboxAshTests(unittest.TestCase):
             'disk:\n  - slot: 0\n    type: hdd\n    image: disk.img\n    read_only: false\n', encoding='utf-8')
         command = [str(self.harness), str(self.image), '42', '--frames', '3600', '--dump-pcg',
                    '--cpu', os.environ.get('FOUNDATION_TEST_CPU', 'cached'),
-                   '--type', '30=busybox sh /a.sh\\n']
+                   '--type', f'30=busybox sh {path}\\n']
         result = subprocess.run(command, cwd=run, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=1800)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         lines = result.stdout.splitlines()
         screen = lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')]
+        return screen
+
+    def test_script_and_pipelines(self):
+        screen = self.run_script('/a.sh')
         for expected in ('one', 'Z=zed', '3', 'hi', 'sub', 'rc=3', 'f-ok', 'done-ash'):
             self.assertIn(expected, screen)
+
+    def test_external_wax_exit_status(self):
+        screen = self.run_script('/external.sh')
+        for expected in ('external-wax-ok', 'cat-ok=0', 'usage: cat path...',
+                         'cat-usage=254', 'cat: /nonexistent: not found (-10)',
+                         'cat-missing=246', 'done-external'):
+            self.assertIn(expected, screen)
+        self.assertNotIn('Segmentation fault', '\n'.join(screen))
 
 
 if __name__ == '__main__':

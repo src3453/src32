@@ -158,7 +158,7 @@ Foundation の `fnd_status`（負値）を `pkcl_errno` で errno に直しま�
 |---|---|---|
 | `_exit`、`exit` | `fnd_exit`（`exit` と `atexit` は libc） | `_exit` 実装済み |
 | `posix_spawn`、`posix_spawnp` | `fnd_proc_exec`。file actions（`dup2`/`close`/`open`）は子の `std_in/out/err` に渡すハンドルへ翻訳（0〜2 だけ）。`posix_spawnp` は `PATH` を `fnd_path_stat` で探す | 予定（M2） |
-| `waitpid`、`wait` | pkcl の子プロセス表（32 件、pid → PROCESS ハンドル）と `wait`。`WNOHANG` は `wait(h, 0, …)`（`WOULD_BLOCK`→0）。終了コードは `WEXITSTATUS`、カーネルが殺したときは `SIGKILL`、フォールトは `SIGSEGV` | 実装済み |
+| `waitpid`、`wait` | pkcl の子プロセス表（32 件、pid → PROCESS ハンドル）と `wait`。`WNOHANG` は `wait(h, 0, …)`（`WOULD_BLOCK`→0）。通常終了は Foundation の通常エラー（-1〜-255）を含め、終了コードの下位 8 bit を `WEXITSTATUS` で返す。`FND_E_KILLED` は `SIGKILL`、-256 以下の予約範囲にあるフォールトの CAUSE は `SIGSEGV`。通常エラーをフォールトと誤認しない | 実装済み |
 | `execve`、`execv`、`execvp` | **代理 exec**：子を spawn して待ち、その終了コードで `_exit`。fd の継承は 0〜2 のみ。自分のハンドル（fd 3 以上）は渡らない | 予定（M2） |
 | `system`、`popen` | `posix_spawn("/bin/sh")` ＋ `waitpid`（`popen` は pipe 後） | 予定 |
 | `fork`、`vfork` | `proc_fork`（VM のみ）。`vfork` は `fork` と同じ（親の停止はしない）。子は pkcl の子プロセス表を空にして始まる | 実装済み（VM） |

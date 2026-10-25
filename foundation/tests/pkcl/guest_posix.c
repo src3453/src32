@@ -2,6 +2,8 @@
  * 失敗したら失敗した行番号で終了する（0 が成功）。 */
 #include <errno.h>
 #include <setjmp.h>
+#include <signal.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -34,6 +36,37 @@ int main(void) {
     CHECK(WIFEXITED(status) && WEXITSTATUS(status) == 7);
     CHECK(shared == 1);
     CHECK(waitpid(child, &status, WNOHANG) == -1 && errno == ECHILD);
+
+    /* Foundation の負の通常エラーをシグナルと誤認しない。POSIX は下位 8 bit。 */
+    static const int codes[] = {-1, -2, -10, -64, -255, 0, 255, 256, 259};
+    for (unsigned i = 0; i < sizeof codes / sizeof codes[0]; ++i) {
+        child = fork();
+        CHECK(child >= 0);
+        if (child == 0)
+            _exit(codes[i]);
+        CHECK(waitpid(child, &status, 0) == child);
+        CHECK(WIFEXITED(status) && WEXITSTATUS(status) == (codes[i] & 255));
+    }
+
+    /* 実際のフォールトと強制終了はシグナルのまま保持する。 */
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        volatile uintptr_t unmapped = 0;
+        *(volatile uint32_t *)unmapped = 1;
+        _exit(99);
+    }
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGSEGV);
+    child = fork();
+    CHECK(child >= 0);
+    if (child == 0) {
+        for (;;)
+            sleep(1);
+    }
+    CHECK(kill(child, SIGKILL) == 0);
+    CHECK(waitpid(child, &status, 0) == child);
+    CHECK(WIFSIGNALED(status) && WTERMSIG(status) == SIGKILL);
 
     /* pipe: 4 KiB を超える書き込みも、読み手が減らすまで待って全部届き、閉じれば EOF。 */
     int p[2];

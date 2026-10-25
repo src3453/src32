@@ -81,11 +81,15 @@ pid_t fork(void) {
 /* vfork は fork と同じ。親は止まらないが、BusyBox が子で行うのは exec か _exit だけ。 */
 pid_t vfork(void) { return fork(); }
 
-/* exit_code を wait の status に直す。終了コードは 0〜255、強制終了は SIGKILL、それ以外（フォールト）は SIGSEGV。 */
+/* Foundation の通常エラー (-1..-255) も正常なプロセス終了であり、
+ * POSIX の終了コードは下位 8 bit。予約範囲 (-256 以下) の CAUSE だけを
+ * SIGSEGV にする。proc_kill の FND_E_KILLED は従来どおり SIGKILL。 */
 static int wait_status(int32_t code) {
-    if (code >= 0 && code < 256)
-        return code << 8;
-    return code == FND_E_KILLED ? SIGKILL : SIGSEGV;
+    if (code == FND_E_KILLED)
+        return SIGKILL;
+    if (code <= -256)
+        return SIGSEGV;
+    return (int)((uint32_t)code & 255u) << 8;
 }
 
 pid_t waitpid(pid_t pid, int *status, int options) {
