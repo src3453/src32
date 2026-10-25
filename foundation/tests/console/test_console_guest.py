@@ -60,7 +60,7 @@ class ConsoleGuestTests(unittest.TestCase):
     def tearDownClass(cls):
         test_shell.ShellTests.tearDownClass.__func__(cls)
 
-    def run_console(self, *batches, final=(), pixels=(), spacing=40):
+    def run_console(self, *batches, final=(), pixels=(), spacing=40, serial=()):
         self.run_count = getattr(self, 'run_count', 0) + 1
         run = self.work / f'{self.id().split(".")[-1]}-{self.run_count}'
         run.mkdir()
@@ -72,6 +72,11 @@ class ConsoleGuestTests(unittest.TestCase):
                    '--cpu', os.environ.get('FOUNDATION_TEST_CPU', 'cached')]
         for i, batch in enumerate(batches):
             command += ['--type', f'{30 + i * spacing}={batch}']
+        for i, (frame, payload) in enumerate(serial):
+            source = run / f'uart-{i}.bin'
+            source.write_bytes(payload)
+            command += ['--uart-rx', f'{frame}={source}']
+        command += ['--dump-uart', str(run / 'uart-output.bin')]
         for address, value in final:
             command += ['--expect-final-mem-u8', f'{address:#x}={value}']
         for x, y, rgb in pixels:
@@ -79,7 +84,37 @@ class ConsoleGuestTests(unittest.TestCase):
         result = subprocess.run(command, cwd=run, capture_output=True, text=True,
                                 encoding='utf-8', errors='replace', timeout=600)
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.serial_output = (run / 'uart-output.bin').read_bytes()
         return result.stdout
+
+    def test_uart_shell_and_keyboard_share_console(self):
+        # Serial type-ahead, fragmented CSI, CRLF coalescing and line editing.
+        text = self.run_console('echo keyboard-ok\\n', spacing=40,
+                                serial=[(80, b'echo uart-wrld\x1b['),
+                                        (81, b'D\x1b[D\x1b[Do\r\n'),
+                                        (150, b'echo discard\x03echo break-ok\r'),
+                                        (210, b'echo utf8-\xe6'),
+                                        (211, b'\x97\xa5\r')])
+        self.assertIn('keyboard-ok', text)
+        self.assertIn('uart-world', text)
+        self.assertIn('break-ok', text)
+        self.assertIn(b'Foundation shell 1.0', self.serial_output)
+        self.assertIn(b'keyboard-ok\r\n', self.serial_output)
+        self.assertIn(b'uart-world\r\n', self.serial_output)
+        self.assertIn('utf8-日\r\n'.encode(), self.serial_output)
+
+    def test_uart_line_edit_and_eof(self):
+        text = self.run_console(serial=[(30, b'concheck input\r'),
+                                        (100, b'line-abx\x7fc\r\n'),
+                                        (160, b'\x04'),
+                                        (190, '日'.encode()),
+                                        (220, b'echo eof-ok\r')])
+        self.assertIn('line-abc', text)
+        self.assertIn('eof-ok', text)
+        self.assertIn('uart input passed', text)
+        self.assertIn(b'line-abc\r\n', self.serial_output)
+        self.assertIn(b'eof-ok\r\n', self.serial_output)
+        self.assertNotIn('日'.encode(), self.serial_output)  # RAW does not echo
 
     def test_ansi_via_ipc(self):
         text = self.run_console('concheck\\n', 'echo status=$?\\n', spacing=170,
@@ -90,6 +125,8 @@ class ConsoleGuestTests(unittest.TestCase):
         self.assertIn('CRD', text)
         self.assertIn('console guest passed', text)
         self.assertIn('status=0', text)
+        self.assertIn(b'\x1b[2J\x1b[H', self.serial_output)
+        self.assertIn(b'console guest passed\r\n', self.serial_output)
 
     def test_bulk_console_and_disk_io(self):
         text = self.run_console('concheck bulk\\n', 'echo status=$?\\n', spacing=220)

@@ -1,16 +1,17 @@
 /* The console service (doc/spec_Foundation_API.md §5, §8, §9): the PCG
- * screen and the PeC keyboard behind the stream and console protocols.
+ * screen, PeC keyboard and UART behind the stream and console protocols.
  *
  * It registers as "console" and "dev.con". A channel from svc_lookup only
  * takes DEV_OPEN, which makes a console stream: a channel of the service's
  * port whose badge names a stream object. Reads and CON_READ_KEY wait in one
  * FIFO (§8.3) and are answered when keys arrive; CON_READ_KEY with
- * FND_CON_NOWAIT answers at once. The keyboard still uses polling whenever
+ * FND_CON_NOWAIT answers at once. Both inputs use polling whenever
  * ipc_recv times out. */
 #include <foundation/fnd.h>
 #include <foundation/sys.h>
 
 #include "con_pcg.h"
+#include "con_uart.h"
 
 #define POLL_TICKS 1u /* minimum wait: 10 ms at 100 Hz */
 #define STREAMS 16u
@@ -67,7 +68,10 @@ static struct stream *find_stream(uint32_t badge) {
     return 0;
 }
 
-static void write_text(const void *text, uint32_t len) { con_pcg_write((const uint8_t *)text, len); }
+static void write_text(const void *text, uint32_t len) {
+    con_pcg_write((const uint8_t *)text, len);
+    con_uart_write((const uint8_t *)text, len);
+}
 
 /* ---- input ---- */
 
@@ -199,18 +203,23 @@ static void take_break(void) {
     key_count = 0;
 }
 
+static void accept_key(const fnd_key_t *k) {
+    if (break_token && k->code == FND_KEY_CHAR && k->ch == 'c' && (k->mods & FND_MOD_CTRL)) {
+        take_break();
+        return;
+    }
+    if (key_count < KEYS) {
+        keys[(key_head + key_count) % KEYS] = *k;
+        ++key_count;
+    }
+}
+
 static void poll_keys(void) {
     fnd_key_t k;
-    while (con_pcg_poll_key(&k)) {
-        if (break_token && k.code == FND_KEY_CHAR && k.ch == 'c' && (k.mods & FND_MOD_CTRL)) {
-            take_break();
-            continue;
-        }
-        if (key_count < KEYS) {
-            keys[(key_head + key_count) % KEYS] = k;
-            ++key_count;
-        }
-    }
+    while (con_pcg_poll_key(&k)) accept_key(&k);
+    uint32_t now = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO);
+    /* Cap serial work so a continuous sender cannot starve IPC or the keyboard. */
+    for (uint32_t n = 0; n < KEYS && con_uart_poll_key(&k, now); ++n) accept_key(&k);
     dispatch();
 }
 
@@ -329,6 +338,7 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
         return break_token == r->token;
     case FND_CON_CLEAR:
         con_pcg_clear();
+        con_uart_clear();
         return 0;
     case FND_CON_GET_SIZE:
         a[0] = con_pcg_columns();
@@ -337,8 +347,10 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
     case FND_CON_SET_CURSOR:
         if (m->a0 >= con_pcg_columns() || m->a1 >= CON_PCG_ROWS)
             *result = FND_E_BAD_ARG;
-        else
+        else {
             con_pcg_set_cursor(m->a0, m->a1);
+            con_uart_cursor(m->a0, m->a1);
+        }
         return 0;
     case FND_CON_GET_CURSOR:
         con_pcg_get_cursor(&a[0], &a[1]);
@@ -346,11 +358,14 @@ static int handle(fnd_handle port, const fnd_recv *r, int32_t *result, uint32_t 
     case FND_CON_SET_COLOR:
         if (m->a0 > 15 || m->a1 > 15)
             *result = FND_E_BAD_ARG;
-        else
+        else {
             con_pcg_set_color(m->a0, m->a1);
+            con_uart_color(m->a0, m->a1);
+        }
         return 0;
     case FND_CON_SET_DISPLAY:
         *result = con_pcg_set_display(m->a0);
+        if (*result == FND_OK) con_uart_clear();
         return 0;
     case FND_CON_GET_DISPLAY:
         a[0] = con_pcg_display();
@@ -373,6 +388,7 @@ static void client_gone(uint32_t badge) {
 int main(void) {
     fnd_init();
     con_pcg_init();
+    con_uart_clear();
     int32_t port = fnd_sys_port_create();
     if (port < 0 || fnd_sys_svc_register("console", port) != FND_OK ||
         fnd_sys_svc_register("dev.con", port) != FND_OK)

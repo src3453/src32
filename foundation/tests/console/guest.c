@@ -41,6 +41,22 @@ static void bulk_io(void) {
 }
 int main(void) {
     fnd_init();
+    if (fnd_argc() > 1 && fnd_argv(1)[0] == 'i') {
+        char line[16];
+        uint32_t count;
+        CHECK(fnd_read(fnd_std_in(), line, 4, &count) == FND_OK && count == 4);
+        CHECK(fnd_read(fnd_std_in(), line + 4, sizeof line - 4, &count) == FND_OK && count == 5);
+        const char *expected = "line-abc\n";
+        for (uint32_t i = 0; i < 9; ++i) CHECK(line[i] == expected[i]);
+        CHECK(fnd_write(fnd_std_out(), line, 9, 0) == FND_OK);
+        CHECK(fnd_read(fnd_std_in(), line, sizeof line, &count) == FND_OK && count == 0);
+        CHECK(fnd_con_set_mode(FND_CON_RAW) == FND_OK);
+        CHECK(fnd_read(fnd_std_in(), line, sizeof line, &count) == FND_OK && count == 3);
+        CHECK((uint8_t)line[0] == 0xe6 && (uint8_t)line[1] == 0x97 && (uint8_t)line[2] == 0xa5);
+        CHECK(fnd_con_set_mode(FND_CON_LINE) == FND_OK);
+        out("uart input passed\n");
+        return 0;
+    }
     if (fnd_argc() > 1) { bulk_io(); return 0; }
     display(FND_CON_DISPLAY_40, 40);
     out("1234567890123456789012345678901234567890"); cursor(0, 1);

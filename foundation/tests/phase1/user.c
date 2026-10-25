@@ -34,8 +34,7 @@ void task_probe(volatile uint32_t *box) {
     box[PROBE_BAD_CONTEXT] = cpt32_syscall(FND_SYS_YIELD, 1u, 0u, 0u, 0u, 0u);
     box[PROBE_IRQ_ACCESS] = cpt32_syscall(FND_SYS_IRQ_BIND, 0u, 0u, 0u, 0u, 0u);
     box[PROBE_TICK_HZ] = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_HZ);
-    /* Length 0 only: src32_testbench has no UART, so writing a byte would
-     * be a bus error in the kernel. */
+    /* Verify that an empty debug write succeeds without touching UART. */
     box[PROBE_WRITTEN] = (uint32_t)fnd_sys_debug_write(message, 0u) + 1u;
     uint32_t cpu[5];
     cpu[4] = 0x12345678u;

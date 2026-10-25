@@ -137,11 +137,11 @@ def embed(name, data):
 
 
 def console_grants():
-    """MMIO windows in con_pcg.h: VDP, PCG text, wide font, PeC input."""
+    """MMIO windows in con_pcg.h: VDP, PCG text, wide font, PeC input, UART."""
     text = (FOUNDATION / "services/console/con_pcg.h").read_text(encoding="utf-8")
     value = {name: int(number, 16) for name, number in re.findall(r"#define (CON_PCG_\w+) (0x[0-9A-Fa-f]+)u", text)}
     return [(value[f"CON_PCG_{window}_START"], value[f"CON_PCG_{window}_END"], 3)
-            for window in ("VDP", "TEXT", "FONT", "INPUT")]
+            for window in ("VDP", "TEXT", "FONT", "INPUT", "UART")]
 
 
 def header(path, parts):
@@ -250,7 +250,7 @@ def main(argv=None):
     specs = [
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC, grants=console_grants(),
              image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c",
-                                      services / "console/con_wide.c"],
+                                      services / "console/con_wide.c", services / "console/con_uart.c"],
                                out / "console.wax", args, "-I", str(services / "console"),
                                "-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent))),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,

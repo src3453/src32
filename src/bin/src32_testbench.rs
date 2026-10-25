@@ -12,7 +12,51 @@ use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input};
 use cpt32::devices::pec::rng::connect_rng;
 
 use cpt32::music::guest::{STREAM_BASE, read_music_stream};
+use std::cell::RefCell;
+use std::collections::VecDeque;
 use std::path::Path;
+use std::rc::Rc;
+
+/// Deterministic UART: no host stdin thread or stdout writes. Byte captures
+/// keep serial output separate from the harness diagnostics and PCG dump.
+#[derive(Default)]
+struct TestUart {
+    rx: VecDeque<u8>,
+    tx: Vec<u8>,
+    baud: u8,
+    control: u8,
+}
+
+struct TestUartDevice(Rc<RefCell<TestUart>>);
+
+impl cpt32::bus::Device for TestUartDevice {
+    fn is_timing_insensitive(&self) -> bool {
+        true
+    }
+    fn size(&self) -> u32 {
+        16
+    }
+    fn read(&mut self, addr: u32) -> u8 {
+        let mut state = self.0.borrow_mut();
+        match addr {
+            0 => state.rx.pop_front().unwrap_or(0),
+            1 => 1 | if state.rx.is_empty() { 0 } else { 2 },
+            2 => state.baud,
+            3 => state.control,
+            4 => state.rx.len() as u8,
+            _ => 0,
+        }
+    }
+    fn write(&mut self, addr: u32, value: u8) {
+        let mut state = self.0.borrow_mut();
+        match addr {
+            0 => state.tx.push(value),
+            2 => state.baud = value,
+            3 => state.control = value,
+            _ => (),
+        }
+    }
+}
 
 fn integer(text: &str) -> u32 {
     if let Some(hex) = text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
@@ -134,7 +178,7 @@ fn main() {
     cpt32::init_logging();
 
     let args: Vec<String> = env::args().skip(1).collect();
-    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--key FRAME:USAGE:0|1] [--dump-pcg] [--dump-audio PATH] [--expect-pixel X:Y=0xRRGGBB] [--dump-framebuffer PATH.ppm] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
+    let path = args.first().expect("usage: src32_testbench PROGRAM.bin [expected] [--allow-running] [--music-stream PATH] [--frames N] [--irq-drain-cycles N] [--profile-cpu] [--skip-render-checks] [--expect-mem-u8 ADDRESS=VALUE] [--expect-final-mem-u8 ADDRESS=VALUE] [--type FRAME=TEXT] [--uart-rx FRAME=PATH] [--dump-uart PATH] [--key FRAME:USAGE:0|1] [--dump-pcg] [--dump-audio PATH] [--expect-pixel X:Y=0xRRGGBB] [--dump-framebuffer PATH.ppm] [--cpu scalar|cached|cached-relaxed|jit|pipeline]");
     let (args, cli_cpu) = split_cpu_arg(&args).expect("invalid --cpu option");
     let cpu_kind =
         resolve_cpu_kind(cli_cpu, Path::new("config.yaml")).expect("Invalid CPU configuration");
@@ -157,6 +201,8 @@ fn main() {
     let mut framebuffer_dump = None;
     let mut typed: Vec<(usize, Vec<HostInputEvent>)> = Vec::new();
     let mut dump_pcg = false;
+    let mut uart_rx = Vec::new();
+    let mut uart_dump = None;
     let mut audio_dump = None;
     let mut audio_bytes = Vec::new();
     let mut options = args.iter().skip(1);
@@ -219,6 +265,18 @@ fn main() {
                 ));
             }
             "--dump-pcg" => dump_pcg = true,
+            "--uart-rx" => {
+                let (frame, path) = options
+                    .next()
+                    .expect("--uart-rx requires FRAME=PATH")
+                    .split_once('=')
+                    .expect("expected FRAME=PATH");
+                uart_rx.push((
+                    integer(frame) as usize,
+                    fs::read(path).expect("UART input file"),
+                ));
+            }
+            "--dump-uart" => uart_dump = Some(options.next().expect("--dump-uart requires PATH")),
             "--expect-pixel" => {
                 let (xy, rgb) = options
                     .next()
@@ -256,6 +314,12 @@ fn main() {
     let mut bus = Bus::new();
     let input_sender = connect_pec_input(&mut bus);
     connect_rng(&mut bus);
+    let uart = Rc::new(RefCell::new(TestUart::default()));
+    bus.add_device(
+        0x80040000,
+        "test UART",
+        Box::new(TestUartDevice(uart.clone())),
+    );
     let (ram_size, vram_size) =
         cpt32::memory_config::memory_sizes_from_config(Path::new("config.yaml"))
             .expect("Invalid memory configuration");
@@ -301,6 +365,9 @@ fn main() {
     let frame_count = frames.unwrap_or((cycle_budget + cycles_per_frame - 1) / cycles_per_frame);
     let mut cpu_profile = CpuProfile::default();
     for frame in 0..frame_count {
+        for (_, bytes) in uart_rx.iter().filter(|(at, _)| *at == frame) {
+            uart.borrow_mut().rx.extend(bytes);
+        }
         let mut sent = false;
         for (_, events) in typed.iter().filter(|(at, _)| *at == frame) {
             for &event in events {
@@ -362,6 +429,9 @@ fn main() {
         }
     }
 
+    if let Some(path) = uart_dump {
+        fs::write(path, &uart.borrow().tx).expect("UART capture write");
+    }
     if let Some(path) = audio_dump {
         fs::write(path, audio_bytes).expect("cannot write audio capture (stereo PCM16 LE, 48 kHz)");
     }

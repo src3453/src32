@@ -352,7 +352,7 @@ FND_MM=nommu python -m unittest discover -s foundation/tests/shell  # nommu（�
 
 ## 注意と未決事項
 
-- `src32_testbench` には UART がありません。そのため、そこで `debug_write` に 1 byte 以上を渡したり `kernel_panic` が UART へ出力したりすると、カーネル内でバスエラーになります（`kernel_panic` は PCG へ先に描くので画面には残り、再入は黙って停止します）。エミュレーター本体では UART に出力されます。
+- `src32_testbench` の UART 出力（console、`debug_write`、`kernel_panic`）は `--dump-uart PATH` で保存できます。エミュレーター本体ではホスト標準入出力につながります。
 - RAM 容量の取得方法（§4.1）はまだ決めていません。nommu のページプールは [0x400000, RAM 末尾)、最大 256 MiB です。
 - 仮想記憶では、権限はページ単位です。Foundation のイメージは `--page-align` でコード（RX）とデータ（RW）を別ページに置くので W^X です（`.rodata` は RW データの中で、R 専用ではありません）。MMIO の付与はページ単位で、窓の検査は byte 単位に加えてページ範囲が届く先も検査しますが、同じページにある別のレジスタには触れます（[仕様 §5.5](../doc/spec_Foundation.md)）。
 - プロセスは（仮想記憶でも nommu でも）10 個、スレッドは 16 個までです。スロットにもアリーナにも縛られないので、`FND_MAX_PROCS` を増やせます。
@@ -362,11 +362,19 @@ FND_MM=nommu python -m unittest discover -s foundation/tests/shell  # nommu（�
 - timer の ACK から IRQC の W1C までの間に次の tick が来ると、IRQC の edge が失われます。カーネルは W1C の後に timer の pending をもう一度確認して、取りこぼしを防いでいます。
 
 
+### console の UART 複製
+
+console は標準で、PCG への文字出力・エコーを PeC UART にも送り、UART 受信をキーボードと共通の入力として扱います。FPGA 検証では UTF-8・ANSI 対応のシリアル端末をローカルエコーなしで接続してください。ボーレート・制御設定は console が変更しないため、ボード側の設定に合わせます。UART 出力の LF は CRLF になります。Enter、Backspace、Ctrl+C/D、基本的な矢印キーと UTF-8 を使えます。画面消去・カーソル・色の操作も端末に送ります。端末サイズの問い合わせは PCG の値です。
+
+対話には `/dev/con` を使います。console が UART 受信を消費するため、`/dev/uart0` の直接 read との同時利用は入力を取り合います。UART 入力は `CON_KEY_STATE` の物理キー状態には現れません。詳細は [API §8](../doc/spec_Foundation_API.md#8-コンソール)。
+
+検証: `python -m unittest discover -s foundation/tests/console -v`（ゲスト検証は `FND_MM=nommu` でも実行）。testbench は `--uart-rx FRAME=PATH` でファイルの生バイトを指定フレームに受信し、`--dump-uart PATH` で送信バイト列を保存します。ホスト標準入出力とは接続せず、PCG ダンプも混ざりません。
+
 ### PeC 乱数と UART
 
 `/dev/trng` は READ 専用で、ハードウェアの READY が落ちている間は呼び出したスレッドをブロックします。`/dev/prng` は READ 専用のノンブロッキング GFSR 乱数です（暗号用途向けではありません）。`/dev/uart0` はホスト標準入出力へつながるバイトストリームで、読み出しは受信待ち、書き込みはデータをそのまま送信します。通常の `fnd_file_open`／`fnd_read`／`fnd_write` で利用できます。複数 open は同じハードウェアを共有します。乱数列の seed 設定 API は公開しません。[API §9.4](../doc/spec_Foundation_API.md#94-pec-乱数uart-devtrngdevprngdevuart0)。
 
-検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=nommu` でも実行してください。testbench には UART がないため、UART の正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
+検証: `python -m unittest discover -s foundation/tests/pec -v`。ゲスト検証は `FND_MM=nommu` でも実行してください。UART ドライバの正長入出力と TRNG の未準備からの復帰は、実ドライバと IPC ディスパッチを制御可能な MMIO に接続するホストテストで確認します。ゲスト側では RNG の 4096 bytes をまたぐ read、短い末尾、VFS とハンドル転送、権限、stat、複数 open を確認します。
 
 ### COW と fork
 

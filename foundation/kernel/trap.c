@@ -338,7 +338,7 @@ static void panic_screen(uint32_t cause, uint32_t epc) {
 
 void kernel_panic(uint32_t cause, uint32_t epc) {
     sched_timer_stop();
-    /* A fault while reporting (no UART on src32_testbench, for one) re-enters
+    /* A fault while reporting (an unmapped UART, for example) re-enters
      * here from the stub; stop without touching the devices again. */
     if (!panic_entered) {
         panic_entered = 1;

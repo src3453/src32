@@ -22,6 +22,70 @@ static void store32(uint32_t a, uint32_t v) {
 #define CON_WIDE_REG(a) (*mmio8(a))
 #include "../../services/console/con_pcg.c"
 #include "../../services/console/con_wide.c"
+static uint8_t uart_rx[1024], uart_tx[8192];
+static uint32_t uart_pos, uart_len, uart_sent;
+static uint8_t uart_read(uint32_t a) {
+    if (a == 0x80040001u) return uart_pos < uart_len ? 2 : 0;
+    assert(a == 0x80040000u && uart_pos < uart_len);
+    return uart_rx[uart_pos++];
+}
+static void uart_write(uint32_t a, uint8_t b) {
+    assert(a == 0x80040000u && uart_sent < sizeof uart_tx);
+    uart_tx[uart_sent++] = b;
+}
+#define CON_UART_READ8(a) uart_read(a)
+#define CON_UART_WRITE8(a, b) uart_write((a), (b))
+#include "../../services/console/con_uart.c"
+static void serial_input(const char *s) {
+    uart_len = (uint32_t)strlen(s); uart_pos = 0;
+    memcpy(uart_rx, s, uart_len);
+}
+static void serial_key(uint32_t code, uint32_t ch, uint32_t mods) {
+    fnd_key_t k;
+    assert(con_uart_poll_key(&k, 0));
+    assert(k.code == code && k.ch == ch && k.mods == mods);
+}
+static void serial_tests(void) {
+    fnd_key_t k;
+    assert(!con_uart_poll_key(&k, 0));
+    serial_input("a\r\nb\n\b\177\003\004\t");
+    serial_key(FND_KEY_CHAR, 'a', 0);
+    serial_key(FND_KEY_ENTER, 0, 0);
+    serial_key(FND_KEY_CHAR, 'b', 0);
+    serial_key(FND_KEY_ENTER, 0, 0);
+    serial_key(FND_KEY_BACKSPACE, 0, 0); serial_key(FND_KEY_BACKSPACE, 0, 0);
+    serial_key(FND_KEY_CHAR, 'c', FND_MOD_CTRL); serial_key(FND_KEY_CHAR, 'd', FND_MOD_CTRL);
+    serial_key(FND_KEY_TAB, 0, 0);
+    /* Receive a Unicode scalar one byte at a time, then invalid encodings. */
+    serial_input("\xe6"); assert(!con_uart_poll_key(&k, 0));
+    serial_input("\x97"); assert(!con_uart_poll_key(&k, 0));
+    serial_input("\xa5"); serial_key(FND_KEY_CHAR, 0x65e5, 0);
+    serial_input("\xf0\x9f\x98\x80\xed\xa0\x80\xe0\x80\x80\xff");
+    serial_key(FND_KEY_CHAR, 0x1f600, 0);
+    for (int i = 0; i < 3; ++i) serial_key(FND_KEY_CHAR, 0xfffd, 0);
+    serial_input("\033["); assert(!con_uart_poll_key(&k, 0));
+    serial_input("D\033OA\033[3~\033[4~");
+    serial_key(FND_KEY_LEFT, 0, 0); serial_key(FND_KEY_UP, 0, 0);
+    serial_key(FND_KEY_DELETE, 0, 0); serial_key(FND_KEY_END, 0, 0);
+    serial_input("\033"); assert(!con_uart_poll_key(&k, 0));
+    assert(!con_uart_poll_key(&k, 4));
+    assert(con_uart_poll_key(&k, 5) && k.code == FND_KEY_ESC);
+    serial_input("\033[999999999999~x"); serial_key(FND_KEY_CHAR, 'x', 0);
+    serial_input("\033[1;5D\033[?25hy"); serial_key(FND_KEY_CHAR, 'y', 0);
+    serial_input("\033["); assert(!con_uart_poll_key(&k, 0));
+    assert(!con_uart_poll_key(&k, 5));
+    serial_input("z"); serial_key(FND_KEY_CHAR, 'z', 0);
+    /* LF expands to CRLF, including across write boundaries; CRLF is retained.
+     * A permanently clear TX_READY must never stall output. */
+    const uint8_t bytes[] = {'A', 0, '\033', '[', 'm', '\n', '\r'};
+    con_uart_write(bytes, sizeof bytes);
+    con_uart_write((const uint8_t *)"\n", 1);
+    assert(uart_sent == 9 && !memcmp(uart_tx, "A\0\033[m\r\n\r\n", 9));
+    uart_sent = 0;
+    con_uart_clear(); con_uart_cursor(79, 29); con_uart_color(15, 4);
+    const char *expected = "\033[2J\033[H\033[30;80H\033[0;97;44m";
+    assert(uart_sent == strlen(expected) && !memcmp(uart_tx, expected, uart_sent));
+}
 static void write_text(const char *s) { con_pcg_write((const uint8_t *)s, (uint32_t)strlen(s)); }
 static void cursor(uint32_t x, uint32_t y) {
     uint32_t a, b;
@@ -68,6 +132,7 @@ static void mixed_line_ends(void) {
     }
 }
 int main(void) {
+    serial_tests();
     con_pcg_init();
     write_text("ASCII \xE6\x97\xA5\xC2\x9B");
     cursor(7, 0); assert(cell(6, 0, 0) == '?');

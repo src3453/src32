@@ -29,8 +29,11 @@ impl UART {
     pub fn write(&mut self, data: u8) {
         self.tx_buffer.push(data);
         self.tx_ready = false; // Not ready to transmit until the buffer is processed
-        print!("{}", data as char); // Output the character to the console
-        std::io::stdout().flush().unwrap();
+        // UART carries bytes. Formatting `data as char` would re-encode every
+        // byte >= 0x80, corrupting UTF-8 and binary output.
+        let mut stdout = std::io::stdout().lock();
+        stdout.write_all(&[data]).unwrap();
+        stdout.flush().unwrap();
     }
 
     pub fn read(&mut self) -> Option<u8> {
