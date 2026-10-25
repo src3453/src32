@@ -17,3 +17,14 @@
 - `take_next` は受信のたびに `irqs[16]` を全部走査する（ホットな PC の実行回数が呼び出し回数のちょうど 16 倍）。1 周約 180 命令。保留 IRQ のビットマスクを持てば、ほぼ 0 にできる見込み（未実装）。
 - 生成コードは値をすべてスタックに退避する（`irqs[i]` の添字計算ごとに MUL、ジャンプは LDIH/LDIL/JR）。C の 1 行がそのまま数十命令になるため、ループ回数がそのまま効く。`proc_user_range_ok` は IPC 1 回あたり約 4 回呼ばれ、`ipc.c` の文字列検査はバイトごとに 1 回呼ぶ。
 - `top` は 10 ms ごとに `fnd_con_pollkey`（IPC）と `fnd_sys_sleep(1)` を呼ぶので、1 秒に約 100 回のシステムコールとコンテキストスイッチが起きる。これが負荷の大半。
+
+## 修正と再計測（同日）
+
+- 修正（`foundation/kernel/ipc.c`, `mm.c`）:
+  - `take_next`: 保留 IRQ のビットマスク `irq_pending_mask` を持ち、0 なら 16 本の走査を飛ばす（`irq_set_pending` 経由でだけ更新）。`next_caller` は B_SEND で待つスレッドのビットマスク `send_blocked` を遅延クリアで持ち、0 ならスレッド表を走査しない。`__builtin_ctz` はバックエンドの対応が不明なので使わない。
+  - `proc_user_range_ok`: 1 ページ内の成功を 8 エントリ（process と ページでインデックス、perm の和を保持）にキャッシュする。ページテーブルを変える `mm_vm_create/cow/map/map_phys/clone` と `vm_destroy` が `vm_epoch` を進めて無効化する。fork 後の W 検査が COW 解決を飛ばさないための要。`vm_range_ok` は COW を見たときだけ `vm_prepare_write` を呼ぶ（2 度引きをやめた）。
+  - `mm_vm_copy_to`: 1 ページ内で COW でなければ 1 回の引きでコピーする。`write_recv`: 64 B 読み 64 B 書きをやめ、必要な 8 B を読み先頭 56 B だけ書く。
+- 結果（`top -n 4`、同じ窓）: カーネル命令 41.97M → 31.41M（-25%）。`take_next` 10.26M → 3.46M、`proc_user_range_ok` 6.05M → 2.39M（切り出された `vm_range_ok` 1.36M を足して 3.74M）、`mm_vm_copy_to` 1.80M → 0.69M。`kmem_copy` 5.3M と `mm_vm_copy_from` 2.9M はほぼ変わらない。
+- `take_next` の残り（1 呼び出し約 1000 命令）は、実際に送信待ちを受け取る 1,450 回の配送処理（`deliver_call` と `write_recv`）。`proc_user_range_ok` の命令は、キャッシュ引き 1 回が約 190 命令。生成コードの重さがそのまま効く。
+- 検証: shell 30 件（VM / `FND_MM=nommu` の両方）、irq / pec / panic / fs / disk / perf、`test_toolchain` の phase1 / fork / vm_kernel / wal_from_c / wax_loader がすべて通過。
+- 次に効きそうなもの: `kmem_copy`（32 B ごとに約 190 命令）と `mm_vm_copy_from` の呼び出し回数（IPC 1 回あたり約 6 回）、`kernel_trap` + `sched_next` + `ctx` の約 800 命令/トラップ、`top` の 10 ms ポーリング自体。
