@@ -60,6 +60,8 @@ zip -X -q example.cpt32pkg manifest.yaml program.bin disks/system.img plugins/ex
 
 The opaque asset is optional and need not be listed in the manifest. The loader does not extract package members.
 
+The Python Launcher also provides **CPT32PKG保存…** to bundle the selected raw program, enabled disks, and expansion cards. It uses the output filename stem as the title and generates a fresh UUID for every export. Disk slots, kinds and read-only modes, and plugin slots are preserved. Host runtime settings (including CPU, memory, BIOS, fonts, music and disk timing) are not part of this format. WAX, sol source, existing cartridge conversion, and BIOS disk boot are not supported by this export. See `tools/cpt32-launcher/README.md` for details.
+
 ## Launch
 
 Launch a package using the normal CPT32 CLI:

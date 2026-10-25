@@ -11,11 +11,119 @@ from contextlib import redirect_stdout
 from io import StringIO
 from types import MethodType, SimpleNamespace
 import unittest
+from unittest.mock import patch
+import uuid
+import zipfile
 
 
 spec = importlib.util.spec_from_file_location("cpt32_launcher", Path(__file__).with_name("launcher.py"))
 launcher = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(launcher)
+
+
+class CartridgeExportTests(unittest.TestCase):
+    def setUp(self):
+        self.temporary = tempfile.TemporaryDirectory(prefix="cpt32pkg 日本語 ")
+        self.addCleanup(self.temporary.cleanup)
+        self.base = Path(self.temporary.name)
+        self.program = self.base / "game.bin"
+        self.program.write_bytes(b"\x12\x34\x56\x78")
+        self.output = self.base / "日本語.cpt32pkg"
+
+    def save(self, document=None):
+        launcher.save_cartridge(self.output, self.program, document or {}, self.base)
+
+    def test_manifest_and_resources_preserve_slots_modes_and_bytes(self):
+        (self.base / "disk.img").write_bytes(b"d" * 512)
+        card = self.base / "card.cpt32card"
+        with zipfile.ZipFile(card, "w") as nested:
+            nested.writestr("manifest.yaml", "format_version: 1\n")
+        document = {"disk": [
+            {"slot": 3, "type": "hdd", "image": "disk.img", "read_only": False},
+            {"slot": 0, "type": "fdd", "image": "disk.img", "read_only": True},
+        ], "expansion_card": [{"slot": 7, "package": "card.cpt32card"}], "cpu": {"microarchitecture": "jit"}}
+        self.save(document)
+        with zipfile.ZipFile(self.output) as archive:
+            manifest = launcher.parse_yaml(archive.read("manifest.yaml").decode("utf-8"))
+            self.assertEqual(str(uuid.UUID(manifest["id"])), manifest["id"])
+            self.assertEqual(manifest["title"], "日本語")
+            self.assertEqual(manifest["system"], {"architecture": "SRC32"})
+            self.assertNotIn("cpu", manifest)
+            self.assertEqual([d["mode"] for d in manifest["disks"]], ["read_write", "read_only"])
+            self.assertEqual([d["slot"] for d in manifest["disks"]], [3, 0])
+            self.assertEqual(archive.read(manifest["entrypoint"]["path"]), self.program.read_bytes())
+            self.assertEqual(archive.read(manifest["plugins"][0]["path"]), card.read_bytes())
+            for disk in manifest["disks"]:
+                self.assertEqual(archive.read(disk["path"]), b"d" * 512)
+        self.assertEqual(document["disk"][0]["image"], "disk.img")
+
+    def test_invalid_inputs_preserve_existing_output(self):
+        self.output.write_bytes(b"existing")
+        disk = self.base / "disk.img"
+        disk.write_bytes(b"bad sector")
+        invalid = [
+            {"disk": [{"slot": 0, "type": "hdd", "image": "disk.img"}]},
+            {"disk": [{"slot": 4, "type": "fdd", "image": "disk.img"}]},
+            {"disk": [{"slot": 0, "type": "unknown", "image": "disk.img"}]},
+            {"expansion_card": [{"slot": 8, "package": "missing.cpt32card"}]},
+            {"expansion_card": [{"slot": 0, "package": "missing.cpt32card"}]},
+            {"disk": [{"slot": 0, "type": "hdd", "image": "game.bin"}] * 2},
+        ]
+        for document in invalid:
+            with self.subTest(document=document), self.assertRaises((OSError, launcher.ConfigError)):
+                self.save(document)
+            self.assertEqual(self.output.read_bytes(), b"existing")
+
+    def test_container_source_and_empty_or_large_program_are_rejected(self):
+        for content in (b"", b"WAX\0payload", b"PK\x03\x04payload"):
+            self.program.write_bytes(content)
+            with self.subTest(content=content), self.assertRaises(launcher.ConfigError):
+                self.save()
+        with self.program.open("wb") as stream:
+            stream.truncate(16 * 1024 * 1024 + 1)
+        with self.assertRaises(launcher.ConfigError):
+            self.save()
+        for suffix in (".wax", ".sol", ".cpt32pkg"):
+            source = self.base / ("source" + suffix)
+            source.write_bytes(b"payload")
+            with self.subTest(suffix=suffix), self.assertRaises(launcher.ConfigError):
+                launcher.save_cartridge(self.output, source, {}, self.base)
+        self.assertFalse(self.output.exists())
+
+    def test_output_cannot_alias_input(self):
+        with self.assertRaises(launcher.ConfigError):
+            launcher.save_cartridge(self.program, self.program, {}, self.base)
+        self.assertEqual(self.program.read_bytes(), b"\x12\x34\x56\x78")
+
+    def test_failed_replace_preserves_output_and_removes_temporary(self):
+        self.output.write_bytes(b"existing")
+        with patch.object(launcher.os, "replace", side_effect=OSError("write failed")):
+            with self.assertRaises(OSError):
+                self.save()
+        self.assertEqual(self.output.read_bytes(), b"existing")
+        self.assertFalse(list(self.base.glob(".cpt32pkg-*")))
+
+    def test_save_button_uses_current_document_without_changing_selection(self):
+        states = {}
+        variable = lambda value: SimpleNamespace(get=lambda: value)
+        ui = SimpleNamespace(
+            running=False, exporting=False, program=variable(str(self.program)),
+            config_source=variable(str(self.base / "config.yaml")),
+            _effective_document=lambda: {}, result_queue=launcher.ProcessEventQueue(),
+            start_button=SimpleNamespace(configure=lambda **kw: states.update(start=kw)),
+            package_button=SimpleNamespace(configure=lambda **kw: states.update(package=kw)),
+            status=SimpleNamespace(set=lambda *_: None), after=lambda *_: None,
+            _poll_process=lambda: None,
+        )
+        with patch.object(launcher.filedialog, "asksaveasfilename", return_value=str(self.output)):
+            launcher.Launcher.save_package(ui)
+        event = ui.result_queue.get(timeout=5)
+        self.assertEqual(event, ("package_saved", str(self.output)))
+        ui.result_queue.put(event)
+        launcher.Launcher._poll_process(ui)
+        self.assertFalse(ui.exporting)
+        self.assertEqual(ui.program.get(), str(self.program))
+        self.assertEqual(states["package"]["state"], "normal")
 
 
 class LaunchPipelineTests(unittest.TestCase):

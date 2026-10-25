@@ -64,6 +64,8 @@ zip -X -q example.cpt32pkg manifest.yaml program.bin disks/system.img plugins/ex
 
 不透明なアセットは任意であり、manifest に列挙する必要はありません。ローダーはパッケージメンバーを展開しません。
 
+Python Launcherの「CPT32PKG保存…」でも、選択中のrawプログラム、有効なディスクと拡張カードを同梱できます。タイトルには保存先のファイル名（拡張子を除く）を使い、保存ごとに新しいUUIDを生成します。ディスクのスロット・種類・読み取り専用属性とカードのスロットを維持します。CPU・メモリ・BIOS・フォント・音楽・ディスク速度などのホスト設定は本形式の対象外です。WAX・sol・既存パッケージの変換やBIOSディスク起動の保存には対応しません。詳細は `tools/cpt32-launcher/README.md` を参照してください。
+
 ## 起動
 
 通常の CPT32 CLI を使ってパッケージを起動します:

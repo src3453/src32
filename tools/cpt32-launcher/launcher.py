@@ -14,6 +14,8 @@ import tempfile
 import threading
 import copy
 import shlex
+import uuid
+import zipfile
 from pathlib import Path
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
@@ -338,6 +340,79 @@ def user_profile_path() -> Path:
     return base / "CPT32" / "Launcher" / "profiles.json"
 
 
+def save_cartridge(output: Path, program: Path, document: dict, config_base: Path):
+    """Bundle the v1 cartridge resources; replace output only after a complete write."""
+    output, program = output.expanduser().resolve(), program.expanduser().resolve()
+    if program.suffix.lower() in (".wax", ".wal", ".sol", ".cpt32pkg"):
+        raise ConfigError("CPT32PKG v1にはアドレス0で実行するrawバイナリを指定してください。WAX・sol・既存CPT32PKGは変換できません。")
+    manifest = {
+        "format": "cpt32pkg", "format_version": 1, "id": str(uuid.uuid4()),
+        "title": output.stem, "system": {"architecture": "SRC32"},
+        "entrypoint": {"type": "program", "path": "program.bin"},
+    }
+    resources = [("program.bin", program, 16 * 1024 * 1024, False)]
+    for section, target, maximum in (("disk", "disks", 4), ("expansion_card", "plugins", 8)):
+        slots = set()
+        entries = document.get(section) or []
+        if not isinstance(entries, list):
+            raise ConfigError(f"`{section}` はsequenceで指定してください")
+        for item in entries:
+            if not isinstance(item, dict):
+                raise ConfigError(f"`{section}` の要素はmappingで指定してください")
+            slot = item.get("slot")
+            if type(slot) is not int or not 0 <= slot < maximum or slot in slots:
+                raise ConfigError(f"`{section}` のslotは重複しない0〜{maximum - 1}で指定してください")
+            slots.add(slot)
+            disk = section == "disk"
+            value = item.get("image" if disk else "package")
+            if not isinstance(value, str) or not value.strip():
+                raise ConfigError(f"`{section}` slot {slot}: ファイルを指定してください")
+            source = Path(resolve_config_path(value, config_base))
+            name = f"disks/slot{slot}.img" if disk else f"plugins/slot{slot}.cpt32card"
+            entry = {"slot": slot, "path": name}
+            if disk:
+                if item.get("type") not in ("fdd", "hdd") or type(item.get("read_only", False)) is not bool:
+                    raise ConfigError(f"disk slot {slot}: type / read_only が不正です")
+                entry.update(type=item["type"], mode="read_only" if item.get("read_only", False) else "read_write")
+            elif source.suffix.lower() != ".cpt32card":
+                raise ConfigError(f"拡張カードには.cpt32cardを指定してください: {source}")
+            manifest.setdefault(target, []).append(entry)
+            resources.append((name, source, 64 * 1024 * 1024, disk))
+    # Check every input before creating an output, including aliases to input files.
+    for name, source, limit, disk in resources:
+        if output == source or (output.exists() and source.exists() and output.samefile(source)):
+            raise ConfigError(f"保存先に入力ファイルは指定できません: {source}")
+        if not source.is_file():
+            raise ConfigError(f"ファイルが見つかりません: {source}")
+        size = source.stat().st_size
+        if not 0 < size <= limit or (disk and size % 512):
+            raise ConfigError(f"{source}: サイズは1〜{limit} byte、ディスクは512 byte単位で指定してください")
+        if name == "program.bin":
+            with source.open("rb") as stream:
+                if stream.read(4) in (b"WAX\0", b"PK\x03\x04"):
+                    raise ConfigError("WAXやZIPではなくrawゲストバイナリを指定してください")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(prefix=".cpt32pkg-", suffix=".tmp", dir=output.parent, delete=False) as stream:
+            temporary = Path(stream.name)
+        with zipfile.ZipFile(temporary, "w", compression=zipfile.ZIP_DEFLATED) as archive:
+            archive.writestr("manifest.yaml", dump_yaml(manifest).encode("utf-8"))
+            for name, source, limit, disk in resources:
+                size = 0
+                with source.open("rb") as src, archive.open(name, "w") as dst:
+                    while chunk := src.read(1024 * 1024):
+                        size += len(chunk)
+                        if size > limit:
+                            raise ConfigError(f"保存中にファイルがサイズ上限を超えました: {source}")
+                        dst.write(chunk)
+                if not size or (disk and size % 512):
+                    raise ConfigError(f"保存中にファイルサイズが変化しました: {source}")
+        os.replace(temporary, output)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
+
+
 def prepare_program(program: str | None, workspace: Path, run_dir: Path, compiler_args: str = ""):
     """Plan source compilation without changing the selected source or its directory."""
     if not program or Path(program).suffix.lower() != ".sol":
@@ -369,6 +444,7 @@ class Launcher(tk.Tk):
         self.result_queue = ProcessEventQueue()
         self.process: subprocess.Popen | None = None
         self.running = False
+        self.exporting = False
         self.stop_requested = threading.Event()
         self.process_lock = threading.Lock()
         self.run_directory: Path | None = None
@@ -514,7 +590,10 @@ class Launcher(tk.Tk):
         self.stop_button = ttk.Button(buttons, text="停止", command=self.stop_emulator, state="disabled")
         self.stop_button.pack(side="left", padx=4)
         ttk.Button(buttons, text="設定を保存", command=self.save_config).pack(side="left", padx=4)
+        self.package_button = ttk.Button(buttons, text="CPT32PKG保存…", command=self.save_package)
+        self.package_button.pack(side="left", padx=4)
         ttk.Button(buttons, text="プロファイル保存", command=self.save_profile).pack(side="left", padx=4)
+        ttk.Label(footer, text="CPT32PKG: raw ROM・ディスク・拡張カードを保存。CPU・BIOS・フォント・音楽・速度設定は対象外。", foreground="#555").grid(row=1, column=0, columnspan=2, sticky="w", pady=(6, 0))
         self.status = tk.StringVar(value="起動待ち")
         ttk.Label(footer, textvariable=self.status).grid(row=0, column=0, sticky="w")
         log_frame = ttk.LabelFrame(self, text="起動ログ", padding=6)
@@ -790,6 +869,37 @@ class Launcher(tk.Tk):
         except (OSError, ConfigError) as error:
             messagebox.showerror("設定を保存できません", str(error), parent=self)
 
+    def save_package(self):
+        if self.running or self.exporting:
+            return
+        try:
+            program = self.program.get().strip()
+            if not program:
+                raise ConfigError("保存するrawゲストバイナリをROM欄に指定してください")
+            document = self._effective_document()
+            output = filedialog.asksaveasfilename(
+                parent=self, title="CPT32PKGとして保存（raw ROM・ディスク・拡張カード）",
+                defaultextension=".cpt32pkg", initialfile=Path(program).stem + ".cpt32pkg",
+                filetypes=[("CPT32PKG", "*.cpt32pkg")],
+            )
+            if not output:
+                return
+            base = Path(self.config_source.get()).expanduser().resolve().parent
+            self.exporting = True
+            self.package_button.configure(state="disabled")
+            self.start_button.configure(state="disabled")
+            self.status.set("CPT32PKGを保存しています…")
+            events = self.result_queue
+            def export():
+                try:
+                    save_cartridge(Path(output), Path(program), document, base)
+                    events.put(("package_saved", output))
+                except (OSError, ConfigError, zipfile.BadZipFile, RuntimeError) as error:
+                    events.put(("package_error", str(error)))
+            threading.Thread(target=export).start()
+        except (OSError, ConfigError) as error:
+            messagebox.showerror("CPT32PKGを保存できません", str(error), parent=self)
+
     def _collect_profile(self):
         return {
             "config_source": self.config_source.get(), "config_yaml": dump_yaml(self._effective_document()),
@@ -961,6 +1071,8 @@ class Launcher(tk.Tk):
         return command
 
     def start_emulator(self):
+        if self.exporting:
+            return
         if self.running:
             messagebox.showinfo("起動中", "エミュレーターは既に起動しています", parent=self)
             return
@@ -985,6 +1097,7 @@ class Launcher(tk.Tk):
             steps.append(("エミュレーターを起動しています…", command))
             self.status.set(steps[0][0])
             self.start_button.configure(state="disabled")
+            self.package_button.configure(state="disabled")
             self.stop_button.configure(state="normal")
             self.stop_requested.clear()
             self.running = True
@@ -1066,6 +1179,15 @@ class Launcher(tk.Tk):
                     lines.append("起動エラー: " + value)
                     self.status.set("起動に失敗しました")
                     self._finish_process()
+                elif kind in ("package_saved", "package_error"):
+                    self.exporting = False
+                    self.package_button.configure(state="normal")
+                    self.start_button.configure(state="normal")
+                    if kind == "package_saved":
+                        self.status.set(f"CPT32PKGを保存しました: {value}")
+                    else:
+                        self.status.set("CPT32PKGの保存に失敗しました")
+                        messagebox.showerror("CPT32PKGを保存できません", value, parent=self)
                 if characters >= LOG_POLL_CHARS:
                     break
         except queue.Empty:
@@ -1081,6 +1203,7 @@ class Launcher(tk.Tk):
         self.process = None
         self.running = False
         self.start_button.configure(state="normal")
+        self.package_button.configure(state="normal")
         self.stop_button.configure(state="disabled")
         if self.run_directory:
             shutil.rmtree(self.run_directory, ignore_errors=True)
