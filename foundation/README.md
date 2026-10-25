@@ -219,6 +219,8 @@ cmake --build target/foundation
 
 ## 受け入れテスト
 
+IPCの性能測定は [tests/perf/README.md](tests/perf/README.md) を参照してください。VM/slot、メッセージサイズ、整列、`reply_recv` を実際のUモード間通信で比較し、[基準値と改善候補](../doc/foundation_ipc_performance.md) を記録しています。
+
 `tests/phase1` は、[実装案 §8](../doc/foundation_os_plan.md) のフェーズ1の条件を確認します。tick フックの中で検査し、成功すると R1=42、失敗すると `0x100 + 失敗数` で停止します。
 
 - yield しない U モードのカウンタ A・B が両方とも進むこと。
