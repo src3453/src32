@@ -34,9 +34,14 @@ fdio と同じく、pkcl の仕事は「ファイル記述子の表」と「POSI
 
 | 場所 | 内容 |
 |---|---|
-| `foundation/include/pkcl/` | POSIX ヘッダ（`errno.h`、`fcntl.h`、`unistd.h`、`sys/types.h`、`sys/stat.h`…）と内部境界 `pkcl/pkcl.h` |
+| `foundation/include/pkcl/` | 内部境界 `pkcl/pkcl.h` |
+| `foundation/include/pkcl-nolibc/` | libc なしで使う POSIX ヘッダ（`errno.h`、`fcntl.h`、`unistd.h`、`sys/types.h`、`sys/stat.h`…） |
+| `foundation/include/pkcl-posix/` | Newlib のヘッダに足す POSIX ヘッダ（`dirent.h`、`termios`、`poll.h`、`sys/socket.h`、`netdb.h`…）と、Newlib が隠す宣言（`lstat`、`nanosleep`、`getline`…）の補い |
 | `foundation/lib/pkcl/` | 実装（`errno.c`、`fd.c`、`fs.c`、`crt.c`） |
-| `foundation/tests/pkcl/` | 実際の fs・console に対するゲストテスト |
+| `foundation/lib/pkcl/newlib/` | Newlib の OS 層（`_open`、`_sbrk`、`_gettimeofday`…）を pkcl に結ぶアダプタ |
+| `foundation/lib/pkcl/posix/` | libc ありで足す POSIX（`DIR`、端末・`ioctl`・`poll`、ソケットの失敗スタブ、プロセス・時刻・シグナルの縮退、ユーザー DB、`fnmatch`） |
+| `tools/pkcl/` | BusyBox のビルド（`busybox.py`、`busybox.config`、`busybox_stubs.c`） |
+| `foundation/tests/pkcl/` | 実際の fs・console に対するゲストテストと BusyBox のテスト |
 
 ### 3.2 ビルド
 
@@ -48,7 +53,7 @@ python tools/llvm-src32/driver.py app.c foundation/lib/pkcl/*.c \
     --entry pkcl_start --wax3 --import-wal root/lib/fnd.1.wal ...
 ```
 
-- `-I foundation/include/pkcl` を**先頭**に置き、libc のヘッダより先に pkcl のヘッダを見せます（libc 統合後は §9 で調整）。
+- libc なしなら `-I foundation/include/pkcl-nolibc` を先頭に置きます。Newlib を使うときは `--newlib-profile posix`（§9）と `-I foundation/include/pkcl-posix`、`-DPKCL_LIBC` を指定します。
 - WAL `fnd` を import する WAX v3 が基本です。静的 libfnd（WAX v2）でも動きます。
 
 ### 3.3 起動
@@ -221,12 +226,12 @@ BusyBox は GPL-2.0 なので、**リポジトリには含めません**。Newli
 | 必要なもの | 状態 |
 |---|---|
 | ファイル I/O、`stat`、`mkdir` 等 | 実装済み（§6.1〜6.3） |
-| `DIR`（`ls`、`cp -r`、`rm -r`） | M1 |
-| libc：`stdio`（`printf` 系、`fopen`、バッファ）、`strtol`、`qsort`、`getopt`、`regcomp`（`grep`、`sed`）、`locale` の最小 | M2（libc 統合） |
-| `setjmp`/`longjmp`（ash が必須） | G7 |
-| `posix_spawn`、`waitpid`（外部コマンド、`xargs`、`find -exec`） | M3 |
-| `pipe`（シェルのパイプ、`popen`） | M4 |
-| `termios`、`ioctl`、`signal`（対話シェル、`vi`、`top`） | M4 |
+| `DIR`（`ls`、`cp -r`、`rm -r`） | 実装済み（`posix/dirent.c`） |
+| libc：`stdio`（`printf` 系、`fopen`、バッファ）、`strtol`、`qsort`、`getopt`、`regcomp`（`grep`、`sed`）、`locale` の最小 | 実装済み（Newlib の posix プロファイル、§9） |
+| `setjmp`/`longjmp`（ash が必須） | 未対応。`posix/setjmp.c` は `setjmp` が 0 を返し `longjmp` は終了する仮実装（G7） |
+| `posix_spawn`、`waitpid`（外部コマンド、`xargs`、`find -exec`） | `execve` 系は「子を起動して終了を待ち、終了コードで自分も終わる」代理実装。`vfork`／`waitpid` は失敗（M2 の残り） |
+| `pipe`（シェルのパイプ、`popen`） | `ENOSYS`（G3、M4） |
+| `termios`、`ioctl`、`signal`（対話シェル、`vi`、`top`） | termios／`TIOCGWINSZ` は console の LINE／RAW に対応。`sigaction` は登録を受け付けるだけで配送されない。`poll` は要求をそのまま準備済みとして返す（G9） |
 | `getpwnam` 等 | BusyBox の `USE_BB_PWD_GRP` で自前実装を使い、`/etc/passwd` を読む |
 | 浮動小数点 | `llvm-src32` が SoftFloat で対応済み。BusyBox は `awk`、`dc` 以外で不要 |
 
@@ -236,26 +241,52 @@ BusyBox の NOMMU 構成（`CONFIG_NOMMU`）と NOFORK／NOEXEC applet（`FEATUR
 
 ### 8.4 ビルド
 
-`tools/pkcl/busybox.py`（予定）が、`--busybox-source PATH` の外部ソース、pkcl、libc を `tools/llvm-src32/driver.py` に渡して `busybox.wax` を作り、`/bin/busybox.wax` と各 applet 名のファイルをディスクに置きます（シンボリックリンクがないので、applet ごとに 1 つの小さな WAX で `busybox` を spawn し引数を足す、または shell 側のディスパッチ。`foundation/bin` の方式に合わせる）。WAX は 1 MiB の `FND_EXEC_IMAGE_MAX` に収まる必要があります（BusyBox は applet を絞って組む）。
+`tools/pkcl/busybox.py` が、`--busybox-source PATH` の外部ソース、`--newlib-source PATH` の Newlib、pkcl を `tools/llvm-src32/driver.py` に渡して `busybox.wax` を作ります。
+
+```
+python3 tools/pkcl/busybox.py --busybox-source /path/to/busybox-1.36.1 \
+    --newlib-source /path/to/newlib-4.4.0.20231231 --fnd-wal root/lib/fnd.1.wal --out build/busybox
+```
+
+1. `allnoconfig` に `tools/pkcl/busybox.config` の差分を重ね、ホストの gcc で `make V=1` して生成ヘッダとコンパイルコマンド（`-I`／`-D`／`-include`）を集める。
+2. 各翻訳単位を `driver.py -c` で LLVM IR にする（`-Os`、`gnu11`）。`-D__clang_major__=0` で Clang 向けのインラインアセンブリの分岐を避け、`-DBB_GLOBAL_CONST=` で `ptr_to_globals` を rodata に置かせない（U モードで書込みフォルトになる）。バリアの空 asm は IR から消す。
+3. 全部を一度にリンクして `busybox.wax`（WAX v3、`fnd` WAL を import）を作る。
+
+`/bin/busybox.wax` を置いて `busybox echo hi` のように呼びます（シンボリックリンクがないので applet 名のファイルは作らない。必要なら小さな WAX か shell 側のディスパッチ）。WAX は 1 MiB の `FND_EXEC_IMAGE_MAX` に収まる必要があり、シェルのヒープ（スロット 4 は 2 MiB）に丸ごと読み込まれるので、**サイズが applet の数を決める**。現在の構成は 1.04 MB です。サイズの内訳と抑えている手段は §9 を参照。
+
+**設定が選ぶもの**：`CONFIG_NOMMU=y`、`CONFIG_LFS=n`（`off_t` は 32 bit）、`CONFIG_STATIC=y`、シェル（ash／hush）なし。applet は `cat echo true false pwd basename dirname head wc mkdir rmdir rm cp mv ls sleep test printf`。applet を足すにはサイズを確認すること（`tools/pkcl/busybox.py` のあとで `busybox.wax` が 1 MiB 未満であること。テストも確認する）。
 
 ## 9. libc の方針
 
-`tools/llvm-src32` の Newlib 統合は、現状は文字列・整数・`qsort`・nano allocator だけで、`printf`/stdio/ファイル I/O は未対応です（`examples/newlib-c/README.md`）。pkcl は libc を持たず、次の順で進めます。
+pkcl は libc を持たず、Newlib（`--newlib-source` の外部ソース。同梱しない）を使います。`tools/llvm-src32` の Newlib 統合には 2 つのプロファイルがあります。
 
-1. **M2**：Newlib の stdio を載せられるか調査する。必要なのは `_open_r`/`_read_r`/`_write_r`/`_close_r`/`_lseek_r`/`_fstat_r`/`_isatty_r`/`_sbrk_r` などの reent 層で、これは pkcl の関数へ 1 対 1 の薄いアダプタ（`pkcl/newlib_syscalls.c`、予定）にできます。障害になりそうな `llvm-src32` の未対応事項（`_impure_ptr`、TLS、`setjmp`、atomic）は Issue にします。
-2. 載せられない場合の代替：`printf` 系だけ自前の最小実装（`sol/cpt32` の C 版や `sdk/cpt32/src/print.c` 相当）を pkcl の `libc-lite` として持つ。
-3. pkcl のヘッダは libc のヘッダと衝突しないよう、`errno`、`fcntl`、`unistd`、`sys/stat`、`sys/types` だけを持ち、`stdio.h` などは libc のものを使います。
+- `portable`（既定）：文字列・整数・`qsort`・nano allocator だけを、必要なものだけコンパイルする。
+- `posix`（`--newlib-profile posix`）：`argz ctype errno locale misc reent search signal stdio stdlib string time` と `libm` のほぼ全部を一度 IR にして `--newlib-cache` に置き、**未解決シンボルの索引**から必要な翻訳単位だけをリンクする。OS 層（`posix/`、`sys/`、`machine/`）は pkcl（`foundation/lib/pkcl/newlib/syscalls.c`）が `_open` や `_sbrk` などを pkcl の POSIX 関数と `fnd_sys_mem_grow` に結ぶ。
+
+posix プロファイルの判断（サイズが 1 MiB の制約に直結するため）：
+
+| 判断 | 理由 |
+|---|---|
+| ライブラリは `-Os` | `-O0` では BusyBox が 1.8 MB |
+| nano の scanf を使い、printf は full | nano の printf は `%lld` に対応しない（`ll` を解釈せず "ld" と出力する）。BusyBox の `printf` が必要とする |
+| full の `_svfprintf_r`（文字列用）と整数専用の `_vfiprintf_r`／`_svfiprintf_r` を、`_vfprintf_r` への転送関数にする（`runtime/newlib/stdio_i.c`） | 同じ整形器が 3 つ入って約 130 KB 増える。文字列の FILE は fd を持たないので full の整形器がそのまま書ける |
+| IR のエイリアスを転送関数に、`weak`／`extern_weak` を強いシンボルに書き換える | バックエンドにエイリアスと弱いシンボルがない。nano scanf の `_scanf_float` を常にリンクするため、BusyBox は `tools/pkcl/busybox_stubs.c` の失敗スタブで置き換えて strtod 一式（約 60 KB）を外す |
+| `setjmp`／`longjmp` は仮実装 | G7 |
+
+バックエンドに足した命令（最適化したコードが出す）：`llvm.fshl`／`llvm.fshr`（i32 は変数のシフト量、i64 は定数のシフト量）、`llvm.umul.with.overflow.i64`、`llvm.uadd.sat`（32 bit 以下）、`llvm.get.rounding`／`llvm.set.rounding`、グローバル初期値の `undef`／`poison`。Clang は `-std=gnu11` で、`asm` キーワードが使えます（インラインアセンブリそのものは未対応）。
+
+pkcl のヘッダは libc なしの `pkcl-nolibc`（`errno`、`fcntl`、`unistd`、`sys/stat`、`sys/types`）と、Newlib のヘッダの足りない分を補う `pkcl-posix` に分かれます。`pkcl-posix` のラッパーは `#include_next` で Newlib のヘッダを呼び、隠されている宣言を足します。
 
 ## 10. マイルストーンと Issue
 
 | マイルストーン | 内容 | 状態 |
 |---|---|---|
-| M0 | 設計、ヘッダ、fd I/O、パス操作、errno、起動コード、ゲストテスト | **この PR** |
-| M1 | ディレクトリ（`DIR`）、`O_DIRECTORY`、`statvfs`、`chown`、`dup3`、`pread`/`pwrite` | 予定 |
-| M2 | libc 統合（Newlib stdio を調査）、`posix_spawn`・`waitpid`・代理 `execve` | 予定 |
-| M3 | 環境変数（G2）、`getpid`（G1）、時刻、`sleep` | 予定 |
-| M4 | pipe サービス（G3）、`poll`、シグナル、termios | 予定 |
-| M5 | BusyBox のビルド統合（`--busybox-source`）、最初の applet、ash／hush の調査、`setjmp`（G7） | 予定 |
+| M0 | 設計、ヘッダ、fd I/O、パス操作、errno、起動コード、ゲストテスト | 完了 |
+| M1 | ディレクトリ（`DIR`）、`O_DIRECTORY`、`statvfs`、`chown`、`dup3`、`pread`/`pwrite` | `DIR`・`chown` 縮退は完了。残りは予定 |
+| M2 | libc 統合（Newlib の posix プロファイル）、代理 `execve` | 完了。`posix_spawn`・`waitpid` は予定 |
+| M3 | 環境変数（G2）、`getpid`（G1）、時刻、`sleep` | 時刻・`sleep` は完了。G1・G2 は予定（`getpid` は 1 を返す仮実装） |
+| M4 | pipe サービス（G3）、`poll`、シグナル、termios | termios は完了。他は予定 |
+| M5 | BusyBox のビルド統合（`--busybox-source`）、最初の applet、ash／hush の調査、`setjmp`（G7） | ビルド統合と最初の applet は完了。ash／hush と `setjmp` は予定 |
 | M6 | 64 bit オフセット（G8）、`utime`（G5）、inode（G4） | 予定 |
 
 各 Issue は GitHub Issues にあります。GitHub のマイルストーンは分野の分類（Foundation OS）で、上の M は Issue タイトルの接頭辞に書きます。
@@ -267,6 +298,15 @@ BusyBox の NOMMU 構成（`CONFIG_NOMMU`）と NOFORK／NOEXEC applet（`FEATUR
 ```
 python3 -m unittest discover -s foundation/tests/pkcl -v
 ```
+
+BusyBox のテスト（`test_busybox.py`）は GPL のソースを置かないので、環境変数を渡したときだけ走ります。
+
+```
+SRC32_BUSYBOX_SOURCE=/path/to/busybox-1.36.1 SRC32_NEWLIB_SOURCE=/path/to/newlib-4.4.0.20231231 \
+    python3 -m unittest discover -s foundation/tests/pkcl -k busybox -v
+```
+
+BusyBox のビルドが数分、起動が 1 MiB のイメージの読み込みで遅いので、全体で数分かかります。
 
 - Clang と `llvmlite` の LLVM のメジャー版を合わせてください（`CLANG` で指定）。`src32_testbench` は release ビルドを使います（`SRC32_TESTBENCH`）。
 - ゲストは `--entry pkcl_start` で `main(argc, argv)` を持ち、失敗は失敗した行番号で終了します。テストは `pkcl guest passed` の出力と `status=0` を確認します。

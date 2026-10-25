@@ -117,7 +117,8 @@ def target_sources(build: Path):
 
 def driver_args(args):
     return ["--newlib-source", str(args.newlib_source), "--newlib-profile", "posix",
-            "--newlib-cache", str(args.cache), *(["--clang", args.clang] if args.clang else [])]
+            *(["--newlib-cache", str(args.cache)] if args.cache else []),
+            *(["--clang", args.clang] if args.clang else [])]
 
 
 EMPTY_ASM = re.compile(r'^\s*(?:tail )?call void asm sideeffect "",.*\n', re.M)
@@ -144,6 +145,7 @@ def compile_all(args, build: Path, out: Path):
         ir = out / (obj.replace("/", "-")[:-2] + ".ll")
         command = [sys.executable, str(DRIVER), "-c", source, args.optimization,
                    "-D", "__clang_major__=0",  # インラインアセンブリを使う Clang 向け分岐を避ける
+                   "-D", "BB_GLOBAL_CONST=",   # ptr_to_globals を rodata に置かない（U モードでは書込みフォルトになる）
                    "-I", str(ROOT / "foundation/include/pkcl-posix"), *driver_args(args), "-o", str(ir)]
         for kind, value in flags:
             if kind == "-I":
@@ -174,7 +176,7 @@ def compile_all(args, build: Path, out: Path):
 
 def link(args, irs, out: Path):
     sources = [PKCL / name for name in ("errno.c", "fd.c", "fs.c", "crt.c", "newlib/syscalls.c")]
-    extra = sorted(PKCL.glob("posix/*.c"))
+    extra = [*sorted(PKCL.glob("posix/*.c")), HERE / "busybox_stubs.c"]
     command = [sys.executable, str(DRIVER), *map(str, irs), *map(str, sources), *map(str, extra), args.optimization,
                "-I", str(ROOT / "foundation/include"), "-I", str(ROOT / "sdk/cpt32/include"),
                "-I", str(ROOT / "foundation/include/pkcl-posix"), "-D", "PKCL_LIBC",

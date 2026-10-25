@@ -20,17 +20,17 @@ SOURCES.update({name: f"search/{name}.c" for name in ("qsort", "bsearch")})
 POSIX_DIRS = ("libc/argz", "libc/ctype", "libc/errno", "libc/locale", "libc/misc", "libc/reent",
               "libc/search", "libc/signal", "libc/stdio", "libc/stdlib", "libc/string", "libc/time",
               "libm/common", "libm/math")
-POSIX_EXCLUDE = ("mallocr", "malloc.c", "mlock", "nano-mallocr", "sbrkr", "mstats", "malloc_r",
+POSIX_EXCLUDE = ("nano-vfprintf", "nano-svfprintf", "/stdio/vfiprintf.c", "/stdio/svfiprintf.c", "/stdio/svfprintf.c", "mallocr", "malloc.c", "mlock", "nano-mallocr", "sbrkr", "mstats", "malloc_r",
                  "/stdlib/cxa_", "/stdlib/callocr.c", "/stdlib/cfreer.c", "/stdlib/freer.c", "/stdlib/malignr.c",
                  "/stdlib/mallinfor.c", "/stdlib/malloptr.c", "/stdlib/mallstatsr.c", "/stdlib/msizer.c",
                  "/stdlib/pvallocr.c", "/stdlib/realloc.c", "/stdlib/calloc.c", "/stdlib/free.c", "/stdlib/valloc.c", "/stdlib/pvalloc.c", "/stdlib/memalign.c", "/stdlib/mallinfo.c", "/stdlib/malloc_usable_size.c", "/stdlib/reallocr.c", "/stdlib/vallocr.c", "/stdlib/mallocr.c", "/misc/ffs", "fdopen64", "/stdio64/",
                  # the driver's own string.c supplies these (it compiles them at -O2)
                  "/string/memcpy.c", "/string/memmove.c", "/string/memset.c", "/string/memcmp.c", "/string/strlen.c")
 # Files that Newlib compiles as variants of another file; compile only the first of a group.
-POSIX_PRIORITY = ("stdio/nano-vfprintf.c", "stdio/nano-svfprintf.c", "stdio/nano-vfscanf.c", "stdio/nano-svfscanf.c",
-                  "stdio/nano-vfprintf_i.c", "stdio/nano-vfscanf_i.c")
+POSIX_PRIORITY = ("stdio/nano-vfscanf.c", "stdio/nano-svfscanf.c", "stdio/nano-vfscanf_i.c")
 POSIX_DEFINES = ("_COMPILING_NEWLIB", "_GNU_SOURCE")
-CACHE_VERSION = "5"  # 2: the library is compiled with -Os (it was -O0)
+CACHE_VERSION = "7"  # 2: the library is compiled with -Os (it was -O0)
+INTEGER_PRINTF = ("_vfiprintf_r", "vfiprintf", "_svfiprintf_r", "_svfprintf_r")
 REENT_ALLOCATORS = ("_malloc_r", "_free_r", "_realloc_r", "_calloc_r", "__malloc_lock", "__malloc_unlock")
 ALLOCATORS = ("malloc", "free", "calloc", "realloc", "malloc_usable_size")
 
@@ -195,4 +195,7 @@ class Newlib:
         if self.posix and missing & set(REENT_ALLOCATORS) and "reent-alloc" not in self.loaded:
             self.loaded.add("reent-alloc")
             result.append(("reent-alloc", PORT / "reent_alloc.c", []))
+        if self.posix and missing & set(INTEGER_PRINTF) and "stdio-i" not in self.loaded:
+            self.loaded.add("stdio-i")
+            result.append(("stdio-i", PORT / "stdio_i.c", []))
         return result
