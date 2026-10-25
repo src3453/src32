@@ -77,7 +77,7 @@ static int32_t identify(const struct blk_req *r) {
 static void start(const struct blk_req *r) {
     idc_clear();
     FND_REG32(IDC_DMA_GLOBAL_CONTROL) = 1u;
-    FND_REG32(IDC_DMA_CHANNEL_ENABLE) = 1u;
+    FND_REG32(IDC_DMA_CHANNEL_ENABLE) = FND_REG32(IDC_DMA_CHANNEL_ENABLE) | 1u;
     FND_REG32(IDC_IRQ_ENABLE) = IDC_IRQ_BITS;
     FND_REG16(FND_IRQC_ENABLE) = FND_REG16(FND_IRQC_ENABLE) | (1u << FND_IRQ_IDC);
     FND_REG32(IDC_DRIVE_SELECT) = r->drive;

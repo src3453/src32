@@ -9,9 +9,12 @@ cargo build --release --bin src32_testbench
 python foundation/tests/perf/bench_ipc.py target/ipc-bench --mm vm slot
 python foundation/tests/perf/bench_ipc.py target/ipc-bench-equal --priority equal
 python foundation/tests/perf/bench_ipc.py target/ipc-bench-pipeline --cpu pipeline --repeats 1
+python foundation/tests/perf/bench_ipc.py target/ipc-cpu --dma-min 0
 ```
 
 `--clang` / `CLANG`、`--testbench` / `SRC32_TESTBENCH` で実行ファイルを指定できます。`--rounds` はバッチ内の反復数（既定64、最大512）、`--repeats` は独立した起動回数（既定3）です。出力ディレクトリは条件ごとに分けてください。毎回ビルドし、イメージ、ビルドログ、実行ログ、`results.json` を保存します。`FND_MM` に関係なく `--mm` がバックエンドを選び、ゲストでも実際の選択を検証します。
+
+カーネルのDMAコピー追加後は `--dma-min 256` が既定です。`--dma-min 0` で同じソースからCPU専用イメージを作れます。値は物理的に連続するコピー片の長さに対する閾値で、VMではメッセージ全体が大きくても短いページ端の片はCPUコピーになります。JSONの `copy_dma_min` がない従来の基準値はDMA導入前です。DMA導入の結果は [分析の追記](../../../doc/foundation_ipc_performance.md#同期dmaコピーの試作174) を参照してください。
 
 ## 測定対象と単位
 

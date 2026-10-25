@@ -44,7 +44,9 @@ void mm_release(struct fnd_proc *proc);
 int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm);
 
 /* Copies for addresses proc_user_range_ok accepted. kmem_copy and kmem_zero
- * work on physical (kernel) addresses. */
+ * work on physical (kernel) addresses. kmem_copy may use synchronous DMAC
+ * ch1 for disjoint Main RAM ranges >= FND_COPY_DMA_MIN (default 256 bytes).
+ * User translations/permission checks still belong to the mm_copy_* caller. */
 void kmem_copy(uint32_t dst, uint32_t src, uint32_t len);
 void kmem_zero(uint32_t start, uint32_t end);
 

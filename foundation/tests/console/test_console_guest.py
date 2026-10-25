@@ -91,6 +91,11 @@ class ConsoleGuestTests(unittest.TestCase):
         self.assertIn('console guest passed', text)
         self.assertIn('status=0', text)
 
+    def test_bulk_console_and_disk_io(self):
+        text = self.run_console('concheck bulk\\n', 'echo status=$?\\n', spacing=220)
+        self.assertIn('bulk console/fs passed', text)
+        self.assertIn('status=0', text)
+
     def test_mode_40_query_and_line_edit(self):
         text = self.run_console('mode 40\\n', 'mode\\n', 'echo wrld\\L\\L\\Lo\\n',
                                 final=[(0x8000F003, 0)])

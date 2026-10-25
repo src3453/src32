@@ -221,6 +221,8 @@ cmake --build target/foundation
 
 IPCの性能測定は [tests/perf/README.md](tests/perf/README.md) を参照してください。VM/slot、メッセージサイズ、整列、`reply_recv` を実際のUモード間通信で比較し、[基準値と改善候補](../doc/foundation_ipc_performance.md) を記録しています。
 
+カーネルは256 bytes以上の重ならないMain RAMコピーに同期DMA（専用ch1）を使用します。IPCのペイロードとディスク用bounce bufferのコピーが対象に含まれ、短いIPCやconsole内の文字描画はCPU処理です。[同期DMAの契約](../doc/spec_Foundation.md#541-カーネル内の同期dmaコピー)。境界・チャネル共存の確認は `python -m unittest discover -s foundation/tests/perf -p test_copy.py -v`、console/fsの大容量I/O確認は `python -m unittest foundation.tests.console.test_console_guest.ConsoleGuestTests.test_bulk_console_and_disk_io -v`（`FND_MM=slot`でも実行）です。
+
 `tests/phase1` は、[実装案 §8](../doc/foundation_os_plan.md) のフェーズ1の条件を確認します。tick フックの中で検査し、成功すると R1=42、失敗すると `0x100 + 失敗数` で停止します。
 
 - yield しない U モードのカウンタ A・B が両方とも進むこと。

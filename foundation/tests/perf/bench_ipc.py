@@ -58,11 +58,15 @@ def main():
     parser.add_argument('--rounds', type=positive, default=64)
     parser.add_argument('--repeats', type=positive, default=3)
     parser.add_argument('--priority', choices=['service', 'equal'], default='service')
+    parser.add_argument('--dma-min', type=int, default=256,
+                        help='minimum physical copy size for DMA; 0 disables DMA')
     parser.add_argument('--clang', default=os.environ.get('CLANG') or shutil.which('clang') or
                         'C:/Program Files/AMD/ROCm/6.4/bin/clang.exe')
     parser.add_argument('--testbench', type=Path, default=Path(os.environ.get('SRC32_TESTBENCH',
                         str(ROOT / 'target/release' / ('src32_testbench.exe' if os.name == 'nt' else 'src32_testbench')))))
     args = parser.parse_args()
+    if args.dma_min < 0:
+        parser.error('--dma-min must be non-negative')
     # Each delta must stay well below the 32-bit accounting clock wrap.
     if args.rounds > 512:
         parser.error('--rounds must be <= 512; increase --repeats for more samples')
@@ -75,6 +79,7 @@ def main():
     harness = args.testbench.resolve()
     clang = shutil.which(args.clang) or args.clang
     metadata = dict(cpu=args.cpu, rounds=args.rounds, repeats=args.repeats, priority=args.priority,
+                    copy_dma_min=args.dma_min,
                     clock_hz=48000000, optimization='-O1', warmup=8,
                     git=run(['git', 'rev-parse', 'HEAD'], ROOT, 10).strip(),
                     dirty=bool(run(['git', 'status', '--porcelain'], ROOT, 10).strip()),
@@ -91,7 +96,7 @@ def main():
         command = [sys.executable, ROOT / 'tools/llvm-src32/driver.py', '--clang', clang, *sources,
                    '-I', ROOT / 'sdk/cpt32/include', '-I', ROOT / 'foundation/include',
                    '-I', ROOT / 'foundation/kernel', '--origin', '0x10000', '--stack-top', '0x100000',
-                   '-O1', '-D', f'BENCH_ROUNDS={args.rounds}', '-D',
+                   '-O1', '-D', f'FND_COPY_DMA_MIN={args.dma_min}', '-D', f'BENCH_ROUNDS={args.rounds}', '-D',
                    'BENCH_SERVER_PRIORITY=' + ('1' if args.priority == 'service' else '2'), '-o', image]
         if mm == 'slot':
             command += ['-D', 'FND_MM_SLOT_ONLY']

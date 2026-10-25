@@ -17,8 +17,31 @@ static void display(uint32_t mode, uint32_t width) {
     CHECK(reply.a0 == width && reply.a1 == 30);
     cursor(0, 0);
 }
+static void bulk_io(void) {
+    uint8_t *memory = fnd_mem_alloc(8193 + 4);
+    CHECK(memory);
+    uint8_t *data = memory + 1; /* unaligned IPC and multiple pages */
+    for (uint32_t i = 0; i < 8193; ++i) data[i] = (uint8_t)(i * 37u + 11u);
+    fnd_handle file;
+    CHECK(fnd_file_open("/dma-copy.bin", FND_OPEN_WRITE | FND_OPEN_CREATE | FND_OPEN_TRUNC,
+                        FND_MODE_DEFAULT, &file) == FND_OK);
+    uint32_t count;
+    CHECK(fnd_write(file, data, 8193, &count) == FND_OK && count == 8193);
+    CHECK(fnd_close(file) == FND_OK);
+    for (uint32_t i = 0; i < 8193; ++i) data[i] = 0;
+    CHECK(fnd_file_open("/dma-copy.bin", FND_OPEN_READ, FND_MODE_DEFAULT, &file) == FND_OK);
+    CHECK(fnd_read(file, data, 8193, &count) == FND_OK && count == 8193);
+    for (uint32_t i = 0; i < 8193; ++i) CHECK(data[i] == (uint8_t)(i * 37u + 11u));
+    CHECK(fnd_read(file, data, 1, &count) == FND_OK && count == 0);
+    CHECK(fnd_close(file) == FND_OK);
+    for (uint32_t i = 0; i < 4096; ++i) data[i] = i % 80u == 79u ? '\n' : 'D';
+    CHECK(fnd_write(fnd_std_out(), data, 4096, &count) == FND_OK && count == 4096);
+    out("\033[H\033[2Jbulk console/fs passed\n");
+    fnd_mem_free(memory);
+}
 int main(void) {
     fnd_init();
+    if (fnd_argc() > 1) { bulk_io(); return 0; }
     display(FND_CON_DISPLAY_40, 40);
     out("1234567890123456789012345678901234567890"); cursor(0, 1);
     out("\b"); cursor(39, 0);

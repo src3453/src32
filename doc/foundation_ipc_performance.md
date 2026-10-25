@@ -33,3 +33,36 @@ Cached/VM/SERVICEを128反復でも確認しました（独立起動1回）。�
 ## 保存した証拠
 
 [`foundation/tests/perf/baselines/`](../foundation/tests/perf/baselines/) のJSONに、CachedのSERVICE／同優先度とPipelineのSERVICE、追加の128反復確認を保存しています。数値はゲスト48 MHzクロックで、ホストの秒数ではありません。CIで絶対時間を閾値判定する用途より、同一条件での改善前後比較を意図しています。
+
+## 同期DMAコピーの試作（#174）
+
+`kmem_copy` に、重ならないMain RAMの256 bytes以上をDMAC ch1で同期転送する経路を追加しました。権限検証、VMの物理ページごとの分割、IPCの完了タイミングは従来どおりです。相対的な整列位置が一致する場合、先頭/末尾をCPU、本体を32-bit DMAで処理します。位置が異なる場合は8-bit DMAです。短いコピーと使用不可時はCPU経路を使います。
+
+同じ変更後ソースを `--dma-min 0` と `--dma-min 256` でビルドして比較しました。Cached、SERVICEサーバー、64往復×3起動、`reply_recv` のバッチ平均の中央値です。両設定とも各起動の値は同一でした。
+
+| 要求/応答のデータ量 | VM CPU µs/往復 | VM DMA µs/往復 | slot CPU µs/往復 | slot DMA µs/往復 |
+|---|---:|---:|---:|---:|
+| 0 B | 391.40 | 398.81 | 367.78 | 369.92 |
+| 32 B | 441.02 | 450.45 | 396.77 | 398.90 |
+| 256 B | 509.27 | 457.21 | 466.06 | 405.69 |
+| 4096 B、ページ先頭 | 1688.25 | 499.45 | 1644.24 | 448.82 |
+| 4096 B、先頭+1 B | 8893.89 | 553.14 | 8804.25 | 458.21 |
+
+4096 B整列時の往復はVMで3.38倍、slotで3.66倍高速化しました。非整列時は16.08倍／19.21倍です。これは「往復全体」の倍率であり、DMA単体の帯域ではありません。256 BもVMで10.2%／slotで13.0%短縮しました。一方、CPU経路を使う0/32 Bにも分岐やコード配置等の費用が加わり、VMで約1.9〜2.1%、slotで約0.5〜0.6%増加しました。短い制御IPCの改善は引き続き別の課題です。
+
+PipelineでもDMA有効の全11ケースをVM/slotで各1起動検証しました。VMの4096 Bは整列598.57 µs／非整列667.23 µs、slotは532.91／543.48 µsです。今回の変更後ソースによるPipelineのCPU専用比較は実行していません。
+
+### console / fs への適用範囲
+
+consoleのST_WRITEペイロード、fsのST_READ/ST_WRITE、disk I/OのVM bounce bufferとユーザーバッファの間など、カーネルの `mm_copy_*` を通る大きなコピーに適用されます。disk用ch0とコピー用ch1のenableビットを共存させました。
+
+consoleのUTF-8/ANSI解析、文字ごとのPCG描画、キー入力の10 msポーリング、fs内部のキャッシュ・メタデータ処理やユーザー空間内のコピーは、この変更ではDMA化しません。console/fsが体感上の主な待ち時間であるという観察に対し、まずコピー部分を短縮する変更です。サービス全体の高速化率はまだ計測していません。次は大量のconsole出力とファイルread/writeの時間を、IPC転送、サービスのuser CPU時間、disk待ちに分けて測るのが有効です。
+
+### 検証
+
+- `python -m unittest discover -s foundation/tests/perf -p test_copy.py -v`：実DMACで全16組のsrc/dst整列、0〜8193 B、ガードbyte、重なり、無効BMC/DMAC、busy/stale error、ch0併走とIRQ/enable保持、非連続なVM物理ページ間の転送を確認。閾値256/1 × Cached/Pipelineの4構成が通過。
+- VMの既存shell/console検証6件（banner、cat/cp、diskへのredirect、clear/scroll、ANSI、mode/redirect）が通過。追加のbulk I/Oも通過。
+- slotでcat/cp、redirect、ANSI、bulk I/Oの4件が通過。bulk I/Oは非整列8193 Bのファイルwrite/read/EOF検証と4096 Bのconsole出力を行う。
+- CachedではCPU専用／DMA、VM／slotを各3起動、PipelineではDMA、VM／slotを各1起動。生データは `baselines/2026-10-25-copy-*.json`。
+
+同期方式なので転送中はカーネルを占有し、他のプロセスは実行しません。DMAエラー後のCPU再コピーは重ならない範囲だけに限定しています。非同期化する場合には、対象ページの寿命管理、終了時の停止、IRQ1の完了処理を別途設計する必要があります。

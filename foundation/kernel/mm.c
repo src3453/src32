@@ -8,9 +8,72 @@
 int mm_vm;
 static int mm_decided;
 
+/* Synchronous RAM copies reserve DMAC ch1; disk I/O owns ch0. The kernel
+ * is not preempted, so no process can exit or change mappings while we wait.
+ * Keep the CPU path for small copies and for platforms without the DMAC.
+ * Set to 0 for a CPU-only comparison build. */
+#ifndef FND_COPY_DMA_MIN
+#define FND_COPY_DMA_MIN 256u
+#endif
+#if FND_COPY_DMA_MIN > 0
+#define COPY_DMA_REG(offset) FND_REG32(0x80050000u + (offset))
+#define COPY_DMA_BIT 2u
+static int copy_dma(uint32_t dst, uint32_t src, uint32_t len) {
+    uint32_t ram = mm_ram_bytes();
+    if (src >= ram || dst >= ram || len > ram - src || len > ram - dst)
+        return 0;
+    /* A partial DMA followed by CPU fallback is safe only for disjoint ranges.
+     * Preserve the existing forward-copy behavior for overlapping ranges. */
+    if ((dst > src && dst - src < len) || (src > dst && src - dst < len))
+        return 0;
+    if (COPY_DMA_REG(0) != 0x444D4101u || !(FND_REG32(0x80060004u) & 1u) ||
+        !(COPY_DMA_REG(4) & 1u) ||
+        (COPY_DMA_REG(0x130) & 1u))
+        return 0;
+    uint32_t width = 0; /* byte beats also support differing alignments */
+    if (((dst ^ src) & 3u) == 0) {
+        while (len && (src & 3u)) {
+            *(volatile uint8_t *)(uintptr_t)dst++ = *(const volatile uint8_t *)(uintptr_t)src++;
+            --len;
+        }
+        width = 2u; /* 32-bit increment/increment */
+    }
+    uint32_t bytes = width ? len & ~3u : len;
+    if (!bytes) {
+        for (uint32_t i = 0; i < len; ++i)
+            *(volatile uint8_t *)(uintptr_t)(dst + i) = *(const volatile uint8_t *)(uintptr_t)(src + i);
+        return 1;
+    }
+    COPY_DMA_REG(8) = COPY_DMA_REG(8) | COPY_DMA_BIT;
+    COPY_DMA_REG(0xC) = COPY_DMA_REG(0xC) & ~COPY_DMA_BIT; /* polling, no IRQ */
+    COPY_DMA_REG(0x10) = COPY_DMA_BIT;
+    COPY_DMA_REG(0x130) = 6u; /* clear this channel's DONE/ERROR */
+    COPY_DMA_REG(0x138) = 0u; /* P0: share bus with CPU polling, no starvation */
+    COPY_DMA_REG(0x120) = src;
+    COPY_DMA_REG(0x124) = dst;
+    COPY_DMA_REG(0x128) = bytes;
+    COPY_DMA_REG(0x12C) = 0x100u | width;
+    uint32_t status;
+    do { status = COPY_DMA_REG(0x130); } while (status & 1u);
+    uint32_t remain = COPY_DMA_REG(0x134);
+    COPY_DMA_REG(0x130) = 6u;
+    if (!(status & 2u) || (status & 4u) || remain) {
+        /* The caller retries the original, disjoint ranges on the CPU. */
+        return 0;
+    }
+    for (uint32_t i = bytes; i < len; ++i)
+        *(volatile uint8_t *)(uintptr_t)(dst + i) = *(const volatile uint8_t *)(uintptr_t)(src + i);
+    return 1;
+}
+#endif
+
 /* By words, eight per step where it can: the compiler keeps nothing in
  * registers, so the loop overhead is most of the cost. */
 void kmem_copy(uint32_t dst, uint32_t src, uint32_t len) {
+    if (dst == src) return;
+#if FND_COPY_DMA_MIN > 0
+    if (len >= FND_COPY_DMA_MIN && copy_dma(dst, src, len)) return;
+#endif
     uint32_t at = 0;
     if (((dst | src) & 3u) == 0) {
         volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)dst;
