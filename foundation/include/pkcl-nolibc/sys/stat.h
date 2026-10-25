@@ -28,7 +28,7 @@
 #define S_IRWXO 0007
 
 /* FS2 に inode 番号・リンク数・GID・atime はない。st_ino は 0、st_nlink は 1、
- * st_gid は 0、st_atime は st_mtime と同じ（doc/spec_pkcl.md §6.3）。 */
+ * st_gid は 0、st_rdev は 0、st_blksize は 512、st_atime は st_mtime と同じ（doc/spec_pkcl.md §6.3）。 */
 struct stat {
     dev_t st_dev;
     ino_t st_ino;
@@ -36,10 +36,13 @@ struct stat {
     nlink_t st_nlink;
     uid_t st_uid;
     gid_t st_gid;
+    dev_t st_rdev;
     off_t st_size;
     time_t st_atime;
     time_t st_mtime;
     time_t st_ctime;
+    int32_t st_blksize;
+    int32_t st_blocks;
 };
 
 int stat(const char *path, struct stat *st);

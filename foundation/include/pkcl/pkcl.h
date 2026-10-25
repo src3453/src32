@@ -6,6 +6,11 @@
 /* pkcl の内部境界（doc/spec_pkcl.md §3）。アプリケーションは POSIX の名前だけを使い、
  * これは pkcl の .c 同士と、pkcl をテストするコードのためのものです。 */
 
+/* ファイル記述子は 0..PKCL_OPEN_MAX-1。カーネルのハンドル上限（63）に合わせる。 */
+#ifndef PKCL_OPEN_MAX
+#define PKCL_OPEN_MAX 64
+#endif
+
 /* Foundation のエラーを errno の値に直す。0 以上（成功）は 0。 */
 int pkcl_errno(fnd_status status);
 /* status が負なら errno を設定して -1、そうでなければ 0 を返す。 */

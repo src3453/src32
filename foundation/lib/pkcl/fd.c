@@ -1,6 +1,7 @@
 /* ファイル記述子表と、ストリームに対する POSIX 呼び出し（doc/spec_pkcl.md §6.1）。
  * 1 つの記述子は 1 つの Foundation ハンドル（開いたファイル 1 つ = 1 CHANNEL）を指し、
  * 読み書き位置はサービス側が持つ。dup はハンドルの複製なので、位置を共有する（POSIX どおり）。 */
+#define _GNU_SOURCE 1 /* libc のヘッダに O_CLOEXEC などを出させる */
 #include <errno.h>
 #include <fcntl.h>
 #include <foundation/api.h>

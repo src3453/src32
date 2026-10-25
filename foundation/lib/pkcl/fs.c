@@ -1,4 +1,5 @@
 /* パスに対する POSIX 呼び出し（doc/spec_pkcl.md §6.2〜§6.3）。パスは書き換えず fs へ送る。 */
+#define _GNU_SOURCE 1 /* libc のヘッダに O_CLOEXEC などを出させる */
 #include <errno.h>
 #include <fcntl.h>
 #include <foundation/api.h>
@@ -19,7 +20,10 @@ int pkcl_stat_convert(const fnd_stat_t *fs, struct stat *st) {
     st->st_nlink = 1;
     st->st_uid = fs->uid;
     st->st_gid = 0;
+    st->st_rdev = 0;
     st->st_size = (off_t)fs->size_lo;
+    st->st_blksize = 512;
+    st->st_blocks = (fs->size_lo + 511u) / 512u;
     st->st_mtime = (time_t)(((uint64_t)fs->modified_sec_hi << 32) | fs->modified_sec_lo);
     st->st_atime = st->st_mtime;
     st->st_ctime = (time_t)(((uint64_t)fs->changed_sec_hi << 32) | fs->changed_sec_lo);

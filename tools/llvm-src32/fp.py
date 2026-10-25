@@ -149,7 +149,7 @@ def literal_bits(ty, text):
     """Bit pattern of the LLVM constant `text` (without type) of float/double."""
     text = text.strip()
     double = kind(ty) == "df"
-    if re.fullmatch(r"0x[0-9a-fA-F]{16}", text):
+    if re.fullmatch(r"0x[0-9a-fA-F]{1,16}", text):
         bits = int(text, 16)  # LLVM prints every float constant as a double
         if double:
             return bits

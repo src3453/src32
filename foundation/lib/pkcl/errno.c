@@ -1,9 +1,13 @@
 /* pkcl の errno と変換表（doc/spec_pkcl.md §5）。 */
+#define _GNU_SOURCE 1 /* libc のヘッダに O_CLOEXEC などを出させる */
 #include <errno.h>
 #include <foundation/api.h>
 #include <pkcl/pkcl.h>
 
+/* libc が errno をマクロにしているとき（Newlib は *__errno()）は、その libc が実体を持つ。 */
+#ifndef errno
 int errno;
+#endif
 
 int pkcl_errno(fnd_status status) {
     switch (status) {

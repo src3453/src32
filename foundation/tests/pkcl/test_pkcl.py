@@ -19,7 +19,7 @@ sys.path.insert(0, str(HERE.parent / 'shell'))
 import test_shell  # noqa: E402
 
 PKCL = ROOT / 'foundation/lib/pkcl'
-INCLUDES = ['-I', str(ROOT / 'foundation/include/pkcl'), '-I', str(ROOT / 'foundation/include'),
+INCLUDES = ['-I', str(ROOT / 'foundation/include/pkcl-nolibc'), '-I', str(ROOT / 'foundation/include'),
             '-I', str(ROOT / 'sdk/cpt32/include')]
 
 

@@ -89,6 +89,11 @@ def parser() -> argparse.ArgumentParser:
                    help="parallel Clang invocations (default: CPU count; output does not depend on N)")
     p.add_argument("--newlib-source", type=Path, help="external Newlib source root (optional portable integer/string/allocator profile)")
     p.add_argument("--newlib-heap-size", type=address, default=65536, help="reserved Newlib heap bytes (default 65536; multiple of 8)")
+    p.add_argument("--newlib-profile", choices=("portable", "posix"), default="portable",
+                   help="portable: strings, integers, sort and a bounded allocator; posix: most of libc "
+                        "(stdio, stdlib, time, locale…), leaving errno, sbrk and the system calls to the OS layer")
+    p.add_argument("--newlib-cache", type=Path, help="directory for the compiled Newlib IR of the posix profile "
+                                                      "(default: $SRC32_CACHE or ~/.cache/llvm-src32)")
     return p
 
 
@@ -117,12 +122,21 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     if runtime and (source == ROOT / "runtime" / "string.c" or softfloat):
         optimization = "-O2"
     cxx = source.suffix.lower() in CXX_SUFFIXES
+    newlib = getattr(args, "newlib", None)
+    posix_library = bool(runtime and newlib and newlib.posix)
+    if posix_library:
+        # Newlib is written for GNU C and builds with the old implicit-declaration rules.
+        defines = (*defines, *newlib_posix_defines())
     command = [clang, "--target=mips-unknown-none", "-mabi=o32", "-msoft-float",
                "-ffreestanding", "-fno-builtin", "-ffp-contract=off", "-fno-stack-protector", "-fno-pic", "-fno-pie",
-               "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-nostdinc",
-               "-std=c++17" if cxx else "-std=c11",
+               "-fno-vectorize", "-fno-slp-vectorize", "-fsigned-char", "-G0", "-nostdinc",
+               "-std=c++17" if cxx else "-std=gnu11" if posix_library else "-std=c11",
                optimization, "-S", "-emit-llvm"]
-    newlib = getattr(args, "newlib", None)
+    if posix_library:
+        if source.is_relative_to(newlib.root / "newlib" / "libm"):
+            command.extend(["-I", str(newlib.root / "newlib" / "libm" / "common")])
+        command.extend(["-Wno-error=implicit-function-declaration", "-Wno-error=int-conversion",
+                        "-Wno-error=incompatible-pointer-types", "-Wno-error=implicit-int", "-w"])
     for include in newlib.headers() if newlib else [ROOT / "runtime" / "include"]:
         command.extend(["-isystem", str(include)])
     if newlib:
@@ -151,6 +165,11 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
     if result.returncode:
         raise DriverError(f"Clang failed for {source}:\n{result.stderr.strip() or result.stdout.strip()}")
+
+
+def newlib_posix_defines():
+    from newlib import POSIX_DEFINES
+    return POSIX_DEFINES
 
 
 def load_python(path: Path, name: str):
@@ -304,7 +323,9 @@ def run(args) -> Path:
         if args.newlib_source:
             from newlib import Newlib
             clang = clang or find_clang(args.clang)
-            args.newlib = Newlib(args.newlib_source, clang, args.newlib_heap_size)
+            args.newlib = Newlib(args.newlib_source, clang, args.newlib_heap_size, profile=args.newlib_profile,
+                                 cache=args.newlib_cache, jobs=args.jobs if args.jobs > 0 else (os.cpu_count() or 1))
+            args.newlib.compile_ir = lambda source, ir: compile_c(clang, source, ir, args, runtime=True)
             dependencies.add(args.newlib.root / "COPYING.NEWLIB")
         jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 1)
         args.jobs = jobs
@@ -342,13 +363,18 @@ def run(args) -> Path:
         if args.newlib:
             while True:
                 defined = {f.name for f in linked.functions if not f.is_declaration}
-                missing = {f.name for f in linked.functions if f.is_declaration} - defined
+                defined |= {g.name for g in linked.global_variables if not g.is_declaration}
+                missing = {f.name for f in linked.functions if f.is_declaration}
+                missing |= {g.name for g in linked.global_variables if g.is_declaration}
+                missing -= defined
                 pending = args.newlib.pending(missing, defined)
                 if not pending:
                     break
 
                 def build_newlib(item):
-                    name, source, defines = item
+                    name, source, defines, *cached = item
+                    if cached:  # the posix profile compiled it into its IR cache already
+                        return cached[0], cached[0], None
                     ir = work / f"newlib-{name}.ll"
                     dep = ir.with_suffix(".d") if args.depfile else None
                     # Do not leak application defines/includes into upstream libc.

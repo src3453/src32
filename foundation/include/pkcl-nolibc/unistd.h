@@ -15,9 +15,6 @@
 #define W_OK 2
 #define R_OK 4
 
-/* ファイル記述子は 0..PKCL_OPEN_MAX-1。カーネルのハンドル上限（63）に合わせる。 */
-#define PKCL_OPEN_MAX 64
-
 int close(int fd);
 ssize_t read(int fd, void *buf, size_t len);
 ssize_t write(int fd, const void *buf, size_t len);
