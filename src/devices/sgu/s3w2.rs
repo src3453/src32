@@ -42,9 +42,22 @@ fn wave_phase_step(frequency: u16) -> u64 {
     phase_step_q26(frequency) << 3
 }
 
-/// PCM / SQV4 phase step (Q.29 samples): one eighth of the wavetable step.
+/// Highest FREQUENCY value PCM playback honours (8 samples per 192 kHz tick, 1.536 MHz
+/// sample rate). Larger values act as this limit; the register still reads back as written.
+/// The limit is what the FPGA's SDRAM prefetch buffers are sized for (doc/spec_SGU.md 2.4).
+pub const PCM_FREQ_MAX: u16 = 48_000;
+/// Highest FREQUENCY value SQV4 playback honours (2 samples per tick, 384 kHz): the
+/// ADPCM decoder of the chip produces one sample per few clocks for eight channels.
+pub const SQV4_FREQ_MAX: u16 = 12_000;
+
+/// PCM phase step (Q.29 samples): one eighth of the wavetable step, frequency limited.
 fn pcm_phase_step(frequency: u16) -> u64 {
-    phase_step_q26(frequency)
+    phase_step_q26(frequency.min(PCM_FREQ_MAX))
+}
+
+/// SQV4 phase step (Q.29 samples), frequency limited.
+fn sqv4_phase_step(frequency: u16) -> u64 {
+    phase_step_q26(frequency.min(SQV4_FREQ_MAX))
 }
 /// Per-channel FIFO DAC capacity in 16-bit samples (v2.1).
 pub const FIFO_CAPACITY: usize = 2048;
@@ -975,7 +988,7 @@ impl S3w2Sound {
         } else {
             current << 8
         };
-        channel.phase = channel.phase.wrapping_add(pcm_phase_step(channel.frequency));
+        channel.phase = channel.phase.wrapping_add(sqv4_phase_step(channel.frequency));
         q8
     }
 
@@ -1538,6 +1551,12 @@ mod tests {
         let wave = wave_phase_step(750);
         assert!(wave.abs_diff(1 << PHASE_FRAC_BITS) < (1 << PHASE_FRAC_BITS) / 4_000_000);
         assert_eq!(pcm_phase_step(750) << 3, wave);
+        // PCM and SQV4 clamp the frequency; wavetable and noise do not.
+        assert_eq!(pcm_phase_step(65_535), pcm_phase_step(PCM_FREQ_MAX));
+        assert_eq!(pcm_phase_step(PCM_FREQ_MAX) >> PHASE_FRAC_BITS, 8);
+        assert_eq!(sqv4_phase_step(40_000), sqv4_phase_step(SQV4_FREQ_MAX));
+        assert_eq!(sqv4_phase_step(SQV4_FREQ_MAX) >> PHASE_FRAC_BITS, 2);
+        assert!(wave_phase_step(65_535) > wave_phase_step(PCM_FREQ_MAX));
         // Whole phase steps accumulate without drift: 192000 ticks at freq 750 = 192000 samples.
         let mut sound = v21_sound();
         sound.channels[0].frequency = 750;
@@ -1575,5 +1594,26 @@ mod tests {
         assert_eq!(saturate_output(left[0]), i16::MAX);
         assert_eq!(saturate_output(-70_000), i16::MIN);
         assert_eq!(saturate_output(123), 123);
+    }
+
+    #[test]
+    fn pcm_and_sqv4_playback_rate_is_limited() {
+        let run = |frequency: u16| {
+            let mut sound = v21_sound();
+            for i in 0..64u32 {
+                sound.write_pcm_ram(i, (i * 7) as u8);
+            }
+            let c = &mut sound.channels[0];
+            c.waveform_type = WaveformType::Pcm;
+            c.frequency = frequency;
+            c.volume = 0x80;
+            c.pcm_end_addr = 64;
+            c.pcm_control = 0x03;
+            (0..40).map(|_| sound.generate_sample(0)).collect::<Vec<_>>()
+        };
+        // Above the limit the register still reads back, but playback runs at the limit.
+        assert_eq!(run(65_535), run(PCM_FREQ_MAX));
+        assert_eq!(run(PCM_FREQ_MAX + 1), run(PCM_FREQ_MAX));
+        assert_ne!(run(PCM_FREQ_MAX), run(PCM_FREQ_MAX - 3000));
     }
 }
