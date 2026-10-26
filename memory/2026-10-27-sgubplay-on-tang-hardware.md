@@ -1,7 +1,7 @@
 # SGUBPlay を Tang Console 実機で鳴らす（2026-10-26〜27 の調査記録・引継ぎ）
 
 目的: `remark_music_s3w2.sgub`（SGUB v2、2603 フレーム、wave pool 16＋PCM 13,376 byte、PCM の FREQUENCY 最大 2813）を、実機（Tang Console 138K）の Foundation `sgubplay` で再生する。
-**現状: 最後まで再生は終わり、テンポも実時間（44.0 s／理想 43.4 s）だが、音程が低く（ユーザー報告）、音も欠落する。原因は SGU エンジンではなく HDMI オーディオの届き方（下の「未解決」）。**
+**現状（2026-10-27 追記で解決）: 最後まで実時間（44.0 s／理想 43.4 s）で再生でき、音程も正しい。音程が低く音が欠落した原因は、Gowin V1.9.12.02_SP2 の合成が `hdmi_audio` の別配列（`p_sub`／`p_ecc`）を取り違えて BCH の位置が壊れたこと。`p_body`（64 bit 1 本）にする修正（src32-sv `473d869`）で直った。下の「未解決」節は調査経過の記録で、結論は末尾の「追記」を見ること。**
 
 ## 実機で確定した事実
 
@@ -50,3 +50,18 @@ src32-sv: `soc/pcmram.sv`（BACKING 0/1/2）、`soc/soc_top.sv`（`PCM_BACKING`�
 
 - PCM の再生周波数上限は FREQUENCY 48000（8 サンプル／内部クロック）、SQV4 は 12000（2 サンプル）。エミュレータにも反映済み（`doc/spec_SGU.md` §2.4）。SQV4 の RTL は未実装。
 - 2 枚目の SDRAM の利用（CS 切り替え）は未着手。PCM RAM を 1 MiB にするときの本命。
+
+## 追記: 修正後の実機確認（2026-10-27）
+
+ユーザーが修正（`473d869`、あわせて D3 を島の間ずっと 1 にする仕様の読み直し）を入れて新版 Gowin（V1.9.12.04）でビルドしたビットストリームを実機で確認した。確認は録音を `audio-waveform-check`（`~/.codex/skills/audio-waveform-check`）の手順で画像化して目視し、数値と分けて記録した。
+
+- **波形テーブルのトーン**（`scripts/sgu_tone2.py`）: 440／220／880 Hz がそれぞれ 439.98／219.99／879.96 Hz。スペクトルは単一ピークで他は −50 dB 以下。波形画像（`build/wf_fixed_440.png`）は途切れのない滑らかなサイン波。修正前（`build/wf_before_440.png`）は同じ設定で数 ms の保持と不連続が周期的に入っていた。
+- **FIFO DAC のランプ波**: 約 42.7 ms の直線（0→8188、傾きは平均 +4／サンプル。±1 は録音機器の丸め）。サンプルの欠落なし。
+- **曲の再生**（旧版 V1.9.12.02_SP2 で同じ修正版を合成して実機に書いたもの）: `sgubplay` が最後まで再生し、録音（`build/song_hw_fixed.wav`）とエミュレータの出力（`foundation-fpga/target/emu-ref/remark_emu.raw`、ゲストの `sgu_music_driver` を `--music-stream` で動かして `--dump-audio`）を比べた。40 秒の長時間平均スペクトル（1/3 オクターブ 100 Hz〜12.8 kHz の 22 帯域）の差が平均 0.39 dB、最大 0.94 dB。RMS は実機 2803／エミュレータ 2912。無音区間の周期はどちらも約 3.46 s で、テンポは一致する。
+- 実機はフレームの適用が OS の 100 Hz タイマーに量子化されるため、曲中の短いイベントが最大 40 ms ほどずれて見える（波形画像で確認）。音程や欠落ではない。
+
+**重要: 新版 Gowin（V1.9.12.04）で合成した SoC は Foundation が起動しない。** `build/hdmi-body64-191204-po2` は ROM 経由のテスト（SGU トーン、`soc_test`）は通るが、`uart_load.py` で Foundation を入れてもバナーも画面表示も出ない（4 回再現）。同じ修正済みソースを旧版 V1.9.12.02_SP2 で合成した `build/hdmi-body64-0212-po2`（`clk_sys` 47.967 MHz、place option 2、わずかに未達）では起動し、曲も再生できた。新版で合成した CPU 側の何かが原因と見られるが、未調査（候補: タイミング余裕が 48.003 MHz とほぼゼロ、新版合成の差）。Foundation を使うときは旧版の `--gowin-home C:/Gowin/Gowin_V1.9.12.02_SP2_x64` を使うか、この起動不良を先に調べる。place option 2 の旧版は 47.967 MHz なので、48 MHz を満たす配置オプションの探索も残っている。
+
+注意: Git Bash は `/music/...` を `C:/Program Files/Git/music/...` に変換する。`sgubplay` のようなパス引数を送るときは `MSYS_NO_PATHCONV=1` を付ける。
+
+追加したスクリプト（未コミット）: `scripts/play_and_record.py`（再生しながら HDMI 音声を録音）、`compare_song.py`、`compare_timing.py`、`compare_ltas.py`（録音とエミュレータ出力の比較）。
