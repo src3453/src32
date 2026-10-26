@@ -15,14 +15,19 @@ RAM ディスクはカーネル専用の物理窓 `0x20000000..0x20FFFFFF` に�
 ページ割当て対象に含めません。SoC の BMC は Main RAM を 16 MiB と報告します。
 FS2 イメージは既定の 8 MiB で、最大 16 MiB です。
 
-- `--platform tang-console`: UART 専用コンソール（80×30）、同期 CPU コピーの
-  RAM ディスク。IDC、DMAC、PCG、PeC キーボードへアクセスしません。
+- `--platform tang-console`: PCG/HDMI表示＋UART入出力のコンソール（既定80×30）、
+  同期 CPU コピーのRAMディスク。IDC、DMAC、PeCキーボードへアクセスしません。
+  `mode 40` / `mode 80` / `mode 8x16` に対応します。旧VDPなしRTLでは
+  `--console uart` を指定すると従来のUART専用構成を生成します。
 - `--ramdisk sdram1`: Main RAM 32 MiB + 別 SDRAM 32 MiB の構成。
   RTL も `SRC32_SEPARATE_SDRAM=1` でビルドする必要があります。
   SDRAM1 の実機読み戻しは未解決なので、既定の分割構成を使ってください。
 - Extension V は既存どおり CPUID で自動選択します。`FND_MM=nommu` も使用できます。
 - 画面・音源・乱数デバイスは `FND_E_UNSUPPORTED` を返します。
-  UART と `/dev/con` は使用できます。`mode 40` / `mode 8x16` は未対応です。
+  UART と `/dev/con` は使用できます。コンソールはVDPへ直接表示します。
+  Tang向け起動時にUNSCIIの8×8フォント2バンク、行を2倍にした8×16フォント、
+  先頭64色のRGB222パレットをロードします（UNSCIIのライセンスはassets/参照）。
+  ワイド文字領域は未実装のため、日本語などは `?` で代替します。
 - 最小 SoC に RTC はなく、RTC セレクタは起動からの秒数を返します。
   ファイル時刻は実際の日付ではありません。panic は UART に表示します。
 
@@ -40,7 +45,11 @@ RTL リポジトリで次を実行すると、ゼロ領域を ROM の `Z` コマ
 最小構成の受信 FIFO は 16 byte、console は 100 Hz ポーリングなので、ローダの
 端末入力は 1 byte ごとに 10 ms 待ちます。出力中の大量入力にはフロー制御がありません。
 通常の `--platform cpt32`（既定）は従来の PCG、IDC、DMAC の構成です。
-ホスト回帰は `python -m unittest discover -s foundation/tests/console -p test_headless.py -v`。
+ホスト回帰は `python -m unittest discover -s foundation/tests/console -p test_tang.py -v`。
+UART専用構成は `test_headless.py`、通常エミュレータ構成は `test_console_host.py` で検証します。
+RTL側の `python scripts/check_foundation_vdp_golden.py` は実コンソールドライバの
+3モードの画面を、現在のエミュレータVDPと生RTL出力で厳密比較します。
+キャプチャーボード画像は表示確認に使い、画素一致の判定には使いません。
 
 CPT32 用の OS です。契約は [Foundation 仕様](../doc/spec_Foundation.md)、構成と開発順序は [実装案](../doc/foundation_os_plan.md) にあります。カーネルは C（[LLVM/SRC32 ツールチェーン](../tools/llvm-src32/README.md)）で書き、S モードで動きます。
 

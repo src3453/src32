@@ -14,6 +14,11 @@ static uint8_t headless_register;
 #define MMIO8(address) headless_register
 static int con_wide_has(uint32_t cp) { (void)cp; return 0; }
 static void con_wide_install(void) {}
+#elif defined(FND_CON_TANG)
+/* The FPGA has PCG, but no wide-font storage or PeC event FIFO. */
+static int con_wide_has(uint32_t cp) { (void)cp; return 0; }
+static void con_wide_install(void) {}
+void con_tang_init(void);
 #else
 #include "con_wide.h"
 #endif
@@ -374,6 +379,9 @@ void con_pcg_clear(void) {
 }
 
 fnd_status con_pcg_init(void) {
+#ifdef FND_CON_TANG
+    con_tang_init();
+#endif
     con_pcg_set_color(15, 0);
     MMIO8(VDP_DISPLAY_MODE) = 1;
     MMIO8(PCG_DISABLE) = 0;
@@ -528,7 +536,7 @@ static int decode(uint32_t event, fnd_key_t *key) {
 /* Takes one key press from the PeC event FIFO; 0 when it is empty.
  * The console service polls this between messages. */
 int con_pcg_poll_key(fnd_key_t *key) {
-#ifdef FND_CON_UART_ONLY
+#if defined(FND_CON_UART_ONLY) || defined(FND_CON_TANG)
     (void)key;
     return 0;
 #else

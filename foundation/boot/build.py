@@ -59,6 +59,7 @@ sys.path.insert(0, str(ROOT / "tools/fs2"))
 sys.path.insert(0, str(ROOT / "tools/wax"))
 import fndboot  # noqa: E402
 import wide_font  # noqa: E402
+import tang_font  # noqa: E402
 import fs2  # noqa: E402
 import wax  # noqa: E402
 
@@ -136,8 +137,14 @@ def embed(name, data):
             f"static const uint32_t img_{name}[{len(padded) // 4}] = {{{words}}};\n")
 
 
-def console_grants():
+def console_grants(tang=False, uart_only=False):
     """MMIO windows in con_pcg.h: VDP, PCG text, wide font, PeC input, UART."""
+    if uart_only:
+        return [(0x80040000, 0x80040010, 3)]
+    if tang:
+        return [(0x80000000, 0x80010000, 3), (0x10000000, 0x10003000, 3),
+                (0x10012C00, 0x10012CC0, 3), (0x10020000, 0x10022000, 3),
+                (0x80040000, 0x80040010, 3)]
     text = (FOUNDATION / "services/console/con_pcg.h").read_text(encoding="utf-8")
     value = {name: int(number, 16) for name, number in re.findall(r"#define (CON_PCG_\w+) (0x[0-9A-Fa-f]+)u", text)}
     return [(value[f"CON_PCG_{window}_START"], value[f"CON_PCG_{window}_END"], 3)
@@ -190,7 +197,9 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
     parser.add_argument("--platform", choices=("cpt32", "tang-console"), default="cpt32",
-                        help="tang-console: UART-only console and SDRAM RAM disk; no IDC/DMAC")
+                        help="tang-console: PCG + UART console and SDRAM RAM disk; no IDC/DMAC")
+    parser.add_argument("--console", choices=("auto", "uart"), default="auto",
+                        help="Tang Console defaults to PCG + UART; uart supports older RTL without VDP")
     parser.add_argument("--ramdisk", choices=("sdram0-split", "sdram1"), default="sdram0-split",
                         help="Tang Console RAM disk: split SDRAM0 16+16 MiB (default), or separate 32 MiB SDRAM1")
     parser.add_argument("--clang")
@@ -207,6 +216,9 @@ def main(argv=None):
     parser.set_defaults(optimization="-O1")
     args = parser.parse_args(argv)
     fpga = args.platform == "tang-console"
+    if args.console == "uart" and not fpga:
+        parser.error("--console uart requires --platform tang-console")
+    uart_only = fpga and args.console == "uart"
     ramdisk_bytes = 0x01000000 if args.ramdisk == "sdram0-split" else 0x02000000
     if fpga and args.disk_blocks > ramdisk_bytes // 512:
         parser.error("disk image exceeds the selected Tang Console RAM-disk capacity")
@@ -258,15 +270,24 @@ def main(argv=None):
     kernel_job = pool.submit(driver, [HERE / "main.c", *KERNEL], out / "kernel.bin", args, *kernel_args)
 
     # §11: spawned in this order, init last.
+    console_sources = [services / "console/main.c", services / "console/con_pcg.c",
+                       services / "console/con_uart.c"]
+    console_options = []
+    if uart_only:
+        console_options = ["-D", "FND_CON_UART_ONLY"]
+    elif fpga:
+        console_sources.append(services / "console/con_tang.c")
+        console_options = ["-D", "FND_CON_TANG", "-I",
+                           str(tang_font.write_header(out / "console/con_tang_font.h").parent)]
+    else:
+        console_sources.append(services / "console/con_wide.c")
+        console_options = ["-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent)]
     specs = [
         dict(name="console", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
-             grants=[(0x80040000, 0x80040010, 3)] if fpga else console_grants(),
-             image=pool.submit(static, [services / "console/main.c", services / "console/con_pcg.c",
-                                      *([] if fpga else [services / "console/con_wide.c"]),
-                                      services / "console/con_uart.c"],
+             grants=console_grants(tang=fpga, uart_only=uart_only),
+             image=pool.submit(static, console_sources,
                                out / "console.wax", args, "-I", str(services / "console"),
-                               *(["-D", "FND_CON_UART_ONLY"] if fpga else []),
-                               "-I", str(wide_font.write_header(out / "console/con_wide_font.h").parent))),
+                               *console_options)),
         dict(name="disk", priority=FND_PRIO_SERVICE, caps=FND_CAP_DISK | FND_CAP_SVC,
              image=pool.submit(static, [services / "disk/main.c", services / "disk/cache.c"],
                                out / "disk.wax", args)),
@@ -331,7 +352,8 @@ def main(argv=None):
     print(f"Wrote {disk}")
     if fpga:
         import json
-        manifest = dict(platform="tang-console", entry=KERNEL_LOAD, ramdisk=args.ramdisk,
+        manifest = dict(platform="tang-console", console="uart" if uart_only else "pcg",
+                        entry=KERNEL_LOAD, ramdisk=args.ramdisk,
                         ramdisk_bytes=ramdisk_bytes,
                         segments=[dict(file="kernel.bin", address=KERNEL_LOAD),
                                   dict(file="fndboot.bin", address=FNDBOOT_STAGING),
