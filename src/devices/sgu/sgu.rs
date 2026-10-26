@@ -144,6 +144,7 @@ pub fn connect_sgu_with_version(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::devices::sgu::s3w2::PHASE_FRAC_BITS;
 
     #[test]
     fn config_selects_sgu_version() {
@@ -174,13 +175,13 @@ mod tests {
     fn debugger_register_read_does_not_reset_channel_phase() {
         let mut bus = Bus::new();
         let sgus = connect_sgu(&mut bus);
-        sgus[0].borrow_mut().channels[0].phase = 0.75;
+        sgus[0].borrow_mut().channels[0].phase = 192 << PHASE_FRAC_BITS;
 
         assert_eq!(bus.read_debug_u8(SGU_REG_BASE + 0x80A), Some(0));
-        assert_eq!(sgus[0].borrow().channels[0].phase, 0.75);
+        assert_eq!(sgus[0].borrow().channels[0].phase, 192 << PHASE_FRAC_BITS);
 
-        sgus[0].borrow_mut().channels[0].phase = 0.5;
+        sgus[0].borrow_mut().channels[0].phase = 128 << PHASE_FRAC_BITS;
         assert_eq!(bus.read_u8(SGU_REG_BASE + 0x80A), 0);
-        assert_eq!(sgus[0].borrow().channels[0].phase, 0.0);
+        assert_eq!(sgus[0].borrow().channels[0].phase, 0);
     }
 }

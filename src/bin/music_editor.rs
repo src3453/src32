@@ -4,7 +4,7 @@ use std::rc::Rc;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use cpt32::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound};
+use cpt32::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound, saturate_output};
 use cpt32::music::{gui::TrackerUi, project::Song};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
@@ -246,14 +246,14 @@ impl MusicEditor {
         self.sample_remainder += self.audio.sample_rate();
         let samples = (self.sample_remainder / 60) as usize;
         self.sample_remainder %= 60;
-        let (mut left, mut right) = self.cores[0].borrow_mut().clock_mixed(samples);
-        let (left1, right1) = self.cores[1].borrow_mut().clock_mixed(samples);
-        for (output, sample) in left.iter_mut().zip(left1) {
-            *output = output.saturating_add(sample);
+        let mut mixed_left = vec![0i32; samples];
+        let mut mixed_right = vec![0i32; samples];
+        for core in &self.cores {
+            core.borrow_mut()
+                .clock_mixed_into_i32(&mut mixed_left, &mut mixed_right);
         }
-        for (output, sample) in right.iter_mut().zip(right1) {
-            *output = output.saturating_add(sample);
-        }
+        let left: Vec<i16> = mixed_left.iter().map(|&s| saturate_output(s)).collect();
+        let right: Vec<i16> = mixed_right.iter().map(|&s| saturate_output(s)).collect();
         self.audio.push_samples_i16(&left, &right);
     }
 }

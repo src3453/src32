@@ -401,18 +401,13 @@ fn main() {
             let mut mixed_left = [0i32; 800];
             let mut mixed_right = [0i32; 800];
             for sgu in &sgus {
-                let mut left = [0i16; 800];
-                let mut right = [0i16; 800];
-                sgu.borrow_mut().clock_mixed_into(&mut left, &mut right);
-                for i in 0..800 {
-                    mixed_left[i] += i32::from(left[i]);
-                    mixed_right[i] += i32::from(right[i]);
-                }
+                sgu.borrow_mut()
+                    .clock_mixed_into_i32(&mut mixed_left, &mut mixed_right);
             }
             for i in 0..800 {
                 for sample in [mixed_left[i], mixed_right[i]] {
                     audio_bytes
-                        .extend_from_slice(&(sample.clamp(-32768, 32767) as i16).to_le_bytes());
+                        .extend_from_slice(&cpt32::devices::sgu::s3w2::saturate_output(sample).to_le_bytes());
                 }
             }
         }

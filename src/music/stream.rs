@@ -1397,8 +1397,8 @@ mod tests {
             assert_eq!(sgu.read_register(base + 3), 0xff);
             assert_eq!(sgu.read_channel_wavetable(channel as usize, 0), 0x80);
         }
-        assert_eq!(cores[0].borrow().channels[0].phase, 0.0);
-        assert_eq!(cores[1].borrow().channels[0].phase, 0.0);
+        assert_eq!(cores[0].borrow().channels[0].phase, 0);
+        assert_eq!(cores[1].borrow().channels[0].phase, 0);
         let (left, right) = cores[0].borrow_mut().clock_mixed(800);
         assert!(left.iter().any(|sample| *sample > 0) && left.iter().any(|sample| *sample < 0));
         assert_eq!(left, right);
