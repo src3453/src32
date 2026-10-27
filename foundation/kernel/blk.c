@@ -39,7 +39,7 @@ void blk_irq(void) {}
 void blk_proc_exited(struct fnd_proc *proc) { (void)proc; }
 
 static int32_t ramdisk_io(const struct blk_req *r) {
-    if (r->drive != 0) return FND_E_NO_MEDIA;
+    if (r->drive != 1) return FND_E_NO_MEDIA;
     struct fnd_proc *proc = r->thread->proc;
     if (r->op == BLK_IDENTIFY) {
         uint32_t info[4] = {2u, 512u, RAMDISK_SECTORS, 1u}; /* HDD, present, writable */
@@ -54,6 +54,64 @@ static int32_t ramdisk_io(const struct blk_req *r) {
     else
         mm_copy_from_user((void *)(uintptr_t)address, proc, r->buf, bytes);
     return FND_OK;
+}
+
+/* Tang IDC uses PIO (+0x3c bit0), with bounded card-side timeouts.
+ * Keep user virtual addresses out of MMIO: one sector passes through a kernel
+ * buffer and mm_copy_*, just as the DMA backend uses a physical bounce area. */
+#ifndef FND_IDC_DATA8
+#define FND_IDC_DATA8 (*(volatile uint8_t *)(uintptr_t)IDC_DATA)
+#endif
+static int32_t tang_idc_result(void) {
+    if (!(FND_REG32(IDC_STATUS) & IDC_BIT_ERROR)) return FND_OK;
+    uint32_t code = FND_REG32(IDC_ERROR_CODE);
+    if (code == 2u) return FND_E_NO_MEDIA;
+    if (code == 4u) return FND_E_READ_ONLY;
+    if (code == 1u || code == 3u) return FND_E_BAD_ARG;
+    return FND_E_IO;
+}
+
+static int32_t tang_idc_wait(uint32_t want_data) {
+    uint32_t status;
+    do {
+        status = FND_REG32(IDC_STATUS);
+    } while ((status & IDC_BIT_BUSY) && !(want_data && (status & 8u)));
+    int32_t result = tang_idc_result();
+    if (result == FND_OK && want_data && !(status & 8u)) return FND_E_IO;
+    return result;
+}
+
+static int32_t tang_disk_io(const struct blk_req *r) {
+    if (r->drive == 1u) return ramdisk_io(r);
+    if (r->drive != 0u) return FND_E_NO_MEDIA;
+    FND_REG32(IDC_STATUS) = IDC_CLEAR_BITS;
+    FND_REG32(IDC_DRIVE_SELECT) = 0;
+    if (r->op == BLK_IDENTIFY) {
+        FND_REG32(IDC_COMMAND) = IDC_CMD_IDENTIFY;
+        int32_t result = tang_idc_wait(0);
+        if (result != FND_OK) return result;
+        uint32_t info[4] = {FND_REG32(IDC_DRIVE_TYPE), FND_REG32(IDC_SECTOR_SIZE),
+                            FND_REG32(IDC_CAPACITY), FND_REG32(IDC_DRIVE_FLAGS)};
+        mm_copy_to_user(r->thread->proc, r->buf, info, sizeof info);
+        return FND_OK;
+    }
+    FND_REG32(IDC_LBA) = r->lba;
+    FND_REG32(IDC_SECTOR_COUNT) = r->count;
+    FND_REG32(IDC_COMMAND) = r->op == BLK_READ ? IDC_CMD_READ : IDC_CMD_WRITE;
+    uint8_t sector[512];
+    for (uint32_t n = 0; n < r->count; ++n) {
+        int32_t result = tang_idc_wait(1);
+        if (result != FND_OK) return result;
+        uint32_t address = r->buf + (n << 9);
+        if (r->op == BLK_WRITE) {
+            mm_copy_from_user(sector, r->thread->proc, address, sizeof sector);
+            for (uint32_t i = 0; i < sizeof sector; ++i) FND_IDC_DATA8 = sector[i];
+        } else {
+            for (uint32_t i = 0; i < sizeof sector; ++i) sector[i] = FND_IDC_DATA8;
+            mm_copy_to_user(r->thread->proc, address, sector, sizeof sector);
+        }
+    }
+    return tang_idc_wait(0);
 }
 #else
 /* The DMAC knows physical addresses only, and the pages of a user buffer
@@ -214,7 +272,7 @@ int32_t sys_blk_io(struct fnd_thread *thread, uint32_t blk) {
     if (!proc_user_range_ok(proc, r.buf, bytes, r.op == BLK_WRITE ? CPT32_PERM_R : CPT32_PERM_W))
         return FND_E_ACCESS;
 #ifdef FND_PLATFORM_TANG
-    return ramdisk_io(&r);
+    return tang_disk_io(&r);
 #else
     if (queued >= FND_MAX_THREADS)
         return FND_E_LIMIT;

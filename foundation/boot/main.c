@@ -32,7 +32,7 @@ int main(uint32_t drive, uint32_t fndboot) {
     (void)drive;
     (void)fndboot;
 #ifdef FND_PLATFORM_TANG
-    fnd_set_boot_drive(0);
+    fnd_set_boot_drive(1); /* UART-loaded FS2 is the SDRAM disk; MicroSD is dd0. */
 #endif
     boot_image = (const void *)(uintptr_t)FNDBOOT_STAGING;
 #else

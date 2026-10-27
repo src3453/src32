@@ -197,7 +197,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
     parser.add_argument("--platform", choices=("cpt32", "tang-console"), default="cpt32",
-                        help="tang-console: PCG + UART console and SDRAM RAM disk; no IDC/DMAC")
+                        help="tang-console: PCG + UART, MicroSD dd0 (IDC PIO), SDRAM root dd1; no DMAC")
     parser.add_argument("--console", choices=("auto", "uart"), default="auto",
                         help="Tang Console defaults to PCG + UART; uart supports older RTL without VDP")
     parser.add_argument("--ramdisk", choices=("sdram0-split", "sdram1"), default="sdram0-split",
