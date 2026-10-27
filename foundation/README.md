@@ -16,14 +16,24 @@ RAM ディスクはカーネル専用の物理窓 `0x20000000..0x20FFFFFF` に�
 FS2 イメージは既定の 8 MiB で、最大 16 MiB です。
 
 - `--platform tang-console`: PCG/HDMI表示＋UART入出力のコンソール（既定80×30）、
-  同期 CPU コピーのRAMディスク。IDC、DMAC、PeCキーボードへアクセスしません。
+  同期 CPU コピーのRAMディスク（dd1）、MicroSDのIDC PIO（dd0）。
+  DMACとPeCキーボードは使用しません。
   `mode 40` / `mode 80` / `mode 8x16` に対応します。旧VDPなしRTLでは
   `--console uart` を指定すると従来のUART専用構成を生成します。
+- `--root-drive microsd`: `/` をSDカードのdd0にします。既定はUARTロードの
+  RAMディスクdd1です。Tang用イメージの先頭512バイトには、DMACを使わない
+  `foundation/boot/stage1_tang.a` を組み込みます。BIOSがdd0をIDENTIFYし、
+  LBA 0の55AA署名を確認してR1=0で起動すると、stage1がSDのFNDBOOTとカーネルを
+  読み込みます。`src32-sv` のPCG BIOSでは、リセット後1秒で自動起動、
+  UART入力でモニタ保持、`B`で手動起動できます。
 - `--ramdisk sdram1`: Main RAM 32 MiB + 別 SDRAM 32 MiB の構成。
   RTL も `SRC32_SEPARATE_SDRAM=1` でビルドする必要があります。
   SDRAM1 の実機読み戻しは未解決なので、既定の分割構成を使ってください。
 - Extension V は既存どおり CPUID で自動選択します。`FND_MM=nommu` も使用できます。
-- 画面・音源・乱数デバイスは `FND_E_UNSUPPORTED` を返します。
+- 画面・乱数デバイス（`/dev/fb0`、`/dev/sgc`、`/dev/trng`、`/dev/prng`）は `FND_E_UNSUPPORTED` を返します。
+  `/dev/sgu`（SGU 2基）と `sgubplay` は使えます。PCMRAM容量はBMC `PCMRAM_SIZE`で取得し、
+  現行SDRAM X2構成では1 MiBです。
+  それを超えるアドレスの書き込みは無視され、読み出しは0です。
   UART と `/dev/con` は使用できます。コンソールはVDPへ直接表示します。
   Tang向け起動時にUNSCIIの8×8フォント2バンク、行を2倍にした8×16フォント、
   先頭64色のRGB222パレットをロードします（UNSCIIのライセンスはassets/参照）。

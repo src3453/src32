@@ -80,6 +80,30 @@ int32_t sgu_call(struct fnd_proc *proc, const fnd_msg *m, fnd_msg *r, uint32_t c
         r->a0 = bytes; r->a1 = used + frames;
         return m->len && !bytes ? FND_E_WOULD_BLOCK : FND_OK;
     }
+    case FND_SGU_WRITE_RUNS: {
+        if (!(rights & FND_OPEN_WRITE)) return FND_E_ACCESS;
+        if (!m->len || m->len > FND_IPC_MAX_DATA) return FND_E_BAD_ARG;
+        mm_copy_from_user(data, proc, m->buf, m->len);
+        uint32_t at = 0;
+        while (at < m->len) {                       /* validate every run first */
+            if (m->len - at < 7u) return FND_E_BAD_ARG;
+            uint32_t off = (uint32_t)data[at] << 24 | (uint32_t)data[at + 1] << 16 |
+                           (uint32_t)data[at + 2] << 8 | data[at + 3];
+            uint32_t n = (uint32_t)data[at + 4] << 8 | data[at + 5];
+            if (!n || n > m->len - at - 6u) return FND_E_BAD_ARG;
+            if (off > FND_SGU_SIZE || n > FND_SGU_SIZE - off) return FND_E_NO_SPACE;
+            at += 6u + n;
+        }
+        for (at = 0; at < m->len;) {
+            uint32_t off = (uint32_t)data[at] << 24 | (uint32_t)data[at + 1] << 16 |
+                           (uint32_t)data[at + 2] << 8 | data[at + 3];
+            uint32_t n = (uint32_t)data[at + 4] << 8 | data[at + 5];
+            for (uint32_t i = 0; i < n; ++i) BYTE(address(off + i)) = data[at + 6u + i];
+            at += 6u + n;
+        }
+        r->a0 = m->len;
+        return FND_OK;
+    }
     case FND_ST_SEEK: {
         int64_t off = (int64_t)(int32_t)m->a1 * 4294967296LL + m->a2;
         if (m->a0 > FND_SEEK_END) return FND_E_BAD_ARG;

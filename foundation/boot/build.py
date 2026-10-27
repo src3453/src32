@@ -200,6 +200,8 @@ def main(argv=None):
                         help="tang-console: PCG + UART, MicroSD dd0 (IDC PIO), SDRAM root dd1; no DMAC")
     parser.add_argument("--console", choices=("auto", "uart"), default="auto",
                         help="Tang Console defaults to PCG + UART; uart supports older RTL without VDP")
+    parser.add_argument("--root-drive", choices=("ramdisk", "microsd"), default="ramdisk",
+                        help="Tang root filesystem: UART-loaded RAM disk (default) or MicroSD dd0")
     parser.add_argument("--ramdisk", choices=("sdram0-split", "sdram1"), default="sdram0-split",
                         help="Tang Console RAM disk: split SDRAM0 16+16 MiB (default), or separate 32 MiB SDRAM1")
     parser.add_argument("--clang")
@@ -216,6 +218,8 @@ def main(argv=None):
     parser.set_defaults(optimization="-O1")
     args = parser.parse_args(argv)
     fpga = args.platform == "tang-console"
+    if args.root_drive == "microsd" and not fpga:
+        parser.error('--root-drive microsd requires --platform tang-console')
     if args.console == "uart" and not fpga:
         parser.error("--console uart requires --platform tang-console")
     uart_only = fpga and args.console == "uart"
@@ -258,6 +262,7 @@ def main(argv=None):
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if fpga:
         kernel_args += ["-D", "FND_PLATFORM_TANG", "-D", "FND_COPY_DMA_MIN=0",
+                        "-D", f"FND_TANG_ROOT_DRIVE={0 if args.root_drive == 'microsd' else 1}u",
                         "-D", f"FND_RAMDISK_SECTORS={ramdisk_bytes // 512}u"]
     if args.stop_ticks is not None:
         kernel_args += ["-D", f"FOUNDATION_BOOT_STOP_TICKS={args.stop_ticks}u"]
@@ -338,7 +343,7 @@ def main(argv=None):
     boot = fndboot.pack(kernel, modules)
     (out / "fndboot.bin").write_bytes(boot)
     stage1 = out / "stage1.bin"
-    subprocess.run([sys.executable, str(ASSEMBLER), "-o", str(stage1), str(HERE / "stage1.a")], check=True)
+    subprocess.run([sys.executable, str(ASSEMBLER), "-o", str(stage1), str(HERE / ("stage1_tang.a" if fpga else "stage1.a"))], check=True)
     files = {}
     for tree in (root, args.root):
         for host in sorted(p for p in tree.rglob("*") if p.is_file()) if tree else ():
@@ -353,6 +358,7 @@ def main(argv=None):
     if fpga:
         import json
         manifest = dict(platform="tang-console", console="uart" if uart_only else "pcg",
+                        root_drive=0 if args.root_drive == 'microsd' else 1,
                         entry=KERNEL_LOAD, ramdisk=args.ramdisk,
                         ramdisk_bytes=ramdisk_bytes,
                         segments=[dict(file="kernel.bin", address=KERNEL_LOAD),

@@ -20,6 +20,9 @@
 
 /* Where stage1 stages FNDBOOT (§11); the embedded WAX carries it there too. */
 #define FNDBOOT_STAGING 0x00200000u
+#ifndef FND_TANG_ROOT_DRIVE
+#define FND_TANG_ROOT_DRIVE 1u
+#endif
 
 #ifdef FOUNDATION_BOOT_STOP_TICKS
 /* tests: stop the machine so src32_testbench can read the screen */
@@ -32,7 +35,7 @@ int main(uint32_t drive, uint32_t fndboot) {
     (void)drive;
     (void)fndboot;
 #ifdef FND_PLATFORM_TANG
-    fnd_set_boot_drive(1); /* UART-loaded FS2 is the SDRAM disk; MicroSD is dd0. */
+    fnd_set_boot_drive(FND_TANG_ROOT_DRIVE); /* MicroSD dd0, SDRAM disk dd1. */
 #endif
     boot_image = (const void *)(uintptr_t)FNDBOOT_STAGING;
 #else
