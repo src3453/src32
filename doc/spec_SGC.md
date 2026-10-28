@@ -95,6 +95,8 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 | `0x12` | TRIANGLE | 7 words。続く6 wordは頂点1～3それぞれのX,Y |
 | `0x13` | GLYPH | 4 words。続く3 wordはUnicode BMP code unit、X、Y |
 | `0x14` | SCREEN_FILL | 1 word。320×240の描画plane全体を現在のCLUT色で塗りつぶす |
+| `0x15` | ELLIPSE | 5 words。中心X、中心Y、X半径、Y半径。輪郭を描く |
+| `0x16` | FILL_ELLIPSE | 5 words。同じ引数で内部を塗りつぶす |
 | `0xFF` | NOP | 1 word。予約・整列用 |
 
 `GLYPH`の第2 wordはBMP code unitを格納し、bit31:16を0とする。第3/第4 wordはglyph左上pixelのsigned 16-bit X/Yで、各wordのbit31:16を0とする。glyph rowはVDP PCGと同じ読み取り専用GNU Unifont + Jiskan16 BMP CHR ROMを参照する（配置とfallbackはVDP仕様を参照）。現在の`SET_COLOR`色を前景色として使い、0-bitは透明、1-bitは前景色で描く。画面外pixelはclipする。8×16 glyphは16×16 slotの左側8 pixelを使う。未収録code unitとsurrogateはU+FFFD glyphを使う。描画は既存spriteの後、FIFO順に行う。
@@ -102,6 +104,23 @@ RESET後はSGC disabled、sprite count=0、SAT base=0、output GP=1、FIFO空、
 座標payload wordはbit31:16を0、bit15:0をsigned座標とする。三角形は各整数座標位置をsampleし、辺を含めて塗りつぶす。RECTで右下座標が左上以下の場合、または三角形の全頂点が一直線上の場合は何も描かず、FIFO_ERRORを記録する。未定義opcode、予約bit違反、コマンド途中でのFIFO clearはFIFO_ERRORをstickyに記録する。既知opcodeの不正コマンドはそのopcodeの宣言word数を消費し、後続の解釈を継続する。長さを定義していないopcodeはheader 1 wordのみを消費する。
 
 FIFOにコマンド途中までしか届いていない場合、その先頭wordと後続wordを保持し、完全なコマンドになるまで待つ。コマンド投入はSET_COLORを含めFIFO順に処理される。描画コマンドは単一の現在色を使い、出力GPはOUTPUT_GP設定に従う。LINEは両端を含む整数 Bresenham 線分、RECTは左上を含み右端・下端を含まない矩形、SCREEN_FILLは全描画planeの不透明色塗りつぶしとする。
+
+### 円・楕円の画素規則
+
+中心はsigned 16-bit、半径は0..32767。いずれもword上位16 bitは0。
+半径のbit15が1の場合はFIFO_ERRORにし、その5語を消費して後続を処理する。
+両半径を等しくすると円になる。ヘッダのbit23:0は0。
+
+半径が正のとき、各整数画素について `dx=x-cx, dy=y-cy` とし、
+`F = dx²*ry² + dy²*rx² - rx²*ry²` が0以下なら塗りつぶし領域に含む。
+輪郭はその領域内で、上下左右の少なくとも1画素が領域外となる画素。
+隣接画素の判定はclip前の楕円に対して行い、画面端に人工的な輪郭を追加しない。
+浮動小数点、アンチエイリアス、半画素sampleは使わない。
+
+片方の半径が0なら中心±もう片方の半径の両端を含む線分、両方0なら中心の1点。
+画面外は捨てる。現在のCLUT色を実行時にRGBAへ確定し、不透明で既存画素を上書きする。
+libsgcは `cpt_sgc_ellipse` / `cpt_sgc_fill_ellipse` を公開する。
+中心は他の描画APIと同じくsigned 16-bitへclampし、範囲外の半径はBAD_ARGでqueueしない。
 
 ## 8. VRAM共有と同期
 

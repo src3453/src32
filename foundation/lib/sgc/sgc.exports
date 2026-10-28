@@ -16,3 +16,5 @@ cpt_sgc_line fn(ptr,u32,u32,u32,u32,u32)->i32
 cpt_sgc_triangle fn(ptr,u32,u32,u32,u32,u32,u32,u32)->i32
 cpt_sgc_glyph fn(ptr,u32,u32,u32,u32)->i32
 cpt_sgc_raw fn(ptr,ptr,u32)->i32
+cpt_sgc_ellipse fn(ptr,u32,u32,u32,u32,u32)->i32
+cpt_sgc_fill_ellipse fn(ptr,u32,u32,u32,u32,u32)->i32

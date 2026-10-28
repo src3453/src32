@@ -245,6 +245,19 @@ int main(void) {
     c0 = closes;
     OK(cpt_sgc_close(&g));
     assert(closes == c0 + 2 && g.dev == 0 && g.fb == 0);
+    /* Ellipse commands preserve signed centers, validate radii before queuing,
+     * and keep the existing color coalescing/whole-command guarantees. */
+    open_ctx(32);
+    assert(cpt_sgc_ellipse(&g, 1, 2, -1, 3, 4) == FND_E_BAD_ARG);
+    assert(cpt_sgc_fill_ellipse(&g, 1, 2, 3, 32768, 4) == FND_E_BAD_ARG);
+    assert(cpt_sgc_pending(&g) == 0);
+    OK(cpt_sgc_ellipse(&g, -1, 2, 3, 4, 5));
+    OK(cpt_sgc_fill_ellipse(&g, 319, 239, 0, 0, 5));
+    OK(cpt_sgc_flush(&g));
+    assert(taken() == 11 && W(0) == 0x01000005u && W(1) == FND_SGC_OP_ELLIPSE);
+    assert(W(2) == 0xffff && W(3) == 2 && W(4) == 3 && W(5) == 4);
+    assert(W(6) == FND_SGC_OP_FILL_ELLIPSE && W(7) == 319 && W(8) == 239 && W(9) == 0 && W(10) == 0);
+    OK(cpt_sgc_close(&g));
     puts("libsgc host passed");
     return 0;
 }

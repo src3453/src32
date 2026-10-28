@@ -445,6 +445,7 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `cpt_sgc_open` は `/dev/sgc` を WRITE で開きます。`cpt_sgc_display_init(first, count, rgb)` は `/dev/fb0` を開き、320×240・INDEX8 を確認して CLUT を書き、`cpt_sgc_close` まで開いたままにします（SGC の画素は fb0 ではなく SGC の描画面に描かれます）。
 - 描画関数（`cpt_sgc_clear`／`rect`（x, y, 幅, 高さ）／`line`／`triangle`／`glyph`／`raw`）はコマンドをバッファへ積むだけです。色は 0〜63（範囲外は BAD_ARG）、直前と同じ色の SET_COLOR は省きます。座標は符号付き 16 bit に丸めます。面積のない矩形と一直線上の三角形（ハードウェアが FIFO_ERROR にする）は積まずに FND_OK を返します。
 - `cpt_sgc_flush` は FIFO の空き（256 word）に入る分だけ投入し、待ちません。FIFO が満杯でも FND_OK で、残りは `cpt_sgc_pending` で分かります。描画関数はバッファが埋まると一度 flush を試し、なお入らなければコマンドを分割せず FND_E_WOULD_BLOCK を返します（呼び出し側は次のフレームで再試行）。`cpt_sgc_flush_wait` は 1 tick ずつ眠って空になるまで待ち、`CPT_SGC_WAIT_TICKS` 回進まなければ TIMEOUT です。
+- `cpt_sgc_ellipse(cx, cy, rx, ry, color)` は楕円の輪郭、`cpt_sgc_fill_ellipse` は内部を描きます。半径は0..32767（範囲外はBAD_ARG）、同じ半径で円になります。0半径は線分または点です。中心のclamp、色、buffer/flushは他の描画関数と共通です。WALの既存export順は維持し、この2関数を末尾へ追加しています。
 - `cpt_sgc_cancel`（未送信を捨てて FIFO clear）、`cpt_sgc_reset`、`cpt_sgc_set_output`、`cpt_sgc_status` は対応するデバイス操作です。cancel／reset と raw の後は現在色が不明になり、次の描画で SET_COLOR を送り直します。
 - テストは `foundation/tests/libsgc`（ホスト側のモデルでコマンド列と FIFO 満杯・バッファ満杯を検証、Foundation 上で WAL を呼んで画素を確認）。`chip8` が利用者の例です。
 
