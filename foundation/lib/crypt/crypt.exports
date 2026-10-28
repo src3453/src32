@@ -1,0 +1,6 @@
+# WAL ABI 1.0; helpers are not exported.
+cpt_chacha20_encrypt fn(ptr,ptr,ptr,u32,ptr,ptr,u32)->i32
+cpt_chacha20_decrypt fn(ptr,ptr,ptr,u32,ptr,ptr,u32)->i32
+cpt_chacha20_encrypt_bound fn(u32)->u32
+cpt_poly1305_auth fn(ptr,ptr,ptr,u32,ptr)->i32
+cpt_poly1305_verify fn(ptr,ptr,u32,ptr)->i32

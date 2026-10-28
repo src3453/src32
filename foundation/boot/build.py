@@ -29,7 +29,7 @@ is what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal and /lib/sgc.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal, /lib/crypt.1.wal and /lib/sgc.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -96,6 +96,7 @@ SGC_DIR = FOUNDATION / "lib/sgc"
 SGC_COMMANDS = {"chip8"}
 RLE_DIR = FOUNDATION / "lib/rle"
 CODE_DIR = FOUNDATION / "lib/code"
+CRYPT_DIR = FOUNDATION / "lib/crypt"
 FS = [FOUNDATION / "fs" / name for name in ("main.c", "fs2.c", "vfs.c", "server.c", "dsfs.c")]
 # KAN-38 temporary boot mitigation. Set to 1 to restore the full §10 scan.
 FS2_FULL_MOUNT_CHECK = 0
@@ -234,6 +235,11 @@ def main(argv=None):
     code_build = importlib.util.module_from_spec(code_spec)
     code_spec.loader.exec_module(code_build)
     code_job = pool.submit(code_build.build, out / "code", args.clang, args.optimization)
+    # /lib/crypt.1.wal: ChaCha20 and Poly1305, self-contained and with no work area.
+    crypt_spec = importlib.util.spec_from_file_location("crypt_build", CRYPT_DIR / "build.py")
+    crypt_build = importlib.util.module_from_spec(crypt_spec)
+    crypt_spec.loader.exec_module(crypt_build)
+    crypt_job = pool.submit(crypt_build.build, out / "crypt", args.clang, args.optimization)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if args.stop_ticks is not None:
@@ -286,6 +292,7 @@ def main(argv=None):
     shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
     shutil.copyfile(rle_job.result(), root / "lib/rle.1.wal")
     shutil.copyfile(code_job.result(), root / "lib/code.1.wal")
+    shutil.copyfile(crypt_job.result(), root / "lib/crypt.1.wal")
     for job in program_jobs:
         job.result()
     modules = [dict(spec, image=spec["image"].result().read_bytes()) for spec in specs]

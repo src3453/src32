@@ -311,6 +311,14 @@ src32_testbench /absolute/path/target/foundation-wax/test.wax 42 --cpu pipeline 
 - 出力の見積もりは `cpt_code_bound`。heap・libfnd・作業領域は使いません。
 - テストは `python3 -m unittest foundation.tests.code.test_code`（ホストは Clang、Foundation 上は `src32_testbench` も必要）です。
 
+### 暗号ライブラリ libcrypt
+
+`libcrypt.wal`（`lib/crypt`、image ID `crypt`、ABI 1.0、`/lib/crypt.1.wal`）は RFC 8439 の IETF ChaCha20 と Poly1305 を提供します。公開 API は [`include/foundation/crypt.h`](include/foundation/crypt.h) にあり、ChaCha20 は `cpt_chacha20_encrypt`／`cpt_chacha20_decrypt`、Poly1305 は `cpt_poly1305_auth`／`cpt_poly1305_verify` を使います。戻り値は `CONDE_*`、宛先サイズ引数は conde と同じ容量入力・実長出力です。作業領域や heap は使いません。
+
+ChaCha20 は 32 byte key、12 byte nonce、呼出側指定の 32-bit counter を受け取り、key/nonce の再利用管理は呼出側の責任です。Poly1305 は 32 byte の one-time key が必要で、同じ鍵を複数メッセージに使ってはいけません。鍵と新しい nonce／one-time key には、安全性の高い `/dev/trng` の乱数を使うことを推奨します。ChaCha20 の key/nonce の組み合わせを再利用せず、Poly1305 の one-time key を再利用しないでください。Poly1305 verify はタグを定時間比較します。ChaCha20 と Poly1305 は個別のプリミティブであり、この API は AEAD の nonce/key 管理や AAD・暗号文の結合を行いません。
+
+テストは `python3 -m unittest foundation.tests.crypt.test_crypt`（ホストは Clang、Foundation 上は `src32_testbench` も必要）です。RFC 8439 のベクトルをホストと WAL 上で確認します。
+
 `tests/wal/` は、`tools/llvm-src32` の `--wal`、`--wax3`、`--import-wal`（[ツールチェーンの README](../tools/llvm-src32/README.md#wax-v3--wal)）で C から作った画像を、カーネルで実行します。`build.py` が `test.base`（WAL）、それを import する `test.math`（WAL、1.2）、両方を import する `test.app`（WAX v3、固定アドレス 5 と 6 のスロット相当）を作り、`images.h` に書き出します。`app.c` は、WAL どうしの呼び出し、WAL 内部の関数ポインタ、WAL の静的データがプロセスごとに別であること、オブジェクトの import、文字列定数のアドレス、64-bit の引数と戻り値を確認し、すべて通れば 42 で終了します（起動コードが `proc_exit` を呼ぶ）。
 
 ```sh
