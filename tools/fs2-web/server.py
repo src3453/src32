@@ -18,7 +18,7 @@ lock = threading.Lock()
 class Monitor:
     def __init__(self, name, baud):
         import serial
-        self.port = serial.Serial(port=None, baudrate=baud, timeout=3, write_timeout=3)
+        self.port = serial.Serial(port=None, baudrate=baud, timeout=0.1, write_timeout=15)
         self.port.dtr = self.port.rts = False
         self.port.port = name
         self.port.open()
@@ -48,6 +48,8 @@ class Monitor:
                 break
         else:
             raise IOError('BIOSモニターが見つかりません。リセット直後に接続してください')
+        # SD initialization can take around 20 seconds on a failed card.
+        self.port.timeout = 45
         self.port.write(b'I')
         self.reply()
         return struct.unpack('>I', self.read_exact(4))[0]
