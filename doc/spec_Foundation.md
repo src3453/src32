@@ -352,7 +352,8 @@ S モードの R30 は、常にスタブのアドレスでなければなりま�
   - 3 = `fnd_meminfo`（16 bytes）。順に `ram_bytes`、`vram_bytes`、`pcmram_bytes`、予約（0）。ハードウェアの実装容量で、BMC のメモリ容量レジスタ（[BMC §1.5](spec_BMC_DMAC.md)）の値です。`ram_bytes` は sel 0 と同じ（容量不明なら 16 MiB）。`vram_bytes` と `pcmram_bytes` は BMC の値そのままで、0 は容量不明を表します
   - 4 = 呼び出したプロセス自身の `pid` と `parent`（8 bytes、u32 が 2 つ）。POSIX の `getpid`／`getppid` 用
   - 5 = PROCESS ハンドルの pid。ハンドル番号を `buf` に渡し（メモリは使わない。`cap` は無視）、結果が pid です。ハンドルが PROCESS でなければ `FND_E_BAD_HANDLE`。`proc_fork` や `proc_spawn` が返したハンドルから子の pid を知るのに使う
-  - その他は `FND_E_BAD_ARG`
+  - 6 = FPGA CPU 性能カウンタ（64 bytes）。CYCLE、INSTRET、IC_MISS、DC_MISS、MEM_STALL、DATA_STALL、BR_STALL、BUS_STALL の順に、各 u64 を low word, high word の 2 語で返します。権限付きMMIOをカーネルが読み、各 high/low/high 読みで tear を避けます。カウンタは SoC 全体の値なので、他プロセス、IRQ、Foundation のカーネル・サービスの実行も含みます。ハードウェア・カウンタを実装しない CPU では使用できず、標準エミュレータの性能統計としては使えません
+  - その他は `FND_E_BAD_ARG`. `sys_info(6)` is Foundation ABI 1.0 add-on selector for the Tang FPGA-only performance view. Older peripherals and the standard emulator do not provide these counters.
 
 ### 9.1 ケーパビリティ
 
