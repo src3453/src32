@@ -2,12 +2,15 @@
 ; Foundation stage1 boot sector (doc/spec_Foundation.md §11, doc/spec_FS2.md §3).
 ;
 ; The BIOS loads this block to 0x00000000 and enters it in S mode with
-; R1 = boot drive and IRQs off (doc/spec_BIOS.md §3). stage1 checks the FS2
+; R1 = boot drive and IRQs off (doc/spec_BIOS.md §3), plus the Tang recovery
+; entry in R26. Update the Tang BIOS and this boot sector together.
+; stage1 checks the FS2
 ; superblock, reads FNDBOOT from the reserved boot area to 0x00200000, checks
 ; its header, copies the kernel to kernel_load and jumps to kernel_entry with
 ; R1 = drive and R2 = 0x00200000.
 ;
-; On failure it HALTs with IRQs still off and R1 = the failed step:
+; Tang BIOS passes its UART recovery entry in R26, which stage1 preserves.
+; On failure it returns there with IRQs still off and R1 = the failed step:
 ;   1 superblock read (BIOS has identified the drive), 2 superblock check,
 ;   3 FNDBOOT read or header check.
 ;
@@ -116,8 +119,7 @@ enter:
     JR R8
 
 fail:
-    HALT
-    JMP fail
+    JR R26
 
 ; Tang Console PIO: no DMAC. The hardware bounds physical SD operations.
 ; R3 LBA, R4 sectors, R5 destination. The multi-sector command presents DRQ
