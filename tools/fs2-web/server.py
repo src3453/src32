@@ -14,6 +14,7 @@ import fs2
 
 MAX_BLOCKS = 131072
 lock = threading.Lock()
+progress = {'message': '', 'percent': None}
 
 class Monitor:
     def __init__(self, name, baud):
@@ -38,16 +39,23 @@ class Monitor:
             raise IOError(f'BIOS/SD エラー: {reply.hex()}')
     def connect(self):
         self.port.reset_input_buffer()
-        self.port.write(b'?')
         response = bytearray()
-        deadline = time.monotonic() + 4
+        deadline = time.monotonic() + 60
+        next_probe = 0
         while time.monotonic() < deadline:
-            b = self.port.read(1)
-            response.extend(b)
+            if time.monotonic() >= next_probe:
+                self.port.write(b'?')
+                next_probe = time.monotonic() + 0.25
+            response.extend(self.port.read(128))
             if b'boot> ' in response:
+                # Drain replies to probes already queued before issuing I.
+                while self.port.read(128):
+                    pass
                 break
+            if len(response) > 4096:
+                del response[:-1024]
         else:
-            raise IOError('BIOSモニターが見つかりません。リセット直後に接続してください')
+            raise IOError('BIOSモニターが見つかりません。接続待機中にボードをリセットしてください')
         # SD initialization can take around 20 seconds on a failed card.
         self.port.timeout = 45
         self.port.write(b'I')
@@ -71,6 +79,7 @@ class Monitor:
             raise IOError(f'セクタ {lba} の読み戻しが一致しません')
 
 def read_volume(monitor):
+    progress.update(message='BIOS待機中：必要ならボードをリセットしてください', percent=None)
     capacity = monitor.connect()
     sb = monitor.read_block(1)
     if sb[:4] != fs2.MAGIC:
@@ -80,15 +89,131 @@ def read_volume(monitor):
         raise ValueError('FS2サイズが不正か、対応上限の64 MiBを超えています')
     original = bytearray(monitor.read_block(0) + sb)
     for lba in range(2, count):
+        if lba % 64 == 0:
+            progress.update(message=f'FS2読み込み中: {lba}/{count} セクタ', percent=int(90*lba/count))
         original.extend(monitor.read_block(lba))
+    if monitor.read_block(1) != sb:
+        raise IOError('読み込み中にsuperblockが変化しました')
+    progress.update(message='読み込み完了、処理中', percent=90)
     return original
 
+class DirectoryReader:
+    """Read only metadata and directory chains needed for a listing.
+
+    This validates the structures it follows, not the rest of the volume.
+    """
+    def __init__(self, monitor):
+        self.monitor = monitor
+        capacity = monitor.connect()
+        self.cache = {}
+        raw = self.block(1)
+        self.sb = sb = dict(zip(fs2.SUPER_FIELDS, struct.unpack_from(fs2.SUPER_FMT, raw)))
+        total = sb['total_blocks']
+        if (sb['magic'] != fs2.MAGIC or sb['version'] != fs2.VERSION or
+            sb['flags'] or sb['casefold_version'] != fs2.CASEFOLD_VERSION or
+            not 2 <= total <= min(capacity, MAX_BLOCKS) or
+            not 1 <= sb['inode_count'] <= 0xfffffffe or sb['root_inode'] != 1):
+            raise ValueError('FS2 superblock が不正か、DIRTYです')
+        expected = fs2.layout(total, sb['boot_blocks'], sb['inode_count'])
+        if (any(sb[key] != value for key, value in expected.items()) or
+            expected['data_start'] > total or sb['boot_size'] > sb['boot_blocks'] * 512 or
+            sb['created_ms'] > 999 or any(raw[fs2.SUPER_USED:])):
+            raise ValueError('FS2 superblock のレイアウトが不正です')
+    def block(self, number):
+        if number not in self.cache:
+            self.cache[number] = self.monitor.read_block(number)
+            progress.update(message=f'必要なセクタを読み込み中: {len(self.cache)} セクタ', percent=None)
+        return self.cache[number]
+    def inode(self, number):
+        if not 1 <= number <= self.sb['inode_count']:
+            raise ValueError('inode 番号が範囲外です')
+        offset = (number - 1) * fs2.INODE_SIZE
+        raw = self.block(self.sb['inode_start'] + offset // 512)[offset % 512:offset % 512 + fs2.INODE_SIZE]
+        inode = dict(zip(fs2.INODE_FIELDS, struct.unpack_from(fs2.INODE_FMT, raw)), number=number)
+        if (inode['type'] not in (fs2.FILE, fs2.DIR) or inode['flags'] or inode['reserved'] or
+            inode['mode'] & ~fs2.MODE_MASK or inode['uid'] == fs2.INVALID_UID or
+            any(raw[0x2a:0x2c]) or any(raw[0x36:0x38]) or any(raw[fs2.INODE_USED:]) or
+            any(inode[t+'_ms'] > 999 for t in ('created','modified','changed')) or
+            inode['block_count'] != (inode['size'] + fs2.PAYLOAD - 1) // fs2.PAYLOAD or
+            (inode['size'] == 0) != (inode['first_block'] == 0)):
+            raise ValueError(f'inode {number} が不正です')
+        return inode
+    def entries(self, inode):
+        if inode['type'] != fs2.DIR or inode['size'] % fs2.ENTRY_SIZE:
+            raise ValueError('ディレクトリが不正です')
+        if inode['block_count'] > self.sb['total_blocks']:
+            raise ValueError('ディレクトリのサイズが不正です')
+        data = bytearray(); seen = set(); block = inode['first_block']
+        for _ in range(inode['block_count']):
+            if block in seen or not self.sb['data_start'] <= block < self.sb['total_blocks']:
+                raise ValueError('ディレクトリのブロックチェーンが不正です')
+            seen.add(block)
+            bitmap = self.block(self.sb['bitmap_start'] + block // 4096)
+            if not bitmap[(block % 4096) // 8] & (0x80 >> (block % 8)):
+                raise ValueError('ディレクトリのブロックが未使用です')
+            raw = self.block(block); block = struct.unpack_from('>I', raw)[0]; data.extend(raw[4:])
+        if block:
+            raise ValueError('ディレクトリのチェーンが長すぎます')
+        result = []; names = set()
+        for off in range(0, inode['size'], fs2.ENTRY_SIZE):
+            raw = data[off:off+fs2.ENTRY_SIZE]; number, length, chars = fs2.ENTRY_HEAD.unpack_from(raw)
+            if not number:
+                if any(raw): raise ValueError('空エントリが不正です')
+                continue
+            if length > fs2.NAME_BYTES: raise ValueError('ファイル名が長すぎます')
+            name = raw[8:8+length].decode('utf-8')
+            if len(name) != chars or fs2.check_name(name) != raw[8:8+length] or any(raw[8+length:]):
+                raise ValueError('ディレクトリエントリが不正です')
+            key = fs2.fold(name)
+            if key in names: raise ValueError('重複するファイル名があります')
+            names.add(key); result.append((number, name))
+        return result
+
+def list_directory(monitor, path):
+    reader = DirectoryReader(monitor)
+    inode = reader.inode(1)
+    for part in path.split('/'):
+        if not part or part == '.': continue
+        if part == '..':
+            inode = reader.inode(inode['parent']); continue
+        matches = [number for number, name in reader.entries(inode) if fs2.fold(name) == fs2.fold(part)]
+        if not matches: raise ValueError(f'ディレクトリが見つかりません: {path}')
+        inode = reader.inode(matches[0])
+    result = []
+    for number, name in reader.entries(inode):
+        child = reader.inode(number)
+        result.append({'name': name, 'directory': child['type'] == fs2.DIR, 'size': child['size']})
+    if monitor.read_block(1) != reader.cache[1]:
+        raise IOError('読み込み中にsuperblockが変化しました')
+    return result
+
 def download(monitor, path):
-    volume = fs2.Volume(read_volume(monitor))
-    inode = volume.resolve(path)
-    if inode["type"] != fs2.FILE:
-        raise ValueError("指定先はファイルではありません")
-    return volume.read(inode)
+    reader = DirectoryReader(monitor)
+    inode = reader.inode(1)
+    parts = [part for part in path.split('/') if part and part != '.']
+    for part in parts:
+        if part == '..':
+            inode = reader.inode(inode['parent']); continue
+        matches = [number for number, name in reader.entries(inode) if fs2.fold(name) == fs2.fold(part)]
+        if not matches: raise ValueError(f'ファイルが見つかりません: {path}')
+        inode = reader.inode(matches[0])
+    if inode['type'] != fs2.FILE:
+        raise ValueError('指定先はファイルではありません')
+    if inode['block_count'] > reader.sb['total_blocks']:
+        raise ValueError('ファイルのサイズが不正です')
+    data = bytearray(); seen = set(); block = inode['first_block']
+    for _ in range(inode['block_count']):
+        if block in seen or not reader.sb['data_start'] <= block < reader.sb['total_blocks']:
+            raise ValueError('ファイルのブロックチェーンが不正です')
+        seen.add(block)
+        bitmap = reader.block(reader.sb['bitmap_start'] + block // 4096)
+        if not bitmap[(block % 4096) // 8] & (0x80 >> (block % 8)):
+            raise ValueError('ファイルのブロックが未使用です')
+        raw = reader.block(block); block = struct.unpack_from('>I', raw)[0]; data.extend(raw[4:])
+    if block: raise ValueError('ファイルのチェーンが長すぎます')
+    if monitor.read_block(1) != reader.cache[1]:
+        raise IOError('読み込み中にsuperblockが変化しました')
+    return bytes(data[:inode['size']])
 
 def update(monitor, path, data):
     original = read_volume(monitor)
@@ -104,8 +229,10 @@ def update(monitor, path, data):
         return 0
     dirty = bytearray(sb)
     struct.pack_into('>H', dirty, 6, struct.unpack_from('>H', dirty, 6)[0] | fs2.FLAG_DIRTY)
+    progress.update(message='DIRTYを設定中', percent=90)
     monitor.write_block(1, dirty)
-    for lba in changed:
+    for index, lba in enumerate(changed):
+        progress.update(message=f'更新中: {index+1}/{len(changed)} セクタ', percent=90+int(9*index/len(changed)))
         if lba != 1:
             monitor.write_block(lba, volume.img[lba*512:(lba+1)*512])
     final = bytearray(volume.img[512:1024])
@@ -117,14 +244,23 @@ def update(monitor, path, data):
     return len(changed)
 
 class Handler(BaseHTTPRequestHandler):
+    def log_message(self, format, *args):
+        if self.path != '/progress':
+            super().log_message(format, *args)
+
     def do_GET(self):
-        if self.path != '/':
+        if self.path == '/progress':
+            body = json.dumps(progress, ensure_ascii=False).encode()
+            content_type = 'application/json; charset=utf-8'
+        elif self.path == '/':
+            body = Path(__file__).with_name('index.html').read_bytes()
+            content_type = 'text/html; charset=utf-8'
+        else:
             self.send_error(404); return
-        body = Path(__file__).with_name('index.html').read_bytes()
-        self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
+        self.send_response(200); self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
-        if self.path not in ('/update', '/download') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
+        if self.path not in ('/update', '/download', '/list', '/backup') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
             self.send_error(403); return
         try:
             length = int(self.headers.get('Content-Length', '0'))
@@ -140,12 +276,18 @@ class Handler(BaseHTTPRequestHandler):
                     if self.path == '/update':
                         count = update(mon, req['path'], data)
                         result = {'ok': True, 'message': f'更新完了: {count} セクタ変更'}
+                    elif self.path == '/backup':
+                        data = read_volume(mon)
+                        result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}
+                    elif self.path == '/list':
+                        result = {'ok': True, 'entries': list_directory(mon, req['path'])}
                     else:
                         data = download(mon, req['path'])
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}
                 finally: mon.close()
         except Exception as e:
             result = {'ok': False, 'message': str(e)}
+        progress.update(message='', percent=None)
         body = json.dumps(result, ensure_ascii=False).encode()
         self.send_response(200); self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)

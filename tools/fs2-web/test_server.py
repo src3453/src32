@@ -9,9 +9,11 @@ spec.loader.exec_module(web)
 
 class FakeMonitor:
     def __init__(self, image, fail=None):
-        self.image = bytearray(image); self.writes = []; self.fail = fail
+        self.image = bytearray(image); self.writes = []; self.reads = []; self.fail = fail
     def connect(self): return len(self.image) // 512
-    def read_block(self, lba): return bytes(self.image[lba*512:(lba+1)*512])
+    def read_block(self, lba):
+        self.reads.append(lba)
+        return bytes(self.image[lba*512:(lba+1)*512])
     def write_block(self, lba, data):
         self.writes.append((lba, bytes(data)))
         if self.fail == len(self.writes): raise IOError('injected failure')
@@ -28,6 +30,37 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(web.fs2.check_image(m.image), [])
         v = web.fs2.Volume(m.image)
         self.assertEqual(v.read(v.resolve('/test.bin')), b'hello')
+    def test_listing_rejects_dirty_and_corrupt_chain(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        web.fs2.Volume(img).put('/file', b'x')
+        dirty = bytearray(img); dirty[519] = 1
+        with self.assertRaises(ValueError): web.list_directory(FakeMonitor(dirty), '/')
+        volume = web.fs2.Volume(img)
+        root = volume.resolve('/')
+        struct.pack_into('>I', img, root['first_block'] * 512, root['first_block'])
+        with self.assertRaises(ValueError): web.list_directory(FakeMonitor(img), '/')
+
+    def test_backup_reads_dirty_volume_without_writes(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        img[519] = 1
+        m = FakeMonitor(img)
+        self.assertEqual(web.read_volume(m), img)
+        self.assertEqual(m.writes, [])
+
+    def test_directory_listing(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        volume = web.fs2.Volume(img)
+        volume.mkdir('/dir')
+        volume.put('/dir/hello.txt', b'abc')
+        m = FakeMonitor(img)
+        entries = web.list_directory(m, '/')
+        self.assertEqual([e['name'] for e in entries], ['dir'])
+        entries = web.list_directory(m, '/dir')
+        self.assertEqual(entries[0]['name'], 'hello.txt')
+        self.assertEqual(entries[0]['size'], 3)
+        self.assertLess(len(m.reads), 256)
+        self.assertEqual(m.writes, [])
+
     def test_download_does_not_write(self):
         img = web.fs2.format_image(128, inode_count=16)
         web.fs2.Volume(img).put('/test', b'content')
