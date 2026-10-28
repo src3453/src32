@@ -28,6 +28,13 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(web.fs2.check_image(m.image), [])
         v = web.fs2.Volume(m.image)
         self.assertEqual(v.read(v.resolve('/test.bin')), b'hello')
+    def test_download_does_not_write(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        web.fs2.Volume(img).put('/test', b'content')
+        m = FakeMonitor(img)
+        self.assertEqual(web.download(m, '/test'), b'content')
+        self.assertEqual(m.writes, [])
+
     def test_interrupted_update_keeps_dirty(self):
         m = FakeMonitor(web.fs2.format_image(128, inode_count=16), fail=2)
         with self.assertRaises(IOError): web.update(m, '/test', b'hello')

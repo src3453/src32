@@ -68,7 +68,7 @@ class Monitor:
         if self.read_block(lba) != data:
             raise IOError(f'セクタ {lba} の読み戻しが一致しません')
 
-def update(monitor, path, data):
+def read_volume(monitor):
     capacity = monitor.connect()
     sb = monitor.read_block(1)
     if sb[:4] != fs2.MAGIC:
@@ -79,6 +79,19 @@ def update(monitor, path, data):
     original = bytearray(monitor.read_block(0) + sb)
     for lba in range(2, count):
         original.extend(monitor.read_block(lba))
+    return original
+
+def download(monitor, path):
+    volume = fs2.Volume(read_volume(monitor))
+    inode = volume.resolve(path)
+    if inode["type"] != fs2.FILE:
+        raise ValueError("指定先はファイルではありません")
+    return volume.read(inode)
+
+def update(monitor, path, data):
+    original = read_volume(monitor)
+    count = len(original) // 512
+    sb = original[512:1024]
     volume = fs2.Volume(bytearray(original))
     volume.put(path, data)
     problems = fs2.check_image(volume.img)
@@ -109,21 +122,26 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type', 'text/html; charset=utf-8')
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
-        if self.path != '/update' or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
+        if self.path not in ('/update', '/download') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
             self.send_error(403); return
         try:
             length = int(self.headers.get('Content-Length', '0'))
             if not 0 < length <= 24 * 1024 * 1024:
                 raise ValueError('リクエストサイズが不正です')
             req = json.loads(self.rfile.read(length))
-            data = base64.b64decode(req['data'], validate=True)
+            data = base64.b64decode(req['data'], validate=True) if self.path == '/update' else None
             if not req['path'].startswith('/'):
                 raise ValueError('FS2パスは / で始めてください')
             with lock:
                 mon = Monitor(req['port'], int(req['baud']))
-                try: count = update(mon, req['path'], data)
+                try:
+                    if self.path == '/update':
+                        count = update(mon, req['path'], data)
+                        result = {'ok': True, 'message': f'更新完了: {count} セクタ変更'}
+                    else:
+                        data = download(mon, req['path'])
+                        result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}
                 finally: mon.close()
-            result = {'ok': True, 'message': f'更新完了: {count} セクタ変更'}
         except Exception as e:
             result = {'ok': False, 'message': str(e)}
         body = json.dumps(result, ensure_ascii=False).encode()
