@@ -104,6 +104,8 @@ cargo run --release --bin emulator_component_bench
 
 Bus tick（デバイス構成別）、VDP/PCG合成、SGCのfill/sprite、VPU三角形、SGUの無音/ノイズ音声をそれぞれ測ります。GPU upload、disk/DMA動作、IDC disk audio は含まれないため、利用環境の frame profile と合わせて判断してください。
 
+SGU v3 の録音入力は、`config.yaml` の `audio.input_device` に OS の録音デバイス名を完全一致で指定できます。省略時は OS の既定入力を使用します。設定例とデバイスが見つからない場合の動作は [34SI22 仕様](doc/spec_34SI22.md) を参照してください。
+
 ログは `tracing` から標準エラーへ出力され、端末ではレベルごとに色分けされます。既定のレベルは `info` です。`config.yaml` の `logging.level` で `trace` / `debug` / `info` / `warn` / `error` / `off` を指定できます。`RUST_LOG` が設定されている場合はそちらを優先します。
 
 ```sh

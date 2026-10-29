@@ -767,6 +767,7 @@ struct GuiApp {
     audio_host: Option<audio::AudioHost>,
     /// The host recording device was tried for the current 34SI22 (opened on first use).
     audio_input_tried: bool,
+    audio_input_device: Option<String>,
     audio_left: Vec<i16>,
     audio_right: Vec<i16>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
@@ -822,6 +823,7 @@ impl GuiApp {
                 (None, [None; 4])
             }
         };
+        let audio_input_device = audio::input_device_from_config(Path::new("config.yaml"))?;
         let audio_host = match audio::AudioHost::new() {
             Ok(host) => Some(host),
             Err(error) => {
@@ -838,6 +840,7 @@ impl GuiApp {
             idc: machine.idc,
             audio_host,
             audio_input_tried: false,
+            audio_input_device,
             audio_left: Vec::new(),
             audio_right: Vec::new(),
             input_sender: machine.input_sender,
@@ -2857,7 +2860,7 @@ impl ApplicationHandler for GuiApp {
                             // recording or reads REC_x_ADC.
                             if !self.audio_input_tried && si22.borrow().wants_adc() {
                                 self.audio_input_tried = true;
-                                match audio::AudioInput::new() {
+                                match audio::AudioInput::new(self.audio_input_device.as_deref()) {
                                     Ok(input) => si22.borrow_mut().set_adc(Box::new(input)),
                                     Err(error) => {
                                         tracing::warn!(%error, "34SI22: no host audio input, recording silence")
@@ -3741,6 +3744,7 @@ mod input_tests {
             idc: None,
             audio_host: None,
             audio_input_tried: false,
+            audio_input_device: None,
             audio_left: Vec::new(),
             audio_right: Vec::new(),
             input_sender: old_sender,

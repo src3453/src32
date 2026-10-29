@@ -218,6 +218,29 @@ impl AudioHost {
     }
 }
 
+/// Read the optional SGU v3 host input device name from the emulator configuration.
+#[allow(dead_code)]
+pub fn input_device_from_config(path: &std::path::Path) -> Result<Option<String>, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("cannot read {}: {e}", path.display())),
+    };
+    input_device_from_yaml(&contents)
+}
+
+#[allow(dead_code)]
+fn input_device_from_yaml(contents: &str) -> Result<Option<String>, String> {
+    let root: yaml_serde::Value = yaml_serde::from_str(contents)
+        .map_err(|e| format!("invalid YAML: {e}"))?;
+    let Some(audio) = root.get("audio") else { return Ok(None) };
+    let table = audio.as_mapping().ok_or("`audio` must be a mapping")?;
+    let Some(value) = table.get("input_device") else { return Ok(None) };
+    let name = value.as_str().filter(|s| !s.trim().is_empty())
+        .ok_or("`audio.input_device` must be a nonempty device name string")?;
+    Ok(Some(name.to_owned()))
+}
+
 /// Captured input frames awaiting the guest, capped to bound the latency.
 type CaptureQueue = Arc<Mutex<std::collections::VecDeque<(i16, i16)>>>;
 
@@ -235,11 +258,21 @@ pub struct AudioInput {
 
 #[allow(dead_code)]
 impl AudioInput {
-    pub fn new() -> Result<Self, String> {
+    pub fn new(device_name: Option<&str>) -> Result<Self, String> {
         let host = cpal::default_host();
-        let device = host
-            .default_input_device()
-            .ok_or_else(|| "No audio input device found".to_string())?;
+        let device = if let Some(name) = device_name {
+            let mut matches = host.input_devices()
+                .map_err(|e| format!("Failed to enumerate audio input devices: {e}"))?
+                .filter(|device| device.description().is_ok_and(|d| d.name() == name));
+            let device = matches.next().ok_or_else(|| format!("Audio input device not found: {name}"))?;
+            if matches.next().is_some() {
+                return Err(format!("Multiple audio input devices named: {name}"));
+            }
+            device
+        } else {
+            host.default_input_device().ok_or_else(|| "No audio input device found".to_string())?
+        };
+        tracing::info!(device = ?device.description(), "34SI22 audio input selected");
         let supported = device
             .default_input_config()
             .map_err(|e| format!("Failed to get input config: {e}"))?;
@@ -334,6 +367,16 @@ impl cpt32::devices::sgu::sgu::AdcSource for AudioInput {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn input_device_config_validates_name() {
+        assert_eq!(super::input_device_from_yaml("{}").unwrap(), None);
+        assert_eq!(super::input_device_from_yaml("audio: {}\n").unwrap(), None);
+        assert_eq!(super::input_device_from_yaml("audio:\n  input_device: 'Voicemeeter Out A1'\n").unwrap().as_deref(), Some("Voicemeeter Out A1"));
+        for yaml in ["audio: 1", "audio: {input_device: 42}", "audio: {input_device: ''}", "audio: {input_device: null}"] {
+            assert!(super::input_device_from_yaml(yaml).is_err(), "{yaml}");
+        }
+    }
 
     #[test]
     fn stereo_push_preserves_channel_order_and_sample_values() {
