@@ -173,7 +173,23 @@ class DirectoryReader:
             names.add(key); result.append((number, name))
         return result
 
-def list_directory(monitor, path):
+def volume_usage(reader):
+    total = reader.sb['total_blocks']
+    remaining = total
+    used = 0
+    for index in range(reader.sb['bitmap_blocks']):
+        bitmap = reader.block(reader.sb['bitmap_start'] + index)
+        bits = min(remaining, fs2.BLOCK * 8)
+        whole, tail = divmod(bits, 8)
+        used += sum(byte.bit_count() for byte in bitmap[:whole])
+        if tail:
+            used += (bitmap[whole] & (0xff << (8 - tail))).bit_count()
+        remaining -= bits
+    return {'total_sectors': total, 'used_sectors': used,
+            'free_sectors': total - used, 'sector_bytes': fs2.BLOCK}
+
+
+def list_directory(monitor, path, with_usage=False):
     reader = DirectoryReader(monitor)
     inode = reader.inode(1)
     for part in path.split('/'):
@@ -187,9 +203,10 @@ def list_directory(monitor, path):
     for number, name in reader.entries(inode):
         child = reader.inode(number)
         result.append({'name': name, 'directory': child['type'] == fs2.DIR, 'size': child['size']})
+    usage = volume_usage(reader) if with_usage else None
     if monitor.read_block(1) != reader.cache[1]:
         raise IOError('読み込み中にsuperblockが変化しました')
-    return result
+    return (result, usage) if with_usage else result
 
 def download(monitor, path):
     reader = DirectoryReader(monitor)
@@ -424,7 +441,8 @@ class Handler(BaseHTTPRequestHandler):
                         data = read_volume(mon)
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}
                     elif self.path == '/list':
-                        result = {'ok': True, 'entries': list_directory(mon, req['path'])}
+                        entries, usage = list_directory(mon, req['path'], with_usage=True)
+                        result = {'ok': True, 'entries': entries, 'usage': usage}
                     else:
                         data = download(mon, req['path'])
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}

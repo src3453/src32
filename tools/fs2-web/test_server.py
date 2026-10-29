@@ -141,6 +141,23 @@ class UpdateTests(unittest.TestCase):
         self.assertLess(len(m.reads), 256)
         self.assertEqual(m.writes, [])
 
+    def test_volume_usage_counts_only_valid_bitmap_bits(self):
+        img = web.fs2.format_image(4101, inode_count=16)
+        volume = web.fs2.Volume(img)
+        volume.put('/file', b'x' * 1000)
+        expected = sum(volume.bit(block) for block in range(4101))
+        # Out-of-volume padding is excluded even if those bits are set.
+        bitmap_end = (volume.sb['bitmap_start'] + volume.sb['bitmap_blocks']) * 512
+        img[bitmap_end - 1] = 0xff
+        m = FakeMonitor(img)
+        entries, usage = web.list_directory(m, '/', with_usage=True)
+        self.assertEqual(entries[0]['name'], 'file')
+        self.assertEqual(usage, {'total_sectors': 4101, 'used_sectors': expected,
+                                 'free_sectors': 4101 - expected, 'sector_bytes': 512})
+        self.assertIn(volume.sb['bitmap_start'] + 1, m.reads)
+        self.assertLess(len(m.reads), 30)
+        self.assertEqual(m.writes, [])
+
     def test_download_does_not_write(self):
         img = web.fs2.format_image(128, inode_count=16)
         web.fs2.Volume(img).put('/test', b'content')
