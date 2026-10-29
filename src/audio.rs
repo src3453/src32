@@ -218,6 +218,119 @@ impl AudioHost {
     }
 }
 
+/// Captured input frames awaiting the guest, capped to bound the latency.
+type CaptureQueue = Arc<Mutex<std::collections::VecDeque<(i16, i16)>>>;
+
+/// The host's default recording device as the 34SI22 ADC: 48 kHz stereo,
+/// mono duplicated to both sides, other rates resampled (zero-order hold).
+#[allow(dead_code)] // music_editor includes this file but has no 34SI22
+pub struct AudioInput {
+    _stream: Stream,
+    shared: CaptureQueue,
+    pending: std::collections::VecDeque<(i16, i16)>,
+    device_rate: u32,
+    phase: u64,
+    last: (i16, i16),
+}
+
+#[allow(dead_code)]
+impl AudioInput {
+    pub fn new() -> Result<Self, String> {
+        let host = cpal::default_host();
+        let device = host
+            .default_input_device()
+            .ok_or_else(|| "No audio input device found".to_string())?;
+        let supported = device
+            .default_input_config()
+            .map_err(|e| format!("Failed to get input config: {e}"))?;
+        let device_rate = supported.sample_rate();
+        let channels = supported.channels().max(1) as usize;
+        let sample_format = supported.sample_format();
+        let config: StreamConfig = supported.into();
+        let shared: CaptureQueue = Arc::new(Mutex::new(std::collections::VecDeque::new()));
+        let cap = (device_rate as usize / 4).max(1024);
+
+        fn push(queue: &CaptureQueue, cap: usize, channels: usize, data: &[f32]) {
+            let Ok(mut queue) = queue.lock() else { return };
+            for frame in data.chunks(channels) {
+                let l = (frame[0] * 32767.0).clamp(-32768.0, 32767.0) as i16;
+                let r = frame
+                    .get(1)
+                    .map_or(l, |r| (r * 32767.0).clamp(-32768.0, 32767.0) as i16);
+                queue.push_back((l, r));
+            }
+            while queue.len() > cap {
+                queue.pop_front();
+            }
+        }
+
+        let err_fn = |err| tracing::error!(%err, "Audio input stream error");
+        let q = Arc::clone(&shared);
+        let stream = match sample_format {
+            SampleFormat::F32 => device.build_input_stream(
+                config,
+                move |data: &[f32], _: &cpal::InputCallbackInfo| push(&q, cap, channels, data),
+                err_fn,
+                None,
+            ),
+            SampleFormat::I16 => device.build_input_stream(
+                config,
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let f: Vec<f32> = data.iter().map(|&s| s as f32 / 32768.0).collect();
+                    push(&q, cap, channels, &f);
+                },
+                err_fn,
+                None,
+            ),
+            SampleFormat::U16 => device.build_input_stream(
+                config,
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    let f: Vec<f32> = data
+                        .iter()
+                        .map(|&s| (s as i32 - 32768) as f32 / 32768.0)
+                        .collect();
+                    push(&q, cap, channels, &f);
+                },
+                err_fn,
+                None,
+            ),
+            _ => return Err("Unsupported input sample format".to_string()),
+        }
+        .map_err(|e| format!("Failed to build input stream: {e}"))?;
+        stream
+            .play()
+            .map_err(|e| format!("Failed to start input stream: {e}"))?;
+        Ok(Self {
+            _stream: stream,
+            shared,
+            pending: std::collections::VecDeque::new(),
+            device_rate,
+            phase: 0,
+            last: (0, 0),
+        })
+    }
+}
+
+impl cpt32::devices::sgu::sgu::AdcSource for AudioInput {
+    /// One 48 kHz frame: consume `device_rate / 48000` captured frames and hold the
+    /// last one; an empty queue (underrun) holds the previous value.
+    fn next_frame(&mut self) -> (i16, i16) {
+        self.phase += u64::from(self.device_rate);
+        while self.phase >= 48_000 {
+            self.phase -= 48_000;
+            if self.pending.is_empty() {
+                if let Ok(mut shared) = self.shared.lock() {
+                    self.pending.extend(shared.drain(..));
+                }
+            }
+            if let Some(frame) = self.pending.pop_front() {
+                self.last = frame;
+            }
+        }
+        self.last
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -233,7 +233,7 @@ BMCとDMACの詳細は [`spec_BMC_DMAC.md`](spec_BMC_DMAC.md) を参照。
 |--------------|------|--------|-----------|
 | 0x80000000 - 0x8000FFFF | 64KB | VDP | RWS |
 | 0x80010000 - 0x8001FFFF | 64KB | SGC | RWS |
-| 0x80020000 - 0x8002FFFF | 64KB | SGU x2 (SGU 2 registers at 0x80021000; shared PCMRAM) | RWS |
+| 0x80020000 - 0x8002FFFF | 64KB | SGU x2 (SGU 2 registers at 0x80021000; shared PCMRAM) + 34SI22 at 0x80022000 (SGU v3, `spec_34SI22.md`) | RWS |
 | 0x80030000 - 0x8003FFFF | 64KB | VPU | RWS |
 | 0x80040000 - 0x8004FFFF | 64KB | PeC (UART / RNG / input / quad timer / RTC / IDC) | RWS |
 | 0x80050000 - 0x8005FFFF | 64KB | DMAC | RWS |

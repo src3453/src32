@@ -24,7 +24,7 @@ use cpt32::devices::pec::serial::connect_uart;
 use cpt32::devices::ram::connect_ram;
 use cpt32::devices::ram::connect_ram_with_size;
 use cpt32::devices::sgu::s3w2::S3w2Sound;
-use cpt32::devices::sgu::sgu::{connect_sgu_with_version, sgu_version_from_config};
+use cpt32::devices::sgu::sgu::{Si22Unit, connect_sound_with_version, sgu_version_from_config};
 #[cfg(test)]
 use cpt32::devices::vdp::vdp::{MAX_VDP_VRAM_SIZE, connect_vdp};
 use cpt32::devices::vdp::vdp::{Vdp, connect_vdp_with_vram_size};
@@ -48,6 +48,12 @@ mod monitor;
 mod render;
 
 impl audio::AudioSource for S3w2Sound {
+    fn render_audio(&mut self, _: u32, left: &mut [i16], right: &mut [i16]) {
+        self.clock_mixed_into(left, right);
+    }
+}
+
+impl audio::AudioSource for Si22Unit {
     fn render_audio(&mut self, _: u32, left: &mut [i16], right: &mut [i16]) {
         self.clock_mixed_into(left, right);
     }
@@ -203,6 +209,7 @@ struct GuestMachine {
     cpu: AnyCpu,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    si22: Option<Rc<RefCell<Si22Unit>>>,
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     title: Option<String>,
@@ -261,10 +268,11 @@ fn build_guest_machine(
     } else {
         connect_idc_from_config(&mut bus)?
     };
-    let sgu = connect_sgu_with_version(
+    let sound = connect_sound_with_version(
         &mut bus,
         sgu_version_from_config(Path::new("config.yaml"))?,
     );
+    let (sgu, si22) = (sound.sgus, sound.si22);
     let program = match cartridge.as_ref() {
         Some(cartridge) => cartridge.program.as_slice(),
         None => {
@@ -274,6 +282,7 @@ fn build_guest_machine(
                 bus,
                 input_sender,
                 sgu,
+                si22,
                 idc,
                 cpu_kind,
             );
@@ -321,6 +330,7 @@ fn build_guest_machine(
         cpu,
         vdp,
         sgu,
+        si22,
         idc: Some(idc),
         input_sender,
         title,
@@ -333,6 +343,7 @@ fn build_raw_guest(
     mut bus: Bus,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    si22: Option<Rc<RefCell<Si22Unit>>>,
     idc: Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>,
     cpu_kind: CpuKind,
 ) -> Result<GuestMachine, String> {
@@ -371,6 +382,7 @@ fn build_raw_guest(
         cpu,
         vdp,
         sgu,
+        si22,
         idc: Some(idc),
         input_sender,
         title: None,
@@ -750,8 +762,11 @@ struct GuiApp {
     boot_pc: u32,
     vdp: Rc<RefCell<Vdp>>,
     sgu: [Rc<RefCell<S3w2Sound>>; 2],
+    si22: Option<Rc<RefCell<Si22Unit>>>,
     idc: Option<Rc<RefCell<cpt32::devices::pec::idc::idc::Idc>>>,
     audio_host: Option<audio::AudioHost>,
+    /// The host recording device was tried for the current 34SI22 (opened on first use).
+    audio_input_tried: bool,
     audio_left: Vec<i16>,
     audio_right: Vec<i16>,
     input_sender: tokio::sync::mpsc::UnboundedSender<HostInputEvent>,
@@ -819,8 +834,10 @@ impl GuiApp {
             cpu: machine.cpu,
             vdp: machine.vdp,
             sgu: machine.sgu,
+            si22: machine.si22,
             idc: machine.idc,
             audio_host,
+            audio_input_tried: false,
             audio_left: Vec::new(),
             audio_right: Vec::new(),
             input_sender: machine.input_sender,
@@ -870,6 +887,8 @@ impl GuiApp {
                 self.cpu = machine.cpu;
                 self.vdp = machine.vdp;
                 self.sgu = machine.sgu;
+                self.si22 = machine.si22;
+                self.audio_input_tried = false;
                 self.idc = machine.idc;
                 self.input_sender = machine.input_sender;
                 if let Some(gilrs) = self.gilrs.as_ref() {
@@ -1199,8 +1218,8 @@ struct DebugUiState {
     frame_profile: Option<FrameProfileSummary>,
     cpu_utilization_history: VecDeque<f32>,
     runtime_percent_history: VecDeque<f32>,
-    audio_muted: [bool; 4],
-    audio_levels: [(f32, f32); 4],
+    audio_muted: [bool; 5],
+    audio_levels: [(f32, f32); 5],
     expansion: ExpansionDebugState,
 }
 
@@ -1338,8 +1357,8 @@ impl DebugUiState {
             frame_profile: None,
             cpu_utilization_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
             runtime_percent_history: VecDeque::with_capacity(Self::PERFORMANCE_HISTORY_SAMPLES),
-            audio_muted: [false; 4],
-            audio_levels: [(0.0, 0.0); 4],
+            audio_muted: [false; 5],
+            audio_levels: [(0.0, 0.0); 5],
             expansion: ExpansionDebugState::default(),
         }
     }
@@ -1694,7 +1713,7 @@ impl DebugUiState {
     }
 
     fn draw_audio_mixer(&mut self, ui: &Ui) {
-        const SOURCES: [&str; 4] = ["SGU 1", "SGU 2", "IDC disk audio", "Expansion card"];
+        const SOURCES: [&str; 5] = ["SGU 1", "SGU 2", "IDC disk audio", "Expansion card", "34SI22"];
         ui.window(DebugWindow::AudioMixer.label())
             .size([480.0, 240.0], Condition::FirstUseEver)
             .build(|| {
@@ -2806,8 +2825,8 @@ impl ApplicationHandler for GuiApp {
                             .debug_gui
                             .as_ref()
                             .map(|gui| gui.state.audio_muted)
-                            .unwrap_or([false; 4]);
-                        let mut levels = [(0.0, 0.0); 4];
+                            .unwrap_or([false; 5]);
+                        let mut levels = [(0.0, 0.0); 5];
                         for index in 0..2 {
                             levels[index] = audio::mix_source(
                                 &mut *self.sgu[index].borrow_mut(),
@@ -2833,6 +2852,25 @@ impl ApplicationHandler for GuiApp {
                             &mut self.audio_left,
                             &mut self.audio_right,
                         );
+                        if let Some(si22) = self.si22.as_ref() {
+                            // The recording device opens when the guest first arms a recording.
+                            if !self.audio_input_tried && si22.borrow().chip.input_active() {
+                                self.audio_input_tried = true;
+                                match audio::AudioInput::new() {
+                                    Ok(input) => si22.borrow_mut().set_adc(Box::new(input)),
+                                    Err(error) => {
+                                        tracing::warn!(%error, "34SI22: no host audio input, recording silence")
+                                    }
+                                }
+                            }
+                            levels[4] = audio::mix_source(
+                                &mut *si22.borrow_mut(),
+                                sample_rate,
+                                muted[4],
+                                &mut self.audio_left,
+                                &mut self.audio_right,
+                            );
+                        }
                         if let Some(gui) = self.debug_gui.as_mut() {
                             gui.state.audio_levels = levels;
                         }
@@ -3698,8 +3736,10 @@ mod input_tests {
             boot_pc: 0x1234,
             vdp: old_vdp,
             sgu: old_sgu,
+            si22: None,
             idc: None,
             audio_host: None,
+            audio_input_tried: false,
             audio_left: Vec::new(),
             audio_right: Vec::new(),
             input_sender: old_sender,
