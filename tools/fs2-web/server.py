@@ -243,6 +243,44 @@ def update(monitor, path, data):
     monitor.write_block(1, final)
     return len(changed)
 
+def validate_backup(data):
+    if len(data) < 1024 or len(data) % fs2.BLOCK or len(data) > MAX_BLOCKS * fs2.BLOCK:
+        raise ValueError('バックアップは512バイト単位、最大64 MiBのFS2イメージである必要があります')
+    total = struct.unpack_from('>I', data, fs2.BLOCK + 8)[0]
+    if total != len(data) // fs2.BLOCK:
+        raise ValueError('イメージ長とFS2のボリュームサイズが一致しません')
+    problems = fs2.check_image(data, allow_dirty=True)
+    if problems:
+        raise ValueError(f'バックアップのFS2検査に失敗しました: {problems[0]}')
+    return total
+
+
+def restore(monitor, data):
+    total = validate_backup(data)
+    progress.update(message='BIOS待機中：必要ならボードをリセットしてください', percent=None)
+    capacity = monitor.connect()
+    if total > capacity:
+        raise ValueError('バックアップがSDカード容量を超えています。書き込みは行っていません')
+    final = data[512:1024]
+    dirty = bytearray(final)
+    struct.pack_into('>H', dirty, 6, struct.unpack_from('>H', dirty, 6)[0] | fs2.FLAG_DIRTY)
+    progress.update(message='復元開始：DIRTYを設定中', percent=0)
+    try:
+        monitor.write_block(1, dirty)
+        for lba in range(total):
+            if lba == 1:
+                continue
+            progress.update(message=f'復元・読み戻し中: {lba + 1}/{total} セクタ',
+                            percent=int(99 * (lba + 1) / total))
+            monitor.write_block(lba, data[lba*512:(lba+1)*512])
+        if final != dirty:
+            progress.update(message='復元完了：DIRTYを解除中', percent=99)
+            monitor.write_block(1, final)
+    except Exception as exc:
+        raise IOError('復元が中断しました。媒体は不完全またはDIRTYの可能性があります。'
+                      'バックアップから再度復元してください: ' + str(exc)) from exc
+    return total, bool(struct.unpack_from('>H', final, 6)[0] & fs2.FLAG_DIRTY)
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         if self.path != '/progress':
@@ -260,15 +298,17 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
-        if self.path not in ('/update', '/download', '/list', '/backup') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
+        if self.path not in ('/update', '/download', '/list', '/backup', '/restore') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
             self.send_error(403); return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 24 * 1024 * 1024:
+            if not 0 < length <= 90 * 1024 * 1024:
                 raise ValueError('リクエストサイズが不正です')
             req = json.loads(self.rfile.read(length))
-            data = base64.b64decode(req['data'], validate=True) if self.path == '/update' else None
-            if not req['path'].startswith('/'):
+            data = base64.b64decode(req['data'], validate=True) if self.path in ('/update', '/restore') else None
+            if self.path == '/restore':
+                validate_backup(data)  # reject bad images before opening the port
+            if not req.get('path', '/').startswith('/'):
                 raise ValueError('FS2パスは / で始めてください')
             with lock:
                 mon = Monitor(req['port'], int(req['baud']))
@@ -276,6 +316,9 @@ class Handler(BaseHTTPRequestHandler):
                     if self.path == '/update':
                         count = update(mon, req['path'], data)
                         result = {'ok': True, 'message': f'更新完了: {count} セクタ変更'}
+                    elif self.path == '/restore':
+                        count, dirty = restore(mon, data)
+                        result = {'ok': True, 'message': f'復元完了: {count} セクタ。' + ('元のDIRTYを維持しています。' if dirty else 'DIRTYは解除されています。')}
                     elif self.path == '/backup':
                         data = read_volume(mon)
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}

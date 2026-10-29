@@ -30,6 +30,38 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(web.fs2.check_image(m.image), [])
         v = web.fs2.Volume(m.image)
         self.assertEqual(v.read(v.resolve('/test.bin')), b'hello')
+    def test_restore_clean_and_dirty_backups(self):
+        for was_dirty in (False, True):
+            img = web.fs2.format_image(64, inode_count=16)
+            web.fs2.Volume(img).put('/restored', b'restore data')
+            if was_dirty: img[519] |= 1
+            m = FakeMonitor(web.fs2.format_image(128, inode_count=16))
+            count, dirty = web.restore(m, img)
+            self.assertEqual((count, dirty), (64, was_dirty))
+            self.assertEqual(m.image[:len(img)], img)
+            self.assertEqual(m.writes[0][0], 1)
+            self.assertEqual(m.writes[0][1][7] & 1, 1)
+            if not was_dirty:
+                self.assertEqual(m.writes[-1][0], 1)
+                self.assertEqual(m.writes[-1][1][7] & 1, 0)
+            self.assertEqual(web.fs2.check_image(m.image, allow_dirty=was_dirty), [])
+
+    def test_restore_rejects_invalid_or_oversized_before_write(self):
+        img = web.fs2.format_image(64, inode_count=16)
+        m = FakeMonitor(web.fs2.format_image(32, inode_count=8))
+        with self.assertRaises(ValueError): web.restore(m, img)
+        self.assertEqual(m.writes, [])
+        bad = bytearray(img); bad[512] = 0
+        with self.assertRaises(ValueError): web.restore(m, bad)
+        self.assertEqual(m.writes, [])
+        with self.assertRaises(ValueError): web.validate_backup(img + bytes(512))
+
+    def test_restore_failure_keeps_dirty(self):
+        img = web.fs2.format_image(64, inode_count=16)
+        m = FakeMonitor(web.fs2.format_image(64, inode_count=16), fail=3)
+        with self.assertRaisesRegex(IOError, 'DIRTY'): web.restore(m, img)
+        self.assertEqual(m.image[519] & 1, 1)
+
     def test_listing_rejects_dirty_and_corrupt_chain(self):
         img = web.fs2.format_image(128, inode_count=16)
         web.fs2.Volume(img).put('/file', b'x')
