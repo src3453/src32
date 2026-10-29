@@ -102,6 +102,8 @@ pub struct Si22Unit {
     pub chip: Si22,
     pcm_ram: Rc<RefCell<Vec<u8>>>,
     adc: Option<Box<dyn AdcSource>>,
+    /// The guest read REC_A_ADC / REC_B_ADC (the host opens its input then too).
+    adc_read: std::cell::Cell<bool>,
 }
 
 impl Si22Unit {
@@ -110,6 +112,7 @@ impl Si22Unit {
             chip: Si22::new(),
             pcm_ram,
             adc: None,
+            adc_read: std::cell::Cell::new(false),
         }
     }
 
@@ -120,6 +123,19 @@ impl Si22Unit {
 
     pub fn has_adc(&self) -> bool {
         self.adc.is_some()
+    }
+
+    /// True once the guest uses the ADC: a recording is armed or REC_x_ADC was read.
+    pub fn wants_adc(&self) -> bool {
+        self.chip.input_active() || self.adc_read.get()
+    }
+
+    /// Guest register read: like `read_register`, and notes that the ADC is in use.
+    pub fn read_register_from_guest(&self, offset: u32) -> u8 {
+        if (0x25..=0x28).contains(&offset) {
+            self.adc_read.set(true);
+        }
+        self.read_register(offset)
     }
 
     pub fn read_register(&self, offset: u32) -> u8 {
@@ -172,7 +188,7 @@ impl Device for Si22Device {
     }
 
     fn read(&mut self, addr: u32) -> u8 {
-        self.0.borrow().read_register(addr)
+        self.0.borrow().read_register_from_guest(addr)
     }
 
     fn debug_read(&mut self, addr: u32) -> Option<u8> {
@@ -344,6 +360,13 @@ mod tests {
         si22.borrow_mut().clock_mixed_into_i32(&mut l, &mut r);
         assert_eq!(l, [0x100, 0x200, 0x300, 0x400, 0]);
         assert_eq!(r, l);
+
+        // REC_A_ADC follows the ADC while nothing records; a debugger peek does not
+        // count as using the ADC, a guest read does.
+        assert_eq!(bus.read_debug_u8(SI22_REG_BASE + 0x25), Some(0x0D)); // 13th tick
+        assert!(!si22.borrow().wants_adc());
+        assert_eq!(bus.read_u8(SI22_REG_BASE + 0x26), 0x00);
+        assert!(si22.borrow().wants_adc());
     }
 
     #[test]

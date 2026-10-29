@@ -140,6 +140,8 @@ pub struct Si22 {
     pub flags: u8,
     pub vox_threshold: u8,
     pub vox_hold: u8,
+    /// Raw ADC sample (L, R) of the last tick: REC_A_ADC / REC_B_ADC.
+    pub adc: (i16, i16),
 }
 
 fn addr_byte(value: u32, offset: u32) -> u8 {
@@ -200,6 +202,10 @@ impl Si22 {
             0x22 => r[0].format_field | (r[1].format_field << 4),
             0x23 => self.vox_threshold,
             0x24 => self.vox_hold,
+            0x25 => (self.adc.0 >> 8) as u8,
+            0x26 => self.adc.0 as u8,
+            0x27 => (self.adc.1 >> 8) as u8,
+            0x28 => self.adc.1 as u8,
             _ => 0,
         }
     }
@@ -312,6 +318,7 @@ impl Si22 {
 
     /// One 48 kHz tick: playback A, B, then record A, B; returns (DAC_L, DAC_R).
     pub fn tick(&mut self, adc: (i16, i16), mem: &mut dyn Si22Memory) -> (i16, i16) {
+        self.adc = adc;
         for ch in 0..2 {
             self.play_step(ch, mem);
         }
@@ -711,6 +718,21 @@ mod tests {
         chip.tick((9000, 0), &mut ram);
         assert_ne!(ram.0[17], 0xAA); // 9 bits: first payload byte written
         assert_eq!(ram.0[18], 0xAA);
+    }
+
+    #[test]
+    fn rec_adc_registers_show_the_raw_sample_without_recording() {
+        let mut ram = Ram(vec![0; 0x100]);
+        let mut chip = Si22::new();
+        chip.write_register(0x1D, 0xFF, &mut ram); // gain does not apply
+        chip.write_register(0x1E, 7, &mut ram); // nor the divider
+        chip.tick((-2, 0x1234), &mut ram);
+        let regs: Vec<u8> = (0x25..=0x29).map(|o| chip.read_register(o)).collect();
+        assert_eq!(regs, [0xFF, 0xFE, 0x12, 0x34, 0]);
+        chip.write_register(0x25, 0x55, &mut ram); // read only
+        chip.tick((i16::MIN, i16::MAX), &mut ram);
+        let regs: Vec<u8> = (0x25..=0x28).map(|o| chip.read_register(o)).collect();
+        assert_eq!(regs, [0x80, 0x00, 0x7F, 0xFF]);
     }
 
     #[test]

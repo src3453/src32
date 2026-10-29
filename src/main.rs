@@ -2853,8 +2853,9 @@ impl ApplicationHandler for GuiApp {
                             &mut self.audio_right,
                         );
                         if let Some(si22) = self.si22.as_ref() {
-                            // The recording device opens when the guest first arms a recording.
-                            if !self.audio_input_tried && si22.borrow().chip.input_active() {
+                            // The recording device opens when the guest first arms a
+                            // recording or reads REC_x_ADC.
+                            if !self.audio_input_tried && si22.borrow().wants_adc() {
                                 self.audio_input_tried = true;
                                 match audio::AudioInput::new() {
                                     Ok(input) => si22.borrow_mut().set_adc(Box::new(input)),
