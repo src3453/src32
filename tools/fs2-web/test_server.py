@@ -157,6 +157,13 @@ class UpdateTests(unittest.TestCase):
         m = FakeMonitor(img)
         with self.assertRaises(web.fs2.Fs2Error): web.update(m, '/test', b'hello')
         self.assertEqual(m.writes, [])
+    def test_upload_directory_path_rejected_before_connect(self):
+        class NoConnect(FakeMonitor):
+            def connect(self): raise AssertionError('must not connect')
+        for path in ('/', '/bin/', 'relative', '/.', '/..'):
+            with self.subTest(path=path), self.assertRaises((ValueError, web.fs2.Fs2Error)):
+                web.update(NoConnect(web.fs2.format_image(128, inode_count=16)), path, b'x')
+
     def test_invalid_path_does_not_write(self):
         m = FakeMonitor(web.fs2.format_image(128, inode_count=16))
         with self.assertRaises(web.fs2.Fs2Error): web.update(m, '/missing/test', b'hello')

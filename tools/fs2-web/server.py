@@ -219,7 +219,13 @@ def download(monitor, path):
         raise IOError('読み込み中にsuperblockが変化しました')
     return bytes(data[:inode['size']])
 
+def validate_upload_path(path):
+    if not isinstance(path, str) or not path.startswith('/') or path.endswith('/'):
+        raise ValueError('アップロード先には /ファイル名 を含む絶対パスを指定してください')
+    fs2.check_name(path.rsplit('/', 1)[-1])
+
 def update(monitor, path, data):
+    validate_upload_path(path)
     original = read_volume(monitor)
     count = len(original) // 512
     sb = original[512:1024]
@@ -396,6 +402,8 @@ class Handler(BaseHTTPRequestHandler):
                 raise ValueError('リクエストサイズが不正です')
             req = json.loads(self.rfile.read(length))
             data = base64.b64decode(req['data'], validate=True) if self.path in ('/update', '/restore') else None
+            if self.path == '/update':
+                validate_upload_path(req.get('path'))
             if self.path == '/restore':
                 validate_backup(data)  # reject bad images before opening the port
             if not req.get('path', '/').startswith('/'):
