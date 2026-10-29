@@ -68,6 +68,10 @@ int32_t cpt_sgc_set_color(cpt_sgc *g, uint32_t color);
 int32_t cpt_sgc_clear(cpt_sgc *g, uint32_t color);
 int32_t cpt_sgc_rect(cpt_sgc *g, int32_t x, int32_t y, int32_t w, int32_t h, uint32_t color);
 int32_t cpt_sgc_line(cpt_sgc *g, int32_t x0, int32_t y0, int32_t x1, int32_t y1, uint32_t color);
+/* Center and radii 0..32767; equal radii draw a circle. Negative/too-large
+ * radii return BAD_ARG. A zero radius degenerates to an inclusive line/point. */
+int32_t cpt_sgc_ellipse(cpt_sgc *g, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t color);
+int32_t cpt_sgc_fill_ellipse(cpt_sgc *g, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t color);
 int32_t cpt_sgc_triangle(cpt_sgc *g, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                          int32_t x2, int32_t y2, uint32_t color);
 /* One Unifont BMP code unit with its top left at (x, y); 0 bits stay transparent. */

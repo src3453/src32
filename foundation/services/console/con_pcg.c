@@ -7,7 +7,21 @@
  * ring row that comes back at the bottom; the cursor keeps its screen row
  * apart from the physical ring row. */
 #include "con_pcg.h"
+#ifdef FND_CON_UART_ONLY
+/* Keep the existing cursor/ANSI parser, without accessing VDP, VRAM or input.
+ * The terminal itself renders the original bytes sent by con_uart_write. */
+static uint8_t headless_register;
+#define MMIO8(address) headless_register
+static int con_wide_has(uint32_t cp) { (void)cp; return 0; }
+static void con_wide_install(void) {}
+#elif defined(FND_CON_TANG)
+/* The FPGA has PCG, but no wide-font storage or PeC event FIFO. */
+static int con_wide_has(uint32_t cp) { (void)cp; return 0; }
+static void con_wide_install(void) {}
+void con_tang_init(void);
+#else
 #include "con_wide.h"
+#endif
 
 #ifndef MMIO8
 #define MMIO8(address) (*(volatile uint8_t *)(uintptr_t)(address))
@@ -88,6 +102,9 @@ static void break_pair(uint32_t x, uint32_t y) {
 }
 
 static void put_cell_kind(uint32_t x, uint32_t y, uint32_t ch, uint32_t kind) {
+#ifdef FND_CON_UART_ONLY
+    (void)x; (void)y; (void)ch; (void)kind;
+#else
     uint32_t cell = cell_address(x, y);
     if (display == FND_CON_DISPLAY_8X16)
         break_pair(x, y);
@@ -95,6 +112,7 @@ static void put_cell_kind(uint32_t x, uint32_t y, uint32_t ch, uint32_t kind) {
     uint8_t front = colors[fg < 8u && bold ? fg + 8u : fg], back = colors[bg];
     MMIO8(cell + PCG_FG) = (inverse ? back : front) | kind << WIDE_KIND_SHIFT;
     MMIO8(cell + PCG_BG) = inverse ? front : back;
+#endif
 }
 
 static void put_cell(uint32_t x, uint32_t y, uint32_t ch) { put_cell_kind(x, y, ch, 0); }
@@ -361,6 +379,9 @@ void con_pcg_clear(void) {
 }
 
 fnd_status con_pcg_init(void) {
+#ifdef FND_CON_TANG
+    con_tang_init();
+#endif
     con_pcg_set_color(15, 0);
     MMIO8(VDP_DISPLAY_MODE) = 1;
     MMIO8(PCG_DISABLE) = 0;
@@ -372,6 +393,9 @@ fnd_status con_pcg_init(void) {
 }
 
 fnd_status con_pcg_set_display(uint32_t mode) {
+#ifdef FND_CON_UART_ONLY
+    if (mode != FND_CON_DISPLAY_80) return FND_E_UNSUPPORTED;
+#endif
     if (mode != FND_CON_DISPLAY_40 && mode != FND_CON_DISPLAY_80 && mode != FND_CON_DISPLAY_8X16)
         return FND_E_BAD_ARG;
     /* The 1 byte font VRAM belongs to the startup configuration; preserve it in every
@@ -512,6 +536,10 @@ static int decode(uint32_t event, fnd_key_t *key) {
 /* Takes one key press from the PeC event FIFO; 0 when it is empty.
  * The console service polls this between messages. */
 int con_pcg_poll_key(fnd_key_t *key) {
+#if defined(FND_CON_UART_ONLY) || defined(FND_CON_TANG)
+    (void)key;
+    return 0;
+#else
     for (;;) {
         uint32_t status = MMIO32(PEC_EVENT_STATUS);
         if (status & 2u)
@@ -523,6 +551,7 @@ int con_pcg_poll_key(fnd_key_t *key) {
         if (decode(event, key))
             return 1;
     }
+#endif
 }
 
 void con_pcg_get_cursor(uint32_t *x, uint32_t *y) {

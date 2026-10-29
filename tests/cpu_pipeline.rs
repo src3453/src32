@@ -248,7 +248,7 @@ fn cpuid_advertises_p_and_r0_stays_zero() {
     cpu.load_program(0, &image);
     cpu.run(32);
     assert_eq!(cpu.read_reg(1), 0x5352_4332);
-    assert_eq!(cpu.read_reg(2), 0x33F | 0x80); // Base|A|L|M|S|I + P + V + p
+    assert_eq!(cpu.read_reg(2), 0x33F | 0x80 | 0x400); // Base|A|L|M|S|I + P + V + p
     assert_eq!(cpu.read_reg(0), 0);
 }
 
@@ -269,7 +269,7 @@ fn cpuid_results_forward_to_immediately_following_readers() {
         cpu.load_program(0, &image);
         cpu.run(64);
         let id = 0x5352_4332u32;
-        let features = 0x33F | 0x80;
+        let features = 0x33F | 0x80 | 0x400;
         assert_eq!(cpu.read_reg(3), id.wrapping_add(features), "gap {gap}");
     }
 }
@@ -284,7 +284,7 @@ fn younger_writer_of_r1_wins_over_cpuid_forwarding() {
     image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
     cpu.load_program(0, &image);
     cpu.run(64);
-    assert_eq!(cpu.read_reg(3), (0x33Fu32 | 0x80).wrapping_add(cpu.read_reg(1)));
+    assert_eq!(cpu.read_reg(3), (0x33Fu32 | 0x80 | 0x400).wrapping_add(cpu.read_reg(1)));
 }
 
 #[test]
@@ -503,4 +503,58 @@ fn mulh_divu_and_division_edges() {
     assert_eq!(p_regs[4], 0);
     assert_eq!(p_regs[5], 0);
     assert_eq!(p_regs[8], 0);
+}
+
+// ---- Extension C (L1 cache model) ----
+
+fn cache_program() -> Vec<u8> {
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 0x100)); // ADDI R1, R0, 0x100
+    image.extend_from_slice(&encode_i(0x01, 3, 1, 0)); // LD R3, [R1]   (D miss)
+    image.extend_from_slice(&encode_i(0x01, 4, 1, 4)); // LD R4, [R1+4] (same line: hit)
+    for _ in 0..12 {
+        image.extend_from_slice(&encode_r(0x03, 0, 0, 0)); // NOP
+    }
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
+    image
+}
+
+#[test]
+fn l1_cache_counts_hits_and_misses() {
+    let mut cpu = boot();
+    cpu.load_program(0, &cache_program());
+    cpu.run(200);
+    // 16 words plus the pipeline's prefetch past HALT: 19 fetches over 3 I lines.
+    let (ih, im, dh, dm) = cpu.cache_stats();
+    assert_eq!((ih, im), (16, 3));
+    assert_eq!((dh, dm), (1, 1));
+    // The same counters are visible through the CPU-reserved MMIO window.
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0300), 0x0D_0D_05);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0310), 16);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0314), 3);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0318), 1);
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_031C), 1);
+}
+
+#[test]
+fn l1_miss_penalty_adds_stall_cycles_only_when_configured() {
+    let mut base = boot();
+    base.load_program(0, &cache_program());
+    base.run(200);
+    let mut slow = boot();
+    slow.set_cache_miss_penalty(10);
+    slow.load_program(0, &cache_program());
+    slow.run(400);
+    assert_eq!(slow.read_reg(3), base.read_reg(3));
+    assert_eq!(slow.stall_cycles() - base.stall_cycles(), 10 * 4); // 3 I + 1 D miss
+}
+
+#[test]
+fn l1_cache_control_register_disables_and_clears() {
+    let mut cpu = boot();
+    cpu.write_mem_u32_be(0xFFFF_0304, 0); // both caches off
+    cpu.load_program(0, &cache_program());
+    cpu.run(200);
+    assert_eq!(cpu.cache_stats(), (0, 0, 0, 0));
+    assert_eq!(cpu.read_mem_u32_be(0xFFFF_0304), 0);
 }

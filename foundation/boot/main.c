@@ -20,6 +20,9 @@
 
 /* Where stage1 stages FNDBOOT (§11); the embedded WAX carries it there too. */
 #define FNDBOOT_STAGING 0x00200000u
+#ifndef FND_TANG_ROOT_DRIVE
+#define FND_TANG_ROOT_DRIVE 1u
+#endif
 
 #ifdef FOUNDATION_BOOT_STOP_TICKS
 /* tests: stop the machine so src32_testbench can read the screen */
@@ -28,9 +31,12 @@ static uint32_t on_tick(uint32_t ticks) { return ticks == FOUNDATION_BOOT_STOP_T
 
 int main(uint32_t drive, uint32_t fndboot) {
     const void *boot_image;
-#ifdef FOUNDATION_BOOT_EMBEDDED
+#if defined(FOUNDATION_BOOT_EMBEDDED) || defined(FND_PLATFORM_TANG)
     (void)drive;
     (void)fndboot;
+#ifdef FND_PLATFORM_TANG
+    fnd_set_boot_drive(FND_TANG_ROOT_DRIVE); /* MicroSD dd0, SDRAM disk dd1. */
+#endif
     boot_image = (const void *)(uintptr_t)FNDBOOT_STAGING;
 #else
     fnd_set_boot_drive(drive);

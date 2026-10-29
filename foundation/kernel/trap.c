@@ -97,9 +97,15 @@ static int32_t time_get(uint32_t selector) {
     case FND_TIME_TICK_HZ:
         return (int32_t)FND_TICK_HZ;
     case FND_TIME_RTC_LO:
+#ifdef FND_PLATFORM_TANG
+        return (int32_t)(fnd_ticks() / FND_TICK_HZ); /* boot-relative seconds */
+    case FND_TIME_RTC_HI:
+        return 0;
+#else
         return (int32_t)FND_REG32(RTC_SECONDS_LO); /* latches HI */
     case FND_TIME_RTC_HI:
         return (int32_t)FND_REG32(RTC_SECONDS_HI);
+#endif
     default:
         return FND_E_BAD_ARG;
     }
@@ -242,6 +248,10 @@ cpt32_ctx_frame *kernel_trap(cpt32_ctx_frame *frame) {
 static uint32_t panic_col, panic_row, panic_entered;
 
 static void panic_putc(uint32_t c) {
+#ifdef FND_PLATFORM_TANG
+    if (c == '\n') fnd_debug_putc('\r');
+    fnd_debug_putc(c);
+#else
     if (c == '\n') {
         panic_col = 0;
         ++panic_row;
@@ -251,6 +261,7 @@ static void panic_putc(uint32_t c) {
         return; /* no scrolling: the message is short and the first lines matter */
     uint32_t cell = PANIC_VRAM + panic_row * PANIC_COLS + panic_col++;
     PANIC_REG8(cell) = (uint8_t)c;
+#endif
 }
 
 static void panic_puts(const char *s) {
@@ -277,6 +288,7 @@ static const char *panic_cause_name(uint32_t cause) {
 }
 
 static void panic_screen(uint32_t cause, uint32_t epc) {
+#ifndef FND_PLATFORM_TANG
     PANIC_REG8(0x80000000u) = 1; /* common DISPLAY_ENABLE */
     PANIC_REG8(0x80000001u) = 1; /* DISPLAY_MODE: PCG text */
     PANIC_REG8(0x80000004u) = 0; /* FORMAT: back from a bitmap lease */
@@ -293,6 +305,7 @@ static void panic_screen(uint32_t cause, uint32_t epc) {
         PANIC_REG8(PANIC_VRAM + PANIC_FG + i) = 0x3Fu;
         PANIC_REG8(PANIC_VRAM + PANIC_BG + i) = 0x00u;
     }
+#endif
     panic_col = panic_row = 0;
     panic_puts("Foundation: kernel panic\n");
     panic_puts("cause=");

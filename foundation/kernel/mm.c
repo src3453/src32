@@ -9,6 +9,8 @@
 #include <cpt32/bmc.h>
 
 int mm_vm;
+/* Bumped by everything that changes a page table, to drop the range-check cache. */
+static uint32_t vm_epoch;
 static int mm_decided;
 
 /* Synchronous RAM copies reserve DMAC ch1; disk I/O owns ch0. The kernel
@@ -339,6 +341,7 @@ uint32_t mm_vm_proc_bytes(const struct fnd_proc *proc) { return proc->vm_pages *
 static uint32_t *table_at(uint32_t pa) { return (uint32_t *)(uintptr_t)pa; }
 
 int32_t mm_vm_create(struct fnd_proc *proc) {
+    ++vm_epoch;
     proc->vm_pages = 0;
     proc->pt_root = frame_alloc();
     return proc->pt_root ? FND_OK : FND_E_NO_MEMORY;
@@ -362,6 +365,7 @@ static uint32_t *l2_entry(const struct fnd_proc *proc, uint32_t va, int create) 
 
 /* Only owned COW pages are eligible. A true RX page must stay RX. */
 int32_t mm_vm_cow(const struct fnd_proc *proc, uint32_t va) {
+    ++vm_epoch;
     uint32_t *entry = proc->pt_root ? l2_entry(proc, va, 0) : 0;
     if (!entry || (*entry & (PTE_V | PTE_U | PTE_OWNED | PTE_COW | PTE_DEV)) !=
                              (PTE_V | PTE_U | PTE_OWNED | PTE_COW))
@@ -381,6 +385,7 @@ int32_t mm_vm_cow(const struct fnd_proc *proc, uint32_t va) {
 }
 
 int32_t mm_vm_map(struct fnd_proc *proc, uint32_t start, uint32_t end, uint32_t perm) {
+    ++vm_epoch;
     uint32_t flags = PTE_V | PTE_U | ((perm & CPT32_PERM_R) ? PTE_R : 0) | ((perm & CPT32_PERM_W) ? PTE_W : 0) |
                      ((perm & CPT32_PERM_X) ? PTE_X : 0);
     for (uint32_t page = start & ~MM_PAGE_MASK; page < end; page += MM_PAGE) {
@@ -409,6 +414,7 @@ int32_t mm_vm_map(struct fnd_proc *proc, uint32_t start, uint32_t end, uint32_t 
 
 int32_t mm_vm_map_phys(struct fnd_proc *proc, uint32_t vstart, uint32_t vend, uint32_t pstart,
                        uint32_t perm, uint32_t dev) {
+    ++vm_epoch;
     uint32_t flags = PTE_V | PTE_U | ((perm & CPT32_PERM_R) ? PTE_R : 0) | ((perm & CPT32_PERM_W) ? PTE_W : 0) |
                      ((perm & CPT32_PERM_X) ? PTE_X : 0) | (dev ? PTE_DEV : 0);
     uint32_t frame = pstart & PTE_FRAME;
@@ -429,6 +435,7 @@ int32_t mm_vm_map_phys(struct fnd_proc *proc, uint32_t vstart, uint32_t vend, ui
 }
 
 static void vm_destroy(struct fnd_proc *proc) {
+    ++vm_epoch;
     if (!proc->pt_root)
         return;
     uint32_t *root = table_at(proc->pt_root);
@@ -450,6 +457,7 @@ static void vm_destroy(struct fnd_proc *proc) {
 /* Build the child completely before write-protecting the parent. Failure
  * drops child references/tables and leaves the parent's PTEs untouched. */
 int32_t mm_vm_clone(struct fnd_proc *child, struct fnd_proc *parent) {
+    ++vm_epoch;
     int32_t status = mm_vm_create(child);
     if (status != FND_OK)
         return status;
@@ -528,14 +536,17 @@ uint8_t *mm_vm_ptr(const struct fnd_proc *proc, uint32_t va, uint32_t *run) {
 static int vm_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm) {
     uint32_t need = (perm & CPT32_PERM_R ? PTE_R : 0) | (perm & CPT32_PERM_W ? PTE_W : 0) |
                     (perm & CPT32_PERM_X ? PTE_X : 0);
-    uint32_t start = addr, bytes = len;
+    uint32_t start = addr, bytes = len, cow = 0;
     while (len) {
         uint32_t *entry = proc->pt_root ? l2_entry(proc, addr, 0) : 0;
-        uint32_t flags = entry ? *entry : 0;
-        if (flags & PTE_COW)
+        uint32_t pte = entry ? *entry : 0;
+        uint32_t flags = pte;
+        if (pte & PTE_COW) {
             flags |= PTE_W;
+            cow = 1;
+        }
         /* A Device page is MMIO the kernel must not touch for a user. */
-        if (!entry || (*entry & (PTE_V | PTE_U | PTE_DEV)) != (PTE_V | PTE_U) || (flags & need) != need)
+        if (!entry || (pte & (PTE_V | PTE_U | PTE_DEV)) != (PTE_V | PTE_U) || (flags & need) != need)
             return 0;
         uint32_t covered = MM_PAGE - (addr & MM_PAGE_MASK);
         if (covered >= len)
@@ -543,7 +554,8 @@ static int vm_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len,
         addr += covered;
         len -= covered;
     }
-    return !(perm & CPT32_PERM_W) || vm_prepare_write(proc, start, bytes);
+    /* vm_prepare_write only has work for COW pages, which this walk saw. */
+    return !(perm & CPT32_PERM_W) || !cow || vm_prepare_write(proc, start, bytes);
 }
 
 void mm_vm_copy_from(void *dst, const struct fnd_proc *proc, uint32_t src, uint32_t len) {
@@ -563,9 +575,17 @@ void mm_vm_copy_from(void *dst, const struct fnd_proc *proc, uint32_t src, uint3
 }
 
 void mm_vm_copy_to(const struct fnd_proc *proc, uint32_t dst, const void *src, uint32_t len) {
+    uint32_t from = (uint32_t)(uintptr_t)src;
+    if (len && len <= MM_PAGE - (dst & MM_PAGE_MASK) && proc->pt_root) {
+        /* Inside one page, the common case: one lookup serves the COW test and the copy. */
+        uint32_t *entry = l2_entry(proc, dst, 0);
+        if (entry && (*entry & PTE_V) && !(*entry & PTE_COW)) {
+            kmem_copy(((*entry & PTE_FRAME) | (dst & MM_PAGE_MASK)), from, len);
+            return;
+        }
+    }
     if (!vm_prepare_write(proc, dst, len))
         return;
-    uint32_t from = (uint32_t)(uintptr_t)src;
     while (len) {
         uint32_t run;
         uint8_t *to = mm_vm_ptr(proc, dst, &run);
@@ -649,10 +669,41 @@ void mm_release(struct fnd_proc *proc) {
         vm_destroy(proc);
 }
 
+/* A few recent single-page successes (proc, page, perms), valid for one vm_epoch. IPC validates
+ * the same message, reply and receive structs again and again; the page-table walk is the
+ * dearest part of that. */
+#define RANGE_CACHE 8u
+static struct {
+    const struct fnd_proc *proc;
+    uint32_t page, perm, epoch;
+} range_cache[RANGE_CACHE];
+
 int proc_user_range_ok(const struct fnd_proc *proc, uint32_t addr, uint32_t len, uint32_t perm) {
     if (len == 0)
         return 1;
     if (addr + len < addr || addr + len > 0xFFFF0000u)
         return 0;
-    return mm_vm ? vm_range_ok(proc, addr, len, perm) : slot_range_ok(proc, addr, len, perm);
+    if (!mm_vm)
+        return slot_range_ok(proc, addr, len, perm);
+    uint32_t page = addr & ~MM_PAGE_MASK;
+    if (page != ((addr + len - 1u) & ~MM_PAGE_MASK))
+        return vm_range_ok(proc, addr, len, perm);
+    /* Processes share virtual addresses, so the process takes part in the index. */
+    uint32_t slot = ((page >> 12) + ((uint32_t)(uintptr_t)proc >> 6)) & (RANGE_CACHE - 1u);
+    if (range_cache[slot].proc == proc && range_cache[slot].page == page &&
+        range_cache[slot].epoch == vm_epoch && !(perm & ~range_cache[slot].perm))
+        return 1;
+    if (!vm_range_ok(proc, addr, len, perm))
+        return 0;
+    /* vm_range_ok may have resolved a COW page (new epoch): record the epoch it ended with. */
+    if (range_cache[slot].proc == proc && range_cache[slot].page == page &&
+        range_cache[slot].epoch == vm_epoch)
+        range_cache[slot].perm |= perm;
+    else {
+        range_cache[slot].proc = proc;
+        range_cache[slot].page = page;
+        range_cache[slot].perm = perm;
+        range_cache[slot].epoch = vm_epoch;
+    }
+    return 1;
 }

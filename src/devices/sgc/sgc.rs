@@ -29,6 +29,8 @@ const OP_RECT: u8 = 0x11;
 const OP_TRIANGLE: u8 = 0x12;
 const OP_GLYPH: u8 = 0x13;
 const OP_SCREEN_FILL: u8 = 0x14;
+const OP_ELLIPSE: u8 = 0x15;
+const OP_FILL_ELLIPSE: u8 = 0x16;
 const OP_NOP: u8 = 0xff;
 
 pub struct Sgc {
@@ -193,7 +195,7 @@ impl Sgc {
             let opcode = (header >> 24) as u8;
             let length = match opcode {
                 OP_SET_COLOR | OP_SCREEN_FILL | OP_NOP => 1,
-                OP_LINE | OP_RECT => 5,
+                OP_LINE | OP_RECT | OP_ELLIPSE | OP_FILL_ELLIPSE => 5,
                 OP_TRIANGLE => 7,
                 OP_GLYPH => 4,
                 _ => 1,
@@ -251,6 +253,24 @@ impl Sgc {
                     if !draw_triangle(&mut pixels, coords, color) {
                         self.set_error(STATUS_FIFO_ERROR);
                     }
+                }
+                OP_ELLIPSE | OP_FILL_ELLIPSE => {
+                    let coords = coordinates(&words[1..5]);
+                    if header & 0x00ff_ffff != 0 || coords.is_none() {
+                        self.set_error(STATUS_FIFO_ERROR);
+                        continue;
+                    }
+                    let coords = coords.unwrap();
+                    if coords[2] < 0 || coords[3] < 0 {
+                        self.set_error(STATUS_FIFO_ERROR);
+                        continue;
+                    }
+                    draw_ellipse(
+                        &mut pixels,
+                        coords,
+                        color_rgba(&vram, self.color_index.get()),
+                        opcode == OP_FILL_ELLIPSE,
+                    );
                 }
                 OP_GLYPH => {
                     if header & 0x00ff_ffff != 0
@@ -494,6 +514,32 @@ fn draw_triangle(pixels: &mut [[u8; 4]], coords: [i32; 6], color: [u8; 4]) -> bo
     true
 }
 
+/// Integer samples of rx/ry ellipse. Outline is the inside pixels having at
+/// least one outside four-neighbor in the UNCLIPPED ellipse. No floating point,
+/// and clipping does not manufacture an outline along the display boundary.
+fn draw_ellipse(pixels: &mut [[u8; 4]], coords: [i32; 6], color: [u8; 4], filled: bool) {
+    let (cx, cy, rx, ry) = (coords[0], coords[1], coords[2], coords[3]);
+    if rx == 0 || ry == 0 {
+        draw_line(pixels, [cx - rx, cy - ry, cx + rx, cy + ry, 0, 0], color);
+        return;
+    }
+    let a = i64::from(ry) * i64::from(ry);
+    let b = i64::from(rx) * i64::from(rx);
+    let limit = a * b;
+    for y in (cy - ry).max(0)..=(cy + ry).min(FRAME_HEIGHT - 1) {
+        for x in (cx - rx).max(0)..=(cx + rx).min(FRAME_WIDTH - 1) {
+            let dx = i64::from(x - cx);
+            let dy = i64::from(y - cy);
+            let f = dx * dx * a + dy * dy * b - limit;
+            if f <= 0
+                && (filled || f + (2 * dx.abs() + 1) * a > 0 || f + (2 * dy.abs() + 1) * b > 0)
+            {
+                put_pixel(pixels, x, y, color);
+            }
+        }
+    }
+}
+
 fn draw_glyph(pixels: &mut [[u8; 4]], code_unit: u16, x0: i32, y0: i32, color: [u8; 4]) {
     for row in 0..16 {
         let bits = lookup_row(UNIFONT_BMP_ROM, code_unit, row).expect("row is in glyph bounds");
@@ -514,6 +560,48 @@ fn put_pixel(pixels: &mut [[u8; 4]], x: i32, y: i32, color: [u8; 4]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ellipse_outline_fill_degenerate_and_clip() {
+        let color = [11, 22, 33, 255];
+        let mut p = vec![[0; 4]; FRAME_PIXELS];
+        draw_ellipse(&mut p, [4, 4, 2, 2, 0, 0], color, false);
+        assert_eq!(p[4 * 320 + 4], [0; 4]);
+        assert_eq!(p.iter().filter(|&&v| v == color).count(), 8);
+        draw_ellipse(&mut p, [4, 4, 2, 2, 0, 0], color, true);
+        assert_eq!(p.iter().filter(|&&v| v == color).count(), 13);
+        p.fill([0; 4]);
+        draw_ellipse(&mut p, [0, 0, 0, 2, 0, 0], color, false);
+        assert_eq!(p.iter().filter(|&&v| v == color).count(), 3);
+        draw_ellipse(&mut p, [319, 239, 0, 0, 0, 0], color, false);
+        assert_eq!(p[239 * 320 + 319], color);
+        p.fill([0; 4]);
+        draw_ellipse(&mut p, [0, 0, 20, 20, 0, 0], color, false);
+        assert_eq!(p[0], [0; 4]); // clip edge is not an ellipse boundary
+    }
+
+    #[test]
+    fn ellipse_fifo_waits_rejects_bad_radius_and_continues() {
+        let mut sgc = enabled_sgc();
+        push_word(&mut sgc, 0x1600_0000);
+        for v in [10, 10, 2] {
+            push_word(&mut sgc, v);
+        }
+        sgc.tick();
+        assert_eq!(read_word(&sgc, 0x24) >> 16, 4);
+        assert!(sgc.render_frame().iter().all(|p| p[3] == 0));
+        push_word(&mut sgc, 1);
+        sgc.tick();
+        assert_eq!(sgc.render_frame()[10 * 320 + 10][3], 255);
+        push_word(&mut sgc, 0x1500_0000);
+        for v in [10, 10, 0x8000, 1] {
+            push_word(&mut sgc, v);
+        }
+        push_word(&mut sgc, 0xff00_0000);
+        sgc.tick();
+        assert_eq!(read_word(&sgc, 8) & STATUS_FIFO_ERROR, STATUS_FIFO_ERROR);
+        assert_eq!(read_word(&sgc, 0x24) >> 16, 0);
+    }
 
     fn enabled_sgc() -> Sgc {
         let vram = Rc::new(RefCell::new(vec![0; VRAM_SIZE]));

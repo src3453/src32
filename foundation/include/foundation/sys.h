@@ -9,6 +9,8 @@
  * work in code that may not call outside its granted range. */
 #define fnd_sys_info(selector, buffer, cap)                                           \
     ((int32_t)CPT32_SYSCALL3(FND_SYS_INFO, (selector), (uint32_t)(uintptr_t)(buffer), (cap)))
+#define fnd_sys_cpu_perf(buffer) \
+    fnd_sys_info(FND_SYSINFO_CPU_PERF, (buffer), FND_SYSINFO_CPU_PERF_BYTES)
 #define fnd_sys_yield() ((int32_t)CPT32_SYSCALL0(FND_SYS_YIELD))
 #define fnd_sys_sleep(ticks) ((int32_t)CPT32_SYSCALL1(FND_SYS_SLEEP, (ticks)))
 #define fnd_sys_thread_create(entry, sp, arg)                                         \

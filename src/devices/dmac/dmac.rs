@@ -594,6 +594,107 @@ mod tests {
         assert_eq!((status >> 4) & 0xF, 2);
     }
 
+    // The RTL testbench (src32-sv/sim/tb_dmac.sv) asserts these same values; keeping
+    // them here makes the emulator the checked golden reference for that bench.
+    fn start_channel(bus: &mut Bus, ch: u32, src: u32, dst: u32, count: u32, control: u32) {
+        let base = DMAC_BASE + CHANNEL_BASE + ch * CHANNEL_STRIDE;
+        bus.write_u32_be(base, src);
+        bus.write_u32_be(base + 4, dst);
+        bus.write_u32_be(base + 8, count);
+        bus.write_u32_be(base + 0x0C, control | (1 << 8));
+    }
+
+    fn channel_status(bus: &mut Bus, ch: u32) -> u32 {
+        bus.read_u32_be(DMAC_BASE + CHANNEL_BASE + ch * CHANNEL_STRIDE + 0x10)
+    }
+
+    #[test]
+    fn rtl_reference_start_validation_codes() {
+        let mut bus = setup_bus(false);
+        bus.write_u32_be(DMAC_BASE + 8, 0x3F);
+        // (src, dst, count, control): every case is a configuration error, code 1.
+        let bad = [
+            (0x100, 0x300, 0, 0),
+            (0x100, 0x300, 6, 2),
+            (0x101, 0x300, 4, 1),
+            (0x100, 0x302, 4, 2),
+            (0x100, 0x300, 4, 3),
+            (0x100, 0x300, 4, 2 << 2),
+            (0x100, 0x300, 4, 2 << 4),
+            (0x100, 0x8004_1024, 4, 1 << 4),
+        ];
+        for (src, dst, count, control) in bad {
+            start_channel(&mut bus, 2, src, dst, count, control);
+            assert_eq!(channel_status(&mut bus, 2), 0x14, "{src:#x} {dst:#x} {count} {control:#x}");
+            bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 0x10, 4);
+        }
+        bus.write_u32_be(DMAC_BASE + 8, 0x3B); // channel 2 disabled
+        start_channel(&mut bus, 2, 0x100, 0x300, 4, 2);
+        assert_eq!(channel_status(&mut bus, 2), 0x14);
+        bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 0x10, 4);
+        bus.write_u32_be(DMAC_BASE + 8, 0x3F);
+        bus.write_u32_be(DMAC_BASE + 4, 0); // DMAC disabled
+        start_channel(&mut bus, 2, 0x100, 0x300, 4, 2);
+        assert_eq!(channel_status(&mut bus, 2), 0x14);
+        bus.write_u32_be(DMAC_BASE + 4, 1);
+        bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 0x10, 4);
+        assert_eq!(channel_status(&mut bus, 2), 0);
+    }
+
+    #[test]
+    fn rtl_reference_address_windows_and_overlap() {
+        let mut bus = setup_bus(false);
+        bus.write_u32_be(DMAC_BASE + 8, 0x3F);
+        // Just past the 16 MiB Main RAM window, and a non-FIFO MMIO word: code 2.
+        for (src, dst) in [(0x0100_0000, 0x200), (0x100, 0x8003_0028)] {
+            start_channel(&mut bus, 1, src, dst, 4, 2);
+            run_dma(&mut bus, 16);
+            assert_eq!(channel_status(&mut bus, 1), 0x24);
+            bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + CHANNEL_STRIDE + 0x10, 4);
+        }
+        // Overlapping copy behaves like a forward byte loop: 1,2,1,2,1,2.
+        for (i, b) in [1u8, 2, 3, 4, 5, 6, 7, 8].into_iter().enumerate() {
+            bus.write_u8(0x700 + i as u32, b);
+        }
+        start_channel(&mut bus, 4, 0x700, 0x702, 6, 0);
+        run_dma(&mut bus, 64);
+        let copied: Vec<u8> = (0x700..0x708).map(|a| bus.read_u8(a)).collect();
+        assert_eq!(copied, [1, 2, 1, 2, 1, 2, 1, 2]);
+        assert_eq!(channel_status(&mut bus, 4), STATUS_DONE);
+    }
+
+    #[test]
+    fn rtl_reference_busy_abort_and_priority() {
+        let mut bus = setup_bus(false);
+        bus.write_u32_be(DMAC_BASE + 8, 0x3F);
+        start_channel(&mut bus, 0, 0x800, 0x900, 64, 2);
+        // BUSY: configuration and START are ignored.
+        bus.write_u32_be(CH0, 0x1234);
+        bus.write_u32_be(CH0 + 8, 4);
+        bus.write_u32_be(CH0 + 0x0C, 1 << 8);
+        assert_eq!(bus.read_u32_be(CH0), 0x800);
+        assert_eq!(bus.read_u32_be(CH0 + 8), 64);
+        assert_eq!(bus.read_u32_be(CH0 + 0x0C), 2);
+        // Global disable aborts running channels with code 3.
+        run_dma(&mut bus, 10);
+        bus.write_u32_be(DMAC_BASE + 4, 0);
+        assert_eq!(channel_status(&mut bus, 0), 0x34);
+        bus.write_u32_be(DMAC_BASE + 4, 1);
+        // CHn_PRIORITY aliases BMC MASTER_PRIORITY[n+2]; both keep the low 3 bits.
+        bus.write_u32_be(CH0 + CHANNEL_STRIDE + 0x18, 0xFFFF_FFF8);
+        assert_eq!(bus.read_u32_be(CH0 + CHANNEL_STRIDE + 0x18), 0);
+        assert_eq!(bus.read_u32_be(crate::devices::bmc::BMC_BASE + 0x020 + 4 * 3), 0);
+        // A split CONTROL write latches START on byte 2 and fires on byte 3.
+        bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 8, 4);
+        bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE, 0x100);
+        bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 4, 0x300);
+        let ctl = DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 0x0C;
+        bus.write_u8(ctl + 2, 1);
+        assert_eq!(channel_status(&mut bus, 2), 0);
+        bus.write_u8(ctl + 3, 2);
+        assert_eq!(channel_status(&mut bus, 2), STATUS_BUSY);
+    }
+
     #[test]
     fn abort_stops_at_the_next_beat_boundary() {
         let mut bus = setup_bus(false);

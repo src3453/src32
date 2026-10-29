@@ -2,9 +2,18 @@
 //
 // 3WS8PN is a wavetable/PCM/noise sound generator chip with 8 channels.
 // SGU v2.1 (3WS8PNA) adds 2-tap linear interpolation and a 16-bit FIFO DAC;
-// `SguVersion` selects v1 / v2 / v2.1 behavior (doc/spec_SGU.md section 8).
+// `SguVersion` selects v1 / v2 / v2.1 / v3 behavior (doc/spec_SGU.md section 8);
+// v3 adds the 34SI22 (si22.rs) beside the two cores.
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
+//
+// The phase accumulator is fixed point, matching the FPGA RTL (src32-sv
+// soc/sgu_chip.sv): `Channel::phase` counts samples in Q.PHASE_FRAC_BITS
+// (u64 here; the RTL keeps 20 integer bits and a sticky "phase >= one cycle"
+// flag, which is equivalent because only the low 20 bits ever reach an address
+// and hard sync only asks whether the phase reached 256 samples). A step adds
+// freq * 2^26/750 (K = 89478.5) samples, shifted to Q.29; PCM and SQV4 run at
+// 1/8 of that. Mixing is done in 32 bits and saturated once at the output.
 
 use std::cell::RefCell;
 use std::collections::VecDeque;
@@ -19,6 +28,38 @@ pub const PCM_RAM_SIZE: usize = 1024 * 1024; // 1MB
 pub const SAMPLE_RATE: usize = 48000;
 pub const SOUND_CLOCK: u32 = 192_000;
 pub const SGU_CLOCK_DIVIDER: u32 = 250; // 48MHz / 250 = 192kHz
+/// Fraction bits of the fixed-point phase (samples).
+pub const PHASE_FRAC_BITS: u32 = 29;
+/// One wavetable cycle (256 samples) in phase units; hard sync tests `phase < PHASE_ONE_CYCLE`.
+pub const PHASE_ONE_CYCLE: u64 = 256 << PHASE_FRAC_BITS;
+
+/// Phase step per 192 kHz tick in Q.26 samples: freq * 89478.5 = freq * 2^26 / 750.
+fn phase_step_q26(frequency: u16) -> u64 {
+    u64::from(frequency) * 89478 + u64::from(frequency >> 1)
+}
+
+/// Wavetable / noise phase step (Q.29 samples).
+fn wave_phase_step(frequency: u16) -> u64 {
+    phase_step_q26(frequency) << 3
+}
+
+/// Highest FREQUENCY value PCM playback honours (8 samples per 192 kHz tick, 1.536 MHz
+/// sample rate). Larger values act as this limit; the register still reads back as written.
+/// The limit is what the FPGA's SDRAM prefetch buffers are sized for (doc/spec_SGU.md 2.4).
+pub const PCM_FREQ_MAX: u16 = 48_000;
+/// Highest FREQUENCY value SQV4 playback honours (2 samples per tick, 384 kHz): the
+/// ADPCM decoder of the chip produces one sample per few clocks for eight channels.
+pub const SQV4_FREQ_MAX: u16 = 12_000;
+
+/// PCM phase step (Q.29 samples): one eighth of the wavetable step, frequency limited.
+fn pcm_phase_step(frequency: u16) -> u64 {
+    phase_step_q26(frequency.min(PCM_FREQ_MAX))
+}
+
+/// SQV4 phase step (Q.29 samples), frequency limited.
+fn sqv4_phase_step(frequency: u16) -> u64 {
+    phase_step_q26(frequency.min(SQV4_FREQ_MAX))
+}
 /// Per-channel FIFO DAC capacity in 16-bit samples (v2.1).
 pub const FIFO_CAPACITY: usize = 2048;
 
@@ -30,8 +71,10 @@ pub enum SguVersion {
     /// Two SGU cores; Wavetable/PCM are not interpolated.
     V2,
     /// 3WS8PNA: 2-tap linear interpolation and the FIFO DAC.
-    #[default]
     V2_1,
+    /// v2.1 plus the 34SI22 record/playback interface chip (doc/spec_34SI22.md).
+    #[default]
+    V3,
 }
 
 impl SguVersion {
@@ -40,6 +83,7 @@ impl SguVersion {
             "1" | "1.0" => Some(Self::V1),
             "2" | "2.0" => Some(Self::V2),
             "2.1" => Some(Self::V2_1),
+            "3" | "3.0" => Some(Self::V3),
             _ => None,
         }
     }
@@ -50,7 +94,12 @@ impl SguVersion {
     }
 
     fn has_3ws8pna(self) -> bool {
-        self == Self::V2_1
+        matches!(self, Self::V2_1 | Self::V3)
+    }
+
+    /// True when the 34SI22 is mapped next to the SGU cores.
+    pub fn has_34si22(self) -> bool {
+        self == Self::V3
     }
 }
 
@@ -140,7 +189,8 @@ pub struct Channel {
     // Internal state
     pub old_phase: u64,
     pub lfsr_state: u32,
-    pub phase: f64,
+    /// Fixed-point sample position, Q.PHASE_FRAC_BITS (see the file header).
+    pub phase: u64,
     pub last_sample: i16,
     pub active: bool,
     slew_current: i32,
@@ -185,7 +235,7 @@ impl Default for Channel {
             sqv4_frame: [[0; 64]; 2],
             old_phase: 0,
             lfsr_state: 0x12D4_803C,
-            phase: 0.0,
+            phase: 0,
             last_sample: 0,
             active: true,
             slew_current: 0,
@@ -218,7 +268,7 @@ impl Channel {
         self.pcm_control = 0;
         self.invalidate_sqv4();
         self.old_phase = 0;
-        self.phase = 0.0;
+        self.phase = 0;
         self.last_sample = 0;
         self.lfsr_state = 0x12D4_803C;
         self.active = true;
@@ -273,6 +323,11 @@ pub struct S3w2Sound {
     pub version: SguVersion,
     pub channels: [Channel; NUM_CHANNELS],
     pub pcm_ram: Rc<RefCell<Vec<u8>>>,
+}
+
+/// Final output stage: 32-bit mix to signed 16-bit.
+pub fn saturate_output(sample: i32) -> i16 {
+    sample.clamp(i32::from(i16::MIN), i32::from(i16::MAX)) as i16
 }
 
 fn apply_master_gain(sample: i16) -> i16 {
@@ -483,7 +538,7 @@ impl S3w2Sound {
                 }
             }
             0x0A => {
-                c.phase = 0.0;
+                c.phase = 0;
                 c.slew_current = 0;
                 c.invalidate_sqv4();
                 c.lfsr_state = 0x12D4_803C;
@@ -527,7 +582,7 @@ impl S3w2Sound {
                 }
             }
             0x0A => {
-                c.phase = 0.0;
+                c.phase = 0;
                 c.invalidate_sqv4();
                 0
             }
@@ -664,11 +719,12 @@ impl S3w2Sound {
         }
     }
 
-    /// Fraction of `phase * 256` in 1/256 steps and its integer part.
-    fn split_phase(phase: f64) -> (u64, i32) {
-        let scaled = phase * 256.0;
-        let whole = scaled as u64;
-        (whole, (((scaled - whole as f64) * 256.0) as i32).clamp(0, 255))
+    /// Integer sample position and its fraction in 1/256 steps.
+    fn split_phase(phase: u64) -> (u64, i32) {
+        (
+            phase >> PHASE_FRAC_BITS,
+            ((phase >> (PHASE_FRAC_BITS - 8)) & 0xFF) as i32,
+        )
     }
 
     fn generate_wavetable_sample(&mut self, ch: usize) -> i32 {
@@ -682,7 +738,7 @@ impl S3w2Sound {
         let target_phase = self.channels[abs_target_ch].phase;
 
         let c = &mut self.channels[ch];
-        c.phase += (c.frequency as f64) / (SOUND_CLOCK as f64);
+        c.phase = c.phase.wrapping_add(wave_phase_step(c.frequency));
         let (phase, frac) = Self::split_phase(c.phase);
 
         let index = match c.modulation_type {
@@ -705,8 +761,8 @@ impl S3w2Sound {
         if c.modulation_type == ModulationType::Ring {
             q8 = Self::ring(q8, target_last_sample, c.modulation_param_1, interpolate);
         } else if c.modulation_type == ModulationType::HardSync {
-            if target_phase < 1.0 {
-                c.phase = 0.0;
+            if target_phase < PHASE_ONE_CYCLE {
+                c.phase = 0;
                 q8 = i32::from(c.wavetable[0]) << 8;
             }
         } else if c.modulation_type == ModulationType::Window {
@@ -782,13 +838,13 @@ impl S3w2Sound {
         if (addr as u32) >= c.pcm_end_addr {
             if (c.pcm_control & 0x02) != 0 {
                 // Loop on
-                c.phase = (c.pcm_loop_addr.saturating_sub(c.pcm_start_addr) as f64) / 256.0;
+                c.phase = u64::from(c.pcm_loop_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
             } else {
-                c.phase = (c.pcm_end_addr.saturating_sub(c.pcm_start_addr) as f64) / 256.0;
+                c.phase = u64::from(c.pcm_end_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
                 out = 0;
             }
         } else {
-            c.phase += (c.frequency as f64) / (SOUND_CLOCK as f64) / 8.0;
+            c.phase = c.phase.wrapping_add(pcm_phase_step(c.frequency));
         }
 
         out
@@ -927,7 +983,7 @@ impl S3w2Sound {
                 return 0;
             }
             sample_index = self.channels[ch].sqv4_loop_sample;
-            self.channels[ch].phase = sample_index as f64 / 256.0;
+            self.channels[ch].phase = (sample_index as u64) << PHASE_FRAC_BITS;
         }
         let pcm_ram = self.pcm_ram.borrow();
         let channel = &mut self.channels[ch];
@@ -941,17 +997,17 @@ impl S3w2Sound {
         } else {
             current << 8
         };
-        channel.phase += (channel.frequency as f64) / (SOUND_CLOCK as f64) / 8.0;
+        channel.phase = channel.phase.wrapping_add(sqv4_phase_step(channel.frequency));
         q8
     }
 
     fn generate_noise_sample(&mut self, ch: usize) -> i16 {
         let c = &mut self.channels[ch];
-        c.phase += (c.frequency as f64) / (SOUND_CLOCK as f64);
-        let phase = (c.phase * 256.0) as u64;
+        c.phase = c.phase.wrapping_add(wave_phase_step(c.frequency));
+        let phase = c.phase >> PHASE_FRAC_BITS;
 
         if c.old_phase / 8 != phase / 8 {
-            c.old_phase = (c.phase * 256.0) as u64;
+            c.old_phase = phase;
             let bit = match c.modulation_type {
                 ModulationType::None => ((c.lfsr_state >> 0) ^ (c.lfsr_state >> 1)) & 1,
                 ModulationType::Phase => {
@@ -1007,6 +1063,28 @@ impl S3w2Sound {
         let mut right_out = vec![0i16; samples];
         self.clock_mixed_into(&mut left_out, &mut right_out);
         (left_out, right_out)
+    }
+
+    /// Add this chip's stereo output to 32-bit buffers without saturating.
+    /// The SoC mixer sums both chips at 32 bits and saturates to 16 bits once, at the
+    /// output (`saturate_output`); this is the reference for the RTL master mixer.
+    pub fn clock_mixed_into_i32(&mut self, left_out: &mut [i32], right_out: &mut [i32]) {
+        let samples = left_out.len().min(right_out.len());
+        for i in 0..samples {
+            let mut mix_l = 0i32;
+            let mut mix_r = 0i32;
+            for ch in 0..NUM_CHANNELS {
+                for _ in 0..4 {
+                    let sample = apply_master_gain(self.generate_sample(ch));
+                    let pan_l = (self.channels[ch].panpot >> 4) as i32;
+                    let pan_r = (self.channels[ch].panpot & 0x0F) as i32;
+                    mix_l += (sample as i32) * pan_l / 15;
+                    mix_r += (sample as i32) * pan_r / 15;
+                }
+            }
+            left_out[i] += mix_l;
+            right_out[i] += mix_r;
+        }
     }
 
     /// Add this chip's stereo output to existing buffers using saturating mix.
@@ -1122,7 +1200,7 @@ mod tests {
         sound.channels[0].wavetable[255] = 0;
         sound.channels[0].wavetable[0] = 200;
         sound.channels[0].volume = 4;
-        sound.channels[0].phase = 255.5 / 256.0;
+        sound.channels[0].phase = (255u64 << PHASE_FRAC_BITS) + (1 << (PHASE_FRAC_BITS - 1));
         // The advance (frequency 0) is nil, so index 255 + 0.5.
         assert_eq!(sound.generate_sample(0), 100 - 128);
     }
@@ -1138,15 +1216,15 @@ mod tests {
         c.volume = 4;
         c.pcm_end_addr = 2;
         c.pcm_control = 0x01;
-        c.phase = 1.5 / 256.0;
+        c.phase = (1u64 << PHASE_FRAC_BITS) + (1 << (PHASE_FRAC_BITS - 1));
         // between ram[1]=100 and ram[2]... end is exclusive: one-shot holds ram[1].
         assert_eq!(sound.generate_sample(0), 100 - 128);
-        sound.channels[0].phase = 0.5 / 256.0;
+        sound.channels[0].phase = 1 << (PHASE_FRAC_BITS - 1);
         assert_eq!(sound.generate_sample(0), 50 - 128);
         // Looping: the tap past the end reads the loop start.
         sound.channels[0].pcm_control = 0x03;
         sound.channels[0].pcm_loop_addr = 0;
-        sound.channels[0].phase = 1.5 / 256.0;
+        sound.channels[0].phase = (1u64 << PHASE_FRAC_BITS) + (1 << (PHASE_FRAC_BITS - 1));
         assert_eq!(sound.generate_sample(0), 50 - 128);
     }
 
@@ -1262,8 +1340,9 @@ mod tests {
         assert_eq!(SguVersion::parse("1"), Some(SguVersion::V1));
         assert_eq!(SguVersion::parse("v2"), Some(SguVersion::V2));
         assert_eq!(SguVersion::parse("2.1"), Some(SguVersion::V2_1));
-        assert_eq!(SguVersion::parse("3"), None);
-        assert_eq!(SguVersion::default(), SguVersion::V2_1);
+        assert_eq!(SguVersion::parse("3"), Some(SguVersion::V3));
+        assert_eq!(SguVersion::parse("4"), None);
+        assert_eq!(SguVersion::default(), SguVersion::V3);
     }
 
     #[test]
@@ -1474,5 +1553,77 @@ mod tests {
         for expected in decoded.samples {
             assert_eq!(sound.generate_sample(0), expected);
         }
+    }
+
+    #[test]
+    fn phase_step_is_fixed_point_and_pcm_runs_at_one_eighth() {
+        // 750 * 89478.5 / 2^26 = 1.0000 (sample per tick), so the step is just under/over 1 << 29.
+        let wave = wave_phase_step(750);
+        assert!(wave.abs_diff(1 << PHASE_FRAC_BITS) < (1 << PHASE_FRAC_BITS) / 4_000_000);
+        assert_eq!(pcm_phase_step(750) << 3, wave);
+        // PCM and SQV4 clamp the frequency; wavetable and noise do not.
+        assert_eq!(pcm_phase_step(65_535), pcm_phase_step(PCM_FREQ_MAX));
+        assert_eq!(pcm_phase_step(PCM_FREQ_MAX) >> PHASE_FRAC_BITS, 8);
+        assert_eq!(sqv4_phase_step(40_000), sqv4_phase_step(SQV4_FREQ_MAX));
+        assert_eq!(sqv4_phase_step(SQV4_FREQ_MAX) >> PHASE_FRAC_BITS, 2);
+        assert!(wave_phase_step(65_535) > wave_phase_step(PCM_FREQ_MAX));
+        // Whole phase steps accumulate without drift: 192000 ticks at freq 750 = 192000 samples.
+        let mut sound = v21_sound();
+        sound.channels[0].frequency = 750;
+        sound.channels[0].volume = 4;
+        for _ in 0..192_000 {
+            sound.generate_sample(0);
+        }
+        let samples = sound.channels[0].phase >> PHASE_FRAC_BITS;
+        assert!(samples.abs_diff(192_000) <= 1, "{samples}");
+    }
+
+    #[test]
+    fn mixing_stays_32_bit_until_the_final_saturation() {
+        // Full-scale FIFO samples on 8 channels of one chip exceed 16 bits; the second chip
+        // subtracts part of it again. Only the final sum is saturated.
+        let load = |sound: &mut S3w2Sound, channels: usize, value: i16| {
+            for ch in 0..channels {
+                let base = 0x800 + ch as u32 * 0x20;
+                sound.write_register(base + 2, 5);
+                sound.write_register(base + 4, 0xFF);
+                let [hi, lo] = value.to_be_bytes();
+                sound.write_register(base + 0x0C, hi);
+                sound.write_register(base + 0x0D, lo);
+            }
+        };
+        let mut a = v21_sound();
+        let mut b = v21_sound();
+        load(&mut a, 8, i16::MAX);
+        load(&mut b, 4, i16::MIN);
+        let (mut left, mut right) = ([0i32; 1], [0i32; 1]);
+        a.clock_mixed_into_i32(&mut left, &mut right);
+        assert_eq!(left[0], 8 * 4 * 4095);
+        b.clock_mixed_into_i32(&mut left, &mut right);
+        assert_eq!(left[0], 8 * 4 * 4095 - 4 * 4 * 4096);
+        assert_eq!(saturate_output(left[0]), i16::MAX);
+        assert_eq!(saturate_output(-70_000), i16::MIN);
+        assert_eq!(saturate_output(123), 123);
+    }
+
+    #[test]
+    fn pcm_and_sqv4_playback_rate_is_limited() {
+        let run = |frequency: u16| {
+            let mut sound = v21_sound();
+            for i in 0..64u32 {
+                sound.write_pcm_ram(i, (i * 7) as u8);
+            }
+            let c = &mut sound.channels[0];
+            c.waveform_type = WaveformType::Pcm;
+            c.frequency = frequency;
+            c.volume = 0x80;
+            c.pcm_end_addr = 64;
+            c.pcm_control = 0x03;
+            (0..40).map(|_| sound.generate_sample(0)).collect::<Vec<_>>()
+        };
+        // Above the limit the register still reads back, but playback runs at the limit.
+        assert_eq!(run(65_535), run(PCM_FREQ_MAX));
+        assert_eq!(run(PCM_FREQ_MAX + 1), run(PCM_FREQ_MAX));
+        assert_ne!(run(PCM_FREQ_MAX), run(PCM_FREQ_MAX - 3000));
     }
 }

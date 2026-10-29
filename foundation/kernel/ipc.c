@@ -1,3 +1,4 @@
+#include <stddef.h>
 /* Handles, IPC and service registration (doc/spec_Foundation.md §6, §8).
  *
  * A caller blocks in SEND until a receiver takes its request, then in REPLY
@@ -46,13 +47,25 @@ static struct {
     struct fnd_port *port;
     uint32_t pending, delivered;
 } irqs[16];
+/* Bit n is set while irqs[n].pending: take_next runs on every receive, so it
+ * must not scan the table when no IRQ waits. */
+static uint32_t irq_pending_mask;
+
+static void irq_set_pending(uint32_t irq, uint32_t pending) {
+    irqs[irq].pending = pending;
+    if (pending)
+        irq_pending_mask |= 1u << irq;
+    else
+        irq_pending_mask &= ~(1u << irq);
+}
 
 static void irq_release(uint32_t irq) {
     FND_REG16(FND_IRQC_ENABLE) &= (uint16_t)~(1u << irq);
     FND_REG16(FND_IRQC_PENDING) = (uint16_t)(1u << irq);
     irqs[irq].owner = 0;
     irqs[irq].port = 0;
-    irqs[irq].pending = irqs[irq].delivered = 0;
+    irq_set_pending(irq, 0);
+    irqs[irq].delivered = 0;
 }
 
 void ipc_irq_proc_exited(struct fnd_proc *proc) {
@@ -234,7 +247,8 @@ int32_t sys_irq_bind(struct fnd_proc *proc, uint32_t irq, uint32_t h) {
         return FND_E_BUSY;
     irqs[irq].owner = proc;
     irqs[irq].port = e->object;
-    irqs[irq].pending = irqs[irq].delivered = 0;
+    irq_set_pending(irq, 0);
+    irqs[irq].delivered = 0;
     /* Keep any already latched edge, so binding cannot lose the first event. */
     FND_REG16(FND_IRQC_ENABLE) |= (uint16_t)(1u << irq);
     return FND_OK;
@@ -318,12 +332,25 @@ static struct fnd_thread *find_receiver(const struct fnd_port *port) {
     return 0;
 }
 
+/* Bit i: thread i may be blocked in B_SEND. Set where a thread blocks that way
+ * and cleared lazily by next_caller, so a stale bit costs one check and an
+ * empty mask lets the common receive skip the thread table. */
+static uint32_t send_blocked;
+
 static struct fnd_thread *next_caller(const struct fnd_port *port) {
     struct fnd_thread *best = 0;
-    for (unsigned i = 0; i < FND_MAX_THREADS; ++i) {
+    if (!send_blocked)
+        return 0;
+    uint32_t i = 0;
+    for (uint32_t bits = send_blocked; bits; bits >>= 1, ++i) {
+        if (!(bits & 1u))
+            continue;
         struct fnd_thread *t = &fnd_threads[i];
-        if (t->state == T_BLOCKED && t->reason == B_SEND && t->port == port &&
-            (!best || (int32_t)(t->seq - best->seq) < 0))
+        if (t->state != T_BLOCKED || t->reason != B_SEND) {
+            send_blocked &= ~(1u << i);
+            continue;
+        }
+        if (t->port == port && (!best || (int32_t)(t->seq - best->seq) < 0))
             best = t;
     }
     return best;
@@ -336,21 +363,23 @@ static uint32_t token_of(const struct fnd_thread *t) {
 /* Writes a received message into the fnd_recv at rcv of proc, the receiver. */
 static void write_recv(const struct fnd_proc *proc, uint32_t rcv, const fnd_msg *msg, uint32_t token,
                        uint32_t badge, uint32_t reply_cap, uint32_t total) {
+    /* Only data and cap are inputs we keep; timeout and reserved are not
+     * touched, so read 8 bytes and write back the first 56 instead of 64 + 64. */
     fnd_recv r;
-    mm_copy_from_user(&r, proc, rcv, sizeof r);
+    mm_copy_from_user(&r.data, proc, rcv + (uint32_t)offsetof(fnd_recv, data), 2u * sizeof(uint32_t));
     r.msg = *msg;
     r.msg.buf = r.data;
     r.token = token;
     r.badge = badge;
     r.reply_cap = reply_cap;
     r.total = total;
-    mm_copy_to_user(proc, rcv, &r, sizeof r);
+    mm_copy_to_user(proc, rcv, &r, (uint32_t)offsetof(fnd_recv, timeout));
 }
 
 static void deliver_irq(struct fnd_thread *receiver, uint32_t irq) {
     fnd_msg msg = {FND_NOTIFY_IRQ, 0, irq, 0, 0, 0, 0, 0};
     write_recv(receiver->proc, receiver->rcv, &msg, 0, 0, 0, 0);
-    irqs[irq].pending = 0;
+    irq_set_pending(irq, 0);
     irqs[irq].delivered = 1;
 }
 
@@ -359,7 +388,7 @@ int ipc_irq_notify(uint32_t irq) {
         return 0;
     FND_REG16(FND_IRQC_ENABLE) &= (uint16_t)~(1u << irq);
     if (!irqs[irq].pending && !irqs[irq].delivered) {
-        irqs[irq].pending = 1;
+        irq_set_pending(irq, 1);
         struct fnd_thread *receiver = find_receiver(irqs[irq].port);
         if (receiver) {
             deliver_irq(receiver, irq);
@@ -404,10 +433,12 @@ static int32_t deliver_call(struct fnd_thread *receiver, struct fnd_thread *call
 
 /* Gives receiver (blocked or not) the next item of port, if any. */
 static int take_next(struct fnd_thread *receiver, struct fnd_port *port) {
-    for (uint32_t irq = 0; irq < 16u; ++irq) {
-        if (irqs[irq].port == port && irqs[irq].pending) {
-            deliver_irq(receiver, irq);
-            return 1;
+    if (irq_pending_mask) {
+        for (uint32_t irq = 0; irq < 16u; ++irq) {
+            if (irqs[irq].port == port && irqs[irq].pending) {
+                deliver_irq(receiver, irq);
+                return 1;
+            }
         }
     }
     if (port->gone_head) {
@@ -508,6 +539,7 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
     thread->seq = ++next_seq;
     ++thread->gen;
     sched_block(thread, B_SEND, FND_FOREVER);
+    send_blocked |= 1u << (uint32_t)(thread - fnd_threads);
     struct fnd_thread *receiver = find_receiver(chan->port);
     if (receiver && take_next(receiver, chan->port))
         sched_wake(receiver, FND_OK);
@@ -659,10 +691,17 @@ int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name_addr) {
     int32_t status = read_name(proc, name_addr, name);
     if (status != FND_OK)
         return status;
+#ifdef FND_PLATFORM_TANG
+    /* The Tang SoC has two SGUs and a small PCM RAM (BMC PCMRAM_SIZE); everything else here is absent. */
+    if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
+    if (name_equal(name, "dev.fb0") || name_equal(name, "dev.sgc") ||
+        name_equal(name, "dev.trng") || name_equal(name, "dev.prng")) return FND_E_UNSUPPORTED;
+#else
     if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
     if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
     if (name_equal(name, "dev.trng")) return kernel_channel(proc, KDEV_TRNG - 1u);
     if (name_equal(name, "dev.prng")) return kernel_channel(proc, KDEV_PRNG - 1u);
+#endif
     if (name_equal(name, "dev.uart0")) return kernel_channel(proc, KDEV_UART0 - 1u);
     if (name_equal(name, "dev.sgc")) return kernel_channel(proc, 5u);
     for (unsigned i = 0; i < MAX_SERVICES; ++i) {

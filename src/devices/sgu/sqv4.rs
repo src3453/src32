@@ -82,7 +82,7 @@ pub struct DecodedAudio {
     pub samples: Vec<i16>,
 }
 
-#[derive(Clone, Copy, Default)]
+#[derive(Debug, Clone, Copy, Default)]
 pub(crate) struct State {
     pub(crate) predictor: i32,
     pub(crate) index: usize,
@@ -316,7 +316,7 @@ pub(crate) fn decode_code(version: u8, variant: Variant, state: &mut State, code
     update(version, variant, state, code)
 }
 
-fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
+pub(crate) fn encode_code(variant: Variant, state: &mut State, input: i32) -> u8 {
     if variant == Variant::H {
         let step = STEPS[state.index];
         let difference = (input - state.predictor).abs();

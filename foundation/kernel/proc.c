@@ -712,6 +712,7 @@ int32_t proc_mem_grow(struct fnd_proc *proc, uint32_t delta) {
 #define PROCINFO_BYTES 48u
 #define MEMINFO_BYTES 16u
 #define SELFINFO_BYTES 8u
+#define CPUPERF_BYTES 64u
 
 static uint32_t proc_mem_bytes(const struct fnd_proc *proc) {
     if (mm_vm)
@@ -752,6 +753,8 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         size = MEMINFO_BYTES;
     else if (sel == 4)
         size = SELFINFO_BYTES;
+    else if (sel == FND_SYSINFO_CPU_PERF)
+        size = CPUPERF_BYTES;
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -778,6 +781,13 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
     if (sel == 4) {
         put_word(caller, buf, cap, 0, caller->pid);
         put_word(caller, buf, cap, 4u, caller->parent);
+        return (int32_t)size;
+    }
+    if (sel == FND_SYSINFO_CPU_PERF) {
+        uint32_t info[16];
+        sched_perf_snapshot(info);
+        for (uint32_t w = 0; w < 16u; ++w)
+            put_word(caller, buf, cap, 4u * w, info[w]);
         return (int32_t)size;
     }
     if (sel == 3) {

@@ -164,6 +164,27 @@ int32_t cpt_sgc_line(cpt_sgc *g, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
     return FND_OK;
 }
 
+static int32_t ellipse(cpt_sgc *g, int32_t cx, int32_t cy, int32_t rx, int32_t ry,
+                       uint32_t color, uint32_t opcode) {
+    if (rx < 0 || rx > 32767 || ry < 0 || ry > 32767) return FND_E_BAD_ARG;
+    int32_t st = begin(g, color, 5);
+    if (st < 0) return st;
+    g->buf[g->len++] = opcode;
+    g->buf[g->len++] = coord(cx);
+    g->buf[g->len++] = coord(cy);
+    g->buf[g->len++] = (uint32_t)rx;
+    g->buf[g->len++] = (uint32_t)ry;
+    return FND_OK;
+}
+
+int32_t cpt_sgc_ellipse(cpt_sgc *g, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t color) {
+    return ellipse(g, cx, cy, rx, ry, color, FND_SGC_OP_ELLIPSE);
+}
+
+int32_t cpt_sgc_fill_ellipse(cpt_sgc *g, int32_t cx, int32_t cy, int32_t rx, int32_t ry, uint32_t color) {
+    return ellipse(g, cx, cy, rx, ry, color, FND_SGC_OP_FILL_ELLIPSE);
+}
+
 int32_t cpt_sgc_triangle(cpt_sgc *g, int32_t x0, int32_t y0, int32_t x1, int32_t y1,
                          int32_t x2, int32_t y2, uint32_t color) {
     if (color >= CPT_SGC_COLORS) return FND_E_BAD_ARG;

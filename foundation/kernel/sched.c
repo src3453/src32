@@ -28,6 +28,11 @@ static uint32_t ticks, switches, need_resched;
 #define CPU_CLOCK_CTRL 0x80040440u
 #define CPU_CLOCK_LO 0x80040448u
 #define CPU_CLOCK_PRESCALER 0x80040460u
+#define CPU_PERF_BASE 0xFFFF02A0u
+static const uint32_t cpu_perf_addr[8] = {
+    CPU_PERF_BASE + 0u, CPU_PERF_BASE + 8u, CPU_PERF_BASE + 16u, CPU_PERF_BASE + 24u,
+    CPU_PERF_BASE + 32u, CPU_PERF_BASE + 40u, CPU_PERF_BASE + 48u, CPU_PERF_BASE + 56u,
+};
 static uint32_t cpu_last, cpu_origin, cpu_kernel, cpu_idle;
 
 void sched_cpu_enter(void) {
@@ -52,6 +57,23 @@ void sched_cpu_snapshot(uint32_t info[4]) {
     info[1] = cpu_kernel;
     info[2] = cpu_idle;
     info[3] = 48000000u;
+}
+
+/* Privileged, read-only snapshot for sys_info(6). Retry a pair if its high
+ * word changes across the low-word read; counters continue while reading. */
+void sched_perf_snapshot(uint32_t info[16]) {
+    for (uint32_t i = 0; i < 8u; ++i) {
+        volatile uint32_t *low = (volatile uint32_t *)(uintptr_t)cpu_perf_addr[i];
+        volatile uint32_t *high = low + 1;
+        uint32_t hi_before, lo, hi_after;
+        do {
+            hi_before = *high;
+            lo = *low;
+            hi_after = *high;
+        } while (hi_before != hi_after);
+        info[2u * i] = lo;
+        info[2u * i + 1u] = hi_after;
+    }
 }
 
 uint32_t fnd_ticks(void) { return ticks; }

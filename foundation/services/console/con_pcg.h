@@ -8,13 +8,15 @@
 /* The console service's screen and keyboard: the PCG and the PeC input
  * (doc/spec_Foundation_API.md §8). Output follows §8.1 and keys follow the
  * CON_READ_KEY codes of §8.3. The service needs MMIO grants for the ranges
- * below. */
+ * below. Tang builds use UART input only; build.py grants the small font and
+ * CLUT windows instead of wide-font/PeC windows for con_tang_init. */
 
 #define CON_PCG_ROWS 30u
 
 /* MMIO the console touches: the VDP window (display and PCG registers), the
  * PCG text/attribute planes in VRAM, the wide font area, PeC input and UART. The 1 byte
- * font VRAM (0x21000) is not accessed. */
+ * font VRAM (0x21000) is preserved by the normal backend; only the Tang startup
+ * backend initializes it because the FPGA UART boot path has no BIOS font loader. */
 #define CON_PCG_VDP_START 0x80000000u
 #define CON_PCG_VDP_END 0x80010000u
 #define CON_PCG_TEXT_START 0x10000000u

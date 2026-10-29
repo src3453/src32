@@ -48,6 +48,12 @@
 #define FND_TIME_RTC_LO 3u
 #define FND_TIME_RTC_HI 4u
 
+/* sys_info selector 6: eight FPGA CPU performance counters, low/high word
+ * pairs in CYCLE, INSTRET, IC_MISS, DC_MISS, MEM_STALL, DATA_STALL, BR_STALL,
+ * BUS_STALL order. The image/OS must run on RTL that implements this view. */
+#define FND_SYSINFO_CPU_PERF 6u
+#define FND_SYSINFO_CPU_PERF_BYTES 64u
+
 /* Priorities (§10.1): smaller is more urgent. */
 #define FND_PRIO_DRIVER 0u
 #define FND_PRIO_SERVICE 1u

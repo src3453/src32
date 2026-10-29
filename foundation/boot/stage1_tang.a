@@ -1,0 +1,173 @@
+; Tang Console PIO boot sector. BIOS has already identified IDC drive R1.
+; Foundation stage1 boot sector (doc/spec_Foundation.md §11, doc/spec_FS2.md §3).
+;
+; The BIOS loads this block to 0x00000000 and enters it in S mode with
+; R1 = boot drive and IRQs off (doc/spec_BIOS.md §3), plus the Tang recovery
+; entry in R26. Update the Tang BIOS and this boot sector together.
+; stage1 checks the FS2
+; superblock, reads FNDBOOT from the reserved boot area to 0x00200000, checks
+; its header, copies the kernel to kernel_load and jumps to kernel_entry with
+; R1 = drive and R2 = 0x00200000.
+;
+; Tang BIOS passes its UART recovery entry in R26, which stage1 preserves.
+; On failure it returns there with IRQs still off and R1 = the failed step:
+;   1 superblock read (BIOS has identified the drive), 2 superblock check,
+;   3 FNDBOOT read or header check.
+;
+; Build: python tools/asm/asm.py -o stage1.bin foundation/boot/stage1_tang.a
+
+.CONST SUPERBLOCK 0x200        ; LBA 1 is read here, inside the reserved 0x0-0xFFFF
+.CONST STAGING_HI 0x0020       ; 0x00200000, also the 2 MiB FNDBOOT limit
+.CONST IDC_HI 0x8004
+.CONST IDC_LO 0x1000
+.CONST KERNEL_MAX_HI 0x000E    ; 0x000E0000 bytes up to the kernel stack
+
+; R20 drive, R21 IDC, R24 staging, R9 = 9, R25 = 0x10000
+    ADD R20, R1, R0
+    LDIH R21, IDC_HI
+    LDIL R21, IDC_LO
+    LDIH R24, STAGING_HI
+    LDIL R24, 0
+    ADDI R9, R0, 9
+    LDIH R25, 0x0001           ; 0x00010000: FS2 version word and kernel_load
+    LDIL R25, 0
+
+    ADDI R1, R0, 1             ; BIOS already IDENTIFYed this drive
+    LD R10, [R21+0x30]
+
+    ADDI R3, R0, 1             ; superblock (LBA 1) -> R5
+    ADDI R4, R0, 1
+    ADDI R5, R0, SUPERBLOCK
+    JAL read
+
+    ADDI R1, R0, 2             ; FS2 §3: magic, version 1 with flags 0 (DIRTY=0)
+    LD R6, [R5+0]
+    LDIH R7, 0x4653
+    LDIL R7, 0x3200
+    BNE R6, R7, fail
+    LD R6, [R5+4]
+    BNE R6, R25, fail
+    LD R11, [R5+0x08]          ; total_blocks <= capacity
+    SLTU R6, R10, R11
+    BNE R6, R0, fail
+    LD R6, [R5+0x0C]           ; boot_start = 2
+    ADDI R7, R0, 2
+    BNE R6, R7, fail
+    LD R12, [R5+0x10]          ; bitmap_start = 2 + boot_blocks without wrapping,
+    LD R13, [R5+0x18]          ; and bitmap_start <= data_start <= total_blocks
+    ADD R6, R12, R7
+    BNE R6, R13, fail
+    SLTU R6, R13, R7
+    BNE R6, R0, fail
+    LD R6, [R5+0x2C]
+    SLTU R7, R6, R13
+    BNE R7, R0, fail
+    SLTU R7, R11, R6
+    BNE R7, R0, fail
+    LD R18, [R5+0x14]          ; 0 < boot_size <= 2 MiB, ceil(boot_size/512) <= boot_blocks
+    BEQ R18, R0, fail
+    SLTU R6, R24, R18
+    BNE R6, R0, fail
+    ADDI R4, R18, 511
+    SRL R4, R4, R9
+    SLTU R6, R12, R4
+    BNE R6, R0, fail
+
+    ADDI R1, R0, 3             ; FNDBOOT: R4 sectors from LBA 2 to staging
+    ADDI R3, R0, 2
+    ADD R5, R24, R0
+    JAL read
+
+    LD R6, [R24+0]             ; Foundation §11 header
+    LDIH R7, 0x464E            ; "FNDB"
+    LDIL R7, 0x4442
+    BNE R6, R7, fail
+    LD R6, [R24+4]             ; version 1
+    ADDI R7, R0, 1
+    BNE R6, R7, fail
+    LD R6, [R24+8]             ; size = boot_size
+    BNE R6, R18, fail
+    LD R3, [R24+12]            ; kernel_off + kernel_size <= size
+    LD R4, [R24+16]
+    LD R5, [R24+20]
+    LD R8, [R24+24]
+    SLTU R7, R18, R3
+    BNE R7, R0, fail
+    SUB R6, R18, R3
+    SLTU R7, R6, R4
+    BNE R7, R0, fail
+    BNE R5, R25, fail          ; kernel_load = 0x00010000
+    LDIH R7, KERNEL_MAX_HI     ; kernel_size <= 0xE0000
+    LDIL R7, 0
+    SLTU R7, R7, R4
+    BNE R7, R0, fail
+    SUB R6, R8, R5             ; kernel_load <= kernel_entry < kernel_load + kernel_size
+    SLTU R7, R6, R4
+    BEQ R7, R0, fail
+
+    ADD R3, R3, R24            ; copy the kernel
+    ADD R4, R4, R5
+copy:
+    LDB R6, [R3+0]
+    STB [R5+0], R6
+    ADDI R3, R3, 1
+    ADDI R5, R5, 1
+    BNE R5, R4, copy
+enter:
+    ADD R1, R20, R0
+    ADD R2, R24, R0
+    JR R8
+
+fail:
+    JR R26
+
+; Tang Console PIO: no DMAC. The hardware bounds physical SD operations.
+; R3 LBA, R4 sectors, R5 destination. The multi-sector command presents DRQ
+; once per verified sector, then DONE only after its final byte is consumed.
+read:
+    ADD R19, R31, R0
+    ADD R15, R5, R0
+    ADDI R6, R0, 6
+    ST [R21+8], R6
+    ST [R21+0x14], R20
+    ST [R21+0x1C], R3
+    ST [R21+0x20], R4
+    ADDI R6, R0, 1
+    ST [R21+0x18], R6
+sector_wait:
+    LD R6, [R21+8]
+    ADDI R7, R0, 4
+    AND R7, R6, R7
+    BNE R7, R0, fail
+    ADDI R7, R0, 8
+    AND R7, R6, R7
+    BNE R7, R0, sector_ready
+    ADDI R7, R0, 1
+    AND R7, R6, R7
+    BNE R7, R0, sector_wait
+    JMP fail
+sector_ready:
+    ADDI R7, R0, 512
+pio_byte:
+    LDB R6, [R21+0x24]
+    STB [R15], R6
+    ADDI R15, R15, 1
+    ADDI R7, R7, -1
+    BNE R7, R0, pio_byte
+    ADDI R4, R4, -1
+    BNE R4, R0, sector_wait
+    JAL idc_end
+    JR R19
+idc_end:
+    LD R6, [R21+8]
+    ADDI R7, R0, 1
+    AND R7, R6, R7
+    BNE R7, R0, idc_end
+    ADDI R7, R0, 4
+    AND R6, R6, R7
+    BNE R6, R0, fail
+    JR R31
+
+.ORG 0x1FE
+.BYTE 0x55
+.BYTE 0xAA

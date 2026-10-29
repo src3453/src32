@@ -295,6 +295,20 @@ impl AnyCpu {
         }
     }
 
+    /// Per-PC instruction/cycle histogram; only the pipeline CPU records it.
+    pub fn enable_pc_profile(&mut self, enabled: bool) {
+        if let AnyCpu::Pipelined(cpu) = self {
+            cpu.enable_pc_profile(enabled);
+        }
+    }
+
+    pub fn take_pc_profile(&mut self) -> Vec<(bool, u32, u64, u64)> {
+        match self {
+            AnyCpu::Pipelined(cpu) => cpu.take_pc_profile(),
+            _ => Vec::new(),
+        }
+    }
+
     pub fn take_profile(&mut self) -> Option<CpuProfile> {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => cpu.take_profile(),

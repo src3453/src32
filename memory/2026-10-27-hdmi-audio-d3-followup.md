@@ -1,0 +1,21 @@
+# Tang HDMI 音声調査の継続: D3 の固定値
+
+- 引継ぎ: `2026-10-27-sgubplay-on-tang-hardware.md`。音程低下・欠落の原因は未確定のまま着手。
+- 最初に `python -m unittest discover -s foundation/tests/sgub -v` を再実行し、Host 7 + Player 6 = 13 tests PASS。前回失敗の Furnace v2 再生も PASS。
+  - 実行 Python: `C:/Users/y2k34/remote/src32/.venv/Scripts/python.exe`（llvmlite 入り）。`src32-sv/.venv` には llvmlite がない。
+  - `CLANG=C:/Program Files/LLVM/bin/clang.exe`、`HOST_CC=C:/msys64/ucrt64/bin/gcc.exe`、PATH 先頭に同 GCC の bin。Windows Clang に `-fPIC` を渡すと host test は失敗する。
+  - TEMP/TMP はこの worktree の `target/sgub-tmp` に設定。既定の sandbox TEMP は子プロセスから作成できなかった。
+- HDMI の参照実装を全文照合: [audio_sample_packet.sv](https://github.com/hdl-util/hdmi/blob/master/src/audio_sample_packet.sv)、[packet_assembler.sv](https://github.com/hdl-util/hdmi/blob/master/src/packet_assembler.sv)、[auxiliary_video_information_info_frame.sv](https://github.com/hdl-util/hdmi/blob/master/src/auxiliary_video_information_info_frame.sv)、[audio_clock_regeneration_packet.sv](https://github.com/hdl-util/hdmi/blob/master/src/audio_clock_regeneration_packet.sv)、[hdmi.sv](https://github.com/hdl-util/hdmi/blob/master/src/hdmi.sv)。
+  - Audio Sample の HB1 sample_present、HB2 B/sample_flat、24-bit sample の 16-bit 左詰め、V/U/C/P、BCH マスク 0x83、channel 1/2 の偶数/奇数 bit 配列、ACR byte 順は今回比較した範囲で一致。
+  - **channel 0 の D3 が異なる。** 旧 RTL は各 packet の最初だけ 0。HDMI の Figure 5-3 では payload 全体で 1。参照実装の `cx != 0` も、この水平 blanking 位置では常に 1。
+  - 根拠: [HDMI 1.3 Figure 5-3、印刷 page 60 / PDF page 76](https://fpga.mit.edu/6205/_static/F24/default_files/CEC_HDMI_Specification.pdf#page=76)。D3 は packet 先頭マーカーではない。境界は guard 後の 32 character ごと。
+- `src32-sv/soc/hdmi_audio.sv` を D3=1 に変更し、`sim/tb_hdmi_audio.sv` の同じ誤前提を修正。旧 RTL で 2116 packet 全件 D3 違反、修正後は 2116 packet / 3199 sample PASS。SGU のエミュレータ golden とは別の、FPGA 固有の HDMI framing 検証である。
+  - `python scripts/run_hdmi_audio_sim.py`。sandbox 内では Icarus が出力ファイルを書いた後でも exit 0xC0000005 を返すことがあり、通常環境で再実行すると compiler/simulation とも成功。失敗した compiler の出力を正式な成功扱いにしない。
+- 変更前の実機録音 `src32-sv/build/tone-d3-before.wav`: `sgu_tone.py COM7 440 --record 3`、`wav_peaks.py` は 142 Hz (0 dB), 192 (-8), 42 (-12), 242 (-13), 92 (-14), 292 (-19)。COM7 は通常環境で boot ROM が応答する。sandbox 内ではポート open に access denied。
+- D3 修正版 `build/hdmi-d3-po2` は 1880 s でビルド完了。48.001 MHz、LUT+ALU 36,848、BSRAM 278/340。SRAM 書き込み後も `tone-d3-after.wav` は主成分 142 Hz、50 Hz 間隔の副成分を維持。**D3 は規格違反だったが、この症状の原因ではなかった。** ACR の N=6144, CTS=25200、送出位置（0/240 行）は維持した比較。
+- CPU / SGU / SDRAM / framebuffer を外した `src32-sv/soc/hdmi_audio_diag.sv` と `scripts/build_hdmi_audio_diag.py` を追加。production と同じ PLL / packetizer / serializer、既知の 48 kHz 方形波（左 1 kHz +/-4000、右 2 kHz +/-2000）。約 1300 LUT、ビルド約 40〜50 s。全体 SoC の PnR を反復せず HDMI だけを実験できる。
+  - `build/hdmi-audio-diag`（48 MHz sys 側で生成）も症状を再現。`build/hdmi-diag-sys.wav` の左半周期の最頻値は 70/71 samples、右は 35/36（期待は 24 / 12 samples）。長い保持区間も存在。
+  - `--pixel-source --out build/hdmi-diag-pixel`（25.2 MHz / 525、pixel 側で直接生成し async CDC を除去）も実機の録音・波形画像で同じ異常を確認。CPU/SGU/メモリと async サンプル受け渡しは原因から外せる。
+  - 各 `build/<variant>/prj/hdmi_audio_diag/impl/pnr/hdmi_audio_diag.fs` は boot ROM を持たない。後続の clock/directclock/body64 版の UART は clock 計数のみ。調査後、通常の SoC を SRAM に再ロードすること。
+- ユーザー指摘により、FFT 最大ピークを「方形波の周波数」と扱うのを訂正。途切れ・保持のある波形では、連続区間のエッジ間隔と異常の反復周期を分ける。`audio-waveform-check` 個人スキルを追加。`scripts/render_waveform.py`（個人スキル内）で PNG を作り **view_image で実際に開く**。今回の録音は `build/hdmi-diag-{sys,pixel}-waveform.png` に 80 ms / 8 ms の左右独立図を生成して確認済み。
+- **続報: 主因を特定・修正。** `2026-10-27-hdmi-gowin-bch-packing.md` と `src32-sv/doc/hdmi-audio-debug.md` を参照。別配列 `p_sub` / `p_ecc` が Gowin 合成後に誤配置され、ACR / InfoFrame の BCH が破損していた。64-bit `p_body` への統合で診断回路の実音声が正常化。

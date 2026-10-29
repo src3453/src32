@@ -1,5 +1,12 @@
 # Foundation API 仕様 v1
 
+FPGA 専用の `--platform tang-console` では `/dev/con` と UART を使う。console の MMIO
+grant は `0x80040000..0x8004000F` のみであり、PCG／VRAM／PeC 入力窓へアクセスしない。
+端末は 80×30、表示設定は 80 のみとし、40 列・8×16 の要求には `FND_E_UNSUPPORTED` を
+返す。カーソル座標と ANSI 解析状態は従来の処理で保持し、物理キーボード状態は空である。
+画面・音源・乱数デバイスの lookup は `FND_E_UNSUPPORTED` を返す。FS2 は RAM ディスク
+上で通常のファイル API を提供する。電源断・RAM ディスクの再ロードで内容は失われる。
+
 Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確定、一部実装）**。libfnd は起動、ストリーム、ファイル・cwd、ディレクトリ列挙、プロセス、コンソールの一部を実装し、fs／consoleサービスをIPCで呼びます。現在の提供範囲は [`foundation/include/foundation/fnd.h`](../foundation/include/foundation/fnd.h) と [sol API](../sol/foundation/README.md) を参照してください。本書は Foundation OS のサービス間プロトコルと、アプリ向けライブラリ libfnd の API を定めます。対象は、ストリーム（ファイル、コンソール、デバイス）、fs サービスのセッションとパス操作、ディレクトリの列挙、コンソールの入出力、起動ブロックと標準ストリーム、プロセスの起動、名前照合、API のエラーコードです。カーネル ABI は [spec_Foundation.md](spec_Foundation.md)、ディスク形式と VFS の意味は [spec_FS2.md](spec_FS2.md)、シェルは [spec_Foundation_shell.md](spec_Foundation_shell.md) を参照してください。本書と [実装案](foundation_os_plan.md) が異なる場合は本書が優先します。
 
 「〜しなければならない (MUST)」「〜してはならない (MUST NOT)」「〜してよい (MAY)」は規範的な要求を表します。
@@ -438,6 +445,7 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `cpt_sgc_open` は `/dev/sgc` を WRITE で開きます。`cpt_sgc_display_init(first, count, rgb)` は `/dev/fb0` を開き、320×240・INDEX8 を確認して CLUT を書き、`cpt_sgc_close` まで開いたままにします（SGC の画素は fb0 ではなく SGC の描画面に描かれます）。
 - 描画関数（`cpt_sgc_clear`／`rect`（x, y, 幅, 高さ）／`line`／`triangle`／`glyph`／`raw`）はコマンドをバッファへ積むだけです。色は 0〜63（範囲外は BAD_ARG）、直前と同じ色の SET_COLOR は省きます。座標は符号付き 16 bit に丸めます。面積のない矩形と一直線上の三角形（ハードウェアが FIFO_ERROR にする）は積まずに FND_OK を返します。
 - `cpt_sgc_flush` は FIFO の空き（256 word）に入る分だけ投入し、待ちません。FIFO が満杯でも FND_OK で、残りは `cpt_sgc_pending` で分かります。描画関数はバッファが埋まると一度 flush を試し、なお入らなければコマンドを分割せず FND_E_WOULD_BLOCK を返します（呼び出し側は次のフレームで再試行）。`cpt_sgc_flush_wait` は 1 tick ずつ眠って空になるまで待ち、`CPT_SGC_WAIT_TICKS` 回進まなければ TIMEOUT です。
+- `cpt_sgc_ellipse(cx, cy, rx, ry, color)` は楕円の輪郭、`cpt_sgc_fill_ellipse` は内部を描きます。半径は0..32767（範囲外はBAD_ARG）、同じ半径で円になります。0半径は線分または点です。中心のclamp、色、buffer/flushは他の描画関数と共通です。WALの既存export順は維持し、この2関数を末尾へ追加しています。
 - `cpt_sgc_cancel`（未送信を捨てて FIFO clear）、`cpt_sgc_reset`、`cpt_sgc_set_output`、`cpt_sgc_status` は対応するデバイス操作です。cancel／reset と raw の後は現在色が不明になり、次の描画で SET_COLOR を送り直します。
 - テストは `foundation/tests/libsgc`（ホスト側のモデルでコマンド列と FIFO 満杯・バッファ満杯を検証、Foundation 上で WAL を呼んで画素を確認）。`chip8` が利用者の例です。
 

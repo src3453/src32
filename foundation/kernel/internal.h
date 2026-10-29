@@ -52,6 +52,7 @@ cpt32_ctx_frame *sched_next(void);
 void sched_cpu_enter(void);
 void sched_cpu_leave(void);
 void sched_cpu_snapshot(uint32_t info[4]);
+void sched_perf_snapshot(uint32_t info[16]);
 
 /* proc.c */
 void proc_exit(struct fnd_proc *proc, int32_t code, uint32_t fault_epc);
