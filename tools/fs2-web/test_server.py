@@ -1,6 +1,7 @@
 import importlib.util
 import pathlib
 import struct
+import tempfile
 import unittest
 
 spec = importlib.util.spec_from_file_location('fs2web', pathlib.Path(__file__).with_name('server.py'))
@@ -30,6 +31,53 @@ class UpdateTests(unittest.TestCase):
         self.assertEqual(web.fs2.check_image(m.image), [])
         v = web.fs2.Volume(m.image)
         self.assertEqual(v.read(v.resolve('/test.bin')), b'hello')
+    def test_rescue_repairs_bitmap_and_orphan_with_backup(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        v = web.fs2.Volume(img)
+        v.put('/keep', b'kept')
+        orphan = v.put('/orphan', b'lost')
+        v.set_entry(v.resolve('/'), v.find(v.resolve('/'), 'orphan')[0], 0, '')
+        v.set_bit(v.resolve('/keep')['first_block'], False)
+        img[519] = 1
+        before = bytes(img)
+        m = FakeMonitor(img)
+        with tempfile.TemporaryDirectory() as directory:
+            backup, count, _ = web.rescue(m, directory)
+            self.assertEqual(pathlib.Path(backup).read_bytes(), before)
+        self.assertEqual(count, 1)
+        self.assertEqual(web.fs2.check_image(m.image), [])
+        v = web.fs2.Volume(m.image)
+        self.assertEqual(v.read(v.resolve('/keep')), b'kept')
+        self.assertEqual(v.read_inode(orphan['number'])['type'], web.fs2.FREE)
+        self.assertEqual(m.writes[-1][0], 1)
+        self.assertEqual(m.writes[-1][1][7] & 1, 0)
+
+    def test_rescue_refuses_shared_blocks_and_keeps_backup(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        v = web.fs2.Volume(img); a = v.put('/a', b'a'); b = v.put('/b', b'b')
+        b['first_block'] = a['first_block']; v.write_inode(b['number'], b)
+        img[519] = 1; m = FakeMonitor(img)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaisesRegex(IOError, '共有'):
+                web.rescue(m, directory)
+            self.assertEqual(next(pathlib.Path(directory).iterdir()).read_bytes(), img)
+        self.assertEqual(m.writes, [])
+
+    def test_rescue_write_failure_does_not_clear_dirty(self):
+        img = web.fs2.format_image(128, inode_count=16)
+        v = web.fs2.Volume(img); v.set_bit(2, False); img[519] = 1
+        m = FakeMonitor(img, fail=1)
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(IOError): web.rescue(m, directory)
+        self.assertEqual(m.image[519] & 1, 1)
+
+    def test_rescue_clean_volume_rejected(self):
+        m = FakeMonitor(web.fs2.format_image(128, inode_count=16))
+        with tempfile.TemporaryDirectory() as directory:
+            with self.assertRaises(ValueError): web.rescue(m, directory)
+            self.assertEqual(list(pathlib.Path(directory).iterdir()), [])
+        self.assertEqual(m.writes, [])
+
     def test_restore_clean_and_dirty_backups(self):
         for was_dirty in (False, True):
             img = web.fs2.format_image(64, inode_count=16)
