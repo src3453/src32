@@ -2,6 +2,8 @@
 import argparse
 import base64
 import json
+import os
+import uuid
 import struct
 import sys
 import threading
@@ -109,6 +111,8 @@ class DirectoryReader:
         raw = self.block(1)
         self.sb = sb = dict(zip(fs2.SUPER_FIELDS, struct.unpack_from(fs2.SUPER_FMT, raw)))
         total = sb['total_blocks']
+        if sb['flags'] == fs2.FLAG_DIRTY:
+            raise ValueError('FS2がDIRTYです。必要に応じてレスキューを実行してください')
         if (sb['magic'] != fs2.MAGIC or sb['version'] != fs2.VERSION or
             sb['flags'] or sb['casefold_version'] != fs2.CASEFOLD_VERSION or
             not 2 <= total <= min(capacity, MAX_BLOCKS) or
@@ -169,7 +173,23 @@ class DirectoryReader:
             names.add(key); result.append((number, name))
         return result
 
-def list_directory(monitor, path):
+def volume_usage(reader):
+    total = reader.sb['total_blocks']
+    remaining = total
+    used = 0
+    for index in range(reader.sb['bitmap_blocks']):
+        bitmap = reader.block(reader.sb['bitmap_start'] + index)
+        bits = min(remaining, fs2.BLOCK * 8)
+        whole, tail = divmod(bits, 8)
+        used += sum(byte.bit_count() for byte in bitmap[:whole])
+        if tail:
+            used += (bitmap[whole] & (0xff << (8 - tail))).bit_count()
+        remaining -= bits
+    return {'total_sectors': total, 'used_sectors': used,
+            'free_sectors': total - used, 'sector_bytes': fs2.BLOCK}
+
+
+def list_directory(monitor, path, with_usage=False):
     reader = DirectoryReader(monitor)
     inode = reader.inode(1)
     for part in path.split('/'):
@@ -183,9 +203,10 @@ def list_directory(monitor, path):
     for number, name in reader.entries(inode):
         child = reader.inode(number)
         result.append({'name': name, 'directory': child['type'] == fs2.DIR, 'size': child['size']})
+    usage = volume_usage(reader) if with_usage else None
     if monitor.read_block(1) != reader.cache[1]:
         raise IOError('読み込み中にsuperblockが変化しました')
-    return result
+    return (result, usage) if with_usage else result
 
 def download(monitor, path):
     reader = DirectoryReader(monitor)
@@ -215,7 +236,13 @@ def download(monitor, path):
         raise IOError('読み込み中にsuperblockが変化しました')
     return bytes(data[:inode['size']])
 
+def validate_upload_path(path):
+    if not isinstance(path, str) or not path.startswith('/') or path.endswith('/'):
+        raise ValueError('アップロード先には /ファイル名 を含む絶対パスを指定してください')
+    fs2.check_name(path.rsplit('/', 1)[-1])
+
 def update(monitor, path, data):
+    validate_upload_path(path)
     original = read_volume(monitor)
     count = len(original) // 512
     sb = original[512:1024]
@@ -243,6 +270,130 @@ def update(monitor, path, data):
     monitor.write_block(1, final)
     return len(changed)
 
+def validate_backup(data):
+    if len(data) < 1024 or len(data) % fs2.BLOCK or len(data) > MAX_BLOCKS * fs2.BLOCK:
+        raise ValueError('バックアップは512バイト単位、最大64 MiBのFS2イメージである必要があります')
+    total = struct.unpack_from('>I', data, fs2.BLOCK + 8)[0]
+    if total != len(data) // fs2.BLOCK:
+        raise ValueError('イメージ長とFS2のボリュームサイズが一致しません')
+    problems = fs2.check_image(data, allow_dirty=True)
+    if problems:
+        raise ValueError(f'バックアップのFS2検査に失敗しました: {problems[0]}')
+    return total
+
+
+def restore(monitor, data):
+    total = validate_backup(data)
+    progress.update(message='BIOS待機中：必要ならボードをリセットしてください', percent=None)
+    capacity = monitor.connect()
+    if total > capacity:
+        raise ValueError('バックアップがSDカード容量を超えています。書き込みは行っていません')
+    final = data[512:1024]
+    dirty = bytearray(final)
+    struct.pack_into('>H', dirty, 6, struct.unpack_from('>H', dirty, 6)[0] | fs2.FLAG_DIRTY)
+    progress.update(message='復元開始：DIRTYを設定中', percent=0)
+    try:
+        monitor.write_block(1, dirty)
+        for lba in range(total):
+            if lba == 1:
+                continue
+            progress.update(message=f'復元・読み戻し中: {lba + 1}/{total} セクタ',
+                            percent=int(99 * (lba + 1) / total))
+            monitor.write_block(lba, data[lba*512:(lba+1)*512])
+        if final != dirty:
+            progress.update(message='復元完了：DIRTYを解除中', percent=99)
+            monitor.write_block(1, final)
+    except Exception as exc:
+        raise IOError('復元が中断しました。媒体は不完全またはDIRTYの可能性があります。'
+                      'バックアップから再度復元してください: ' + str(exc)) from exc
+    return total, bool(struct.unpack_from('>H', final, 6)[0] & fs2.FLAG_DIRTY)
+
+def prepare_rescue(image):
+    """Repair allocation leaks only; refuse ambiguous damage without writing."""
+    if len(image) < 1024 or len(image) % 512:
+        raise ValueError('イメージサイズが不正です')
+    sb = dict(zip(fs2.SUPER_FIELDS, struct.unpack_from(fs2.SUPER_FMT, image, 512)))
+    count = sb['total_blocks']
+    if (image[510:512] != fs2.BOOT_SIG or sb['magic'] != fs2.MAGIC or
+        sb['version'] != fs2.VERSION or sb['flags'] != fs2.FLAG_DIRTY or
+        sb['casefold_version'] != fs2.CASEFOLD_VERSION or count != len(image)//512 or
+        not 2 <= count <= MAX_BLOCKS or not 1 <= sb['inode_count'] <= 0xfffffffe or
+        sb['root_inode'] != fs2.ROOT_INODE):
+        raise ValueError('DIRTYなFS2のsuperblockが不正または未対応です')
+    expected = fs2.layout(count, sb['boot_blocks'], sb['inode_count'])
+    if (any(sb[k] != v for k, v in expected.items()) or expected['data_start'] > count or
+        sb['boot_size'] > sb['boot_blocks'] * 512 or sb['created_ms'] > 999):
+        raise ValueError('FS2のレイアウトが不正です')
+    repaired = bytearray(image)
+    vol = fs2.Volume(repaired, check=False)
+    chains = {}; owners = set()
+    for number in range(1, sb['inode_count'] + 1):
+        inode = vol.read_inode(number)
+        if inode['type'] == fs2.FREE:
+            continue
+        if (inode['type'] not in (fs2.FILE, fs2.DIR) or
+            inode['block_count'] != (inode['size'] + fs2.PAYLOAD - 1) // fs2.PAYLOAD or
+            inode['block_count'] > count or
+            (inode['size'] == 0) != (inode['first_block'] == 0)):
+            raise ValueError(f'inode {number} のサイズまたは種類が不正です')
+        block = inode['first_block']; chain = []
+        for _ in range(inode['block_count']):
+            if not sb['data_start'] <= block < count or block in owners:
+                raise ValueError(f'inode {number} のブロック範囲外・循環・共有を検出しました')
+            owners.add(block); chain.append(block); block = vol.next_block(block)
+        if block:
+            raise ValueError(f'inode {number} のチェーンが長すぎます')
+        chains[number] = chain
+    start = sb['bitmap_start'] * 512
+    repaired[start:start + sb['bitmap_blocks']*512] = bytes(sb['bitmap_blocks']*512)
+    for block in range(sb['data_start']): vol.set_bit(block, True)
+    for block in owners: vol.set_bit(block, True)
+    problems = fs2.check_image(repaired, allow_dirty=True)
+    orphan = []
+    for code, message in problems:
+        words = message.split()
+        if len(words) == 8 and words[0] == 'inode' and words[2:] == ['is','not','reachable','from','the','root']:
+            orphan.append(int(words[1]))
+        else:
+            raise ValueError(f'自動修復できないFS2破損: {code}: {message}')
+    for number in orphan:
+        off = vol.inode_offset(number)
+        repaired[off:off+fs2.INODE_SIZE] = bytes(fs2.INODE_SIZE)
+        for block in chains[number]:
+            vol.set_bit(block, False)
+            repaired[block*512:(block+1)*512] = bytes(512)
+    problems = fs2.check_image(repaired, allow_dirty=True)
+    if problems:
+        raise ValueError(f'修復後の検査失敗: {problems[0]}')
+    return repaired, orphan
+
+
+def rescue(monitor, backup_dir):
+    original = read_volume(monitor)
+    if not struct.unpack_from('>H', original, 518)[0] & fs2.FLAG_DIRTY:
+        raise ValueError('DIRTYではないためレスキューは実行しません')
+    backup_dir = Path(backup_dir)
+    backup_dir.mkdir(parents=True, exist_ok=True)
+    backup = backup_dir / ('fs2-rescue-' + uuid.uuid4().hex + '.bin')
+    with backup.open('xb') as output:
+        output.write(original); output.flush(); os.fsync(output.fileno())
+    try:
+        repaired, orphan = prepare_rescue(original)
+        changed = [i for i in range(len(original)//512) if i != 1 and
+                   original[i*512:(i+1)*512] != repaired[i*512:(i+1)*512]]
+        if monitor.read_block(1) != original[512:1024]:
+            raise ValueError('読み込み後にsuperblockが変化しました')
+        for index, lba in enumerate(changed):
+            progress.update(message=f'レスキュー書き込み中: {index+1}/{len(changed)} セクタ',
+                            percent=90 + 9*index//max(1,len(changed)))
+            monitor.write_block(lba, repaired[lba*512:(lba+1)*512])
+        final = bytearray(repaired[512:1024])
+        struct.pack_into('>H', final, 6, struct.unpack_from('>H', final, 6)[0] & ~fs2.FLAG_DIRTY)
+        monitor.write_block(1, final)
+    except Exception as exc:
+        raise IOError(f'レスキュー失敗。元イメージ: {backup}。媒体はDIRTYまたは不完全の可能性があります: {exc}') from exc
+    return str(backup), len(orphan), len(changed)
+
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, format, *args):
         if self.path != '/progress':
@@ -260,15 +411,19 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(200); self.send_header('Content-Type', content_type)
         self.send_header('Content-Length', str(len(body))); self.end_headers(); self.wfile.write(body)
     def do_POST(self):
-        if self.path not in ('/update', '/download', '/list', '/backup') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
+        if self.path not in ('/update', '/download', '/list', '/backup', '/restore', '/rescue') or self.headers.get('Origin') != f'http://127.0.0.1:{self.server.server_port}':
             self.send_error(403); return
         try:
             length = int(self.headers.get('Content-Length', '0'))
-            if not 0 < length <= 24 * 1024 * 1024:
+            if not 0 < length <= 90 * 1024 * 1024:
                 raise ValueError('リクエストサイズが不正です')
             req = json.loads(self.rfile.read(length))
-            data = base64.b64decode(req['data'], validate=True) if self.path == '/update' else None
-            if not req['path'].startswith('/'):
+            data = base64.b64decode(req['data'], validate=True) if self.path in ('/update', '/restore') else None
+            if self.path == '/update':
+                validate_upload_path(req.get('path'))
+            if self.path == '/restore':
+                validate_backup(data)  # reject bad images before opening the port
+            if not req.get('path', '/').startswith('/'):
                 raise ValueError('FS2パスは / で始めてください')
             with lock:
                 mon = Monitor(req['port'], int(req['baud']))
@@ -276,11 +431,18 @@ class Handler(BaseHTTPRequestHandler):
                     if self.path == '/update':
                         count = update(mon, req['path'], data)
                         result = {'ok': True, 'message': f'更新完了: {count} セクタ変更'}
+                    elif self.path == '/restore':
+                        count, dirty = restore(mon, data)
+                        result = {'ok': True, 'message': f'復元完了: {count} セクタ。' + ('元のDIRTYを維持しています。' if dirty else 'DIRTYは解除されています。')}
+                    elif self.path == '/rescue':
+                        saved, orphan, count = rescue(mon, Path(__file__).resolve().parents[2] / 'target' / 'fs2-web-rescue')
+                        result = {'ok': True, 'message': f'レスキュー完了。解放inode: {orphan}、変更セクタ: {count}。元イメージ: {saved}'}
                     elif self.path == '/backup':
                         data = read_volume(mon)
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}
                     elif self.path == '/list':
-                        result = {'ok': True, 'entries': list_directory(mon, req['path'])}
+                        entries, usage = list_directory(mon, req['path'], with_usage=True)
+                        result = {'ok': True, 'entries': entries, 'usage': usage}
                     else:
                         data = download(mon, req['path'])
                         result = {'ok': True, 'data': base64.b64encode(data).decode('ascii')}

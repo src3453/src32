@@ -2,7 +2,8 @@
 //
 // 3WS8PN is a wavetable/PCM/noise sound generator chip with 8 channels.
 // SGU v2.1 (3WS8PNA) adds 2-tap linear interpolation and a 16-bit FIFO DAC;
-// `SguVersion` selects v1 / v2 / v2.1 behavior (doc/spec_SGU.md section 8).
+// `SguVersion` selects v1 / v2 / v2.1 / v3 behavior (doc/spec_SGU.md section 8);
+// v3 adds the 34SI22 (si22.rs) beside the two cores.
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
 //
@@ -70,8 +71,10 @@ pub enum SguVersion {
     /// Two SGU cores; Wavetable/PCM are not interpolated.
     V2,
     /// 3WS8PNA: 2-tap linear interpolation and the FIFO DAC.
-    #[default]
     V2_1,
+    /// v2.1 plus the 34SI22 record/playback interface chip (doc/spec_34SI22.md).
+    #[default]
+    V3,
 }
 
 impl SguVersion {
@@ -80,6 +83,7 @@ impl SguVersion {
             "1" | "1.0" => Some(Self::V1),
             "2" | "2.0" => Some(Self::V2),
             "2.1" => Some(Self::V2_1),
+            "3" | "3.0" => Some(Self::V3),
             _ => None,
         }
     }
@@ -90,7 +94,12 @@ impl SguVersion {
     }
 
     fn has_3ws8pna(self) -> bool {
-        self == Self::V2_1
+        matches!(self, Self::V2_1 | Self::V3)
+    }
+
+    /// True when the 34SI22 is mapped next to the SGU cores.
+    pub fn has_34si22(self) -> bool {
+        self == Self::V3
     }
 }
 
@@ -1331,8 +1340,9 @@ mod tests {
         assert_eq!(SguVersion::parse("1"), Some(SguVersion::V1));
         assert_eq!(SguVersion::parse("v2"), Some(SguVersion::V2));
         assert_eq!(SguVersion::parse("2.1"), Some(SguVersion::V2_1));
-        assert_eq!(SguVersion::parse("3"), None);
-        assert_eq!(SguVersion::default(), SguVersion::V2_1);
+        assert_eq!(SguVersion::parse("3"), Some(SguVersion::V3));
+        assert_eq!(SguVersion::parse("4"), None);
+        assert_eq!(SguVersion::default(), SguVersion::V3);
     }
 
     #[test]

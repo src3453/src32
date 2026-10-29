@@ -335,7 +335,8 @@ fn main() {
         .expect("Invalid SGU configuration");
     cpt32::devices::ram::connect_ram_with_size(&mut bus, ram_size);
     connect_bmc_dmac(&mut bus);
-    let sgus = cpt32::devices::sgu::sgu::connect_sgu_with_version(&mut bus, sgu_version);
+    let sound = cpt32::devices::sgu::sgu::connect_sound_with_version(&mut bus, sgu_version);
+    let (sgus, si22) = (sound.sgus, sound.si22);
     let vdp = cpt32::devices::vdp::vdp::connect_vdp_with_vram_size(&mut bus, vram_size);
     connect_idc_from_config(&mut bus).expect("Invalid disk configuration");
     cpt32::devices::expansion::load_expansion_cards(Path::new("config.yaml"), &mut bus)
@@ -397,9 +398,16 @@ fn main() {
         cpu.run(cycles_per_frame);
         // Opt-in deterministic 48 kHz sink: 800 stereo frames per VSync.
         // Keep the historical no-audio behavior unless capture is requested.
+        // The 34SI22 runs every frame (guests poll its status; the ADC is silent here).
+        let mut si22_left = [0i32; 800];
+        let mut si22_right = [0i32; 800];
+        if let Some(si22) = si22.as_ref() {
+            si22.borrow_mut()
+                .clock_mixed_into_i32(&mut si22_left, &mut si22_right);
+        }
         if audio_dump.is_some() {
-            let mut mixed_left = [0i32; 800];
-            let mut mixed_right = [0i32; 800];
+            let mut mixed_left = si22_left;
+            let mut mixed_right = si22_right;
             for sgu in &sgus {
                 sgu.borrow_mut()
                     .clock_mixed_into_i32(&mut mixed_left, &mut mixed_right);
