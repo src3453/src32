@@ -38,7 +38,7 @@ lang: ja
 ### SQV4
 
 - [[doc/ja/squeezvox/README|SQV4 converter ガイド]] ↔ [[doc/squeezvox/README|SQV4 file converter]]
-- [[doc/ja/squeezvox/squeezvox4_spec_stub|SQV4 v1/v2 形式仕様]] ↔ [[doc/squeezvox/squeezvox4_spec_stub|SQV4 specification]]
+- [[doc/ja/squeezvox/squeezvox4_spec_stub|SQV4 v3 形式仕様]] ↔ [[doc/squeezvox/squeezvox4_spec_stub|SQV4 specification]]
 
 ### 開発ツールとサンプル
 

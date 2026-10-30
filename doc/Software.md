@@ -30,7 +30,7 @@ tags:
 - [[doc/spec_COW|COW sidecar format]] / [[doc/ja/spec_COW|日本語版]] — 書き込み可能 overlay
 - [[doc/spec_DSFS|DSFS 仕様]] — フロッピーディスク用シンプルファイルシステム（ツール: `tools/dsfs/dsfs.py`、ゲストライブラリ: `sol/cpt32/idc.sol`, `sol/cpt32/dsfs.sol`）
 - [[doc/spec_FS2|FS2 (File System 2) 仕様]] — Foundation用の階層型FS、ビットマップと連結割り当て、最大256文字の名前、UID権限、ミリ秒時刻、VFS（仕様策定、未実装）
-- [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v1/v2 specification]] / [[doc/ja/squeezvox/squeezvox4_spec_stub|日本語版]]
+- [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v3 specification]] / [[doc/ja/squeezvox/squeezvox4_spec_stub|日本語版]]
 
 - [[doc/spec_SGUB|SGUB v1 music stream]] — 60 Hz SGU レジスタ列、Furnace ROM エクスポート
 - [[doc/spec_SGUB_v2|SGUB v2 音楽ストリーム仕様案]] — pool ID参照と連続領域操作を使う Draft形式

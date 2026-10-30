@@ -172,15 +172,18 @@ pub struct Channel {
     pub pcm_loop_addr: u32,
     pub pcm_control: u8,
 
-    // Incremental SQV4 decode state; only one 64-sample frame is cached.
+    // SQV4 decode state. SGU v3 plays version 3 files, whose fragments (23
+    // samples) decode independently; v1/v2/v2.1 play version 1/2 files, whose
+    // 64-sample fragments are decoded in order with carried predictor state.
     sqv4_validated: bool,
     sqv4_version: u8,
     sqv4_variant: Option<Sqv4Variant>,
     sqv4_sample_count: usize,
+    sqv4_frame_samples: usize,
     sqv4_frame_size: usize,
     sqv4_loop_sample: usize,
-    // Two 64-sample frames are kept (indexed by frame & 1) so a sample can be
-    // interpolated with the first sample of the following frame.
+    // Two decoded fragments are kept (indexed by frame & 1) so a sample can be
+    // interpolated with the first sample of the following fragment.
     sqv4_cached_frame: [Option<usize>; 2],
     sqv4_next_frame: usize,
     sqv4_decoder: Sqv4State,
@@ -227,6 +230,7 @@ impl Default for Channel {
             sqv4_version: 0,
             sqv4_variant: None,
             sqv4_sample_count: 0,
+            sqv4_frame_samples: 0,
             sqv4_frame_size: 0,
             sqv4_loop_sample: 0,
             sqv4_cached_frame: [None; 2],
@@ -310,6 +314,7 @@ impl Channel {
         self.sqv4_version = 0;
         self.sqv4_variant = None;
         self.sqv4_sample_count = 0;
+        self.sqv4_frame_samples = 0;
         self.sqv4_frame_size = 0;
         self.sqv4_loop_sample = 0;
         self.sqv4_cached_frame = [None; 2];
@@ -368,6 +373,8 @@ impl S3w2Sound {
                 c.waveform_type = WaveformType::Wavetable;
             }
             c.reset_fifo();
+            // The accepted SQV4 versions depend on the generation.
+            c.invalidate_sqv4();
         }
     }
 
@@ -878,8 +885,12 @@ impl S3w2Sound {
             self.channels[ch].invalidate_sqv4();
             return false;
         }
+        // SGU v3 plays SQV4 version 3 only; earlier generations versions 1/2.
+        let wants_v3 = self.version == SguVersion::V3;
         let header = match sqv4::inspect(&pcm_ram[start..end]) {
-            Ok(header) if header.channels == 1 => header,
+            Ok(header) if header.channels == 1 && (header.version == sqv4::VERSION) == wants_v3 => {
+                header
+            }
             _ => {
                 self.channels[ch].active = false;
                 self.channels[ch].invalidate_sqv4();
@@ -915,13 +926,14 @@ impl S3w2Sound {
                 self.channels[ch].invalidate_sqv4();
                 return false;
             }
-            frame * 64
+            frame * header.frame_samples
         };
         let channel = &mut self.channels[ch];
         channel.sqv4_validated = true;
         channel.sqv4_version = header.version;
         channel.sqv4_variant = Some(header.variant);
         channel.sqv4_sample_count = header.samples_per_channel;
+        channel.sqv4_frame_samples = header.frame_samples;
         channel.sqv4_frame_size = header.frame_size;
         channel.sqv4_loop_sample = loop_sample;
         channel.sqv4_cached_frame = [None; 2];
@@ -930,10 +942,24 @@ impl S3w2Sound {
         true
     }
 
-    /// Decode frames in order until `target` is cached (restarting from frame 0
-    /// when it lies before the decoder position).
+    /// Cache fragment `target`. Version 3 fragments decode on their own; version
+    /// 1/2 fragments are decoded in order (restarting from fragment 0 when
+    /// `target` lies before the decoder position).
     fn ensure_sqv4_frame(channel: &mut Channel, pcm_ram: &[u8], start: usize, target: usize) {
         if channel.sqv4_cached_frame[target & 1] == Some(target) {
+            return;
+        }
+        let frame_samples = channel.sqv4_frame_samples;
+        if channel.sqv4_version == sqv4::VERSION {
+            let frame_size = channel.sqv4_frame_size;
+            let offset = start + 16 + target * frame_size;
+            let count = (channel.sqv4_sample_count - target * frame_samples).min(frame_samples);
+            sqv4::decode_fragment(
+                channel.sqv4_variant.unwrap(),
+                &pcm_ram[offset..offset + frame_size],
+                &mut channel.sqv4_frame[target & 1][..count],
+            );
+            channel.sqv4_cached_frame[target & 1] = Some(target);
             return;
         }
         if target < channel.sqv4_next_frame {
@@ -947,15 +973,15 @@ impl S3w2Sound {
         while channel.sqv4_next_frame <= target {
             let decode_frame = channel.sqv4_next_frame;
             let fragment_offset = start + 16 + decode_frame * frame_size;
-            let volume = pcm_ram[fragment_offset] as i32;
-            let payload = &pcm_ram[fragment_offset + 1..fragment_offset + frame_size];
-            let count = (channel.sqv4_sample_count - decode_frame * 64).min(64);
-            for within in 0..count {
-                let code = sqv4::unpack_code(payload, within, variant.bits());
-                let reconstructed =
-                    sqv4::decode_code(version, variant, &mut channel.sqv4_decoder, code);
-                channel.sqv4_frame[decode_frame & 1][within] = (reconstructed * volume / 255) as i16;
-            }
+            let count =
+                (channel.sqv4_sample_count - decode_frame * frame_samples).min(frame_samples);
+            sqv4::decode_legacy_fragment(
+                version,
+                variant,
+                &mut channel.sqv4_decoder,
+                &pcm_ram[fragment_offset..fragment_offset + frame_size],
+                &mut channel.sqv4_frame[decode_frame & 1][..count],
+            );
             channel.sqv4_cached_frame[decode_frame & 1] = Some(decode_frame);
             channel.sqv4_next_frame += 1;
         }
@@ -987,17 +1013,20 @@ impl S3w2Sound {
         }
         let pcm_ram = self.pcm_ram.borrow();
         let channel = &mut self.channels[ch];
-        Self::ensure_sqv4_frame(channel, &pcm_ram, start, sample_index / 64);
-        let current = i32::from(channel.sqv4_frame[(sample_index / 64) & 1][sample_index % 64]);
+        let n = channel.sqv4_frame_samples;
+        Self::ensure_sqv4_frame(channel, &pcm_ram, start, sample_index / n);
+        let current = i32::from(channel.sqv4_frame[(sample_index / n) & 1][sample_index % n]);
         let q8 = if interpolate && frac != 0 && sample_index + 1 < sample_count {
             let next_index = sample_index + 1;
-            Self::ensure_sqv4_frame(channel, &pcm_ram, start, next_index / 64);
-            let next = i32::from(channel.sqv4_frame[(next_index / 64) & 1][next_index % 64]);
+            Self::ensure_sqv4_frame(channel, &pcm_ram, start, next_index / n);
+            let next = i32::from(channel.sqv4_frame[(next_index / n) & 1][next_index % n]);
             current * (256 - frac) + next * frac
         } else {
             current << 8
         };
-        channel.phase = channel.phase.wrapping_add(sqv4_phase_step(channel.frequency));
+        channel.phase = channel
+            .phase
+            .wrapping_add(sqv4_phase_step(channel.frequency));
         q8
     }
 
@@ -1248,26 +1277,97 @@ mod tests {
         sound
     }
 
+    /// SQV4 version 2 H file of 130 samples: 1 then -1 steps, crossing 64-sample fragments.
+    fn sqv4_legacy_bytes() -> Vec<u8> {
+        let mut file = vec![0u8; 16 + 3 * 33];
+        file[..16].copy_from_slice(&[
+            b'S', b'Q', b'V', b'4', 2, 0, 1, 0, 0x40, 0x1f, 0, 0, 130, 0, 0, 0,
+        ]);
+        for frame in 0..3 {
+            file[16 + frame * 33] = 255;
+        }
+        file[17..49].fill(0x14);
+        file[50..82].fill(0x9C);
+        file[83] = 0x04;
+        file
+    }
+
     #[test]
     fn sqv4_two_tap_interpolation_crosses_frames_and_holds_at_end() {
         let pcm: Vec<i16> = (0..130).map(|i| i * 40).collect();
-        let bytes = super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::H, 255).unwrap();
-        let decoded = super::sqv4::decode(&bytes).unwrap().samples;
-        assert_eq!(decoded.len(), 130);
-
-        let mut v2 = sqv4_sound(SguVersion::V2, &bytes);
-        let mut v21 = sqv4_sound(SguVersion::V2_1, &bytes);
-        for k in 0..129usize {
-            // Even calls land on a sample, odd calls halfway to the next one.
-            assert_eq!(v2.generate_sample(0), decoded[k], "v2 sample {k}");
-            assert_eq!(v2.generate_sample(0), decoded[k], "v2 half {k}");
-            assert_eq!(v21.generate_sample(0), decoded[k], "v2.1 sample {k}");
-            let half = ((i32::from(decoded[k]) * 128 + i32::from(decoded[k + 1]) * 128) / 256) as i16;
-            assert_eq!(v21.generate_sample(0), half, "v2.1 half {k}");
+        let v3_bytes =
+            super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::H, 255).unwrap();
+        let legacy_bytes = sqv4_legacy_bytes();
+        for (version, bytes) in [
+            (SguVersion::V2, &legacy_bytes),
+            (SguVersion::V2_1, &legacy_bytes),
+            (SguVersion::V3, &v3_bytes),
+        ] {
+            let decoded = super::sqv4::decode(bytes).unwrap().samples;
+            assert_eq!(decoded.len(), 130);
+            let interpolate = version != SguVersion::V2;
+            let mut sound = sqv4_sound(version, bytes);
+            for k in 0..129usize {
+                // Even calls land on a sample, odd calls halfway to the next one.
+                assert_eq!(
+                    sound.generate_sample(0),
+                    decoded[k],
+                    "{version:?} sample {k}"
+                );
+                let half = if interpolate {
+                    ((i32::from(decoded[k]) * 128 + i32::from(decoded[k + 1]) * 128) / 256) as i16
+                } else {
+                    decoded[k]
+                };
+                assert_eq!(sound.generate_sample(0), half, "{version:?} half {k}");
+            }
+            // The last sample has no following tap: it is held, not blended.
+            assert_eq!(sound.generate_sample(0), decoded[129]);
+            assert_eq!(sound.generate_sample(0), decoded[129]);
         }
-        // The last sample has no following tap: it is held, not blended.
-        assert_eq!(v21.generate_sample(0), decoded[129]);
-        assert_eq!(v21.generate_sample(0), decoded[129]);
+    }
+
+    #[test]
+    fn sqv4_file_version_must_match_the_sgu_generation() {
+        let v3_bytes =
+            super::sqv4::encode_interleaved(&[5000; 40], 1, 8_000, Sqv4Variant::L, 255).unwrap();
+        let legacy_bytes = sqv4_legacy_bytes();
+        for (version, bytes, plays) in [
+            (SguVersion::V3, &v3_bytes, true),
+            (SguVersion::V3, &legacy_bytes, false),
+            (SguVersion::V2_1, &v3_bytes, false),
+            (SguVersion::V2_1, &legacy_bytes, true),
+        ] {
+            let mut sound = sqv4_sound(version, bytes);
+            sound.generate_sample(0);
+            assert_eq!(sound.channels[0].active, plays, "{version:?}");
+        }
+    }
+
+    #[test]
+    fn sqv4_v3_loop_starts_at_an_independent_fragment() {
+        let pcm: Vec<i16> = (0..69)
+            .map(|i| ((i * 2311) % 30000 - 15000) as i16)
+            .collect();
+        let bytes =
+            super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::LPlus, 255).unwrap();
+        let decoded = super::sqv4::decode(&bytes).unwrap().samples;
+        let mut sound = sqv4_sound(SguVersion::V3, &bytes);
+        // 6000 Hz: one sample per call; loop to fragment 2 (sample 46).
+        sound.write_register(0x800, 0x17);
+        sound.write_register(0x801, 0x70);
+        let loop_addr = 256 + 16 + 2 * 11;
+        for (i, address) in (0x816..0x819).zip([
+            (loop_addr >> 16) as u8,
+            (loop_addr >> 8) as u8,
+            loop_addr as u8,
+        ]) {
+            sound.write_register(i, address);
+        }
+        sound.write_register(0x819, 0x03);
+        let played: Vec<i16> = (0..69 + 23).map(|_| sound.generate_sample(0)).collect();
+        assert_eq!(&played[..69], &decoded[..]);
+        assert_eq!(&played[69..], &decoded[46..]);
     }
 
     #[test]
@@ -1473,7 +1573,7 @@ mod tests {
         assert_eq!(decoded.samples, (1..=65).collect::<Vec<i16>>());
         let start = 128u32;
         let end = start + bytes.len() as u32;
-        let mut sound = S3w2Sound::new();
+        let mut sound = sqv4_sound(SguVersion::V2_1, &[]); // fixtures are SQV4 version 2
         for (offset, byte) in bytes.iter().copied().enumerate() {
             sound.write_pcm_ram(start + offset as u32, byte);
         }
@@ -1545,7 +1645,7 @@ mod tests {
         assert_eq!(decoded.variant, Sqv4Variant::LPlus);
         assert_eq!(decoded.samples, [12, 35, 75, 147, 275]);
         let start = 256u32;
-        let mut sound = S3w2Sound::new();
+        let mut sound = sqv4_sound(SguVersion::V2_1, &[]); // fixtures are SQV4 version 2
         for (offset, byte) in bytes.iter().copied().enumerate() {
             sound.write_pcm_ram(start + offset as u32, byte);
         }

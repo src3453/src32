@@ -28,7 +28,7 @@ const AGC_LOW: u32 = 0x1400;
 const AGC_RELEASE_TICKS: u32 = 9600;
 const VOX_HOLD_UNIT: u32 = 1024;
 const SQV4_HEADER: u32 = 16;
-const SQV4_FRAME_SAMPLES: u32 = 64;
+const SQV4_FRAME_SAMPLES: u32 = sqv4::FRAGMENT_SAMPLES as u32;
 const BASE_RATE: u32 = 48_000;
 const ADDR_MASK: u32 = 0xFF_FFFF;
 
@@ -65,7 +65,7 @@ impl Format {
 }
 
 fn frame_size(variant: Sqv4Variant) -> u32 {
-    1 + variant.payload_bytes() as u32
+    variant.fragment_size() as u32
 }
 
 fn magnitude(sample: i16) -> u32 {
@@ -78,7 +78,6 @@ fn sat16(value: i32) -> i16 {
 
 #[derive(Debug, Clone, Copy, Default)]
 struct PlaySqv4 {
-    version: u8,
     variant: Option<Sqv4Variant>,
     total: u32,
     index: u32,
@@ -122,12 +121,10 @@ pub struct RecChannel {
     quiet: u32,
     agc: u8,
     release: u32,
-    encoder: Sqv4State,
     count: u32,
-    /// SQV4 payload bits not yet written (LSB first), their count, and the next payload byte.
-    acc: u16,
-    nbits: u32,
-    wptr: u32,
+    /// SQV4 samples of the fragment being recorded; it is encoded and written
+    /// once complete, because its volume is the fragment's peak.
+    fragment: [i16; sqv4::FRAGMENT_SAMPLES],
 }
 
 /// One 34SI22 chip.
@@ -307,10 +304,7 @@ impl Si22 {
                 c.quiet = 0;
                 c.agc = c.gain;
                 c.release = 0;
-                c.encoder = Sqv4State::default();
                 c.count = 0;
-                c.acc = 0;
-                c.nbits = 0;
             }
             _ => {}
         }
@@ -396,7 +390,7 @@ impl Si22 {
                     }
                     let variant = Sqv4Variant::try_from(h[5]).ok();
                     if &h[..4] != b"SQV4"
-                        || (h[4] != 1 && h[4] != 2)
+                        || h[4] != sqv4::VERSION
                         || variant.is_none()
                         || h[6] != 1
                         || h[7] != 0
@@ -404,7 +398,6 @@ impl Si22 {
                         return Err(true);
                     }
                     c.sqv4 = PlaySqv4 {
-                        version: h[4],
                         variant,
                         total: u32::from_le_bytes([h[12], h[13], h[14], h[15]]),
                         ..PlaySqv4::default()
@@ -420,11 +413,13 @@ impl Si22 {
                     return Err(false);
                 }
                 if within == 0 {
+                    // Each fragment restarts the decoder from its own step index.
                     s.frame_volume = i32::from(rd(mem, frame_addr));
+                    s.state = Sqv4State::fragment_start(rd(mem, frame_addr + 1));
                 }
                 let bits = variant.bits() as u32;
                 let bit = within * bits;
-                let payload = frame_addr + 1;
+                let payload = frame_addr + sqv4::FRAGMENT_PREFIX as u32;
                 let lo = rd(mem, payload + bit / 8);
                 let hi = if (bit % 8) + bits > 8 {
                     rd(mem, payload + bit / 8 + 1)
@@ -433,9 +428,9 @@ impl Si22 {
                 };
                 let code =
                     (((u16::from(hi) << 8 | u16::from(lo)) >> (bit % 8)) & ((1 << bits) - 1)) as u8;
-                let reconstructed = sqv4::decode_code(s.version, variant, &mut s.state, code);
+                let reconstructed = sqv4::decode_code(sqv4::VERSION, variant, &mut s.state, code);
                 s.index += 1;
-                Ok((reconstructed * s.frame_volume / 255) as i16)
+                Ok(sqv4::apply_volume(reconstructed, s.frame_volume) as i16)
             }
         }
     }
@@ -522,28 +517,16 @@ impl Si22 {
                 c.addr += 2;
             }
             Format::Sqv4(variant) => {
-                // A frame's volume byte is written with its first sample, each payload byte
-                // as soon as its bits are complete (doc/spec_34SI22.md 6.3).
-                let fs = frame_size(variant);
-                if c.count % SQV4_FRAME_SAMPLES == 0 {
-                    if c.addr + fs > c.end {
-                        return false;
-                    }
-                    mem.write(c.addr & ADDR_MASK, 255);
-                    c.wptr = c.addr + 1;
+                // A fragment must fit before its first sample is taken; it is written
+                // whole after its last sample (doc/spec_34SI22.md 6.3).
+                let within = (c.count % SQV4_FRAME_SAMPLES) as usize;
+                if within == 0 && c.addr + frame_size(variant) > c.end {
+                    return false;
                 }
-                let code = sqv4::encode_code(variant, &mut c.encoder, i32::from(y));
-                c.acc |= u16::from(code) << c.nbits;
-                c.nbits += variant.bits() as u32;
-                if c.nbits >= 8 {
-                    mem.write(c.wptr & ADDR_MASK, c.acc as u8);
-                    c.wptr += 1;
-                    c.acc >>= 8;
-                    c.nbits -= 8;
-                }
+                c.fragment[within] = y;
                 c.count += 1;
-                if c.count % SQV4_FRAME_SAMPLES == 0 {
-                    c.addr += fs;
+                if within + 1 == sqv4::FRAGMENT_SAMPLES {
+                    Self::write_fragment(c, variant, sqv4::FRAGMENT_SAMPLES, mem);
                 }
             }
         }
@@ -556,34 +539,37 @@ impl Si22 {
         self.flags |= 0x40 << ch;
     }
 
-    /// End of a recording: flush the partial SQV4 frame and write the header.
+    /// Encode the buffered `count` samples as one fragment at `addr` and advance.
+    fn write_fragment(
+        c: &mut RecChannel,
+        variant: Sqv4Variant,
+        count: usize,
+        mem: &mut dyn Si22Memory,
+    ) {
+        let mut bytes = Vec::with_capacity(variant.fragment_size());
+        sqv4::encode_fragment(variant, &c.fragment[..count], &mut bytes);
+        for (i, byte) in bytes.iter().enumerate() {
+            mem.write((c.addr + i as u32) & ADDR_MASK, *byte);
+        }
+        c.addr += bytes.len() as u32;
+    }
+
+    /// End of a recording: write the partial SQV4 fragment and the header.
     fn rec_close(&mut self, ch: usize, mem: &mut dyn Si22Memory) {
         let c = &mut self.rec[ch];
         let Format::Sqv4(variant) = c.format else {
             return;
         };
-        if c.count % SQV4_FRAME_SAMPLES != 0 {
-            // pad the last frame with zero codes
-            if c.nbits > 0 {
-                mem.write(c.wptr & ADDR_MASK, c.acc as u8);
-                c.wptr += 1;
-                c.acc = 0;
-                c.nbits = 0;
-            }
-            while c.wptr < c.addr + frame_size(variant) {
-                mem.write(c.wptr & ADDR_MASK, 0);
-                c.wptr += 1;
-            }
+        let partial = (c.count % SQV4_FRAME_SAMPLES) as usize;
+        if partial != 0 {
+            // unused code slots and padding bits are zero
+            Self::write_fragment(c, variant, partial, mem);
         }
         if c.end < c.base + SQV4_HEADER {
             return;
         }
         let rate = BASE_RATE / (u32::from(c.div) + 1);
-        let mut header = [0u8; 16];
-        header[..4].copy_from_slice(b"SQV4");
-        header[4..8].copy_from_slice(&[2, variant as u8, 1, 0]);
-        header[8..12].copy_from_slice(&rate.to_le_bytes());
-        header[12..16].copy_from_slice(&c.count.to_le_bytes());
+        let header = sqv4::header_bytes(variant, 1, rate, c.count);
         for (i, byte) in header.iter().enumerate() {
             mem.write((c.base + i as u32) & ADDR_MASK, *byte);
         }
@@ -705,19 +691,23 @@ mod tests {
     }
 
     #[test]
-    fn sqv4_bytes_are_written_as_soon_as_they_are_complete() {
+    fn sqv4_fragment_is_written_after_its_last_sample() {
         let mut ram = Ram(vec![0xAA; 0x200]);
         let mut chip = Si22::new();
         set_addr(&mut chip, 0x13, 0x100, &mut ram);
-        chip.write_register(0x22, 3, &mut ram); // L: 3-bit codes
+        chip.write_register(0x22, 3, &mut ram); // L: 11-byte fragments
         chip.write_register(0x1C, 0x01, &mut ram);
-        chip.tick((3000, 0), &mut ram);
-        assert_eq!(ram.0[16], 255); // volume byte with the first sample
-        assert_eq!(ram.0[17], 0xAA); // 3 bits pending
-        chip.tick((6000, 0), &mut ram);
-        chip.tick((9000, 0), &mut ram);
-        assert_ne!(ram.0[17], 0xAA); // 9 bits: first payload byte written
-        assert_eq!(ram.0[18], 0xAA);
+        let input: Vec<i16> = (1..=23).map(|i| i * 300).collect();
+        for &x in &input[..22] {
+            chip.tick((x, 0), &mut ram);
+        }
+        assert!(ram.0[16..27].iter().all(|&b| b == 0xAA)); // still buffered
+        chip.tick((input[22], 0), &mut ram);
+        let mut expected = Vec::new();
+        sqv4::encode_fragment(Sqv4Variant::L, &input, &mut expected);
+        assert_eq!(&ram.0[16..27], &expected[..]);
+        assert_eq!(ram.0[16], sqv4::fragment_volume(&input));
+        assert_eq!(ram.0[27], 0xAA);
     }
 
     #[test]

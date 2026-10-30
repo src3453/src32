@@ -29,7 +29,7 @@ tags:
 ## 音声
 
 - [[doc/spec_SGU|SGU]] — 音源コアと PCM（v2.1: 2-tap 補間と FIFO DAC、`sgu.version` で v1/v2/v2.1 切替）
-- [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v1/v2 ファイル形式]]
+- [[doc/squeezvox/squeezvox4_spec_stub|SQV4 v3 ファイル形式]]
 - [[doc/squeezvox/README|SQV4 コンバーターの使い方]] / [[doc/ja/squeezvox/README|日本語版]]
 
 ## 拡張カード

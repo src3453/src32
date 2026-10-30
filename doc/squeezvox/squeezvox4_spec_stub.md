@@ -1,6 +1,10 @@
-# SqueezVOX 4 (SQV4) versions 1 and 2 specification
+# SqueezVOX 4 (SQV4) version 3 specification
 
-This document defines the normative version 1 and version 2 wire formats and predictor rules for SQV4H, SQV4L, and SQV4L+. Version 2 preserves version 1 decoding except for the L+ codebook, which is versioned because changing its reconstruction levels changes decoded PCM. New encoders MUST write version 2; decoders MUST support versions 1 and 2. Multi-byte integers are unsigned little-endian unless stated otherwise. PCM input and output are signed 16-bit little-endian interleaved samples. A decoder MUST reject malformed or non-canonical file lengths; encoders MUST emit exactly the format defined here.
+This document defines the normative SQV4 version 3 wire format, predictor rules, and encoder rules for the SQV4H, SQV4L, and SQV4L+ variants. Version 3 is a breaking change from versions 1 and 2: every channel fragment is normalized to full scale, carries its own initial step index, and decodes without any earlier fragment, so a decoder can join a stream at any fragment boundary. New encoders MUST write version 3. Versions 1 and 2 are summarized in [Appendix A](#appendix-a-versions-1-and-2) only for decoders that keep playing old files.
+
+Multi-byte integers are unsigned little-endian unless stated otherwise. PCM input and output are signed 16-bit interleaved samples. A decoder MUST reject malformed or non-canonical files as described below; encoders MUST emit exactly the format defined here.
+
+SQV4 version 3 belongs to the SGU v3 generation (`doc/spec_SGU.md` §8): the SGU v3 cores and the 34SI22 (`doc/spec_34SI22.md`) play version 3 only, and SGU v1, v2, and v2.1 play versions 1 and 2 only. The chip revision is unchanged.
 
 ## File format
 
@@ -9,7 +13,7 @@ The fixed header is 16 bytes:
 | Offset | Size | Meaning |
 | --- | ---: | --- |
 | 0 | 4 | ASCII `SQV4` |
-| 4 | 1 | Version: `1` or `2`; encoders MUST write `2` |
+| 4 | 1 | Version: `3` |
 | 5 | 1 | Variant: `0` = H, `1` = L, `2` = L+ |
 | 6 | 1 | Channel count: `1` mono or `2` stereo |
 | 7 | 1 | Reserved, MUST be zero |
@@ -18,57 +22,78 @@ The fixed header is 16 bytes:
 
 An empty stream has a zero sample count and consists of the header alone. The declared sample rate is metadata; decoding does not resample.
 
-The payload consists of time-ordered fragments. For each fragment, channels appear in ascending channel order. Each channel fragment is one unsigned volume byte followed by 64 packed codes. H uses 4-bit codes (32 payload bytes); L and L+ use 3-bit codes (24 payload bytes). Codes are packed least-significant-bit first: code bit 0 is the first bit in the stream, and samples are packed in ascending sample index. Unused code slots in the final fragment MUST be zero. A decoder emits only the declared per-channel sample count; padded slots do not contribute output.
+The payload consists of time-ordered fragments of 23 samples per channel. For each fragment, channels appear in ascending channel order. For `n` samples per channel there are `f = ceil(n/23)` fragments per channel (zero when `n = 0`); the last one holds `n - 23*(f-1)` samples.
 
-Each fragment volume is a linear gain in `[0,255]`. Decoding applies signed integer division toward zero: `output = reconstructed_predictor * volume / 255`. An encoder's `volume` argument is written unchanged to every channel fragment.
+## Channel fragment
 
-For `n` samples per channel, `f = ceil(n/64)` fragments per channel are present, including zero fragments when `n=0`. The exact file size is `16 + f * channel_count * (1 + payload_bytes_per_fragment)`, where payload size is 32 for H and 24 for L/L+. Arithmetic MUST be checked for overflow. A decoder MUST reject a short header, bad magic/version/variant/channel count/reserved byte, zero rate, truncated payload, or any trailing byte.
+| Offset | Size | Field |
+| --- | ---: | --- |
+| 0 | 1 | Volume: linear gain `0..255` |
+| 1 | 1 | Index: initial step index `0..88` |
+| 2 | 12 (H) / 9 (L, L+) | Codes: 23 packed codes |
 
-Each channel has an independent predictor and step index, initialized once at file start to predictor `0`, index `0`, then retained across all its fragments. Fragments carry no predictor state; random frame seek is not guaranteed. Stereo channel state is independent.
+H codes are 4 bits and L/L+ codes are 3 bits. Codes are packed least-significant-bit first: bit 0 of code 0 is bit 0 of the first code byte, and samples follow in ascending order. 23 codes occupy 92 bits (H) or 69 bits (L/L+), so the code area is padded to a whole byte with 4 (H) or 3 (L/L+) zero bits. A channel fragment is therefore 14 bytes for H and 11 bytes for L/L+.
 
-## Shared ADPCM state
+The exact file size is `16 + f * channel_count * fragment_size`. Arithmetic MUST be checked for overflow.
 
-After determining a code's signed difference `delta`, update `predictor = clamp(predictor + delta, -32768, 32767)`, then update `index = clamp(index + adjustment, 0, 88)`. The reconstructed sample for a code is the updated predictor. Encoder code selection evaluates this post-clamp reconstructed sample. The initial state and all state transitions apply identically to encoding and decoding.
+In the last fragment, code slots past the last sample MUST be zero; together with the byte padding, every bit after the last used code of a fragment is zero. A decoder emits only the declared per-channel sample count.
+
+## Decoding
+
+Each channel fragment decodes on its own. At the first code of a fragment the channel's state is set to predictor `0` and step index `Index`. Nothing carries over from the previous fragment, and stereo channels are independent.
+
+For each code in order, the decoder computes the variant's signed difference `delta` from the current step `s = STEPS[index]`, then updates `predictor = clamp(predictor + delta, -32768, 32767)` and `index = clamp(index + adjustment, 0, 88)`. The reconstructed value of the code is the updated predictor. The output sample is the reconstructed value scaled by the fragment volume, rounded to nearest with ties away from zero:
+
+`output = sign(p) * ((|p| + 127) / 255)`, where `p = reconstructed * volume` and `/` is integer division.
+
+A volume of `0` decodes to silence.
 
 ### SQV4H
 
-H is IMA ADPCM. Code bit 3 is sign (`1` means subtract); bits 0–2 are magnitude. Its 89-entry step table is:
+H is IMA ADPCM. Code bit 3 is sign (`1` means subtract); bits 0–2 are magnitude. The 89-entry step table `STEPS` is:
 
 `[7,8,9,10,11,12,13,14,16,17,19,21,23,25,28,31,34,37,41,45,50,55,60,66,73,80,88,97,107,118,130,143,157,173,190,209,230,253,279,307,337,371,408,449,494,544,598,658,724,796,876,963,1060,1166,1282,1411,1552,1707,1878,2066,2272,2499,2749,3024,3327,3660,4026,4428,4871,5358,5894,6484,7132,7845,8630,9493,10442,11487,12635,13899,15289,16818,18500,20350,22385,24623,27086,29794,32767]`
 
-For magnitude `m = code & 7` and current step `s`, `diff = (s >> 3) + ((m & 1) != 0 ? s >> 2 : 0) + ((m & 2) != 0 ? s >> 1 : 0) + ((m & 4) != 0 ? s : 0)`. The index adjustment indexed by the full code is `[-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8]`.
-
-The H encoder compares the absolute input-predictor difference with `s`, `s/2`, and `s/4` in that order; each threshold met sets magnitude bit 2, 1, or 0 respectively and subtracts that threshold from the remaining difference. The sign bit is set iff the input is below the current predictor.
+For magnitude `m = code & 7`, `diff = (s >> 3) + ((m & 1) != 0 ? s >> 2 : 0) + ((m & 2) != 0 ? s >> 1 : 0) + ((m & 4) != 0 ? s : 0)`. The index adjustment indexed by the full code is `[-1,-1,-1,-1,2,4,6,8,-1,-1,-1,-1,2,4,6,8]`.
 
 ### SQV4L
 
-L uses 3-bit codes: bit 2 is sign (`1` means subtract), bits 0–1 select magnitude. For magnitude `m` in `[0,3]`, the positive reconstruction level is `[(1*s+4)/8, (3*s+4)/8, (5*s+4)/8, (7*s+4)/8]`, using integer division. The sign negates this level. The magnitude-index adjustment is `[-1,2,4,6]`.
+L codes are 3 bits: bit 2 is sign (`1` means subtract), bits 0–1 select magnitude `m`. The positive difference is `(level[m]*s + 4) / 8` with integer division and levels `[1,3,5,7]`. The index adjustment indexed by `m` is `[-1,2,4,6]`.
 
 ### SQV4L+
 
-L+ uses the same 3-bit sign, magnitude, predictor update, and index adjustment as L. Its positive difference is `(level*s+4)/8`; code bit 2 negates the difference.
+L+ uses the L sign, magnitude, predictor update, and index adjustment with levels `[1,2,3,14]`. The levels are fixed; decoders MUST NOT optimize them at runtime.
 
-Version 1 uses codebook `[10,11,12,14]`. Version 2 uses codebook `[1,2,3,14]`. A decoder MUST select the codebook by the file version; an encoder MUST use the version 2 codebook and write version `2`. This preserves playback of existing version 1 L+ files while correcting version 2 audio quality.
+The levels were selected from all integer tuples `(a,b,c,d)` with `1 <= a < b < c < d <= 15`, excluding arithmetic progressions, by encoding and decoding six mono fixtures with a continuous predictor (reset per fixture, unit gain) and minimizing total squared error, ties lexicographically. The fixtures are: silence (1024 zero samples); impulse (1024 samples, sample 0 = 32767, sample 511 = -32768, others zero); sawtooth (`-32768 + (i mod 256)*256`, 1024 samples); ramp (`-32768 + floor(i*65535/1023)`, 1024 samples); square (`i mod 128 < 64 ? 24576 : -24576`, 1024 samples); and an 8192-sample tone repeating the 128-sample table `L_PLUS_BENCH_TONE` in `src/devices/sgu/sqv4.rs`. The winner `[1,2,3,14]` has total squared error `279448221728` over 13312 samples (test `l_plus_codebook_benchmark_is_reproducible`).
 
-Both codebooks are selected from all integer tuples `(a,b,c,d)` with `1 <= a < b < c < d <= 15`, excluding arithmetic progressions. For each tuple, encode then decode each fixture in sequence with predictor/index reset per fixture and volume 255; choose the tuple minimizing total squared error, ties lexicographically.
+## Encoding
 
-The version 1 benchmark uses five 1024-sample mono fixtures: silence (all zero); impulse (sample 0 = 32767, sample 511 = -32768, all others zero); sawtooth (`-32768 + (i mod 256)*256`); ramp (`-32768 + floor(i*65535/1023)`); square (`i mod 128 < 64 ? 24576 : -24576`). It selects `[10,11,12,14]` with total squared error `252189726976` over 5120 samples.
+The encoder processes each channel fragment independently from its own input samples `x[0..k)`, `1 <= k <= 23`. It is deterministic; the 34SI22 recorder and the file encoder produce identical bytes.
 
-The version 2 benchmark uses those five fixtures plus an 8192-sample tone fixture formed by repeating this 128-sample signed PCM table 64 times:
+1. **Volume.** With `peak = max |x[i]|` (`|-32768| = 32768`), `Volume = min(255, ceil(peak * 255 / 32767))`. A fragment of zeros has volume `0`; the encoder then writes index `0` and all-zero codes.
+2. **Normalization.** Each sample is scaled to the fragment's full scale: `n[i] = clamp(round(x[i] * 255 / Volume), -32768, 32767)`, rounding to nearest with ties away from zero. Quiet fragments are thereby quantized with the same relative precision as loud ones, which reduces the quantization error that a fixed gain would leave at low levels.
+3. **Code selection** for a given initial index, starting from predictor `0`:
+   - H compares the absolute difference between `n[i]` and the predictor with `s`, `s/2`, and `s/4` in that order; each threshold met sets magnitude bit 2, 1, or 0 and is subtracted from the remaining difference. The sign bit is set iff `n[i]` is below the predictor.
+   - L and L+ evaluate all eight codes, apply each difference to the predictor with 16-bit clamping, and select the code with the smallest absolute error to `n[i]`; ties select the numerically smallest code.
+   - The selected code updates predictor and index by the decoding rules before the next sample.
+4. **Index.** The encoder runs step 3 for every initial index `0..88` and keeps the one that minimizes `sum((x[i] - output[i])^2)`, with `output` computed by the decoding rules (volume applied). Ties select the smallest index.
 
-`[0,8926,15150,17259,15693,12291,9111,7209,6123,4321,355,-5996,-13304,-19056,-20923,-17999,-11314,-3305,3432,7423,8889,9316,10311,12445,14782,15391,12542,5883,-3121,-11761,-17368,-18600,-16000,-11529,-7368,-4690,-3121,-1188,2542,8320,14782,19516,20311,16387,8889,352,-6568,-10376,-11314,-10928,-10923,-11985,-13304,-13067,-9645,-2750,6123,14280,19111,19362,15693,10188,5150,1855,0,-1855,-5150,-10188,-15693,-19362,-19111,-14280,-6123,2750,9645,13067,13304,11985,10923,10928,11314,10376,6568,-352,-8889,-16387,-20311,-19516,-14782,-8320,-2542,1188,3121,4690,7368,11529,16000,18600,17368,11761,3121,-5883,-12542,-15391,-14782,-12445,-10311,-9316,-8889,-7423,-3432,3305,11314,17999,20923,19056,13304,5996,-355,-4321,-6123,-7209,-9111,-12291,-15693,-17259,-15150,-8926]`
+An encoder MAY apply a linear pre-gain to its input before step 1 (the reference `encode_interleaved` and `sqv4_convert` take `volume`: `x * volume / 255`, truncated toward zero); the pre-gain is not stored.
 
-The version 2 winner is `[1,2,3,14]`, with total squared error `279448221728` over 13312 samples. Codebook levels MUST remain fixed during encoding and decoding; decoders MUST NOT optimize them at runtime.
+## Validation
 
-## Encoder selection
+A decoder MUST reject: a short header; bad magic; an unsupported version; a variant other than 0–2; a channel count other than 1 or 2; a nonzero reserved byte; a zero sample rate; a file length other than the exact size (truncation or trailing bytes); an index byte above 88; and any nonzero bit after the last used code of a fragment.
 
-For L and L+, at each input sample the encoder evaluates every legal magnitude with both signs. It applies the candidate difference to the current predictor with 16-bit clamping, then selects the code minimizing absolute error to the input sample. Ties select the numerically smallest code. It emits the code and updates predictor and index using the normal state rules before processing the next sample. H uses the threshold quantizer specified above. Encoders write zero codes for final-fragment padding without advancing predictor/index for those nonexistent samples.
+A streaming decoder that consumes fragments before the whole file is available (the 34SI22) cannot validate ahead. It MUST still produce the decoding above for valid data; for an index byte above 88 it uses 88.
 
 ## Hardware playback container
 
-The S3W2 SQV4 waveform consumes a file placed wholly within PCM RAM. The start register points to the 16-byte file header; the end register is an exclusive byte address covering the complete file. Only mono files are accepted by this hardware playback path. The PCM sample-rate register continues to control playback cadence; the file's sample rate is metadata only. A loop address of zero or equal to start means restart at the file header. Any other loop address MUST point to the first byte of a channel fragment (the volume byte) after the header; it MUST NOT be interpreted as an independent seek state. Looping reconstructs from initial predictor/index state through the selected fragment. Invalid header, non-mono data, out-of-RAM bounds, incomplete file, or invalid loop boundary makes the channel inactive without reading out of bounds and produces silence.
+The S3W2 SQV4 waveform (SGU v3) consumes a version 3 file placed wholly within PCM RAM. The start register points to the 16-byte header; the end register is an exclusive byte address covering the complete file. Only mono files are accepted. The PCM sample-rate register controls playback cadence; the file's sample rate is metadata only. A loop address of zero or equal to start restarts at the first fragment. Any other loop address MUST point to the first byte (volume) of a channel fragment after the header; playback resumes there by decoding that fragment alone. An invalid file (any validation failure above), a file whose version does not match the SGU generation, non-mono data, out-of-RAM bounds, or an invalid loop boundary makes the channel inactive without reading out of bounds and produces silence.
 
 ## ImHex inspection pattern
 
-`tools/imhex/sqv4.hexpat` displays the v1/v2 header and variant-sized channel
-fragments. Packed ADPCM code bytes remain raw; the pattern does not decode them.
+`tools/imhex/sqv4.hexpat` displays the header and variant-sized channel fragments of versions 1–3. Packed ADPCM code bytes remain raw; the pattern does not decode them.
+
+## Appendix A: versions 1 and 2
+
+Versions 1 and 2 share the header above (version byte `1` or `2`). Their channel fragments hold 64 samples: one volume byte followed by 64 codes packed as above (32 bytes for H, 24 for L/L+), with no index byte and no padding inside a full fragment. Each channel's predictor and index start at `0` once at file start and carry across all fragments, so a fragment cannot be decoded alone. The output is `reconstructed * volume / 255` truncated toward zero, and encoders wrote the volume argument unchanged into every fragment (no normalization). The H and L rules are those above; L+ uses levels `[10,11,12,14]` in version 1 and `[1,2,3,14]` in version 2. Unused code slots of the last fragment are zero. A version 1/2 loop address points to a fragment's volume byte and is reached by decoding from the file start.
