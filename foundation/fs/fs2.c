@@ -145,6 +145,7 @@ static fnd_status sec_write(fs2_vol *v, uint32_t lba, const uint8_t *buf) {
             c->valid = 0;
         return st;
     }
+    v->tx_writes++;
     if (!c)
         c = cache_line(v, lba);
     fs_copy(c->data, buf, FS2_BLOCK);
@@ -176,9 +177,43 @@ static fnd_status begin_change(fs2_vol *v) {
         return st;
     fs_put16(sb + 6, fs_be16(sb + 6) | FS2_SB_DIRTY);
     st = sec_write(v, 1, sb);
-    if (st == FND_OK)
+    if (st == FND_OK) {
         v->dirty = 1;
+        v->tx_writes = 0; /* the flag itself is not a change to the volume */
+    }
     return st;
+}
+
+/* Writes DIRTY = 0, the last write of a transaction (§9.1). */
+static fnd_status clear_dirty(fs2_vol *v) {
+    uint8_t sb[FS2_BLOCK] FS_ALIGNED;
+    fnd_status st = sec_read(v, 1, sb);
+    if (st == FND_OK) {
+        fs_put16(sb + 6, fs_be16(sb + 6) & ~FS2_SB_DIRTY);
+        st = sec_write(v, 1, sb);
+    }
+    if (st == FND_OK)
+        v->dirty = 0;
+    return st;
+}
+
+/* Ends one public update operation = one transaction. Every sector is
+ * written through before the call returns, so on success the volume is
+ * consistent and DIRTY goes back to 0. An operation that failed after
+ * writing something may have left the volume half updated: DIRTY stays,
+ * and so does every later operation's (suspect). A failure before the first
+ * write changed nothing and is safe to close. After an I/O error nothing
+ * more is written (failed). */
+static fnd_status end_change(fs2_vol *v, fnd_status st) {
+    if (!v->dirty || v->failed)
+        return st;
+    if (st != FND_OK && v->tx_writes)
+        v->suspect = 1;
+    v->tx_writes = 0;
+    if (v->suspect)
+        return st;
+    fnd_status c = clear_dirty(v);
+    return st != FND_OK ? st : c;
 }
 
 /* ---- bitmap ----------------------------------------------------------- */
@@ -519,7 +554,7 @@ static fnd_status file_write(fs2_vol *v, uint32_t ino, fs2_inode *n, uint64_t of
     return inode_write(v, ino, n);
 }
 
-fnd_status fs2_write(fs2_vol *v, uint32_t ino, uint64_t off, const void *buf, uint32_t len, fs_time now) {
+static fnd_status fs2_write_tx(fs2_vol *v, uint32_t ino, uint64_t off, const void *buf, uint32_t len, fs_time now) {
     fs2_inode n;
     fnd_status st = fs2_inode_read(v, ino, &n);
     if (st != FND_OK)
@@ -529,6 +564,10 @@ fnd_status fs2_write(fs2_vol *v, uint32_t ino, uint64_t off, const void *buf, ui
     if (len == 0)
         return FND_OK;
     return file_write(v, ino, &n, off, (const uint8_t *)buf, len, now);
+}
+
+fnd_status fs2_write(fs2_vol *v, uint32_t ino, uint64_t off, const void *buf, uint32_t len, fs_time now) {
+    return end_change(v, fs2_write_tx(v, ino, off, buf, len, now));
 }
 
 static fnd_status file_truncate(fs2_vol *v, uint32_t ino, fs2_inode *n, uint64_t size, fs_time now) {
@@ -579,7 +618,7 @@ static fnd_status file_truncate(fs2_vol *v, uint32_t ino, fs2_inode *n, uint64_t
     return st;
 }
 
-fnd_status fs2_truncate(fs2_vol *v, uint32_t ino, uint64_t size, fs_time now) {
+static fnd_status fs2_truncate_tx(fs2_vol *v, uint32_t ino, uint64_t size, fs_time now) {
     fs2_inode n;
     fnd_status st = fs2_inode_read(v, ino, &n);
     if (st != FND_OK)
@@ -589,6 +628,10 @@ fnd_status fs2_truncate(fs2_vol *v, uint32_t ino, uint64_t size, fs_time now) {
     if (size == n.size)
         return FND_OK;
     return file_truncate(v, ino, &n, size, now);
+}
+
+fnd_status fs2_truncate(fs2_vol *v, uint32_t ino, uint64_t size, fs_time now) {
+    return end_change(v, fs2_truncate_tx(v, ino, size, now));
 }
 
 /* ---- directories ------------------------------------------------------ */
@@ -769,7 +812,7 @@ static fnd_status dirent_write(fs2_vol *v, uint32_t dir, uint32_t slot, uint32_t
     return file_write(v, dir, &n, (uint64_t)slot * FS2_DIRENT, e, FS2_DIRENT, now);
 }
 
-fnd_status fs2_create(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t type,
+static fnd_status fs2_create_tx(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t type,
                       uint32_t mode, uint32_t uid, fs_time now, uint32_t *ino) {
     fs2_dirent d;
     uint32_t slot, chars, num = 0;
@@ -825,7 +868,12 @@ fnd_status fs2_create(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t le
     return FND_OK;
 }
 
-fnd_status fs2_remove(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t want_dir,
+fnd_status fs2_create(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t type,
+                      uint32_t mode, uint32_t uid, fs_time now, uint32_t *ino) {
+    return end_change(v, fs2_create_tx(v, dir, name, len, type, mode, uid, now, ino));
+}
+
+static fnd_status fs2_remove_tx(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t want_dir,
                       fs_time now) {
     fs2_dirent d;
     fs2_inode n;
@@ -862,6 +910,11 @@ fnd_status fs2_remove(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t le
     return chain_free_from(v, n.first, n.count);
 }
 
+fnd_status fs2_remove(fs2_vol *v, uint32_t dir, const uint8_t *name, uint32_t len, uint32_t want_dir,
+                      fs_time now) {
+    return end_change(v, fs2_remove_tx(v, dir, name, len, want_dir, now));
+}
+
 fnd_status fs2_is_under(fs2_vol *v, uint32_t ino, uint32_t anc, uint32_t *result) {
     for (uint32_t steps = 0; steps <= v->inode_count; ++steps) {
         if (ino == anc) {
@@ -880,7 +933,7 @@ fnd_status fs2_is_under(fs2_vol *v, uint32_t ino, uint32_t anc, uint32_t *result
     return FND_OK;
 }
 
-fnd_status fs2_rename(fs2_vol *v, uint32_t src_dir, const uint8_t *src, uint32_t src_len, uint32_t dst_dir,
+static fnd_status fs2_rename_tx(fs2_vol *v, uint32_t src_dir, const uint8_t *src, uint32_t src_len, uint32_t dst_dir,
                       const uint8_t *dst, uint32_t dst_len, fs_time now) {
     fs2_dirent from, to;
     fs2_inode n;
@@ -935,7 +988,12 @@ fnd_status fs2_rename(fs2_vol *v, uint32_t src_dir, const uint8_t *src, uint32_t
     return st;
 }
 
-fnd_status fs2_set_owner(fs2_vol *v, uint32_t ino, uint32_t set_mode, uint32_t mode, uint32_t set_uid,
+fnd_status fs2_rename(fs2_vol *v, uint32_t src_dir, const uint8_t *src, uint32_t src_len, uint32_t dst_dir,
+                      const uint8_t *dst, uint32_t dst_len, fs_time now) {
+    return end_change(v, fs2_rename_tx(v, src_dir, src, src_len, dst_dir, dst, dst_len, now));
+}
+
+static fnd_status fs2_set_owner_tx(fs2_vol *v, uint32_t ino, uint32_t set_mode, uint32_t mode, uint32_t set_uid,
                          uint32_t uid, fs_time now) {
     fs2_inode n;
     fnd_status st = fs2_inode_read(v, ino, &n);
@@ -954,6 +1012,11 @@ fnd_status fs2_set_owner(fs2_vol *v, uint32_t ino, uint32_t set_mode, uint32_t m
         n.uid = uid;
     touch(&n, now, 0);
     return inode_write(v, ino, &n);
+}
+
+fnd_status fs2_set_owner(fs2_vol *v, uint32_t ino, uint32_t set_mode, uint32_t mode, uint32_t set_uid,
+                         uint32_t uid, fs_time now) {
+    return end_change(v, fs2_set_owner_tx(v, ino, set_mode, mode, set_uid, uid, now));
 }
 
 fnd_status fs2_sync(fs2_vol *v) {
@@ -1321,16 +1384,8 @@ fnd_status fs2_mount(fs2_vol *v, fs_dev *dev, uint32_t writable) {
 
 fnd_status fs2_unmount(fs2_vol *v) {
     fnd_status st = FND_OK;
-    if (v->dirty && !v->failed) {
-        uint8_t sb[FS2_BLOCK] FS_ALIGNED;
-        st = sec_read(v, 1, sb);
-        if (st == FND_OK) {
-            fs_put16(sb + 6, fs_be16(sb + 6) & ~FS2_SB_DIRTY);
-            st = sec_write(v, 1, sb);
-        }
-        if (st == FND_OK)
-            v->dirty = 0;
-    }
+    if (v->dirty && !v->failed)
+        st = clear_dirty(v);
     if (st == FND_OK)
         vol_release(v);
     return st;

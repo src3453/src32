@@ -692,9 +692,11 @@ int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name_addr) {
     if (status != FND_OK)
         return status;
 #ifdef FND_PLATFORM_TANG
-    /* The Tang SoC has two SGUs and a small PCM RAM (BMC PCMRAM_SIZE); everything else here is absent. */
+    /* The Tang SoC has the INDEX8 bitmap VDP, two SGUs and a small PCM RAM (BMC PCMRAM_SIZE);
+     * the SGC, TRNG and PRNG are absent. */
+    if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
     if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
-    if (name_equal(name, "dev.fb0") || name_equal(name, "dev.sgc") ||
+    if (name_equal(name, "dev.sgc") ||
         name_equal(name, "dev.trng") || name_equal(name, "dev.prng")) return FND_E_UNSUPPORTED;
 #else
     if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);

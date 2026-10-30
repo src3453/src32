@@ -67,6 +67,8 @@ typedef struct {
     uint32_t writable; /* mounted read-write */
     uint32_t dirty;    /* DIRTY=1 is on the media */
     uint32_t failed;   /* an I/O error stopped new updates (§9.1) */
+    uint32_t suspect;  /* an operation failed after changing the media: keep DIRTY */
+    uint32_t tx_writes; /* sectors written by the running operation after DIRTY was set */
     uint32_t flags;    /* superblock flags as read */
     uint32_t total_blocks, boot_blocks, boot_size;
     uint32_t bitmap_start, bitmap_blocks;

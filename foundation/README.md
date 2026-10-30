@@ -30,7 +30,8 @@ FS2 イメージは既定の 8 MiB で、最大 16 MiB です。
   RTL も `SRC32_SEPARATE_SDRAM=1` でビルドする必要があります。
   SDRAM1 の実機読み戻しは未解決なので、既定の分割構成を使ってください。
 - Extension V は既存どおり CPUID で自動選択します。`FND_MM=nommu` も使用できます。
-- 画面・乱数デバイス（`/dev/fb0`、`/dev/sgc`、`/dev/trng`、`/dev/prng`）は `FND_E_UNSUPPORTED` を返します。
+- `/dev/fb0` は使えます（INDEX8 320×240 とCLUTのみ。`FB_SET_FORMAT` のRGB555/RGB888は `FND_E_NO_MEDIA`）。
+  `/dev/sgc`、`/dev/trng`、`/dev/prng` は `FND_E_UNSUPPORTED` を返します（SGC RTLは未統合）。
   `/dev/sgu`（SGU 2基）と `sgubplay` は使えます。PCMRAM容量はBMC `PCMRAM_SIZE`で取得し、
   現行SDRAM X2構成では1 MiBです。
   それを超えるアドレスの書き込みは無視され、読み出しは0です。

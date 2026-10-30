@@ -83,6 +83,10 @@ int32_t fb_call(struct fnd_proc *proc, const fnd_msg *m, fnd_msg *r, uint32_t ca
     case FND_FB_SET_FORMAT:
         if (!(access_flags & FND_OPEN_WRITE)) return FND_E_ACCESS;
         if (m->a0 > FND_FB_RGB888) return FND_E_BAD_ARG;
+#ifdef FND_PLATFORM_TANG
+        /* The Tang bitmap VDP is INDEX8 only: a nonzero BITMAP_FORMAT sets an error and stays 0. */
+        if (m->a0 != FND_FB_INDEX8) return FND_E_NO_MEDIA;
+#endif
         if (bmc_vram_bytes() < bases[m->a0] + 320u * 240u * (m->a0 + 1u)) return FND_E_NO_MEDIA;
         format = m->a0;
         position = 0;

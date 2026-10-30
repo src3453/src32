@@ -530,13 +530,17 @@ class VolumeTests(FsTestBase):
     def sb_flags(self, mnt=ROOT_MNT):
         return be(self.image_bytes(mnt), 512 + 6, 2)
 
-    def test_dirty_set_on_first_change_and_cleared_on_unmount(self):
+    def test_dirty_is_cleared_when_each_update_completes(self):
         fs = self.fs
         image = fs.boot_disk()
         fs.list("/")
         self.assertEqual(self.sb_flags(), 0)  # reading leaves the volume clean
         fs.put("/x", b"1")
-        self.assertEqual(self.sb_flags(), 1)
+        self.assertEqual(self.sb_flags(), 0)  # a finished update closes its transaction
+        fs.ok(SESSION, FS_CHMOD, 0x24, data="/x")
+        self.assertEqual(self.sb_flags(), 0)
+        fs.ok(SESSION, FS_UNLINK, data="/x")
+        self.assertEqual(self.sb_flags(), 0)
         self.assertEqual(s32(fs.lib.host_unmount(ROOT_MNT) & 0xFFFFFFFF), 0)
         self.assertEqual(self.sb_flags(), 0)
         image[512 + 7] = 1
@@ -765,8 +769,8 @@ class Fs2ToolTests(FsTestBase):
         fs.lib.host_gone(h)
         fs.ok(SESSION, FS_CHMOD, 0x24, data="/etc/profile.fsh")
         fs.ok(SESSION, FS_CHOWN, 1000, data="/home/ユーザー")
-        self.assertEqual(be(bytes(img), 512 + 6, 2), 1)
-        self.assertEqual(fs2tool.check_image(img, allow_dirty=True), [])
+        self.assertEqual(be(bytes(img), 512 + 6, 2), 0)
+        self.assertEqual(fs2tool.check_image(img), [])
         self.assertEqual(s32(fs.lib.host_unmount(ROOT_MNT) & 0xFFFFFFFF), 0)
         self.assertEqual(fs2tool.check_image(img), [])
         vol = fs2tool.Volume(img)
