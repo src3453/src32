@@ -14,9 +14,9 @@ use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
 
 /// Register window of the chip (6-bit address).
 pub const SI22_REG_COUNT: u32 = 0x40;
-/// Playback volume, Q15, 4 dB per step, 15 = 0 dB, 0 = mute.
+/// Playback volume, Q15, 2.5 dB per step, 15 = 0 dB, 1 = -35 dB, 0 = mute.
 pub const VOL_LUT: [i32; 16] = [
-    0, 52, 82, 130, 207, 328, 519, 823, 1305, 2068, 3277, 5193, 8231, 13045, 20675, 32768,
+    0, 583, 777, 1036, 1382, 1843, 2457, 3277, 4370, 5827, 7771, 10362, 13818, 18427, 24573, 32768,
 ];
 /// Record gain, Q8, 4 dB per step, 0 = 0 dB, 15 = +60 dB.
 pub const GAIN_LUT: [i32; 16] = [
@@ -658,7 +658,7 @@ mod tests {
         chip.write_register(0x0D, 0x0E, &mut ram);
         chip.write_register(0x0C, 0x01, &mut ram);
         let (l, r) = chip.tick((0, 0), &mut ram);
-        let y = ((0x7F00 * 20675) >> 15) as i16;
+        let y = ((0x7F00 * 24573) >> 15) as i16;
         assert_eq!((l, r), (y, y));
         chip.write_register(0x0D, 0, &mut ram);
         assert_eq!(chip.tick((0, 0), &mut ram), (0, 0));
