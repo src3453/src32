@@ -10,7 +10,7 @@
 |---|---|
 | 再生部 | 2 チャンネル（PLAY A／B）。PCM8／PCM16／SQV4 デコーダ、16 段音量（2.5 dB/段、0 は消音）、ステレオミキサー（L/R 個別の出力禁止） |
 | 録音部 | 2 チャンネル（REC A／B）。ADC L→REC A、ADC R→REC B。16 段ゲイン（4 dB/段）、AGC、VOX（自動開始／停止）、PCM8／PCM16／SQV4 エンコーダ |
-| 標本化 | 基準 48 kHz、チャンネルごとの分周 `DIV`（0～255、`48 kHz / (DIV+1)`、48 kHz～187.5 Hz） |
+| 標本化 | 基準 48 kHz、チャンネルごとの分周 `DIV`（0～15、`48 kHz / (DIV+1)`、48 kHz～3 kHz） |
 | ADC／DAC | 16 ビット符号付き 2ch。RTL ではデジタルポート（アナログ部は外部） |
 | メモリインターフェース | アドレス 24 ビット（バイト単位）、データ 8 または 16 ビット |
 | ホストインターフェース | 8 ビットデータ、6 ビットアドレスのレジスタバス |
@@ -42,16 +42,16 @@
 | `0x09`～`0x0B` | PLAY_B_STOP | 再生 B 終了アドレス |
 | `0x0C` | PLAY_CTRL | bit0-1: A の CTRL/STATUS、bit2-3: B の CTRL/STATUS、bit4: A_L_DISABLE、bit5: A_R_DISABLE、bit6: B_L_DISABLE、bit7: B_R_DISABLE |
 | `0x0D` | PLAY_VOL | bit0-3: A の音量、bit4-7: B の音量 |
-| `0x0E` | PLAY_A_DIV | 再生 A 分周 |
-| `0x0F` | PLAY_B_DIV | 再生 B 分周 |
+| `0x0E` | PLAY_A_DIV | 再生 A 分周（bit0-3、0～15）。bit4-7 は予約（読み出し 0、書き込み無視） |
+| `0x0F` | PLAY_B_DIV | 再生 B 分周（bit0-3、0～15）。bit4-7 は予約（読み出し 0、書き込み無視） |
 | `0x10`～`0x12` | REC_A_START | 録音 A 開始アドレス |
 | `0x13`～`0x15` | REC_A_STOP | 録音 A 終了アドレス（含まない） |
 | `0x16`～`0x18` | REC_B_START | 録音 B 開始アドレス |
 | `0x19`～`0x1B` | REC_B_STOP | 録音 B 終了アドレス |
 | `0x1C` | REC_CTRL | bit0-1: A の CTRL/STATUS、bit2-3: B の CTRL/STATUS、bit4-7: 予約（読み出し 0） |
 | `0x1D` | REC_GAIN | bit0-3: A のゲイン、bit4-7: B のゲイン |
-| `0x1E` | REC_A_DIV | 録音 A 分周 |
-| `0x1F` | REC_B_DIV | 録音 B 分周 |
+| `0x1E` | REC_A_DIV | 録音 A 分周（bit0-3、0～15）。bit4-7 は予約（読み出し 0、書き込み無視） |
+| `0x1F` | REC_B_DIV | 録音 B 分周（bit0-3、0～15）。bit4-7 は予約（読み出し 0、書き込み無視） |
 | `0x20` | STATUS_CTRL | §3.2 |
 | `0x21` | PLAY_FORMAT | bit0-2: A の形式、bit4-6: B の形式（§4） |
 | `0x22` | REC_FORMAT | bit0-2: A の形式、bit4-6: B の形式 |
