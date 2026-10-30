@@ -22,7 +22,7 @@ The fixed header is 16 bytes:
 
 An empty stream has a zero sample count and consists of the header alone. The declared sample rate is metadata; decoding does not resample.
 
-The payload consists of time-ordered fragments of 23 samples per channel. For each fragment, channels appear in ascending channel order. For `n` samples per channel there are `f = ceil(n/23)` fragments per channel (zero when `n = 0`); the last one holds `n - 23*(f-1)` samples.
+The payload consists of time-ordered fragments of 63 samples per channel. For each fragment, channels appear in ascending channel order. For `n` samples per channel there are `f = ceil(n/63)` fragments per channel (zero when `n = 0`); the last one holds `n - 63*(f-1)` samples.
 
 ## Channel fragment
 
@@ -30,9 +30,11 @@ The payload consists of time-ordered fragments of 23 samples per channel. For ea
 | --- | ---: | --- |
 | 0 | 1 | Volume: linear gain `0..255` |
 | 1 | 1 | Index: initial step index `0..88` |
-| 2 | 12 (H) / 9 (L, L+) | Codes: 23 packed codes |
+| 2 | 32 (H) / 24 (L, L+) | Codes: 63 packed codes |
 
-H codes are 4 bits and L/L+ codes are 3 bits. Codes are packed least-significant-bit first: bit 0 of code 0 is bit 0 of the first code byte, and samples follow in ascending order. 23 codes occupy 92 bits (H) or 69 bits (L/L+), so the code area is padded to a whole byte with 4 (H) or 3 (L/L+) zero bits. A channel fragment is therefore 14 bytes for H and 11 bytes for L/L+.
+H codes are 4 bits and L/L+ codes are 3 bits. Codes are packed least-significant-bit first: bit 0 of code 0 is bit 0 of the first code byte, and samples follow in ascending order. 63 codes occupy 252 bits (H) or 189 bits (L/L+), so the code area is padded to a whole byte with 4 (H) or 3 (L/L+) zero bits. A channel fragment is therefore 34 bytes for H and 26 bytes for L/L+.
+
+The Index field is the ADPCM step index, not a sample value. The predictor (sample value) of every fragment starts at `0` and is not stored, so the 63 codes produce the fragment's 63 output samples; there is no separate initial sample.
 
 The exact file size is `16 + f * channel_count * fragment_size`. Arithmetic MUST be checked for overflow.
 
@@ -68,7 +70,7 @@ The levels were selected from all integer tuples `(a,b,c,d)` with `1 <= a < b < 
 
 ## Encoding
 
-The encoder processes each channel fragment independently from its own input samples `x[0..k)`, `1 <= k <= 23`. It is deterministic; the 34SI22 recorder and the file encoder produce identical bytes.
+The encoder processes each channel fragment independently from its own input samples `x[0..k)`, `1 <= k <= 63`. It is deterministic; the 34SI22 recorder and the file encoder produce identical bytes.
 
 1. **Volume.** With `peak = max |x[i]|` (`|-32768| = 32768`), `Volume = min(255, ceil(peak * 255 / 32767))`. A fragment of zeros has volume `0`; the encoder then writes index `0` and all-zero codes.
 2. **Normalization.** Each sample is scaled to the fragment's full scale: `n[i] = clamp(round(x[i] * 255 / Volume), -32768, 32767)`, rounding to nearest with ties away from zero. Quiet fragments are thereby quantized with the same relative precision as loud ones, which reduces the quantization error that a fixed gain would leave at low levels.

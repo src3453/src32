@@ -172,7 +172,7 @@ pub struct Channel {
     pub pcm_loop_addr: u32,
     pub pcm_control: u8,
 
-    // SQV4 decode state. SGU v3 plays version 3 files, whose fragments (23
+    // SQV4 decode state. SGU v3 plays version 3 files, whose fragments (63
     // samples) decode independently; v1/v2/v2.1 play version 1/2 files, whose
     // 64-sample fragments are decoded in order with carried predictor state.
     sqv4_validated: bool,
@@ -1346,17 +1346,17 @@ mod tests {
 
     #[test]
     fn sqv4_v3_loop_starts_at_an_independent_fragment() {
-        let pcm: Vec<i16> = (0..69)
+        let pcm: Vec<i16> = (0..189)
             .map(|i| ((i * 2311) % 30000 - 15000) as i16)
             .collect();
         let bytes =
             super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::LPlus, 255).unwrap();
         let decoded = super::sqv4::decode(&bytes).unwrap().samples;
         let mut sound = sqv4_sound(SguVersion::V3, &bytes);
-        // 6000 Hz: one sample per call; loop to fragment 2 (sample 46).
+        // 6000 Hz: one sample per call; loop to fragment 2 (sample 126).
         sound.write_register(0x800, 0x17);
         sound.write_register(0x801, 0x70);
-        let loop_addr = 256 + 16 + 2 * 11;
+        let loop_addr = 256 + 16 + 2 * 26;
         for (i, address) in (0x816..0x819).zip([
             (loop_addr >> 16) as u8,
             (loop_addr >> 8) as u8,
@@ -1365,9 +1365,9 @@ mod tests {
             sound.write_register(i, address);
         }
         sound.write_register(0x819, 0x03);
-        let played: Vec<i16> = (0..69 + 23).map(|_| sound.generate_sample(0)).collect();
-        assert_eq!(&played[..69], &decoded[..]);
-        assert_eq!(&played[69..], &decoded[46..]);
+        let played: Vec<i16> = (0..189 + 63).map(|_| sound.generate_sample(0)).collect();
+        assert_eq!(&played[..189], &decoded[..]);
+        assert_eq!(&played[189..], &decoded[126..]);
     }
 
     #[test]

@@ -26,11 +26,11 @@ struct SQV4Header {
 
 SQV4Header header @ 0x00;
 
-// v3: 23 samples per fragment, each normalized and decodable on its own.
+// v3: 63 samples per fragment, each normalized and decodable on its own.
 // v1/v2: 64 samples per fragment, predictor state carried through the file.
 fn samples_per_fragment() {
     if (header.version == 3)
-        return 23;
+        return 63;
     return 64;
 };
 
@@ -38,12 +38,12 @@ struct SQV4ChannelFragment {
     u8 volume;
 
     if (header.version == 3) {
-        // Initial step index 0..88, then 23 codes padded with zero bits to a byte.
+        // Initial step index 0..88, then 63 codes padded with zero bits to a byte.
         u8 step_index;
         if (header.variant == SQV4Variant::H) {
-            u8 packed_codes_h[12];
+            u8 packed_codes_h[32];
         } else {
-            u8 packed_codes_l_or_lplus[9];
+            u8 packed_codes_l_or_lplus[24];
         }
     } else {
         // 64 codes: 32 H or 24 L/L+ bytes.

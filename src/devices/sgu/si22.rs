@@ -124,7 +124,7 @@ pub struct RecChannel {
     count: u32,
     /// SQV4 samples of the fragment being recorded; it is encoded and written
     /// once complete, because its volume is the fragment's peak.
-    fragment: [i16; sqv4::FRAGMENT_SAMPLES],
+    fragment: Vec<i16>,
 }
 
 /// One 34SI22 chip.
@@ -523,7 +523,10 @@ impl Si22 {
                 if within == 0 && c.addr + frame_size(variant) > c.end {
                     return false;
                 }
-                c.fragment[within] = y;
+                if within == 0 {
+                    c.fragment.clear();
+                }
+                c.fragment.push(y);
                 c.count += 1;
                 if within + 1 == sqv4::FRAGMENT_SAMPLES {
                     Self::write_fragment(c, variant, sqv4::FRAGMENT_SAMPLES, mem);
@@ -695,19 +698,19 @@ mod tests {
         let mut ram = Ram(vec![0xAA; 0x200]);
         let mut chip = Si22::new();
         set_addr(&mut chip, 0x13, 0x100, &mut ram);
-        chip.write_register(0x22, 3, &mut ram); // L: 11-byte fragments
+        chip.write_register(0x22, 3, &mut ram); // L: 26-byte fragments
         chip.write_register(0x1C, 0x01, &mut ram);
-        let input: Vec<i16> = (1..=23).map(|i| i * 300).collect();
-        for &x in &input[..22] {
+        let input: Vec<i16> = (1..=63).map(|i| i * 300).collect();
+        for &x in &input[..62] {
             chip.tick((x, 0), &mut ram);
         }
-        assert!(ram.0[16..27].iter().all(|&b| b == 0xAA)); // still buffered
-        chip.tick((input[22], 0), &mut ram);
+        assert!(ram.0[16..42].iter().all(|&b| b == 0xAA)); // still buffered
+        chip.tick((input[62], 0), &mut ram);
         let mut expected = Vec::new();
         sqv4::encode_fragment(Sqv4Variant::L, &input, &mut expected);
-        assert_eq!(&ram.0[16..27], &expected[..]);
+        assert_eq!(&ram.0[16..42], &expected[..]);
         assert_eq!(ram.0[16], sqv4::fragment_volume(&input));
-        assert_eq!(ram.0[27], 0xAA);
+        assert_eq!(ram.0[42], 0xAA);
     }
 
     #[test]

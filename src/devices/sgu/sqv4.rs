@@ -13,7 +13,7 @@ const HEADER_SIZE: usize = 16;
 /// The version every encoder writes.
 pub(crate) const VERSION: u8 = 3;
 /// Samples per version 3 channel fragment.
-pub(crate) const FRAGMENT_SAMPLES: usize = 23;
+pub(crate) const FRAGMENT_SAMPLES: usize = 63;
 /// Version 3 volume byte and step-index byte that precede the packed codes.
 pub(crate) const FRAGMENT_PREFIX: usize = 2;
 /// Samples per version 1/2 channel fragment.
@@ -58,12 +58,12 @@ impl Variant {
         if self == Self::H { 4 } else { 3 }
     }
 
-    /// Version 3 packed code bytes: 23 codes rounded up to whole bytes (H 12, L/L+ 9).
+    /// Version 3 packed code bytes: 63 codes rounded up to whole bytes (H 32, L/L+ 24).
     pub(crate) fn payload_bytes(self) -> usize {
         (FRAGMENT_SAMPLES * self.bits()).div_ceil(8)
     }
 
-    /// Version 3 channel fragment: volume, step index, packed codes (H 14, L/L+ 11).
+    /// Version 3 channel fragment: volume, step index, packed codes (H 34, L/L+ 26).
     pub(crate) fn fragment_size(self) -> usize {
         FRAGMENT_PREFIX + self.payload_bytes()
     }
@@ -131,7 +131,7 @@ pub(crate) struct Header {
     pub(crate) channels: u8,
     pub(crate) sample_rate: u32,
     pub(crate) samples_per_channel: usize,
-    /// Samples per channel fragment: 23 for version 3, 64 for versions 1/2.
+    /// Samples per channel fragment: 63 for version 3, 64 for versions 1/2.
     pub(crate) frame_samples: usize,
     pub(crate) frame_count: usize,
     pub(crate) frame_size: usize,
@@ -218,7 +218,7 @@ fn normalize(sample: i16, volume: u8) -> i32 {
     (if numerator < 0 { -rounded } else { rounded }).clamp(i16::MIN as i32, i16::MAX as i32)
 }
 
-/// Encode 1..=23 samples of one channel as a complete version 3 fragment
+/// Encode 1..=63 samples of one channel as a complete version 3 fragment
 /// appended to `output`.
 pub(crate) fn encode_fragment(variant: Variant, samples: &[i16], output: &mut Vec<u8>) {
     encode_fragment_with_volume(variant, samples, fragment_volume(samples), output);
@@ -260,7 +260,7 @@ fn encode_fragment_with_volume(
     }
     output.push(volume);
     output.push(best_index);
-    let mut packed = [0u8; 12];
+    let mut packed = [0u8; 32];
     for (within, &code) in codes[..samples.len()].iter().enumerate() {
         pack_code(&mut packed, within, variant.bits(), code);
     }
@@ -418,7 +418,7 @@ pub(crate) fn decode_legacy_fragment(
     }
 }
 
-fn pack_code(output: &mut [u8; 12], sample: usize, bits: usize, code: u8) {
+fn pack_code(output: &mut [u8; 32], sample: usize, bits: usize, code: u8) {
     let bit_offset = sample * bits;
     for bit in 0..bits {
         if (code & (1 << bit)) != 0 {
@@ -639,7 +639,7 @@ mod tests {
     fn version_3_fragment_layout_is_stable() {
         let input = [0i16, 1000, -1000, 32767, -32768];
         let actual = encode_interleaved(&input, 1, 8_000, Variant::H, 255).unwrap();
-        assert_eq!(actual.len(), HEADER_SIZE + 14);
+        assert_eq!(actual.len(), HEADER_SIZE + 34);
         assert_eq!(
             &actual[..16],
             &[
@@ -652,7 +652,7 @@ mod tests {
         assert!(actual[18 + 2] >> 4 == 0 && actual[18 + 3..].iter().all(|&b| b == 0));
         assert_eq!(
             [Variant::H, Variant::L, Variant::LPlus].map(Variant::fragment_size),
-            [14, 11, 11]
+            [34, 26, 26]
         );
     }
 
@@ -665,9 +665,9 @@ mod tests {
         assert_eq!(fragment_volume(&[32767]), 255);
         assert_eq!(fragment_volume(&[-32768]), 255);
         // A silent fragment is volume 0, index 0, zero codes.
-        let silent = encode_interleaved(&[0; 23], 1, 8_000, Variant::L, 255).unwrap();
+        let silent = encode_interleaved(&[0; FRAGMENT_SAMPLES], 1, 8_000, Variant::L, 255).unwrap();
         assert!(silent[16..].iter().all(|&b| b == 0));
-        assert_eq!(decode(&silent).unwrap().samples, [0; 23]);
+        assert_eq!(decode(&silent).unwrap().samples, [0; FRAGMENT_SAMPLES]);
     }
 
     #[test]
@@ -680,7 +680,7 @@ mod tests {
                 let bytes = encode_interleaved(&pcm, channels, 22_050, variant, 255).unwrap();
                 assert_eq!(
                     bytes.len(),
-                    HEADER_SIZE + 6 * channels as usize * variant.fragment_size()
+                    HEADER_SIZE + 3 * channels as usize * variant.fragment_size()
                 );
                 let decoded = decode(&bytes).unwrap();
                 assert_eq!(decoded.variant, variant);
@@ -714,8 +714,8 @@ mod tests {
 
     #[test]
     fn normalization_reduces_quantization_error_for_quiet_fragments() {
-        // Measured RMS (920 samples): /8 L 171->136, L+ 182->132; /2048 H 0.46->0.13.
-        // H at moderate levels gains little: its step table is already log-scaled.
+        // Normalization helps L/L+ and very quiet H most; H at moderate levels
+        // gains little because its step table is already log-scaled.
         for (variant, divisor) in [
             (Variant::L, 8),
             (Variant::LPlus, 8),
@@ -725,7 +725,7 @@ mod tests {
             (Variant::L, 2048),
             (Variant::LPlus, 2048),
         ] {
-            let pcm: Vec<i16> = (0..23 * 40)
+            let pcm: Vec<i16> = (0..FRAGMENT_SAMPLES * 15)
                 .map(|i| L_PLUS_BENCH_TONE[i % 128] / divisor)
                 .collect();
             let decoded = decode(&encode_interleaved(&pcm, 1, 8_000, variant, 255).unwrap())
@@ -795,7 +795,7 @@ mod tests {
             Err(Error::ZeroSampleRate)
         );
         let valid = encode_interleaved(&[1000], 1, 1, Variant::L, 255).unwrap();
-        assert_eq!(valid.len(), HEADER_SIZE + 11);
+        assert_eq!(valid.len(), HEADER_SIZE + 26);
         assert_eq!(decode(&valid[..15]), Err(Error::TruncatedHeader));
         let mut trailing = valid.clone();
         trailing.push(0);
@@ -820,9 +820,9 @@ mod tests {
         bad[7] = 1;
         assert_eq!(decode(&bad), Err(Error::InvalidReservedByte(1)));
 
-        // Full fragments: the 4 (H) / 3 (L) bits that round 23 codes up to a byte.
-        let pcm = [1000i16; 23];
-        for (variant, last, mask) in [(Variant::H, 13, 0xF0), (Variant::L, 10, 0xE0)] {
+        // Full fragments: the 4 (H) / 3 (L) bits that round 63 codes up to a byte.
+        let pcm = [1000i16; FRAGMENT_SAMPLES];
+        for (variant, last, mask) in [(Variant::H, 33, 0xF0), (Variant::L, 25, 0xE0)] {
             let mut file = encode_interleaved(&pcm, 1, 1, variant, 255).unwrap();
             assert_eq!(file[HEADER_SIZE + last] & mask, 0);
             file[HEADER_SIZE + last] |= 0x80;
