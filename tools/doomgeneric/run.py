@@ -12,7 +12,12 @@ sys.path.insert(0, str(ROOT / "tools/fs2"))
 import fs2  # noqa: E402
 
 
-def install(disk, executable, wad):
+# The Tang RAM disk is 16 MiB: drop programs a doom session does not need.
+SLIM_REMOVE = ("/bin/tinybasic.wax", "/bin/chip8.wax", "/bin/hex.wax", "/bin/sgubplay.wax",
+               "/bin/wavplay.wax", "/bin/bmpview.wax", "/lib/lzma.1.wal")
+
+
+def install(disk, executable, wad, slim=False):
     image = executable.read_bytes()
     volume = fs2.Volume(bytearray(disk.read_bytes()))
     library = volume.read(volume.resolve("/lib/fnd.1.wal"))
@@ -21,6 +26,8 @@ def install(disk, executable, wad):
     with wad.open("rb") as stream:
         if stream.read(4) not in (b"IWAD", b"PWAD"):
             raise ValueError("WAD must start with IWAD or PWAD")
+    for path in SLIM_REMOVE if slim else ():
+        volume.remove(path)
     volume.put("/bin/doom.wax", image, mode=0x3D)
     volume.put("/doom.wad", wad.read_bytes(), mode=0x24)  # owner/other read
     errors = fs2.check_image(volume.img)
@@ -38,6 +45,10 @@ def main(argv=None):
     p.add_argument("--clang")
     p.add_argument("-j", "--jobs", type=int, default=4)
     p.add_argument("--build-only", action="store_true")
+    p.add_argument("--platform", choices=("cpt32", "tang-console"), default="cpt32")
+    p.add_argument("--root-drive", choices=("ramdisk", "microsd"), default="ramdisk",
+                   help="tang-console only: where / lives")
+    p.add_argument("--ram-mib", type=int, default=64, help="RAM of the emulator config (cpt32 only)")
     args = p.parse_args(argv)
     out = args.out.resolve()
     boot = out / "boot"
@@ -47,15 +58,19 @@ def main(argv=None):
     temp.mkdir(parents=True, exist_ok=True)
     env = dict(os.environ, TEMP=str(temp), TMP=str(temp), TMPDIR=str(temp))
     extra = ["--clang", args.clang] if args.clang else []
+    tang = args.platform == "tang-console"
+    # Tang: the UART-loaded RAM disk holds at most 16 MiB (0x20000000..0x20FFFFFF).
+    blocks = "32768" if tang else "131072"
+    platform = ["--platform", "tang-console", *(["--root-drive", "microsd"] if args.root_drive == "microsd" else [])] if tang else []
     subprocess.run([sys.executable, str(ROOT / "foundation/boot/build.py"), str(boot),
-                    "--disk-blocks", "131072", "-j", str(args.jobs), *extra], env=env, check=True)
+                    "--disk-blocks", blocks, "-j", str(args.jobs), *platform, *extra], env=env, check=True)
     subprocess.run([sys.executable, str(Path(__file__).with_name("build.py")),
                     "--doomgeneric-source", str(args.doomgeneric_source.resolve()),
                     "--newlib-source", str(args.newlib_source.resolve()),
                     "--fnd-wal", str(boot / "root/lib/fnd.1.wal"), "--out", str(out),
                     "-j", str(args.jobs), *extra], env=env, check=True)
     disk = boot / "foundation.img"
-    install(disk, out / "doom.wax", args.wad.resolve())
+    install(disk, out / "doom.wax", args.wad.resolve(), slim=tang and args.root_drive == "ramdisk")
     config = ("cpu:\n  microarchitecture: cached-relaxed\n"
               "memory:\n  ram_mib: 64\n  vram_mib: 4\n"
               f"pcg:\n  font: {json.dumps(str(ROOT / 'assets/UNSCII.F08'))}\n"
@@ -63,6 +78,9 @@ def main(argv=None):
               "    read_only: false\n")
     (runtime / "config.yaml").write_text(config, encoding="utf-8")
     print(f"Disk: {disk}\nShell command: doom -iwad /doom.wad", flush=True)
+    if tang:
+        print("Tang: python scripts/uart_load.py COM7 --foundation", boot / "fpga-boot.json", flush=True)
+        return 0
     if not args.build_only:
         subprocess.run(["cargo", "build", "--release", "--bin", "cpt32"], cwd=ROOT, env=env, check=True)
         exe = ROOT / "target/release" / ("cpt32.exe" if os.name == "nt" else "cpt32")

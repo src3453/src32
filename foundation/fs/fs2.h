@@ -34,6 +34,10 @@
  * latency (spec_IDC.md, 10 ms on an HDD), and chains are mostly contiguous. */
 #define FS2_READ_AHEAD 8u
 #define FS2_HINTS 8u
+/* Contiguous runs of a chain seen so far: blocks index..index+len-1 of inode
+ * `ino` are at lba..lba+len-1. FS2 allocates the lowest free block first, so a
+ * big file is usually one or a few runs and a seek into it needs no walk. */
+#define FS2_EXTENTS 64u
 
 typedef struct {
     uint32_t type, mode, uid, parent, first, count;
@@ -52,6 +56,10 @@ typedef struct {
 typedef struct {
     uint32_t ino, index, lba, age;
 } fs2_hint;
+
+typedef struct {
+    uint32_t ino, index, lba, len;
+} fs2_extent;
 
 /* Folded-key hashes of the used entries of one directory, so a lookup reads
  * one entry instead of scanning the chain (entries are 1040 bytes). Any
@@ -82,6 +90,8 @@ typedef struct {
     uint32_t scan, scan_lba, scan_n; /* sec_get bypasses the cache: see dir_index_get */
     fs2_cache_line cache[FS2_CACHE_SECTORS];
     fs2_hint hints[FS2_HINTS];
+    fs2_extent extents[FS2_EXTENTS];
+    uint32_t extent_next;
     fs2_dir_index dir_index[FS2_DIRIDX];
     uint8_t ahead[FS2_READ_AHEAD * FS2_BLOCK];
 } fs2_vol;

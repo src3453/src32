@@ -57,6 +57,26 @@ void fs_copy(void *dst, const void *src, uint32_t n) {
             *dw++ = *sw++;
         d = (uint8_t *)dw;
         s = (const uint8_t *)sw;
+    } else if (n >= 16) {
+        /* Different alignments: align the destination, then read aligned
+         * source words and compose each destination word (big-endian). The
+         * aligned word holding the last needed byte never leaves its page. */
+        for (; (uintptr_t)d & 3u; --n)
+            *d++ = *s++;
+        uint32_t shift = 8u * ((uintptr_t)s & 3u);
+        uint32_t *dw = (uint32_t *)(void *)d;
+        const uint32_t *sw = (const uint32_t *)(const void *)((uintptr_t)s & ~(uintptr_t)3u);
+        uint32_t prev = *sw++;
+        for (; n >= 4; n -= 4, s += 4) {
+            uint32_t next = *sw++;
+#if defined(__BYTE_ORDER__) && __BYTE_ORDER__ == __ORDER_LITTLE_ENDIAN__
+            *dw++ = (prev >> shift) | (next << (32u - shift)); /* host tests */
+#else
+            *dw++ = (prev << shift) | (next >> (32u - shift));
+#endif
+            prev = next;
+        }
+        d = (uint8_t *)dw;
     }
     while (n--)
         *d++ = *s++;
@@ -327,9 +347,34 @@ static void hint_drop(fs2_vol *v, uint32_t ino) {
     for (uint32_t i = 0; i < FS2_HINTS; ++i)
         if (v->hints[i].ino == ino)
             v->hints[i].ino = 0;
+    for (uint32_t i = 0; i < FS2_EXTENTS; ++i)
+        if (v->extents[i].ino == ino)
+            v->extents[i].ino = 0;
+}
+
+/* Records that block `index` of `ino` is at `lba`; extends a run when it is the next block of one. */
+static void extent_note(fs2_vol *v, uint32_t ino, uint32_t index, uint32_t lba) {
+    for (uint32_t i = 0; i < FS2_EXTENTS; ++i) {
+        fs2_extent *e = &v->extents[i];
+        if (e->ino != ino)
+            continue;
+        if (index >= e->index && index - e->index < e->len) {
+            if (lba == e->lba + (index - e->index))
+                return;
+            e->ino = 0; /* contradiction: forget the run */
+            continue;
+        }
+        if (index - e->index == e->len && lba == e->lba + e->len) {
+            ++e->len;
+            return;
+        }
+    }
+    fs2_extent *e = &v->extents[v->extent_next++ % FS2_EXTENTS];
+    e->ino = ino, e->index = index, e->lba = lba, e->len = 1;
 }
 
 static void hint_note(fs2_vol *v, uint32_t ino, uint32_t index, uint32_t lba) {
+    extent_note(v, ino, index, lba);
     fs2_hint *slot = &v->hints[0];
     for (uint32_t i = 0; i < FS2_HINTS; ++i) {
         if (v->hints[i].ino == ino) {
@@ -355,6 +400,20 @@ static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint3
             b = h->lba;
         }
     }
+    for (uint32_t i = 0; i < FS2_EXTENTS; ++i) {
+        fs2_extent *e = &v->extents[i];
+        if (e->ino != ino || e->index > index)
+            continue;
+        if (index - e->index < e->len) { /* inside a known run: no walk */
+            *lba = e->lba + (index - e->index);
+            hint_note(v, ino, index, *lba);
+            return FND_OK;
+        }
+        if (e->index + e->len - 1 >= at) { /* start the walk at the run's last block */
+            at = e->index + e->len - 1;
+            b = e->lba + e->len - 1;
+        }
+    }
     while (at < index) {
         fnd_status st = sec_get(v, b, &buf);
         if (st != FND_OK)
@@ -363,6 +422,7 @@ static fnd_status chain_seek(fs2_vol *v, uint32_t ino, const fs2_inode *n, uint3
         if (b < v->data_start || b >= v->total_blocks)
             return FND_E_IO; /* also needed when the full mount scan is off */
         ++at;
+        extent_note(v, ino, at, b);
     }
     hint_note(v, ino, index, b);
     *lba = b;

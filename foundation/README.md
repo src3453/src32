@@ -35,6 +35,7 @@ FS2 イメージは既定の 8 MiB で、最大 16 MiB です。
   `/dev/sgu`（SGU 2基）と `sgubplay` は使えます。PCMRAM容量はBMC `PCMRAM_SIZE`で取得し、
   現行SDRAM X2構成では1 MiBです。
   それを超えるアドレスの書き込みは無視され、読み出しは0です。
+  `doom`（DOOMGeneric）は実機で動きます（INDEX8、UART 入力、16 MiB 向けの設定。起動に約2.5分、約2秒/フレーム）。手順は [DOOMGeneric 移植](../doc/spec_Foundation_doom.md#tang-console-実機main-ram-16-mib)。
   UART と `/dev/con` は使用できます。コンソールはVDPへ直接表示します。
   Tang向け起動時にUNSCIIの8×8フォント2バンク、行を2倍にした8×16フォント、
   先頭64色のRGB222パレットをロードします（UNSCIIのライセンスはassets/参照）。

@@ -25,8 +25,16 @@ static void read_vram(uint8_t *data, uint32_t address, uint32_t n) {
     for (uint32_t i = 0; i < n; ++i) data[i] = REG8(address + i);
 }
 
+/* A CPU write to external VRAM waits for the SDRAM write and for the VDP to
+ * accept its display copy (doc/vram-sdram.md), so each access is expensive:
+ * use word accesses where address and data are aligned. Memory order is kept,
+ * which is all the byte-lane protocol needs. */
 static void write_vram(uint32_t address, const uint8_t *data, uint32_t n) {
-    for (uint32_t i = 0; i < n; ++i) REG8(address + i) = data[i];
+    uint32_t i = 0;
+    if (!((address | (uintptr_t)data) & 3u))
+        for (; i + 4u <= n; i += 4u)
+            *(volatile uint32_t *)(uintptr_t)(address + i) = *(const uint32_t *)(const void *)(data + i);
+    for (; i < n; ++i) REG8(address + i) = data[i];
 }
 
 int32_t fb_open(uint32_t flags) {
@@ -70,7 +78,7 @@ void fb_close(void) {
 /* r.buf is validated writable memory, cap is its capacity. The dispatcher
  * sets reply status and copies the reply struct after this returns. */
 int32_t fb_call(struct fnd_proc *proc, const fnd_msg *m, fnd_msg *r, uint32_t cap) {
-    uint8_t data[FND_IPC_MAX_DATA];
+    uint8_t data[FND_IPC_MAX_DATA] __attribute__((aligned(4)));
     uint32_t n, address;
     switch (m->op) {
     case FND_FB_GET_INFO: {
