@@ -1,7 +1,8 @@
 # SRC32 Specification
-Revision 3.2 (2026-10-26)
+Revision 3.3 (2026-10-31)
 
 # Changelog
+- 3.3 (2026-10-31): Tidied up the specification, added a few missing details, and clarified some points. No ISA change.
 - 3.2 (2026-10-26): Added Extension C (split L1 instruction/data cache, micro-architectural,
   no ISA change). See `doc/spec_CPU_cache.md`. CPUID bit 10; the pipeline CPU reports `0x7BF`.
   CPU-reserved MMIO `0xFFFF0300..0xFFFF033F` holds the cache registers.
@@ -257,13 +258,14 @@ Bit positions:
   - Floating-point instructions (Extension F)
   - Other future extensions
 - EXTR/EXTI/EXTM use the sub-opcode (`op2`), with `op` values in the range `0x39`-`0x3B`.
+- EXTI and EXTM use a 10-bit signed immediate (`imm10`, -512 to 511) instead of the 16-bit immediate in standard formats.
 
 - EXTR:
   - `[0x39][op2:6][rd:5][rs1:5][rs2:5][rs3:5]`
 - EXTI:
-  - `[0x3A][op2:6][rd:5][rs1:5][imm16:16]`
+  - `[0x3A][op2:6][rd:5][rs1:5][imm10:10]`
 - EXTM:
-  - `[0x3B][op2:6][rd:5][base:5][off16:16]`
+  - `[0x3B][op2:6][rd:5][base:5][off10:10]`
 
 ## 4. ISA
 
@@ -577,14 +579,11 @@ Implemented in this repository:
 - 16 MiB RAM-backed bus
 - CPU-reserved vector and state MMIO
 - Two-pass assembler with labels/directives
-
-Planned (future):
-
 - ROM loader/boot flow
 - Integration tests with assembled programs
 
 Planning extensions:
-V: Virtual Memory, MMU, TLB
+V: Virtual Memory, MMU, TLB (implemented, see doc/spec_CPU_vm.md)
 C: L1 Cache (implemented in the pipeline CPU, see doc/spec_CPU_cache.md)
 P: Protection/Privilege Levels (implemented, see doc/spec_CPU_priv.md)
 p: Pipelining (implemented as Extension p, see doc/spec_CPU_p.md)

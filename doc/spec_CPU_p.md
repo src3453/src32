@@ -51,11 +51,14 @@ and ID for one cycle and injects a bubble into `ID/EX` while the load still
 advances `EX -> MEM`. The waiter is re-decoded afterwards and forwards the
 value from `MEM/WB`.
 
-### 2.3 Branches: resolved in EX, no prediction
+### 2.3 Branches: static prediction and EX resolution
 
 `BEQ`/`BNE`/`JMP`/`JAL`/`JR` (and Short-mode counterparts) resolve in EX.
-A taken branch redirects fetch and flushes `IF/ID` + `ID/EX` (2-instruction
-penalty). `JAL`/`JALR` link `R31` with the fall-through PC at commit and the
+Conditional branches (`BEQ`, `BNE`, `S.BZ`, `S.BNZ`) use backward-taken,
+forward-not-taken prediction in ID. EX checks the actual result: correct
+predictions continue without a redirect; a misprediction redirects and flushes
+younger instructions. Unconditional branches still redirect in EX.
+`JAL`/`JALR` link `R31` with the fall-through PC at commit and the
 link value participates in forwarding.
 
 ### 2.4 Multi-cycle ALU ops
@@ -89,7 +92,8 @@ link value participates in forwarding.
 ### 2.7 Counters
 
 `cycles`, `instructions_executed` (WB commits), `stall_cycles`
-(load-use + MUL/DIV holds), `flush_events` (taken-branch redirects).
+(load-use + MUL/DIV holds), `flush_events` (EX redirects, including branch
+mispredictions and unconditional branches).
 
 ## 3. Reference model and tests
 

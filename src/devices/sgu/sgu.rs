@@ -241,10 +241,7 @@ pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
     connect_sgu_with_version(bus, SguVersion::default())
 }
 
-pub fn connect_sgu_with_version(
-    bus: &mut Bus,
-    version: SguVersion,
-) -> [Rc<RefCell<S3w2Sound>>; 2] {
+pub fn connect_sgu_with_version(bus: &mut Bus, version: SguVersion) -> [Rc<RefCell<S3w2Sound>>; 2] {
     connect_sound_with_version(bus, version).sgus
 }
 
@@ -257,7 +254,10 @@ pub struct SoundUnits {
 pub fn connect_sound_with_version(bus: &mut Bus, version: SguVersion) -> SoundUnits {
     let pcm_ram = Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE]));
     let sgus = [
-        Rc::new(RefCell::new(S3w2Sound::with_version(Rc::clone(&pcm_ram), version))),
+        Rc::new(RefCell::new(S3w2Sound::with_version(
+            Rc::clone(&pcm_ram),
+            version,
+        ))),
         Rc::new(RefCell::new(S3w2Sound::with_version(pcm_ram, version))),
     ];
     bus.add_device(
@@ -299,10 +299,22 @@ mod tests {
     #[test]
     fn config_selects_sgu_version() {
         assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3));
-        assert_eq!(sgu_version_from_yaml("sgu:\n  version: 3\n"), Ok(SguVersion::V3));
-        assert_eq!(sgu_version_from_yaml("sgu:\n  version: 1\n"), Ok(SguVersion::V1));
-        assert_eq!(sgu_version_from_yaml("sgu:\n  version: \"2\"\n"), Ok(SguVersion::V2));
-        assert_eq!(sgu_version_from_yaml("sgu:\n  version: 2.1\n"), Ok(SguVersion::V2_1));
+        assert_eq!(
+            sgu_version_from_yaml("sgu:\n  version: 3\n"),
+            Ok(SguVersion::V3)
+        );
+        assert_eq!(
+            sgu_version_from_yaml("sgu:\n  version: 1\n"),
+            Ok(SguVersion::V1)
+        );
+        assert_eq!(
+            sgu_version_from_yaml("sgu:\n  version: \"2\"\n"),
+            Ok(SguVersion::V2)
+        );
+        assert_eq!(
+            sgu_version_from_yaml("sgu:\n  version: 2.1\n"),
+            Ok(SguVersion::V2_1)
+        );
         assert!(sgu_version_from_yaml("sgu:\n  version: 4\n").is_err());
         assert!(sgu_version_from_yaml("sgu: 2\n").is_err());
         let mut bus = Bus::new();
@@ -325,7 +337,11 @@ mod tests {
     #[test]
     fn si22_is_mapped_only_in_v3_and_records_into_pcm_ram() {
         let mut bus = Bus::new();
-        assert!(connect_sound_with_version(&mut bus, SguVersion::V2_1).si22.is_none());
+        assert!(
+            connect_sound_with_version(&mut bus, SguVersion::V2_1)
+                .si22
+                .is_none()
+        );
         bus.write_u8(SI22_REG_BASE + 0x23, 5);
         assert_eq!(bus.read_u8(SI22_REG_BASE + 0x23), 0);
 
@@ -341,7 +357,14 @@ mod tests {
         let si22 = units.si22.unwrap();
         si22.borrow_mut().set_adc(Box::new(Ramp(0)));
         // REC A: PCM8 into 0x100..0x104 given as 0x100100..0x100104 (wraps at 1 MiB).
-        for (offset, value) in [(0x10, 0x10), (0x11, 0x01), (0x12, 0x00), (0x13, 0x10), (0x14, 0x01), (0x15, 0x04)] {
+        for (offset, value) in [
+            (0x10, 0x10),
+            (0x11, 0x01),
+            (0x12, 0x00),
+            (0x13, 0x10),
+            (0x14, 0x01),
+            (0x15, 0x04),
+        ] {
             bus.write_u8(SI22_REG_BASE + offset, value);
         }
         assert_eq!(bus.read_u8(SI22_REG_BASE + 0x10), 0x10);
@@ -349,11 +372,19 @@ mod tests {
         let (mut l, mut r) = ([0i32; 8], [0i32; 8]);
         si22.borrow_mut().clock_mixed_into_i32(&mut l, &mut r);
         assert_eq!(bus.read_u8(SI22_REG_BASE + 0x1C), 3);
-        let recorded: Vec<u8> = (0..5).map(|i| bus.read_u8(PCM_RAM_BASE + 0x100 + i)).collect();
+        let recorded: Vec<u8> = (0..5)
+            .map(|i| bus.read_u8(PCM_RAM_BASE + 0x100 + i))
+            .collect();
         assert_eq!(recorded, [0x81, 0x82, 0x83, 0x84, 0]);
 
         // PLAY A plays it back to both sides at 0 dB.
-        for (offset, value) in [(0x01, 0x01), (0x04, 0x01), (0x05, 0x04), (0x0D, 0x0F), (0x0C, 0x01)] {
+        for (offset, value) in [
+            (0x01, 0x01),
+            (0x04, 0x01),
+            (0x05, 0x04),
+            (0x0D, 0x0F),
+            (0x0C, 0x01),
+        ] {
             bus.write_u8(SI22_REG_BASE + offset, value);
         }
         let (mut l, mut r) = ([0i32; 5], [0i32; 5]);

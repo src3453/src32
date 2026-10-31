@@ -228,10 +228,18 @@ fn main() {
             }
             "--profile-cpu" => profile_cpu = true,
             // Pipeline CPU only: "user|kernel pc instructions cycles" per PC, written at exit.
-            "--profile-pc" => profile_pc = Some(options.next().expect("--profile-pc requires PATH").to_string()),
+            "--profile-pc" => {
+                profile_pc = Some(
+                    options
+                        .next()
+                        .expect("--profile-pc requires PATH")
+                        .to_string(),
+                )
+            }
             "--profile-pc-reset-frame" => {
-                profile_pc_reset_frame =
-                    Some(integer(options.next().expect("--profile-pc-reset-frame requires N")) as usize)
+                profile_pc_reset_frame = Some(integer(
+                    options.next().expect("--profile-pc-reset-frame requires N"),
+                ) as usize)
             }
             "--skip-render-checks" => skip_render_checks = true,
             "--expect-mem-u8" | "--expect-final-mem-u8" => {
@@ -414,8 +422,9 @@ fn main() {
             }
             for i in 0..800 {
                 for sample in [mixed_left[i], mixed_right[i]] {
-                    audio_bytes
-                        .extend_from_slice(&cpt32::devices::sgu::s3w2::saturate_output(sample).to_le_bytes());
+                    audio_bytes.extend_from_slice(
+                        &cpt32::devices::sgu::s3w2::saturate_output(sample).to_le_bytes(),
+                    );
                 }
             }
         }
@@ -483,8 +492,14 @@ fn main() {
     if let Some(path) = &profile_pc {
         let mut lines = String::new();
         for (user, pc, count, cycles) in cpu.take_pc_profile() {
-            lines.push_str(&format!("{} {:08X} {} {}
-", if user { 'U' } else { 'K' }, pc, count, cycles));
+            lines.push_str(&format!(
+                "{} {:08X} {} {}
+",
+                if user { 'U' } else { 'K' },
+                pc,
+                count,
+                cycles
+            ));
         }
         fs::write(path, lines).expect("failed to write the PC profile");
     }

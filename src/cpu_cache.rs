@@ -22,8 +22,7 @@ pub const CTRL_INV_I: u32 = 1 << 8;
 pub const CTRL_INV_D: u32 = 1 << 9;
 pub const CTRL_CLR_STATS: u32 = 1 << 10;
 /// CACHE_INFO: [3:0] log2 line bytes, [7:4] log2 ways, [15:8] log2 I bytes, [23:16] log2 D bytes.
-pub const CACHE_INFO: u32 =
-    LINE_SHIFT | (0 << 4) | (I_SIZE_SHIFT << 8) | (D_SIZE_SHIFT << 16);
+pub const CACHE_INFO: u32 = LINE_SHIFT | (0 << 4) | (I_SIZE_SHIFT << 8) | (D_SIZE_SHIFT << 16);
 
 const INVALID: u32 = u32::MAX;
 
@@ -130,7 +129,11 @@ impl L1Cache {
         if !self.i.enabled || !self.cacheable(pa) {
             return 0;
         }
-        if self.i.access(pa) { 0 } else { self.miss_penalty }
+        if self.i.access(pa) {
+            0
+        } else {
+            self.miss_penalty
+        }
     }
 
     /// Data load. Returns stall cycles.
@@ -138,7 +141,11 @@ impl L1Cache {
         if !self.d.enabled || !self.cacheable(pa) {
             return 0;
         }
-        if self.d.access(pa) { 0 } else { self.miss_penalty }
+        if self.d.access(pa) {
+            0
+        } else {
+            self.miss_penalty
+        }
     }
 
     /// Write-through store: no allocation, snoops the instruction cache.

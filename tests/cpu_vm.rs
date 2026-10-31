@@ -432,8 +432,5 @@ fn debugger_system_snapshot_reports_trap_state() {
     }
     assert_eq!(describe_cause(3), "IRQ3");
     assert_eq!(describe_cause(0x8005_0002), "Protection fault (-W-)");
-    assert_eq!(
-        describe_cause(0x8006_000D),
-        "Page fault (R-X, protection)"
-    );
+    assert_eq!(describe_cause(0x8006_000D), "Page fault (R-X, protection)");
 }

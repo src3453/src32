@@ -133,6 +133,7 @@ struct IdEx {
     pc: u32,
     mode: InstructionMode,
     decoded: Decoded,
+    predicted_taken: bool,
     // GPR numbers (already short-mapped). [src, valid-count]
     srcs: [usize; 3],
     n_srcs: u8,
@@ -306,6 +307,7 @@ fn invalid_id_ex() -> IdEx {
         pc: 0,
         mode: InstructionMode::Normal,
         decoded: Decoded::Normal(Instruction::Nop),
+        predicted_taken: false,
         srcs: [0; 3],
         n_srcs: 0,
         dest: None,
@@ -587,7 +589,12 @@ impl PipelineCpu {
     /// L1 counters: (I hits, I misses, D hits, D misses).
     pub fn cache_stats(&self) -> (u32, u32, u32, u32) {
         let c = self.cache.borrow();
-        (c.read_reg(0x10), c.read_reg(0x14), c.read_reg(0x18), c.read_reg(0x1C))
+        (
+            c.read_reg(0x10),
+            c.read_reg(0x14),
+            c.read_reg(0x18),
+            c.read_reg(0x1C),
+        )
     }
 
     pub fn stall_cycles(&self) -> u128 {
@@ -2145,7 +2152,19 @@ impl PipelineCpu {
                 self.spin.backward_redirect = target <= self.id_ex.pc;
             }
             next_ex_mem = em;
-            redirect = redir;
+            redirect = if self.id_ex.predicted_taken {
+                if redir.is_some() {
+                    None
+                } else {
+                    let size = match self.id_ex.mode {
+                        InstructionMode::Normal => INSN_SIZE,
+                        InstructionMode::Short => SHORT_INSN_SIZE,
+                    };
+                    Some((self.id_ex.pc.wrapping_add(size), self.id_ex.mode))
+                }
+            } else {
+                redir
+            };
         }
         if let Some(start) = execute_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Execute, start.elapsed());
@@ -2164,6 +2183,27 @@ impl PipelineCpu {
         }
         if let Some(start) = decode_start {
             self.record_profile_time::<PROFILE>(CpuProfileStage::Decode, start.elapsed());
+        }
+
+        // Predict only conditional backward branches. An older EX redirect
+        // always wins over a prediction from a younger instruction.
+        if redirect.is_none() && next_id_ex.valid && next_id_ex.exception.is_none() {
+            let offset = match next_id_ex.decoded {
+                Decoded::Normal(Instruction::Beq { offset, .. } | Instruction::Bne { offset, .. })
+                    if offset < 0 => Some(offset),
+                Decoded::Short(ShortInstruction::Bz { offset, .. } | ShortInstruction::Bnz { offset, .. })
+                    if offset < 0 => Some(offset as i16),
+                _ => None,
+            };
+            if let Some(offset) = offset {
+                let size = match next_id_ex.mode {
+                    InstructionMode::Normal => INSN_SIZE,
+                    InstructionMode::Short => SHORT_INSN_SIZE,
+                };
+                self.fetch_pc = Self::branch_target(next_id_ex.pc.wrapping_add(size), offset);
+                self.fetch_mode = next_id_ex.mode;
+                next_id_ex.predicted_taken = true;
+            }
         }
 
         // ---- IF ----

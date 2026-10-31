@@ -268,10 +268,8 @@ fn build_guest_machine(
     } else {
         connect_idc_from_config(&mut bus)?
     };
-    let sound = connect_sound_with_version(
-        &mut bus,
-        sgu_version_from_config(Path::new("config.yaml"))?,
-    );
+    let sound =
+        connect_sound_with_version(&mut bus, sgu_version_from_config(Path::new("config.yaml"))?);
     let (sgu, si22) = (sound.sgus, sound.si22);
     let program = match cartridge.as_ref() {
         Some(cartridge) => cartridge.program.as_slice(),
@@ -1716,7 +1714,13 @@ impl DebugUiState {
     }
 
     fn draw_audio_mixer(&mut self, ui: &Ui) {
-        const SOURCES: [&str; 5] = ["SGU 1", "SGU 2", "IDC disk audio", "Expansion card", "34SI22"];
+        const SOURCES: [&str; 5] = [
+            "SGU 1",
+            "SGU 2",
+            "IDC disk audio",
+            "Expansion card",
+            "34SI22",
+        ];
         ui.window(DebugWindow::AudioMixer.label())
             .size([480.0, 240.0], Condition::FirstUseEver)
             .build(|| {

@@ -27,8 +27,8 @@ pub mod devices {
     }
     pub mod sgu {
         pub mod s3w2;
-        pub mod si22;
         pub mod sgu;
+        pub mod si22;
         pub mod sqv4;
     }
     pub mod vdp {

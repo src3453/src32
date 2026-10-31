@@ -1006,6 +1006,22 @@ impl Idc {
         }
         let value = active.buffer[active.cursor];
         active.cursor += 1;
+        let sector_completed = active.cursor == SECTOR_SIZE && active.dma_channel.is_none();
+        let transfer_completed = if sector_completed {
+            active.completed_sectors += 1;
+            active.cursor = 0;
+            active.read_ready = false;
+            active.completed_sectors == active.sector_count
+        } else {
+            false
+        };
+        if sector_completed {
+            if transfer_completed {
+                self.finish_success();
+            } else {
+                self.update_next_deadline();
+            }
+        }
         value
     }
 
@@ -1381,6 +1397,31 @@ mod tests {
         for _ in 0..ticks {
             bus.tick_devices();
         }
+    }
+
+    #[test]
+    fn pio_read_completes_each_sector_and_signals_done() {
+        let root = temp_root();
+        let mut image = vec![0x11; SECTOR_SIZE];
+        image.extend(vec![0xA5; SECTOR_SIZE]);
+        let config = fixture_config(&root, &image, false);
+        let mut bus = test_bus(&config);
+        bus.write_u32_be(IDC_BASE + 0x0c, 1);
+        bus.write_u32_be(IDC_BASE + 0x20, 2);
+        bus.write_u32_be(IDC_BASE + 0x18, 1);
+        for byte in [0x11, 0xA5] {
+            run_ticks(&mut bus, 2048);
+            assert_ne!(bus.read_u32_be(IDC_BASE + 8) & STATUS_DRQ, 0);
+            for _ in 0..SECTOR_SIZE {
+                assert_eq!(bus.read_u8(IDC_DATA_ADDRESS), byte);
+            }
+        }
+        let status = bus.read_u32_be(IDC_BASE + 8);
+        assert_eq!(status & (STATUS_BUSY | STATUS_DRQ | STATUS_ERROR), 0);
+        assert_ne!(status & STATUS_DONE, 0);
+        assert_ne!(bus.read_u32_be(IDC_BASE + 0x10) & 1, 0);
+        drop(bus);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

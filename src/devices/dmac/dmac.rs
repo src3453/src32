@@ -625,7 +625,11 @@ mod tests {
         ];
         for (src, dst, count, control) in bad {
             start_channel(&mut bus, 2, src, dst, count, control);
-            assert_eq!(channel_status(&mut bus, 2), 0x14, "{src:#x} {dst:#x} {count} {control:#x}");
+            assert_eq!(
+                channel_status(&mut bus, 2),
+                0x14,
+                "{src:#x} {dst:#x} {count} {control:#x}"
+            );
             bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 0x10, 4);
         }
         bus.write_u32_be(DMAC_BASE + 8, 0x3B); // channel 2 disabled
@@ -683,7 +687,10 @@ mod tests {
         // CHn_PRIORITY aliases BMC MASTER_PRIORITY[n+2]; both keep the low 3 bits.
         bus.write_u32_be(CH0 + CHANNEL_STRIDE + 0x18, 0xFFFF_FFF8);
         assert_eq!(bus.read_u32_be(CH0 + CHANNEL_STRIDE + 0x18), 0);
-        assert_eq!(bus.read_u32_be(crate::devices::bmc::BMC_BASE + 0x020 + 4 * 3), 0);
+        assert_eq!(
+            bus.read_u32_be(crate::devices::bmc::BMC_BASE + 0x020 + 4 * 3),
+            0
+        );
         // A split CONTROL write latches START on byte 2 and fires on byte 3.
         bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE + 8, 4);
         bus.write_u32_be(DMAC_BASE + CHANNEL_BASE + 2 * CHANNEL_STRIDE, 0x100);

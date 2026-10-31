@@ -84,6 +84,24 @@ fn not_taken_branch_does_not_flush_or_skip_fallthrough() {
 }
 
 #[test]
+fn backward_branches_predict_taken_and_recover_on_exit() {
+    let mut cpu = boot();
+    let mut image = Vec::new();
+    image.extend_from_slice(&encode_i(0x04, 1, 0, 0));
+    image.extend_from_slice(&encode_i(0x04, 2, 0, 4));
+    image.extend_from_slice(&encode_i(0x04, 1, 1, 1));
+    image.extend_from_slice(&encode_i(0x08, 2, 1, -8)); // BNE to increment
+    image.extend_from_slice(&encode_i(0x04, 3, 0, 42));
+    image.extend_from_slice(&encode_r(0x3F, 0, 0, 0));
+    cpu.load_program(0, &image);
+    cpu.run(100);
+    assert_eq!(cpu.read_reg(1), 4);
+    assert_eq!(cpu.read_reg(3), 42);
+    assert_eq!(cpu.flush_events(), 1); // only the loop exit mispredicts
+    assert_eq!(cpu.instructions_executed(), 12);
+}
+
+#[test]
 fn mul_div_match_scalar_with_extra_latency() {
     let mut cpu = boot();
     let mut image = Vec::new();
@@ -239,6 +257,24 @@ fn short_mode_roundtrip() {
 }
 
 #[test]
+fn short_backward_branch_predicts_and_recovers() {
+    let mut cpu = boot();
+    let mut image = vec![0u8; 0x40];
+    image[0..4].copy_from_slice(&encode_i(0x1D, 0, 0, 0x1C));
+    image[0x20..0x22].copy_from_slice(&encode_short(0x9103)); // R1 = 3
+    image[0x22..0x24].copy_from_slice(&encode_short(0x21FF)); // R1--
+    image[0x24..0x26].copy_from_slice(&encode_short(0x61FC)); // BNZ R1, -4
+    image[0x26..0x28].copy_from_slice(&encode_short(0x9255));
+    image[0x28..0x2A].copy_from_slice(&encode_short(0xF000));
+    image[0x2A..0x2E].copy_from_slice(&encode_r(0x3F, 0, 0, 0));
+    cpu.load_program(0, &image);
+    cpu.run(100);
+    assert_eq!(cpu.read_reg(1), 0);
+    assert_eq!(cpu.read_reg(2), 0x55);
+    assert_eq!(cpu.flush_events(), 3); // JMPS, loop exit, S.RET
+}
+
+#[test]
 fn cpuid_advertises_p_and_r0_stays_zero() {
     let mut cpu = boot();
     let mut image = Vec::new();
@@ -284,7 +320,10 @@ fn younger_writer_of_r1_wins_over_cpuid_forwarding() {
     image.extend_from_slice(&encode_r(0x3F, 0, 0, 0)); // HALT
     cpu.load_program(0, &image);
     cpu.run(64);
-    assert_eq!(cpu.read_reg(3), (0x33Fu32 | 0x80 | 0x400).wrapping_add(cpu.read_reg(1)));
+    assert_eq!(
+        cpu.read_reg(3),
+        (0x33Fu32 | 0x80 | 0x400).wrapping_add(cpu.read_reg(1))
+    );
 }
 
 #[test]

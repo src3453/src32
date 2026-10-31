@@ -49,7 +49,7 @@ DRIVE_SELECTが0～3以外ならコマンドはERROR_CODE=1で終了する。CON
 同時に実行できるIDCコマンドは1つだけである。受理時に選択slotを検査する。BUSY中の新規コマンド、DRIVE_SELECT/LBA/SECTOR_COUNTへの書込みは無視し、進行中のラッチ値と状態を変えない。未定義commandはERROR_CODE=1で終了する。
 
 - **IDENTIFY (3):** 選択slotのDRIVE_TYPE、SECTOR_SIZE、CAPACITY_SECTORS、DRIVE_FLAGSを即時更新して返す。未接続slotなら情報レジスタをabsent値（type/size/capacity/flagsを0）に更新し、ERROR_CODE=2で終了する。成功は通常完了としてDONEを立てる。
-- **READ (1) / WRITE (2):** 選択slot、開始LBA、sector countを受理時にラッチし、媒体の存在、count（1～8,388,607）、全LBA範囲、read-only条件を検査する。未接続媒体はERROR_CODE=2、範囲外LBAはERROR_CODE=3、無効countはERROR_CODE=1で終了する。READ/WRITEには一致するDMAC channelが必要である。WRITE_PROTECTではイメージを書き換えず、ERROR_CODE=4で終了する。検査に成功した後だけDMA転送を開始する。
+- **READ (1) / WRITE (2):** 選択slot、開始LBA、sector countを受理時にラッチし、媒体の存在、count（1～8,388,607）、全LBA範囲、read-only条件を検査する。未接続媒体はERROR_CODE=2、範囲外LBAはERROR_CODE=3、無効countはERROR_CODE=1で終了する。DATAはCPUによる8-bit PIOまたは一致するDMAC channelで転送する。WRITE_PROTECTではイメージを書き換えず、ERROR_CODE=4で終了する。
 - **ABORT (4):** 実行中DMAをsector境界で中止する。すでに完了・commitしたsectorは保持し、staging中のsectorは破棄してERROR_CODE=5で終了する。idle時のABORTは状態を変更しない。
 
 正常なIDENTIFY/READ/WRITEの完了ではBUSYを下げ、DONEを立てる。IRQ_ENABLE.bit0が1ならIRQ_STATUS.bit0にcompletion pendingを立てる。エラー完了ではBUSYを下げ、ERRORを立てる。IRQ_ENABLE.bit1が1ならIRQ_STATUS.bit1にerror pendingを立てる。IRQ_STATUSのpending maskとIRQ_ENABLEのANDが非zeroの間、PeCのIDC IRQ source 2をassertする。IRQ_STATUSは対応bitへの1書込みで個別にclearする。DONE/ERRORのclearとIRQ pendingのclearは独立している。
@@ -57,6 +57,8 @@ DRIVE_SELECTが0～3以外ならコマンドはERROR_CODE=1で終了する。CON
 ## 5. DMAとsector staging
 
 READ/WRITEはDMACの固定アドレスsource/destination handshakeで行う。唯一許可するIDC peripheral endpointは`DATA`の完全一致アドレス`0x80041024`であり、幅は8-bitに限る。
+
+PIOではDRQを確認してからDATAに1 byteずつアクセスする。READは512 byteを消費すると次sectorの準備へ進み、最後のsectorを消費するとBUSYを解除しDONEを設定する。WRITEは512 byteを受信し媒体へのcommitが完了すると次sectorへ進み、最後にDONEを設定する。PIOとDMAを同一command内で混在させない。
 
 | IDC operation | DMAC source | DMAC destination | Transfer width |
 |---|---|---|---|

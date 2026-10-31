@@ -242,7 +242,11 @@ pub fn describe_cause(cause: u32) -> String {
         6 => format!(
             "Page fault ({}, {})",
             access(detail),
-            if detail & 8 != 0 { "protection" } else { "not present" }
+            if detail & 8 != 0 {
+                "protection"
+            } else {
+                "not present"
+            }
         ),
         code => format!("Unknown exception {code}"),
     }
