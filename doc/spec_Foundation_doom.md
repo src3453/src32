@@ -51,7 +51,7 @@ python tools/doomgeneric/run.py --doomgeneric-source target/doomgeneric --newlib
 出力された `fpga-boot.json` を RTL リポジトリの `scripts/uart_load.py COM7 --foundation ...` で転送し、シェルで次を入力します。
 
 ```text
-doom -iwad /doom.wad -mb 4
+doom -iwad /doom.wad -mb 4 -fnd-light
 ```
 
 - **ディスク**: UART ロードの RAM ディスク（最大 16 MiB）に収めるため、`run.py` は doom に不要な `/bin` のプログラム（tinybasic、chip8、hex、sgubplay、wavplay、bmpview）と `/lib/lzma.1.wal` を取り除きます。`--root-drive microsd` ではこの削減をしません。

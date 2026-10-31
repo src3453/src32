@@ -17,6 +17,8 @@ static int32_t mock_time(uint32_t selector) { return selector == FND_TIME_TICK_H
 pixel_t screen[320 * 200];
 pixel_t *DG_ScreenBuffer = screen;
 struct color colors[256];
+int detailLevel, screenblocks = 10;
+void R_SetViewSize(int blocks, int detail) { (void)blocks; (void)detail; }
 void doomgeneric_Create(int argc, char **argv) { (void)argc; (void)argv; }
 void doomgeneric_Tick(void) {}
 static fnd_keyboard physical;

@@ -11,3 +11,9 @@
 - 実機に載せる手順は doc/spec_Foundation_doom.md「Tang Console 実機」。ロード直後はシェルの入力が欠けることがあるので、空行を送ってからコマンドを入れる。
 - Python 3.15 は UTF-8 モードが既定で、日本語 Windows のリンカ出力（cp932）を `text=True` で読む既存テストが失敗する。`python -X utf8=0 -m unittest ...` で実行する。
 - 未検証: HDMI のノイズはキャプチャーボードの発熱が原因だった（ボードの不具合ではない）。キー入力の実機での操作感、シェルテストの nommu 構成。
+
+## 追記: -fnd-light（描画を軽くする）
+
+- この移植では設定ファイル読み込みが `#if ORIGCODE` で無効なので、`-config` で `detaillevel`/`screenblocks` は変えられない。アダプタの `-fnd-light` が `DG_Init` で `detailLevel=1`、`screenblocks=8` を設定し `R_SetViewSize` を呼ぶ。
+- 実機（40フレーム、`-warp 1 1`）: 通常 84.2 秒（約2.1秒/フレーム）→ light 57.4 秒（約1.4秒/フレーム）。起動 ~136 秒、WAD 読み込み ~116 秒は変わらない。
+- UART 入力直後は先頭の数文字が欠けることがある。`-mb 4` が欠けるとゾーン確保に失敗するので、空行を先に送る。

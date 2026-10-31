@@ -77,7 +77,7 @@ def main(argv=None):
               f"disk:\n  - slot: 0\n    type: hdd\n    image: {json.dumps(str(disk))}\n"
               "    read_only: false\n")
     (runtime / "config.yaml").write_text(config, encoding="utf-8")
-    print(f"Disk: {disk}\nShell command: doom -iwad /doom.wad", flush=True)
+    print(f"Disk: {disk}\nShell command: doom -iwad /doom.wad{' -mb 4 -fnd-light' if tang else ''}", flush=True)
     if tang:
         print("Tang: python scripts/uart_load.py COM7 --foundation", boot / "fpga-boot.json", flush=True)
         return 0

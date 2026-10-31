@@ -11,6 +11,10 @@
 
 static fnd_handle fb;
 extern unsigned wad_reads, wad_bytes, wad_ms;
+/* Engine view settings: -fnd-light trades image size and detail for speed. */
+extern int detailLevel, screenblocks;
+void R_SetViewSize(int blocks, int detail);
+static int light;
 static uint32_t last_start;
 static uint32_t tick_hz, start_tick, frame_limit, frames, stats_every, draw_ms, stats_start;
 static unsigned next_usage;
@@ -55,6 +59,11 @@ void DG_Init(void) {
     start_tick = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO);
     if (!DG_ScreenBuffer || atexit(cleanup)) check(FND_E_NO_MEMORY);
     check(fnd_con_key_state(&keyboard));
+    if (light) {
+        detailLevel = 1; /* config files are compiled out of this port */
+        screenblocks = 8;
+        R_SetViewSize(screenblocks, detailLevel);
+    }
 }
 
 /* fb0 is opened for the first frame, not in DG_Init: while it is open the
@@ -265,6 +274,10 @@ int main(int argc, char **argv) {
     for (int i = 1; i < argc; ++i) {
         if (!strcmp(argv[i], "-fnd-stats") && i + 1 < argc) {
             stats_every = (uint32_t)strtoul(argv[++i], 0, 10);
+            continue;
+        }
+        if (!strcmp(argv[i], "-fnd-light")) {
+            light = 1;
             continue;
         }
         if (!strcmp(argv[i], "-fnd-frames")) {
