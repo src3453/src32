@@ -14,7 +14,19 @@ fn uart_raw_output_child() {
     for &byte in PAYLOAD {
         uart.write(byte);
     }
-    assert_eq!(uart.tx_buffer, PAYLOAD);
+    assert!(uart.tx_buffer.is_empty());
+    assert!(uart.tx_ready);
+}
+
+#[test]
+fn uart_mmio_reports_completed_synchronous_transmission() {
+    use cpt32::bus::Device;
+    use cpt32::devices::pec::serial::UARTDevice;
+    let mut uart = UARTDevice::new(false);
+    uart.write(0, b'K');
+    assert_eq!(uart.read(5), 0);
+    assert_eq!(uart.read(1) & 1, 1);
+    assert_eq!(uart.debug_read(5), Some(0));
 }
 
 #[test]

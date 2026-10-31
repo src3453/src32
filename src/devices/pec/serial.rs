@@ -34,6 +34,8 @@ impl UART {
         let mut stdout = std::io::stdout().lock();
         stdout.write_all(&[data]).unwrap();
         stdout.flush().unwrap();
+        // Host output is synchronous: this byte has left the transmit queue.
+        self.process_tx();
     }
 
     pub fn read(&mut self) -> Option<u8> {
