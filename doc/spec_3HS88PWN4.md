@@ -1,5 +1,7 @@
 # 3HS88PWN4 WASM音源カード仕様
 
+> この文書は Rust の WASM 音源カード（`examples/wasm-3ws88pwn4/`）の契約です。整数演算だけの C++ モデル（`chips/3hs88pwn4/`、Furnace の S3HS が使用）は [spec_3HS816.md](spec_3HS816.md) の「3HS88PWN4（整数モデル）」の節で定めます。WTSync を `+8` への書き込みにする点と Gate の扱いは共通です。
+
 ## 資料と互換性
 
 本カードの名前は3HS88PWN4とする。参照元はFurnaceの `src/engine/platform/sound/s3hs88pwn4/` にある3HS88PWN4実装 (`sound.cpp`, `envelove.cpp`, `ram.cpp`, `lib/`) と、ユーザー提供の `3HS88PWN4 Register Sheet 2.xlsx` の第1シート。シートはレジスタ配置の資料として扱う。
