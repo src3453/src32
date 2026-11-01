@@ -35,6 +35,11 @@ constexpr std::array<std::uint8_t, 8> kId = {'3', 'H', 'S', '8', '1', '6', 1, 0}
 
 }  // namespace reg
 
+// Apply a write to one 64-byte channel block. `block` is that channel's
+// register bytes with the new value already stored at `offset`. Shared with
+// the 3HS88PWN4, whose harmonic channels use the same block layout.
+void writeChannelRegister(Channel& channel, const std::uint8_t* block, std::uint32_t offset, std::uint8_t value);
+
 class RegisterInterface {
 public:
     explicit RegisterInterface(Engine& engine);
@@ -46,9 +51,6 @@ public:
     void write(std::uint32_t address, std::uint8_t value);
 
 private:
-    void writeChannel(int channel, std::uint32_t offset, std::uint8_t value);
-    std::uint16_t read16(std::uint32_t address) const;
-
     Engine& engine_;
     std::array<std::uint8_t, reg::kSize> regs_{};
 };

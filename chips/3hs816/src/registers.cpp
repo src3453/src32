@@ -18,10 +18,6 @@ std::uint8_t RegisterInterface::read(std::uint32_t address) const {
     return address < reg::kSize ? regs_[address] : 0;
 }
 
-std::uint16_t RegisterInterface::read16(std::uint32_t address) const {
-    return static_cast<std::uint16_t>(regs_[address] << 8 | regs_[address + 1]);
-}
-
 void RegisterInterface::write(std::uint32_t address, std::uint8_t value) {
     if (address >= reg::kSize || address >= reg::kIdBase) {
         return;  // outside the chip, or the read-only ID
@@ -29,7 +25,9 @@ void RegisterInterface::write(std::uint32_t address, std::uint8_t value) {
     regs_[address] = value;
 
     if (address < reg::kUserWaveBase) {
-        writeChannel(static_cast<int>(address / reg::kChannelStride), address % reg::kChannelStride, value);
+        const std::uint32_t offset = address % reg::kChannelStride;
+        writeChannelRegister(engine_.channel(static_cast<int>(address / reg::kChannelStride)),
+                             &regs_[address - offset], offset, value);
     } else if (address < reg::kMuteBase) {
         const std::uint32_t offset = address - reg::kUserWaveBase;
         engine_.setUserWaveSample(static_cast<int>(offset / kUserWaveLength),
@@ -43,15 +41,14 @@ void RegisterInterface::write(std::uint32_t address, std::uint8_t value) {
     // Everything else is reserved: stored, no effect.
 }
 
-void RegisterInterface::writeChannel(int index, std::uint32_t offset, std::uint8_t value) {
-    Channel& channel = engine_.channel(index);
-    const std::uint32_t base = reg::kChannelBase + static_cast<std::uint32_t>(index) * reg::kChannelStride;
+void writeChannelRegister(Channel& channel, const std::uint8_t* block, std::uint32_t offset, std::uint8_t value) {
+    const auto read16 = [block](std::uint32_t at) { return static_cast<std::uint16_t>(block[at] << 8 | block[at + 1]); };
 
     if (offset < reg::kRatio) {
-        channel.setFrequency(read16(base + reg::kFrequency));
+        channel.setFrequency(read16(reg::kFrequency));
     } else if (offset < reg::kVolume) {
         const int op = static_cast<int>((offset - reg::kFrequency) / 2);
-        channel.setOperatorRatio(op, read16(base + offset - offset % 2));
+        channel.setOperatorRatio(op, read16(offset - offset % 2));
     } else if (offset < reg::kWave) {
         channel.setOperatorVolume(static_cast<int>(offset - reg::kVolume), value);
     } else if (offset < reg::kAlgorithm) {
@@ -74,8 +71,8 @@ void RegisterInterface::writeChannel(int index, std::uint32_t offset, std::uint8
         channel.setFeedback(value);
     } else {
         const int op = static_cast<int>((offset - reg::kEnvelope) / 4);
-        const std::uint32_t at = base + reg::kEnvelope + static_cast<std::uint32_t>(op) * 4;
-        channel.setOperatorEnvelope(op, EnvelopeRegisters{regs_[at], regs_[at + 1], regs_[at + 2], regs_[at + 3]});
+        const std::uint8_t* at = block + reg::kEnvelope + op * 4;
+        channel.setOperatorEnvelope(op, EnvelopeRegisters{at[0], at[1], at[2], at[3]});
     }
 }
 
