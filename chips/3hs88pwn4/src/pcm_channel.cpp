@@ -8,7 +8,6 @@ namespace hs88 {
 
 namespace {
 
-constexpr std::uint32_t kPitchClock = 192000;
 // One table sample per 1500 Hz-samples: the table/PCM rate is 32x the
 // frequency and the chip runs at 48 kHz (48000 / 32 = 1500).
 constexpr std::uint64_t kHzPerSampleStep = 1500;
@@ -119,17 +118,12 @@ void PcmChannel::reset() {
     setPan(0, 0);
 }
 
-// The reference added the quantized frequency to an integer accumulator,
-// dropping its fraction every sample, so the effective rate is
-// floor(192000 / P) Hz with P = floor(192000 / F). The step rounds up so
-// exact sample boundaries are reached (see the 3HS816 phase notes).
+// F Hz plays F / 1500 table samples per output sample, F * 2^32 / 1500 in
+// Q32, rounded up so exact sample boundaries are reached (see the 3HS816
+// phase notes). 0 Hz stops the cursor.
 void PcmChannel::setFrequency(std::uint16_t hz) {
     params_.frequency = hz;
-    std::uint64_t step = 0;
-    if (hz != 0) {
-        const std::uint64_t effectiveHz = kPitchClock / (kPitchClock / hz);
-        step = ((effectiveHz << 32) + kHzPerSampleStep - 1) / kHzPerSampleStep;
-    }
+    const std::uint64_t step = ((static_cast<std::uint64_t>(hz) << 32) + kHzPerSampleStep - 1) / kHzPerSampleStep;
     stepWhole_ = static_cast<std::uint32_t>(step >> 32);
     stepFraction_ = static_cast<std::uint32_t>(step);
 }

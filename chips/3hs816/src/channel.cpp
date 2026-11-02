@@ -37,16 +37,16 @@ unsigned tablePosition(std::int64_t phase) {
     return static_cast<unsigned>(position) & 0xFF;
 }
 
-// Base step for OP1 in Q42 turns/sample: the frequency is quantized to a
-// period P = floor(192000 / F) of the 192 kHz pitch clock, i.e. 4/P turns
-// per 48 kHz sample: ceil(2^42 * 4 / P) = ceil(2^44 / P). 0 Hz stops the
-// phase.
-std::uint64_t baseStepFor(std::uint16_t hz) {
-    if (hz == 0) {
-        return 0;
-    }
-    const std::uint64_t period = kPitchClock / hz;
-    return ((std::uint64_t{1} << 44) + period - 1) / period;
+// Q32 turns per sample for an operator: F Hz times the Q12 ratio over the
+// 48 kHz rate, F * R / 4096 / 48000 cycles = F * R * 2^20 / 48000, rounded
+// up. Rounding up keeps the phase from falling behind the exact rational
+// phase, so exactly periodic pitches (750 Hz = 64 samples per cycle) reach
+// each table boundary they hit exactly instead of stopping one LSB short; the
+// excess is under 1 LSB per sample, far below one table step (2^24). 0 Hz
+// stops the phase. The whole-turn part (up to 22 at 65535 Hz x 16) only
+// feeds the saturating turn count.
+std::uint64_t phaseStepFor(std::uint16_t hz, std::uint64_t ratio) {
+    return (static_cast<std::uint64_t>(hz) * ratio * (std::uint64_t{1} << 20) + kSampleRate - 1) / kSampleRate;
 }
 
 // --- Algorithm routing ------------------------------------------------------
@@ -164,18 +164,10 @@ void Channel::keyOff() {
     gateOn_ = false;
 }
 
-// Step = base * ratio / 4096 in Q32, i.e. (Q42 * Q12) >> 22. Both steps
-// round up: the phase then never falls behind the exact rational phase, so
-// exactly periodic pitches (440 Hz quantizes to 109 samples per cycle) reach
-// each table boundary they hit exactly instead of stopping one LSB short. The
-// excess is under 1 LSB per sample, far below one table step (2^24) for any
-// note. The whole-turn part (up to 64 at 192 kHz x 16) only feeds the
-// saturating turn count.
 void Channel::updatePhaseSteps() {
-    const std::uint64_t base = baseStepFor(params_.frequency);
     for (int op = 0; op < kOperatorCount; op++) {
         const std::uint64_t ratio = op == 0 ? kRatioOne : params_.operators[op].ratio;
-        ops_[op].phaseStep = (base * ratio + (std::uint64_t{1} << 22) - 1) >> 22;
+        ops_[op].phaseStep = phaseStepFor(params_.frequency, ratio);
     }
 }
 

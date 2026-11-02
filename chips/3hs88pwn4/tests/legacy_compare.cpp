@@ -144,6 +144,8 @@ void pcmSample(Pair& p, int ch, int loopStart) {
     for (int i = 0; i < 9; i++) p.wt(ch, 0x10 + i, bytes[i]);
 }
 
+// The reference quantizes F to 192000 / floor(192000 / F); 3HS816/3HS88PWN4
+// play F exactly. Every frequency here divides 192000, where both agree.
 std::vector<Scenario> scenarios() {
     std::vector<Scenario> list;
     const std::string alg = "algorithm ";
@@ -177,7 +179,7 @@ std::vector<Scenario> scenarios() {
 
     list.push_back({"close: PCM one-shot", Check::Close, 8, [](Pair& p) {
                         pcmSample(p, 0, 0xFFFFFF);
-                        wave(p, 0, 440, 0, 220, 0);
+                        wave(p, 0, 480, 0, 220, 0);
                     }});
     list.push_back({"close: PCM looped (reference loop rule)", Check::Close, 12, [](Pair& p) {
                         pcmSample(p, 1, 0x1800);
@@ -186,7 +188,7 @@ std::vector<Scenario> scenarios() {
     for (int filter = 0; filter < 5; filter++) {
         list.push_back({"close: WT filter mode " + std::to_string(filter), Check::Close, 8, [filter](Pair& p) {
                             tables(p);
-                            wave(p, 2, 220, 1, 255, 0);
+                            wave(p, 2, 240, 1, 255, 0);
                             p.wt(2, 4, filter);
                             p.wt(2, 5, 60);
                             p.wt(2, 6, 90);
@@ -203,15 +205,15 @@ std::vector<Scenario> scenarios() {
                     }});
     list.push_back({"close: additive HS with envelopes", Check::Close, 8, [](Pair& p) {
                         tables(p);
-                        voice(p, 1, 440, 0, 0, 128, false);
-                        voice(p, 6, 262, 8, 3, 128, false);
+                        voice(p, 1, 480, 0, 0, 128, false);
+                        voice(p, 6, 250, 8, 3, 128, false);
                     }});
     const auto mixSetup = [](Pair& p) {
         tables(p);
-        voice(p, 0, 440, 0, 0, 128, false);
-        voice(p, 2, 330, 2, 4, 128, false);
-        wave(p, 0, 220, 1, 255, 0);
-        wave(p, 1, 110, 4, 200, 0);
+        voice(p, 0, 480, 0, 0, 128, false);
+        voice(p, 2, 320, 2, 4, 128, false);
+        wave(p, 0, 240, 1, 255, 0);
+        wave(p, 1, 120, 4, 200, 0);
     };
     list.push_back({"close: equalizer", Check::Close, 8,
                     [mixSetup](Pair& p) {
@@ -250,7 +252,7 @@ std::vector<Scenario> scenarios() {
     for (int a : {1, 4, 6, 11}) {
         list.push_back({"info: HS " + alg + std::to_string(a) + " FM with envelopes", Check::Info, 8, [a](Pair& p) {
                             tables(p);
-                            voice(p, 1, 330, a, a, 200, false);
+                            voice(p, 1, 320, a, a, 200, false);
                         }});
     }
     return list;

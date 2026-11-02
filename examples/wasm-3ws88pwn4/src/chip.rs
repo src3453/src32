@@ -150,24 +150,15 @@ fn word(bytes: &[u8]) -> u16 {
 fn address(bytes: &[u8]) -> usize {
     ((bytes[0] as usize) << 16) | ((bytes[1] as usize) << 8) | bytes[2] as usize
 }
-fn period(value: u16) -> u64 {
-    if value == 0 { 0 } else { 192000 / value as u64 }
+/// Q32.32 turns per 48 kHz sample for F Hz and a Q4.12 ratio:
+/// F * R / 4096 / 48000 turns, rounded once. 0 Hz stops the phase.
+fn hs_step(hz: u16, ratio: u16) -> u64 {
+    ((hz as u64 * ratio as u64) << 20).wrapping_add(24000) / 48000
 }
-/// Q32.32 turns, rounded once when converting the register-defined ratio.
-fn hs_step(period: u64, ratio: u16) -> u64 {
-    if period == 0 {
-        return 0;
-    }
-    let denominator = period * 4096;
-    ((4u64 << 32) * ratio as u64 + denominator / 2) / denominator
-}
-/// Q32.32 sample positions; 32 PCM/WT positions per oscillator turn.
-fn wt_step(period: u64) -> u64 {
-    if period == 0 {
-        0
-    } else {
-        ((128u64 << 32) + period / 2) / period
-    }
+/// Q32.32 sample positions; 32 PCM/WT positions per oscillator turn, so F Hz
+/// advances F * 32 / 48000 = F / 1500 positions per sample.
+fn wt_step(hz: u16) -> u64 {
+    ((hz as u64) << 32).wrapping_add(750) / 1500
 }
 
 impl Chip {
@@ -234,10 +225,9 @@ impl Chip {
         }
         for ch in 0..8 {
             let r = &self.regs[ch * 64..];
-            let period = period(word(r));
+            let hz = word(r);
             for op in 0..8 {
-                self.hs_steps[ch][op] =
-                    hs_step(period, if op == 0 { 4096 } else { word(&r[op * 2..]) });
+                self.hs_steps[ch][op] = hs_step(hz, if op == 0 { 4096 } else { word(&r[op * 2..]) });
             }
         }
         for ch in 0..4 {
@@ -248,7 +238,7 @@ impl Chip {
                 self.tables[10 + ch][i] = ((p + (n - p) * (i % 8) as f32 / 8.0) as i32 - 128) as i8;
             }
             self.filter[ch].channel(r[4], r[5], r[6]);
-            self.wt_steps[ch] = wt_step(period(word(r)));
+            self.wt_steps[ch] = wt_step(word(r));
         }
         self.master.configure(&self.regs[0x2c0..]);
         self.dirty = false;
@@ -364,11 +354,9 @@ mod tests {
         chip.write(REG_BASE + 3, 0xab);
         chip.configure();
         let steps = chip.hs_steps[0];
-        assert_eq!(steps[0], ((4u64 << 32) + 218) / 436);
-        assert_eq!(
-            steps[1],
-            ((4u64 << 32) * 0x17ab + 436 * 2048) / (436 * 4096)
-        );
+        // Exact Hz: 440 / 48000 turns, not a quantized 192000 / 436.
+        assert_eq!(steps[0], ((440u64 << 32) + 24000) / 48000);
+        assert_eq!(steps[1], ((440u64 * 0x17ab << 20) + 24000) / 48000);
         // Skip ahead by integer arithmetic, then exercise overflow in sample().
         let count = 48_000u64 * 60 * 60 * 24 * 365;
         chip.phases[0][0] = steps[0].wrapping_mul(count);

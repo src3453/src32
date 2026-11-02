@@ -20,7 +20,7 @@ struct OperatorParams {
 };
 
 struct ChannelParams {
-    std::uint16_t frequency = 0;  // OP1 frequency in Hz, before quantization
+    std::uint16_t frequency = 0;  // OP1 frequency in Hz
     std::uint8_t algorithm = 0;
     std::uint8_t panLeft = 0;     // 0..15; both 0 means centered at full
     std::uint8_t panRight = 0;

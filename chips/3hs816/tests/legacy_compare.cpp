@@ -185,6 +185,8 @@ bool isFm(int algorithm) {
     return algorithm != 0 && algorithm != 2 && algorithm != 8;
 }
 
+// The reference quantizes F to 192000 / floor(192000 / F); 3HS816/3HS88PWN4
+// play F exactly. Every frequency here divides 192000, where both agree.
 std::vector<Scenario> scenarios() {
     std::vector<Scenario> list;
     const std::string alg = "algorithm ";
@@ -234,15 +236,15 @@ std::vector<Scenario> scenarios() {
     for (int a : {0, 2, 8}) {
         list.push_back({"close: " + alg + std::to_string(a) + " with envelopes", Check::Close, 8, [a](Pair& p) {
                             fillUserWaves(p);
-                            voice(p, 1, 440, a, a, 128, false);
-                            voice(p, 6, 262, a, a + 3, 128, false);
+                            voice(p, 1, 480, a, a, 128, false);
+                            voice(p, 6, 250, a, a + 3, 128, false);
                             p.channel(6, 0x1D, 0x4F);
                         }});
     }
     list.push_back({"close: release, re-release, retrigger, legato gate", Check::Close, 12,
                     [](Pair& p) {
-                        voice(p, 0, 262, 0, 0, 128, false);
-                        voice(p, 6, 196, 2, 3, 128, false);
+                        voice(p, 0, 250, 0, 0, 128, false);
+                        voice(p, 6, 200, 2, 3, 128, false);
                     },
                     [](Pair& p, int block) {
                         if (block == 3) p.keyOff(0);
@@ -256,7 +258,8 @@ std::vector<Scenario> scenarios() {
     list.push_back({"close: pitch, ratio and level changes between blocks", Check::Close, 8,
                     [](Pair& p) { voice(p, 4, 100, 0, 1, 128, false); },
                     [](Pair& p, int block) {
-                        p.frequency(4, 100 + block * 37);
+                        static const int pitches[8] = {100, 128, 150, 160, 192, 200, 240, 250};
+                        p.frequency(4, pitches[block]);
                         p.ratio(4, 3, 0x1234 + block * 0x111);
                         p.channel(4, 0x1C, block % 2 ? 8 : 0);
                         p.channel(4, 0x10 + block % 8, 255 - block * 20);
@@ -268,12 +271,12 @@ std::vector<Scenario> scenarios() {
         list.push_back({"info: " + alg + std::to_string(a) + " FM with envelopes, feedback", Check::Info, 8,
                         [a](Pair& p) {
                             fillUserWaves(p);
-                            voice(p, 1, 330, a, a, 200, false);
+                            voice(p, 1, 320, a, a, 200, false);
                             p.feedbackTarget(1, a % 8);
                         }});
     }
     list.push_back({"info: power-on defaults (feedback -1 on OP1, no key-on)", Check::Info, 4, [](Pair& p) {
-                        p.frequency(0, 440);
+                        p.frequency(0, 480);
                         for (int op = 0; op < 8; op++) {
                             p.channel(0, 0x10 + op, 200);
                             p.channel(0, 0x22 + op * 4, 255);

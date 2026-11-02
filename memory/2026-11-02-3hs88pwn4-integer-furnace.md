@@ -4,7 +4,7 @@
 
 - **Source of truth is here.** Furnace's `src/engine/platform/sound/3hs/` is a plain copy of `include/` and `src/`; edit here, run both chips' tests, copy back. `diff -r` the trees before committing either side.
 - **The float reference is gone from Furnace's tree.** For the legacy comparisons extract it: `git -C <furnace> archive 0889f291d src/engine/platform/sound/s3hs88pwn4 | tar -x -C <dir>` (sound.cpp SHA-256 `518671b1…`).
-- **WT/PCM pitch is `floor(192000/P)` Hz on purpose.** The reference added the float frequency to an integer accumulator, dropping the fraction each sample. Using the exact `192000/P` would put every WT channel slightly sharp versus the original.
+- WT/PCM pitch was first modelled as the reference's `floor(192000/P)` Hz; the period quantization has since been removed and F plays as exact Hz ([[2026-11-02-remove-pitch-quantization]]).
 - **The PCM loop rule is the reference's odd one** (`start + i mod (end − loop)`, loop start not added). Furnace writes the loop end as `end`, so it works for its data; don't "fix" it without changing the Furnace dispatch too.
 - `resetGate()` / `wtSync()` became register writes (gate=1, WT `+8`), matching the Rust card spec; SGUB exports now contain them.
 - The whole render verification is real-engine: `python test/3hs/render_check.py build/Release/furnace.exe --reference <old furnace.exe>` in the Furnace checkout. Pitch must use interpolated zero crossings (plain counting misread 440 Hz as 330). Furnace's output removes DC, so DC user waves can't be checked. A/B against the float core can be bit-identical after 44.1 kHz resampling; that is not evidence the reference didn't run (the check requires the reference to be audible instead).

@@ -46,6 +46,15 @@ struct Chip {
     }
 };
 
+// Rising zero crossings: whole cycles of a periodic signal.
+int risingCrossings(const std::vector<std::int16_t>& samples) {
+    int count = 0;
+    for (std::size_t i = 1; i < samples.size(); i++) {
+        if (samples[i - 1] < 0 && samples[i] >= 0) count++;
+    }
+    return count;
+}
+
 int peak(const std::vector<std::int16_t>& samples) {
     int value = 0;
     for (std::int16_t s : samples) value = std::max(value, std::abs(static_cast<int>(s)));
@@ -217,6 +226,17 @@ void testEnvelopeShape() {
     CHECK(env.level() == 0);
 }
 
+// The frequency register is exact Hz: no quantization to a 192 kHz period.
+// 11000 Hz would have played as 192000 / floor(192000 / 11000) = 11294 Hz.
+void testFrequencyIsExact() {
+    for (int hz : {11000, 4401, 37}) {
+        Chip chip;
+        chip.sine(0, hz);
+        const int cycles = risingCrossings(chip.render(hs816::kSampleRate));
+        CHECK(std::abs(cycles - hz) <= 1);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -230,6 +250,7 @@ int main() {
     testUserWave();
     testTaps();
     testEnvelopeShape();
+    testFrequencyIsExact();
     if (failures == 0) std::printf("all 3HS816 tests passed\n");
     return failures == 0 ? 0 : 1;
 }

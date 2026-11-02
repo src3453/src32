@@ -24,9 +24,6 @@ constexpr int kWaveTableLength = 256;
 // rate is the caller's job.
 constexpr int kSampleRate = 48000;
 
-// Pitch is quantized to periods of this clock (like a PSG divider).
-constexpr std::uint32_t kPitchClock = 192000;
-
 // Operator ratios are Q12 (4096 = 1.0). OP1 always runs at 1.0.
 constexpr std::uint16_t kRatioOne = 4096;
 

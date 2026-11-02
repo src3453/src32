@@ -33,6 +33,15 @@ struct Chip {
     }
 };
 
+// Rising zero crossings: whole cycles of a periodic signal.
+int risingCrossings(const std::vector<std::int16_t>& samples) {
+    int count = 0;
+    for (std::size_t i = 1; i < samples.size(); i++) {
+        if (samples[i - 1] < 0 && samples[i] >= 0) count++;
+    }
+    return count;
+}
+
 int peak(const std::vector<std::int16_t>& samples) {
     int value = 0;
     for (std::int16_t s : samples) value = std::max(value, std::abs(static_cast<int>(s)));
@@ -131,6 +140,21 @@ void testFilterBounds() {
     }
 }
 
+// WT pitch is exact Hz: the reference's floor(192000 / floor(192000 / F))
+// would play 7000 Hz as 7111 Hz.
+void testWaveFrequencyIsExact() {
+    for (int hz : {7000, 1001, 45}) {
+        Chip chip;
+        for (int i = 0; i < 32; i++) chip.wt(0, 0x10 + i, i < 16 ? 255 : 0);
+        chip.wt(0, 0, hz >> 8);
+        chip.wt(0, 1, hz & 0xFF);
+        chip.wt(0, 2, 255);
+        chip.wt(0, 3, 4);
+        const int cycles = risingCrossings(chip.render(hs88::kSampleRate));
+        CHECK(std::abs(cycles - hz) <= 1);
+    }
+}
+
 }  // namespace
 
 int main() {
@@ -141,6 +165,7 @@ int main() {
     testFifo();
     testMuteAndPan();
     testFilterBounds();
+    testWaveFrequencyIsExact();
     if (failures == 0) std::printf("all 3HS88PWN4 tests passed\n");
     return failures == 0 ? 0 : 1;
 }
