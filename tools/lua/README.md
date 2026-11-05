@@ -2,14 +2,20 @@
 
 Lua（MIT）はリポジトリに含めません。公式 tarball などで取得したソースと外部 Newlib を指定してビルドします（Newlib・DOOMGeneric と同じ方式）。パッチは当てません。JIT はありません。
 
+一番簡単なのは `foundation/run.py` のオプションです（標準のディスクには入りません）。fnd.1.wal の構築、Lua のビルド、起動ディスクの `/bin/lua.wax` への取り込みまでを自動で行います。
+
 ```sh
-# 1. Foundation を一度ビルドして fnd.1.wal を得る
+python foundation/run.py --disk --lua --lua-source /path/to/lua-5.4.9 --newlib-source /path/to/newlib-4.4.0.20231231
+# 環境変数 SRC32_LUA_SOURCE / SRC32_NEWLIB_SOURCE があれば、--lua だけでよい
+```
+
+手順を分けるときは次のとおりです。
+
+```sh
 python foundation/boot/build.py target/boot
-# 2. lua.wax を作る（Lua 5.4.x と Newlib 4.4 のソースのパス）
 python tools/lua/build.py --lua-source /path/to/lua-5.4.9 --newlib-source /path/to/newlib-4.4.0.20231231 \
     --fnd-wal target/boot/root/lib/fnd.1.wal --out target/foundation-lua
-# 3. 起動ディスクの /bin に取り込んで起動する（--bin-dir は直下の *.wax を /bin に足す）
-python foundation/run.py --disk --bin-dir target/foundation-lua
+python foundation/run.py --disk --bin-dir target/foundation-lua   # --bin-dir は直下の *.wax を /bin に足す
 ```
 
 シェルから `lua`（REPL）、`lua /script.lua`（スクリプト）で使います。`lua.wax` は約 2.1 MiB で、spawn の 3 MiB staging に収まります。
