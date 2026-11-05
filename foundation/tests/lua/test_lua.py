@@ -1,8 +1,8 @@
-"""Lua 5.4（外部ソース）を pkcl と Newlib で組み、Foundation 上でスクリプトと REPL を動かす。
+"""Lua 5.5（外部ソース）を pkcl と Newlib で組み、Foundation 上でスクリプトと REPL を動かす。
 
 Lua は MIT ライセンスだがリポジトリには含めない（Newlib と同じ）。
 
-    SRC32_LUA_SOURCE=/path/to/lua-5.4.9 SRC32_NEWLIB_SOURCE=/path/to/newlib-4.4.0.20231231 \\
+    SRC32_LUA_SOURCE=/path/to/lua-5.5.1 SRC32_NEWLIB_SOURCE=/path/to/newlib-4.4.0.20231231 \\
         python -m unittest discover -s foundation/tests/lua -v
 
 SRC32_LUA_WAX に組み済みの lua.wax を渡すとビルドを省く。CLANG と SRC32_TESTBENCH で実行ファイルを指定できる。
@@ -96,16 +96,16 @@ class LuaTests(unittest.TestCase):
     def test_script(self):
         screen = self.run_commands(['lua /t.lua'], 4000)
         screen = re.sub(r'[ \t]+', ' ', screen)  # PCG のタブ展開は幅が揃うだけ
-        for expected in ('Lua 5.4', '3 3 3.5 1024.0 1', '3.1415926535898', '1.4142135623731', '-4',
+        for expected in ('Lua 5.5', '3 3 3.5 1024.0 1', '3.1415926535897931', '1.4142135623730951', '-4',
                          '9223372036854775807', '3.14|42|str|ff', 'ABC 5 xxx 2 2', '25 16 9 4 1',
-                         'false boom', 'attempt to index a nil value', '1 2 3', '1e+15', '9.2233720368548e+18',
-                         '0.3', 'inf', '[line1][line2]', 'true number', 'done-lua'):
+                         'false boom', 'attempt to index a nil value', '1 2 3', '1e+15', '9.2233720368547758e+18',
+                         '0.30000000000000004', 'inf', '[line1][line2]', 'true number', 'done-lua'):
             self.assertIn(expected, screen)
 
     def test_repl(self):
         screen = self.run_commands(['lua', 'print(6 * 7)', 'x = 10', 'return x + 0.5', '= x * 2',
                                     'print(', '1)', 'os.exit(0)'], 4000, spacing=150)
-        for expected in ('Lua 5.4', '42', '10.5', '20', '1'):
+        for expected in ('Lua 5.5', '42', '10.5', '20', '1'):
             self.assertIn(expected, screen)
 
 

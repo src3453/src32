@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""外部の Lua 5.4 ソースを pkcl と Newlib で組み、Foundation の lua.wax を作る。
+"""外部の Lua 5.5 ソースを pkcl と Newlib で組み、Foundation の lua.wax を作る。
 
 Lua は MIT ライセンスだがリポジトリには含めず、Newlib と同じく取得済みのソースを指定する。
 パッチは当てない。JIT は含まない（Lua 本体のインタプリタと REPL だけ）。
@@ -24,11 +24,12 @@ EXCLUDED = {"luac.c"}
 
 def lua_version(source: Path) -> str:
     text = (source / "src/lua.h").read_text(encoding="utf-8")
-    parts = [re.search(rf"#define LUA_VERSION_{name}\s+\"(\d+)\"", text) for name in ("MAJOR", "MINOR")]
-    release = re.search(r'#define LUA_VERSION_RELEASE\s+"(\d+)"', text)
-    if not all(parts) or not release:
+    # 5.5 defines the numbers (LUA_VERSION_MAJOR_N 5); 5.4 tarballs define strings ("5").
+    parts = [re.search(rf'#define LUA_VERSION_{name}(?:_N)?\s+"?(\d+)"?', text)
+             for name in ("MAJOR", "MINOR", "RELEASE")]
+    if not all(parts):
         raise SystemExit(f"{source}: not a Lua source tree (src/lua.h)")
-    return f"{parts[0][1]}.{parts[1][1]}.{release[1]}"
+    return ".".join(part[1] for part in parts)
 
 
 def main(argv=None):
@@ -46,8 +47,8 @@ def main(argv=None):
     args.out.mkdir(parents=True, exist_ok=True)
     source = args.lua_source.resolve()
     version = lua_version(source)
-    if not version.startswith("5.4."):
-        raise SystemExit(f"Lua 5.4 only (got {version})")
+    if not version.startswith("5.5."):
+        raise SystemExit(f"Lua 5.5 only (got {version})")
     pkcl = ROOT / "foundation/lib/pkcl"
     sources = [s for s in sorted((source / "src").glob("*.c")) if s.name not in EXCLUDED]
     sources += [*sorted(pkcl.glob("*.c")), pkcl / "newlib/syscalls.c", *sorted((pkcl / "posix").glob("*.c"))]

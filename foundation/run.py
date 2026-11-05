@@ -72,10 +72,10 @@ def main():
     parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
                         help="add direct *.wax children to /bin; repeatable, later directories win")
     parser.add_argument("--lua", action="store_true",
-                        help="build Lua 5.4 (tools/lua/build.py) and install it as /bin/lua.wax; needs "
+                        help="build Lua 5.5 (tools/lua/build.py) and install it as /bin/lua.wax; needs "
                              "--lua-source and --newlib-source (or SRC32_LUA_SOURCE / SRC32_NEWLIB_SOURCE)")
     parser.add_argument("--lua-source", type=Path, default=os.environ.get("SRC32_LUA_SOURCE"),
-                        metavar="DIR", help="Lua 5.4 source tree (the directory with src/lua.h)")
+                        metavar="DIR", help="Lua 5.5 source tree (the directory with src/lua.h)")
     parser.add_argument("--newlib-source", type=Path, default=os.environ.get("SRC32_NEWLIB_SOURCE"),
                         metavar="DIR", help="Newlib source tree (e.g. newlib-4.4.0.20231231)")
     parser.add_argument("--ram-mib", type=int, default=16, help="Main RAM in MiB (default: 16)")
