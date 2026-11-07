@@ -1,8 +1,8 @@
-// 3WS8PN / 3WS8PNA (S3W2) Sound Generator Core Implementation
+// 3WS8PN / 3WS8PNA / 3WS8PNB (S3W2) Sound Generator Core Implementation
 //
 // 3WS8PN is a wavetable/PCM/noise sound generator chip with 8 channels.
 // SGU v2.1 (3WS8PNA) adds 2-tap linear interpolation and a 16-bit FIFO DAC;
-// `SguVersion` selects v1 / v2 / v2.1 / v3 behavior (doc/spec_SGU.md section 8);
+// `SguVersion` selects v1 / v2 / v2.1 / v3 / v3.1 behavior (doc/spec_SGU.md section 8);
 // v3 adds the 34SI22 (si22.rs) beside the two cores.
 // Master Output: 16-bit Stereo Linear PCM, 48kHz
 // Sound clock: 192kHz (48MHz / 250)
@@ -73,8 +73,10 @@ pub enum SguVersion {
     /// 3WS8PNA: 2-tap linear interpolation and the FIFO DAC.
     V2_1,
     /// v2.1 plus the 34SI22 record/playback interface chip (doc/spec_34SI22.md).
-    #[default]
     V3,
+    /// 3WS8PNB: per-channel wavetable length and interpolation control.
+    #[default]
+    V3_1,
 }
 
 impl SguVersion {
@@ -84,6 +86,7 @@ impl SguVersion {
             "2" | "2.0" => Some(Self::V2),
             "2.1" => Some(Self::V2_1),
             "3" | "3.0" => Some(Self::V3),
+            "3.1" => Some(Self::V3_1),
             _ => None,
         }
     }
@@ -94,12 +97,12 @@ impl SguVersion {
     }
 
     fn has_3ws8pna(self) -> bool {
-        matches!(self, Self::V2_1 | Self::V3)
+        matches!(self, Self::V2_1 | Self::V3 | Self::V3_1)
     }
 
     /// True when the 34SI22 is mapped next to the SGU cores.
     pub fn has_34si22(self) -> bool {
-        self == Self::V3
+        matches!(self, Self::V3 | Self::V3_1)
     }
 }
 
@@ -203,6 +206,9 @@ pub struct Channel {
     fifo_sub: u8,
     fifo_latch: u8,
 
+    /// 3WS8PNB SAMPLE_CONTROL: bits 1:0 length, bit 2 disables interpolation.
+    pub sample_control: u8,
+
     // Wavetable data (256 bytes)
     pub wavetable: [u8; WAVETABLE_SIZE],
 }
@@ -244,6 +250,7 @@ impl Default for Channel {
             fifo_hold: 0,
             fifo_sub: 0,
             fifo_latch: 0,
+            sample_control: 0,
             wavetable: [0x80; WAVETABLE_SIZE],
         };
         ch.reset();
@@ -274,6 +281,7 @@ impl Channel {
         self.active = true;
         self.slew_current = 0;
         self.reset_fifo();
+        self.sample_control = 0;
         self.wavetable.fill(0x80);
     }
 
@@ -392,7 +400,7 @@ impl S3w2Sound {
         } else if (0x800..=0x8FF).contains(&address) {
             let ch = (((address - 0x800) >> 5) & 0x7) as usize;
             let offset = ((address - 0x800) & 0x1F) as u8;
-            if offset < 0x10 {
+            if offset < 0x10 || offset == 0x1A {
                 self.write_channel_control(ch, offset, value);
             } else {
                 self.write_channel_pcm_reg(ch, offset - 0x10, value);
@@ -442,6 +450,7 @@ impl S3w2Sound {
                 0x0E | 0x0F if self.version.has_3ws8pna() => {
                     (self.channels[ch].fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
                 }
+                0x1A if self.version == SguVersion::V3_1 => self.channels[ch].sample_control,
                 0x10..=0x19 => self.read_channel_pcm_reg(ch, offset - 0x10),
                 _ => 0,
             }
@@ -552,10 +561,10 @@ impl S3w2Sound {
             0x0C if version.has_3ws8pna() => c.fifo_latch = value,
             0x0D if version.has_3ws8pna() => {
                 if c.fifo.len() < FIFO_CAPACITY {
-                    c.fifo
-                        .push_back(i16::from_be_bytes([c.fifo_latch, value]));
+                    c.fifo.push_back(i16::from_be_bytes([c.fifo_latch, value]));
                 }
             }
+            0x1A if version == SguVersion::V3_1 => c.sample_control = value & 7,
             _ => {}
         }
     }
@@ -587,6 +596,7 @@ impl S3w2Sound {
                 0
             }
             0x0B => c.modulation_targeting_mode & 0x01,
+            0x1A if self.version == SguVersion::V3_1 => c.sample_control,
             0x0E | 0x0F if self.version.has_3ws8pna() => {
                 (c.fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
             }
@@ -727,8 +737,21 @@ impl S3w2Sound {
         )
     }
 
+    fn interpolates(&self, ch: usize) -> bool {
+        self.version.has_3ws8pna()
+            && (self.version != SguVersion::V3_1 || self.channels[ch].sample_control & 4 == 0)
+    }
+
+    fn wavetable_mask(&self, ch: usize) -> u64 {
+        if self.version == SguVersion::V3_1 {
+            (256u64 >> (self.channels[ch].sample_control & 3)) - 1
+        } else {
+            255
+        }
+    }
+
     fn generate_wavetable_sample(&mut self, ch: usize) -> i32 {
-        let interpolate = self.version.has_3ws8pna();
+        let interpolate = self.interpolates(ch);
         let abs_target_ch = Self::convert_to_absolute_channel_address(
             ch as u8,
             self.channels[ch].modulation_targeting_mode,
@@ -736,6 +759,8 @@ impl S3w2Sound {
         );
         let target_last_sample = self.channels[abs_target_ch].last_sample;
         let target_phase = self.channels[abs_target_ch].phase;
+        let target_cycle = (self.wavetable_mask(abs_target_ch) + 1) << PHASE_FRAC_BITS;
+        let mask = self.wavetable_mask(ch);
 
         let c = &mut self.channels[ch];
         c.phase = c.phase.wrapping_add(wave_phase_step(c.frequency));
@@ -745,14 +770,14 @@ impl S3w2Sound {
             ModulationType::Phase => {
                 let phase_offset =
                     ((c.modulation_param_1 as i32 * target_last_sample as i32) >> 12) as i64;
-                ((phase.wrapping_add(phase_offset as u64)) & 0xFF) as usize
+                ((phase.wrapping_add(phase_offset as u64)) & mask) as usize
             }
-            _ => (phase & 0xFF) as usize,
+            _ => (phase & mask) as usize,
         };
 
         let current = i32::from(c.wavetable[index]);
         let mut q8 = if interpolate {
-            let next = i32::from(c.wavetable[(index + 1) & 0xFF]);
+            let next = i32::from(c.wavetable[(index + 1) & mask as usize]);
             current * (256 - frac) + next * frac
         } else {
             current << 8
@@ -761,7 +786,7 @@ impl S3w2Sound {
         if c.modulation_type == ModulationType::Ring {
             q8 = Self::ring(q8, target_last_sample, c.modulation_param_1, interpolate);
         } else if c.modulation_type == ModulationType::HardSync {
-            if target_phase < PHASE_ONE_CYCLE {
+            if target_phase < target_cycle {
                 c.phase = 0;
                 q8 = i32::from(c.wavetable[0]) << 8;
             }
@@ -796,7 +821,7 @@ impl S3w2Sound {
     }
 
     fn generate_pcm_sample(&mut self, ch: usize) -> i32 {
-        let interpolate = self.version.has_3ws8pna();
+        let interpolate = self.interpolates(ch);
         let abs_target_ch = Self::convert_to_absolute_channel_address(
             ch as u8,
             self.channels[ch].modulation_targeting_mode,
@@ -838,9 +863,11 @@ impl S3w2Sound {
         if (addr as u32) >= c.pcm_end_addr {
             if (c.pcm_control & 0x02) != 0 {
                 // Loop on
-                c.phase = u64::from(c.pcm_loop_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
+                c.phase =
+                    u64::from(c.pcm_loop_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
             } else {
-                c.phase = u64::from(c.pcm_end_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
+                c.phase =
+                    u64::from(c.pcm_end_addr.saturating_sub(c.pcm_start_addr)) << PHASE_FRAC_BITS;
                 out = 0;
             }
         } else {
@@ -954,7 +981,8 @@ impl S3w2Sound {
                 let code = sqv4::unpack_code(payload, within, variant.bits());
                 let reconstructed =
                     sqv4::decode_code(version, variant, &mut channel.sqv4_decoder, code);
-                channel.sqv4_frame[decode_frame & 1][within] = (reconstructed * volume / 255) as i16;
+                channel.sqv4_frame[decode_frame & 1][within] =
+                    (reconstructed * volume / 255) as i16;
             }
             channel.sqv4_cached_frame[decode_frame & 1] = Some(decode_frame);
             channel.sqv4_next_frame += 1;
@@ -968,7 +996,7 @@ impl S3w2Sound {
         if !self.channels[ch].sqv4_validated && !self.initialize_sqv4(ch) {
             return 0;
         }
-        let interpolate = self.version.has_3ws8pna();
+        let interpolate = self.interpolates(ch);
         let start = self.channels[ch].pcm_start_addr as usize;
         let sample_count = self.channels[ch].sqv4_sample_count;
         if sample_count == 0 {
@@ -997,7 +1025,9 @@ impl S3w2Sound {
         } else {
             current << 8
         };
-        channel.phase = channel.phase.wrapping_add(sqv4_phase_step(channel.frequency));
+        channel.phase = channel
+            .phase
+            .wrapping_add(sqv4_phase_step(channel.frequency));
         q8
     }
 
@@ -1165,11 +1195,83 @@ mod tests {
     }
 
     fn v21_sound() -> S3w2Sound {
-        S3w2Sound::new()
+        S3w2Sound::with_version(
+            Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE])),
+            SguVersion::V2_1,
+        )
     }
 
     fn v2_sound() -> S3w2Sound {
         S3w2Sound::with_version(Rc::new(RefCell::new(vec![0; PCM_RAM_SIZE])), SguVersion::V2)
+    }
+
+    #[test]
+    fn v31_lengths_wrap_interpolation_and_channel_registers() {
+        let mut sound = v21_sound();
+        sound.set_version(SguVersion::V3_1);
+        for ch in 0..8 {
+            for size in 0..4u8 {
+                let addr = 0x81A + ch as u32 * 32;
+                sound.write_register(addr, 0xF8 | size);
+                assert_eq!(sound.read_register(addr), size);
+                assert_eq!(sound.peek_register(addr), size);
+                let length = 256usize >> size;
+                let c = &mut sound.channels[ch];
+                c.wavetable.fill(255);
+                c.wavetable[length - 1] = 0;
+                c.wavetable[0] = 200;
+                c.volume = 4;
+                c.phase = ((length as u64 - 1) << PHASE_FRAC_BITS) + (1 << (PHASE_FRAC_BITS - 1));
+                assert_eq!(sound.generate_sample(ch), -28);
+                sound.write_register(addr, size | 4);
+                assert_eq!(sound.generate_sample(ch), -128);
+                sound.channels[ch].phase = (length as u64) << PHASE_FRAC_BITS;
+                assert_eq!(sound.generate_sample(ch), 72);
+            }
+        }
+        sound.reset();
+        assert_eq!(sound.read_register(0x81A), 0);
+    }
+
+    #[test]
+    fn v31_defaults_match_pna_and_disabled_interpolation_matches_pn() {
+        for waveform in [WaveformType::Wavetable, WaveformType::Pcm] {
+            for (control, version) in [(0, SguVersion::V3), (4, SguVersion::V2)] {
+                let mut old = v2_sound();
+                old.set_version(version);
+                let mut new = v2_sound();
+                new.set_version(SguVersion::V3_1);
+                new.write_register(0x81A, control);
+                for sound in [&mut old, &mut new] {
+                    for i in 0..256 {
+                        sound.write_register(i, (i * 37) as u8);
+                        sound.write_pcm_ram(i, (i * 53) as u8);
+                    }
+                    let c = &mut sound.channels[0];
+                    c.waveform_type = waveform;
+                    c.frequency = 3111;
+                    c.volume = 201;
+                    c.pcm_end_addr = 256;
+                    c.pcm_control = 3;
+                }
+                for _ in 0..1024 {
+                    assert_eq!(new.generate_sample(0), old.generate_sample(0));
+                }
+            }
+        }
+        for version in [
+            SguVersion::V1,
+            SguVersion::V2,
+            SguVersion::V2_1,
+            SguVersion::V3,
+        ] {
+            let mut sound = v2_sound();
+            sound.set_version(version);
+            sound.write_register(0x81A, 7);
+            assert_eq!(sound.read_register(0x81A), 0);
+            assert_eq!(sound.peek_register(0x81A), 0);
+            assert_eq!(sound.wavetable_mask(0), 255);
+        }
     }
 
     #[test]
@@ -1249,6 +1351,20 @@ mod tests {
     }
 
     #[test]
+    fn v31_sqv4_interpolation_switch_matches_old_generations() {
+        let pcm: Vec<i16> = (0..130).map(|i| i * 40).collect();
+        let bytes = super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::H, 255).unwrap();
+        for (control, version) in [(0, SguVersion::V2_1), (4, SguVersion::V2)] {
+            let mut old = sqv4_sound(version, &bytes);
+            let mut new = sqv4_sound(SguVersion::V3_1, &bytes);
+            new.write_register(0x81A, control);
+            for _ in 0..262 {
+                assert_eq!(new.generate_sample(0), old.generate_sample(0));
+            }
+        }
+    }
+
+    #[test]
     fn sqv4_two_tap_interpolation_crosses_frames_and_holds_at_end() {
         let pcm: Vec<i16> = (0..130).map(|i| i * 40).collect();
         let bytes = super::sqv4::encode_interleaved(&pcm, 1, 8_000, Sqv4Variant::H, 255).unwrap();
@@ -1262,7 +1378,8 @@ mod tests {
             assert_eq!(v2.generate_sample(0), decoded[k], "v2 sample {k}");
             assert_eq!(v2.generate_sample(0), decoded[k], "v2 half {k}");
             assert_eq!(v21.generate_sample(0), decoded[k], "v2.1 sample {k}");
-            let half = ((i32::from(decoded[k]) * 128 + i32::from(decoded[k + 1]) * 128) / 256) as i16;
+            let half =
+                ((i32::from(decoded[k]) * 128 + i32::from(decoded[k + 1]) * 128) / 256) as i16;
             assert_eq!(v21.generate_sample(0), half, "v2.1 half {k}");
         }
         // The last sample has no following tap: it is held, not blended.
@@ -1342,7 +1459,8 @@ mod tests {
         assert_eq!(SguVersion::parse("2.1"), Some(SguVersion::V2_1));
         assert_eq!(SguVersion::parse("3"), Some(SguVersion::V3));
         assert_eq!(SguVersion::parse("4"), None);
-        assert_eq!(SguVersion::default(), SguVersion::V3);
+        assert_eq!(SguVersion::parse("3.1"), Some(SguVersion::V3_1));
+        assert_eq!(SguVersion::default(), SguVersion::V3_1);
     }
 
     #[test]
@@ -1619,7 +1737,9 @@ mod tests {
             c.volume = 0x80;
             c.pcm_end_addr = 64;
             c.pcm_control = 0x03;
-            (0..40).map(|_| sound.generate_sample(0)).collect::<Vec<_>>()
+            (0..40)
+                .map(|_| sound.generate_sample(0))
+                .collect::<Vec<_>>()
         };
         // Above the limit the register still reads back, but playback runs at the limit.
         assert_eq!(run(65_535), run(PCM_FREQ_MAX));

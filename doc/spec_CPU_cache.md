@@ -44,9 +44,13 @@ uncached access would:
   self-modifying code and loaders need no flush. (The pipeline already
   discards younger fetches after a store; the I-cache snoop makes the same
   guarantee for lines fetched earlier.)
-- Other bus masters (DMA in the emulator) invalidate overlapping lines.
-  The FPGA SoC has none. In the emulator the model is tag-only, so it cannot
-  return stale data; DMA writes are not snooped and may only skew the counters.
+- DMAC writes to Main RAM invalidate the corresponding I/D cache index in
+  both the FPGA SoC and emulator. The RTL snoop carries an index, not a tag,
+  so a conflicting line at that index is also invalidated. DMA completion
+  must still be observed before using its output. The RTL does not snoop DMA
+  writes to the RAM disk window; software must invalidate after such writes.
+  The emulator's tag-only model always reads data from the bus, so this model
+  affects cache statistics and optional miss penalties, not returned data.
 - Setting or clearing an enable bit invalidates that cache (a disabled cache
   does not snoop stores).
 

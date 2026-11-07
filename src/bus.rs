@@ -129,6 +129,7 @@ pub struct Bus {
     bus_error: bool,
     bmc: Option<Rc<RefCell<Bmc>>>,
     dmac: Option<Rc<RefCell<Dmac>>>,
+    l1_cache: Option<Rc<RefCell<crate::cpu_cache::L1Cache>>>,
     idc: Option<Rc<RefCell<Idc>>>,
     pec_input_pending: Option<Arc<AtomicBool>>,
     pec_timing: Option<Rc<RefCell<PeCTimingState>>>,
@@ -162,6 +163,7 @@ impl Bus {
             bus_error: false,
             bmc: None,
             dmac: None,
+            l1_cache: None,
             idc: None,
             pec_input_pending: None,
             pec_timing: None,
@@ -198,6 +200,10 @@ impl Bus {
 
     pub(crate) fn attach_dmac(&mut self, dmac: Rc<RefCell<Dmac>>) {
         self.dmac = Some(dmac);
+    }
+
+    pub(crate) fn attach_l1_cache(&mut self, cache: Rc<RefCell<crate::cpu_cache::L1Cache>>) {
+        self.l1_cache = Some(cache);
     }
 
     pub(crate) fn attach_idc(&mut self, idc: Rc<RefCell<Idc>>) {
@@ -665,6 +671,13 @@ impl Bus {
                 device.write(offset, byte);
                 if device.is_faulted() {
                     return None;
+                }
+                // RTL snoops each accepted DMAC write to Main RAM. Invalidate
+                // even if a later byte of this DMA beat fails.
+                if op.address + u32::from(byte_index) < 0x0100_0000 {
+                    if let Some(cache) = &self.l1_cache {
+                        cache.borrow_mut().external_write(op.address + u32::from(byte_index), 1);
+                    }
                 }
             }
             Some(op.value)

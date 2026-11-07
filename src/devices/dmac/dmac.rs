@@ -560,6 +560,23 @@ mod tests {
     }
 
     #[test]
+    fn dma_write_invalidates_l1_index_for_both_banks() {
+        let mut bus = setup_bus(false);
+        let cache = crate::cpu_cache::connect_cache(&mut bus);
+        // 0x2200 conflicts with destination 0x200 in the direct-mapped cache.
+        cache.borrow_mut().fetch(0x2200);
+        cache.borrow_mut().load(0x2200);
+        bus.write_u32_be(0x100, 0x1234_5678);
+        configure_channel0(&mut bus, 0x100, 0x200, 4, 2);
+        run_dma(&mut bus, 8);
+        assert_eq!(bus.read_u32_be(0x200), 0x1234_5678);
+        cache.borrow_mut().fetch(0x2200);
+        cache.borrow_mut().load(0x2200);
+        assert_eq!(cache.borrow().read_reg(0x14), 2);
+        assert_eq!(cache.borrow().read_reg(0x1c), 2);
+    }
+
+    #[test]
     fn runs_all_six_channels_concurrently() {
         let mut bus = setup_bus(false);
         bus.write_u32_be(DMAC_BASE + 8, 0x3F);

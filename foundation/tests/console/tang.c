@@ -33,7 +33,7 @@ int main(int argc, char **argv) {
     assert(con_pcg_init() == FND_OK);
     assert(!memcmp(vram + 0x20000, tang_fonts, sizeof tang_fonts));
     assert(!memcmp(vram + 0x12c00, tang_palette, sizeof tang_palette));
-    assert(vdp[1] == 1 && vdp[0xf008] == 0xfe);
+    assert(vdp[1] == 1 && vdp[0xf008] == 0x00);
     fnd_key_t key;
     assert(!con_pcg_poll_key(&key)); /* no PeC input MMIO access */
     const unsigned modes[] = {FND_CON_DISPLAY_80, FND_CON_DISPLAY_40, FND_CON_DISPLAY_8X16};
