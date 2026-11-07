@@ -95,6 +95,8 @@ LZMA_DIR = FOUNDATION / "lib/lzma"
 SGC_DIR = FOUNDATION / "lib/sgc"
 # Commands that import /lib/sgc.1.wal (libsgc) as well as fnd.
 SGC_COMMANDS = {"chip8"}
+# Optional WALs under /lib (fnd is always built). Selected with --libs.
+LIBS = ["lzma", "rle", "code", "crypt", "sgc"]
 RLE_DIR = FOUNDATION / "lib/rle"
 CODE_DIR = FOUNDATION / "lib/code"
 CRYPT_DIR = FOUNDATION / "lib/crypt"
@@ -194,6 +196,17 @@ def external_bins(directories):
     return files
 
 
+def parse_selection(parser, option, text, available):
+    """A comma-separated subset of available, in the canonical order; None selects everything."""
+    if text is None:
+        return list(available)
+    names = [name.strip() for name in text.split(",") if name.strip()]
+    unknown = sorted(set(names) - set(available))
+    if unknown:
+        parser.error(f"{option}: unknown {', '.join(unknown)} (available: {', '.join(available)})")
+    return [name for name in available if name in names]
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("out", type=Path)
@@ -212,6 +225,12 @@ def main(argv=None):
     parser.add_argument("--root", type=Path, help="host directory copied into the disk root (e.g. root/bin/*.wax)")
     parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
                         help="add direct *.wax children to /bin after --root; repeatable, later directories win")
+    parser.add_argument("--commands", metavar="LIST",
+                        help="comma-separated /bin commands to build (default: all; empty for none). "
+                             "The shell is always built. Available: " + ", ".join(COMMANDS))
+    parser.add_argument("--libs", metavar="LIST",
+                        help="comma-separated optional /lib WALs to build (default: all; empty for none). "
+                             "fnd is always built. Available: " + ", ".join(LIBS))
     parser.add_argument("--disk-blocks", type=int, default=DISK_BLOCKS, help=f"disk size in blocks (default {DISK_BLOCKS})")
     level = parser.add_mutually_exclusive_group()
     for n in range(3):
@@ -223,6 +242,11 @@ def main(argv=None):
         parser.error('--root-drive microsd requires --platform tang-console')
     if args.console == "uart" and not fpga:
         parser.error("--console uart requires --platform tang-console")
+    commands = parse_selection(parser, "--commands", args.commands, COMMANDS)
+    libs = parse_selection(parser, "--libs", args.libs, LIBS)
+    for name in commands:
+        if name in SGC_COMMANDS and "sgc" not in libs:
+            parser.error(f"--commands {name} imports /lib/sgc.1.wal; add sgc to --libs")
     uart_only = fpga and args.console == "uart"
     ramdisk_bytes = 0x01000000 if args.ramdisk == "sdram0-split" else 0x02000000
     if fpga and args.disk_blocks > ramdisk_bytes // 512:
@@ -235,6 +259,11 @@ def main(argv=None):
     root = out / "root"
     (root / "bin").mkdir(parents=True, exist_ok=True)
     (root / "lib").mkdir(parents=True, exist_ok=True)
+    # OUT is reused between builds: drop what an earlier build left for modules that are not selected now.
+    for name in set(COMMANDS) - set(commands):
+        (root / "bin" / f"{name}.wax").unlink(missing_ok=True)
+    for name in set(LIBS) - set(libs):
+        (root / "lib" / f"{name}.1.wal").unlink(missing_ok=True)
     services = FOUNDATION / "services"
 
     jobs = args.jobs if args.jobs > 0 else (os.cpu_count() or 1)
@@ -248,22 +277,22 @@ def main(argv=None):
     lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
     lzma_build = importlib.util.module_from_spec(lzma_spec)
     lzma_spec.loader.exec_module(lzma_build)
-    lzma_job = pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization)
+    lzma_job = None if "lzma" not in libs else pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization)
     # /lib/rle.1.wal: PackBits RLE (lib/rle, WAL "rle" 1.0), also self-contained. Both follow conde.
     rle_spec = importlib.util.spec_from_file_location("rle_build", RLE_DIR / "build.py")
     rle_build = importlib.util.module_from_spec(rle_spec)
     rle_spec.loader.exec_module(rle_build)
-    rle_job = pool.submit(rle_build.build, out / "rle", args.clang, args.optimization)
+    rle_job = None if "rle" not in libs else pool.submit(rle_build.build, out / "rle", args.clang, args.optimization)
     # /lib/code.1.wal: character code conversion (lib/code, WAL "code" 1.0), also self-contained.
     code_spec = importlib.util.spec_from_file_location("code_build", CODE_DIR / "build.py")
     code_build = importlib.util.module_from_spec(code_spec)
     code_spec.loader.exec_module(code_build)
-    code_job = pool.submit(code_build.build, out / "code", args.clang, args.optimization)
+    code_job = None if "code" not in libs else pool.submit(code_build.build, out / "code", args.clang, args.optimization)
     # /lib/crypt.1.wal: ChaCha20 and Poly1305, self-contained and with no work area.
     crypt_spec = importlib.util.spec_from_file_location("crypt_build", CRYPT_DIR / "build.py")
     crypt_build = importlib.util.module_from_spec(crypt_spec)
     crypt_spec.loader.exec_module(crypt_build)
-    crypt_job = pool.submit(crypt_build.build, out / "crypt", args.clang, args.optimization)
+    crypt_job = None if "crypt" not in libs else pool.submit(crypt_build.build, out / "crypt", args.clang, args.optimization)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if fpga:
@@ -317,22 +346,21 @@ def main(argv=None):
     sgc_spec = importlib.util.spec_from_file_location("sgc_build", SGC_DIR / "build.py")
     sgc_build = importlib.util.module_from_spec(sgc_spec)
     sgc_spec.loader.exec_module(sgc_build)
-    sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization)
+    sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization) if "sgc" in libs else None
     program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args,
                                 "foundation.shell", fnd)]
     # The commands that import libsgc go last, so the others start while it builds.
-    for name in sorted(COMMANDS, key=lambda name: name in SGC_COMMANDS):
+    for name in sorted(commands, key=lambda name: name in SGC_COMMANDS):
         libs = [sgc_job.result()] if name in SGC_COMMANDS else []
         sources = [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"]
         if name == "sgubplay":
             sources.append(ROOT / "sdk/cpt32/src/sgub.c")
         program_jobs.append(pool.submit(program, sources,
                                         root / "bin" / f"{name}.wax", args, f"foundation.{name}", fnd, *libs))
-    shutil.copyfile(lzma_job.result(), root / "lib/lzma.1.wal")
-    shutil.copyfile(sgc_job.result(), root / "lib/sgc.1.wal")
-    shutil.copyfile(rle_job.result(), root / "lib/rle.1.wal")
-    shutil.copyfile(code_job.result(), root / "lib/code.1.wal")
-    shutil.copyfile(crypt_job.result(), root / "lib/crypt.1.wal")
+    for name, job in (("lzma", lzma_job), ("sgc", sgc_job), ("rle", rle_job), ("code", code_job),
+                      ("crypt", crypt_job)):
+        if job is not None:
+            shutil.copyfile(job.result(), root / f"lib/{name}.1.wal")
     for job in program_jobs:
         job.result()
     modules = [dict(spec, image=spec["image"].result().read_bytes()) for spec in specs]

@@ -44,6 +44,10 @@ def main():
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
     parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
                         help="add direct *.wax children to /bin; repeatable, later directories win")
+    parser.add_argument("--commands", metavar="LIST",
+                        help="comma-separated /bin commands to build (default: all); see boot/build.py")
+    parser.add_argument("--libs", metavar="LIST",
+                        help="comma-separated optional /lib WALs to build (default: all); see boot/build.py")
     parser.add_argument("--ram-mib", type=int, default=16, help="Main RAM in MiB (default: 16)")
     parser.add_argument("--disk-blocks", type=int, help="boot disk size in 512-byte blocks (default: 16384)")
     parser.add_argument("--disk", action="store_true",
@@ -68,6 +72,9 @@ def main():
         command += ["--root", str(args.root.resolve())]
     for directory in args.bin_dir:
         command += ["--bin-dir", str(directory.resolve())]
+    for option in ("commands", "libs"):
+        if getattr(args, option) is not None:
+            command += [f"--{option}", getattr(args, option)]
     if args.disk_blocks is not None:
         command += ["--disk-blocks", str(args.disk_blocks)]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
