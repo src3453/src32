@@ -276,6 +276,22 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(vol.read(vol.resolve('/list.txt')), b'a.txt\tB.txt\n')
         self.assertEqual(vol.read(vol.resolve('/empty.txt')), b'')
 
+    def test_tree(self):
+        # §10.3: ASCII branches, siblings sorted like ls (case folded),
+        # nested prefixes, -d lists directories only, totals cover every path,
+        # errors use the §11.1 format and do not stop the other paths.
+        rows = self.screen('mkdir /t\\n', 'mkdir /t/Sub\\n', 'mkdir /t/empty\\n',
+                           'echo a > /t/b.txt\\n', 'echo a > /t/Sub/x.txt\\n',
+                           'tree /t\\n', 'tree -d /t\\n')
+        text = '\n'.join(rows)
+        self.assertIn('/> tree /t\n/t\n|-- b.txt\n|-- empty\n`-- Sub\n    `-- x.txt\n\n2 directories, 2 files', text)
+        self.assertIn('/> tree -d /t\n/t\n|-- empty\n`-- Sub\n\n2 directories', text)
+        rows = self.screen('echo a > /f.txt\\n', 'tree /nope /f.txt\\n', 'tree -x\\n')
+        self.assertIn('tree: /nope: not found (-10)', rows)
+        self.assertIn('/f.txt', rows)
+        self.assertIn('0 directories, 1 file', rows)
+        self.assertIn('usage: tree [-d] [path...]', rows)
+
     def test_hex(self):
         # Cursor edit both nibbles, ASCII edit, exact goto, legacy command,
         # save and return. Check the disk bytes as well as shell recovery.
