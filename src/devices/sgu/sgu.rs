@@ -298,11 +298,7 @@ mod tests {
 
     #[test]
     fn config_selects_sgu_version() {
-<<<<<<< HEAD
-        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3));
-=======
         assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3_1));
->>>>>>> f1056b9e3162e5099fbf0d2b6b304da66606838a
         assert_eq!(
             sgu_version_from_yaml("sgu:\n  version: 3\n"),
             Ok(SguVersion::V3)
@@ -319,13 +315,10 @@ mod tests {
             sgu_version_from_yaml("sgu:\n  version: 2.1\n"),
             Ok(SguVersion::V2_1)
         );
-<<<<<<< HEAD
-=======
         assert_eq!(
             sgu_version_from_yaml("sgu:\n  version: 3.1\n"),
             Ok(SguVersion::V3_1)
         );
->>>>>>> f1056b9e3162e5099fbf0d2b6b304da66606838a
         assert!(sgu_version_from_yaml("sgu:\n  version: 4\n").is_err());
         assert!(sgu_version_from_yaml("sgu: 2\n").is_err());
         let mut bus = Bus::new();
