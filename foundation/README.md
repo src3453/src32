@@ -215,6 +215,22 @@ python foundation/run.py --bin-dir target/foundation-doom --bin-dir target/busyb
 
 指定ディレクトリ直下の `.wax`（拡張子の大文字小文字は不問）を `/bin/<ファイル名>` に実行可能な mode `0x003D` で取り込みます。サブディレクトリ、WAL、WAD などは対象外です。存在しないディレクトリや WAX のないディレクトリは、コンパイル開始前にエラーになります。標準ファイル、`--root`、`--bin-dir` の順に適用し、同名のファイルは後の指定を優先します。元の WAX はビルド開始時に読み取るため、ビルドで生成先が上書きされる場合も取り込めます。標準コマンドも上書きできるので、専用の外部コマンド出力ディレクトリを指定してください。
 
+ビルドするモジュールは `--commands LIST`（`/bin` のコマンド）と `--libs LIST`（`/lib` の任意 WAL。lzma、rle、code、crypt、sgc）でカンマ区切りに絞れます。省略すると全部、空文字列 `""` で「なし」です。シェルと libfnd は常にビルドします。`chip8` は `sgc` を import するので、`--commands chip8` には `--libs` に `sgc` が必要です（足りなければコンパイル前にエラー）。`OUT` を使い回しても、選ばなかったモジュールの前回の出力は `root/` から取り除きます。
+
+```sh
+python foundation/run.py --commands ls,cat,tinybasic --libs ""
+```
+
+## GUI ランチャー
+
+`python foundation/launcher.py`（Python 3.10+、Tkinter、標準ライブラリのみ）は、上のモジュールの選択と起動オプションをリストとチェックボックスで設定して `run.py` を実行します。`tools/cpt32-launcher`（任意のゲストを起動する汎用ランチャー）とは別物で、Foundation のビルドと起動だけを扱います。
+
+- モジュール一覧は `boot/build.py` の `COMMANDS` / `LIBS` から読むので、コマンドを足せば自動で一覧に出ます（説明は `launcher.py` の `DESCRIPTIONS` に足します）。`chip8` を選ぶと `sgc` も選ばれ、`sgc` を外すと `chip8` も外れます。
+- オプション：ディスク起動（`--disk`）、nommu（`FND_MM=nommu`）、ビルドのみ、Main RAM、ディスクブロック数、並列数、Clang、`--root`、外部 `--bin-dir`（複数）、Lua 5.5（`--lua` とソースの場所。空欄なら環境変数 `SRC32_LUA_SOURCE`／`SRC32_NEWLIB_SOURCE`）、エミュレータ引数（`--arg`）。実行する前に「コマンドをコピー」で実際のコマンドラインを取り出せます。
+- 設定は起動時に `~/.config/CPT32/Launcher/foundation.json`（Windows は `%LOCALAPPDATA%\CPT32\Launcher\foundation.json`）へ保存します。前回の保存後に増えたモジュールは有効で始まります。「停止」はビルドとエミュレータのプロセスをまとめて終了します。
+
+検証：`python -m unittest discover -s foundation/tests/launcher -v`（表示不要。一覧の依存、コマンドライン、保存状態、`build.py`／`run.py` の選択の検証）。
+
 RAM は `--ram-mib N`（既定 16、1〜256）、ディスクは `--disk-blocks N`（512-byte block、既定 16384 = 8 MiB）で設定できます。例えば DOOM 用の WAX と WAD を追加する場合：
 
 ```powershell

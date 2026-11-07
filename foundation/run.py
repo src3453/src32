@@ -71,6 +71,10 @@ def main():
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
     parser.add_argument("--bin-dir", type=Path, action="append", default=[], metavar="DIR",
                         help="add direct *.wax children to /bin; repeatable, later directories win")
+    parser.add_argument("--commands", metavar="LIST",
+                        help="comma-separated /bin commands to build (default: all); see boot/build.py")
+    parser.add_argument("--libs", metavar="LIST",
+                        help="comma-separated optional /lib WALs to build (default: all); see boot/build.py")
     parser.add_argument("--lua", action="store_true",
                         help="build Lua 5.5 (tools/lua/build.py) and install it as /bin/lua.wax; needs "
                              "--lua-source and --newlib-source (or SRC32_LUA_SOURCE / SRC32_NEWLIB_SOURCE)")
@@ -104,6 +108,9 @@ def main():
         command += ["--root", str(args.root.resolve())]
     for directory in args.bin_dir:
         command += ["--bin-dir", str(directory.resolve())]
+    for option in ("commands", "libs"):
+        if getattr(args, option) is not None:
+            command += [f"--{option}", getattr(args, option)]
     if args.disk_blocks is not None:
         command += ["--disk-blocks", str(args.disk_blocks)]
     subprocess.run(command, cwd=ROOT, env=environment, check=True)
