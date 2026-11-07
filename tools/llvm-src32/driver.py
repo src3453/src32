@@ -185,6 +185,12 @@ def compile_c(clang: str, source: Path, output: Path, args, defines=(), runtime=
     if depfile is not None:
         command.extend(["-MD", "-MF", str(depfile.resolve()), "-MT", "src32_dependency_target"])
     command.extend([str(source.resolve()), "-o", str(output.resolve())])
+    launcher = os.environ.get("SRC32_CLANG_LAUNCHER")
+    if launcher:
+        executable = shutil.which(launcher)
+        if not executable:
+            raise DriverError(f"Clang launcher not found: {launcher!r} (SRC32_CLANG_LAUNCHER)")
+        command.insert(0, executable)
     result = subprocess.run(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, errors="replace")
     if result.returncode:
         raise DriverError(f"Clang failed for {source}:\n{result.stderr.strip() or result.stdout.strip()}")

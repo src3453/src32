@@ -21,6 +21,22 @@ Clang は MIPS の 32-bit big-endian 設定で LLVM IR のみを生成し、機�
 Python と llvmlite は同じ環境へインストールしてください。複数 Python がある場合、CMake の `SRC32_PYTHON_EXECUTABLE` を明示します。
 llvmlite は LLVM 自身による IR のパース・検証・モジュールリンク・データレイアウト計算に使用します。
 
+## コンパイルキャッシュ
+
+ccache をインストールして、ビルドを起動するシェルで `SRC32_CLANG_LAUNCHER` を設定すると、C/C++ から LLVM IR へのコンパイル結果を再利用できます。この設定は `driver.py` の直接実行、CMake、Foundation のビルドで共通です。
+
+PowerShell の例
+
+```powershell
+$env:SRC32_CLANG_LAUNCHER = "ccache"
+python foundation/boot/build.py target/foundation-boot
+ccache -s
+```
+
+Bash では `export SRC32_CLANG_LAUNCHER=ccache` を使います。設定値には PATH 上の実行ファイル名か実行ファイルのフルパスを指定します。キャッシュの保存先を指定する場合は `CCACHE_DIR` を設定します。
+
+キャッシュは翻訳単位ごとに利用します。LLVM IR のリンク、SRC32 コード生成、WAX/WAL やディスクイメージの組み立ては毎回実行されます。設定を解除すると Clang を直接起動します。
+
 ## CMake
 
 リポジトリルートから、付属の4翻訳単位の検証プロジェクトをビルド:
