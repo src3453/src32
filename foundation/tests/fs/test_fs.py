@@ -241,6 +241,42 @@ class FileTests(FsTestBase):
         fs.lib.host_gone(h)
         self.assertEqual(fs.remount(), 0)
 
+    def test_random_seeks_in_a_large_file_and_after_rewrite(self):
+        """The run index must not outlive a truncate, a delete or an inode reuse."""
+        fs = self.fs
+        fs.boot_disk()
+        def pattern(salt, n):
+            return bytes(((i // 3) * 11 + (i >> 9) * 5 + salt) & 0xFF for i in range(n))
+        size = 508 * 300 + 77
+        data = pattern(1, size)
+        fs.put("/big", data)
+        h = fs.open("/big", READ)
+        # Forward, backward and repeated offsets, across run boundaries.
+        for off in (size - 100, 0, 508 * 150 + 3, 508 * 10, size - 20, 508 * 299, 5, 508 * 150 + 400):
+            fs.ok(h, ST_SEEK, 0, 0, off)
+            self.assertEqual(fs.ok(h, ST_READ, 90).data, data[off:off + 90], off)
+        fs.lib.host_gone(h)
+        # Shrink and regrow with different content: no stale block mapping.
+        w = fs.open("/big", READ | WRITE)
+        fs.ok(w, ST_TRUNCATE, 0, 0, 1000)
+        fs.ok(w, ST_SEEK, 0, 0, 0)
+        new = pattern(9, 508 * 120)
+        fs.write(w, new)
+        for off in (508 * 100, 17, 508 * 119 + 10, 0):
+            fs.ok(w, ST_SEEK, 0, 0, off)
+            self.assertEqual(fs.ok(w, ST_READ, 60).data, new[off:off + 60], off)
+        fs.lib.host_gone(w)
+        # Delete, then a new file that reuses the freed inode and blocks.
+        fs.ok(SESSION, FS_UNLINK, data="/big")
+        other = pattern(33, 508 * 40)
+        fs.put("/other", other)
+        o = fs.open("/other", READ)
+        for off in (508 * 39, 0, 508 * 20 + 1):
+            fs.ok(o, ST_SEEK, 0, 0, off)
+            self.assertEqual(fs.ok(o, ST_READ, 50).data, other[off:off + 50], off)
+        fs.lib.host_gone(o)
+        self.assertEqual(fs.remount(), 0)
+
     def test_truncate_and_append(self):
         fs = self.fs
         fs.boot_disk()
@@ -530,13 +566,17 @@ class VolumeTests(FsTestBase):
     def sb_flags(self, mnt=ROOT_MNT):
         return be(self.image_bytes(mnt), 512 + 6, 2)
 
-    def test_dirty_set_on_first_change_and_cleared_on_unmount(self):
+    def test_dirty_is_cleared_when_each_update_completes(self):
         fs = self.fs
         image = fs.boot_disk()
         fs.list("/")
         self.assertEqual(self.sb_flags(), 0)  # reading leaves the volume clean
         fs.put("/x", b"1")
-        self.assertEqual(self.sb_flags(), 1)
+        self.assertEqual(self.sb_flags(), 0)  # a finished update closes its transaction
+        fs.ok(SESSION, FS_CHMOD, 0x24, data="/x")
+        self.assertEqual(self.sb_flags(), 0)
+        fs.ok(SESSION, FS_UNLINK, data="/x")
+        self.assertEqual(self.sb_flags(), 0)
         self.assertEqual(s32(fs.lib.host_unmount(ROOT_MNT) & 0xFFFFFFFF), 0)
         self.assertEqual(self.sb_flags(), 0)
         image[512 + 7] = 1
@@ -765,8 +805,8 @@ class Fs2ToolTests(FsTestBase):
         fs.lib.host_gone(h)
         fs.ok(SESSION, FS_CHMOD, 0x24, data="/etc/profile.fsh")
         fs.ok(SESSION, FS_CHOWN, 1000, data="/home/ユーザー")
-        self.assertEqual(be(bytes(img), 512 + 6, 2), 1)
-        self.assertEqual(fs2tool.check_image(img, allow_dirty=True), [])
+        self.assertEqual(be(bytes(img), 512 + 6, 2), 0)
+        self.assertEqual(fs2tool.check_image(img), [])
         self.assertEqual(s32(fs.lib.host_unmount(ROOT_MNT) & 0xFFFFFFFF), 0)
         self.assertEqual(fs2tool.check_image(img), [])
         vol = fs2tool.Volume(img)

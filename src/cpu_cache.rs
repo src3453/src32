@@ -160,8 +160,11 @@ impl L1Cache {
         let mut line = pa & !((1 << LINE_SHIFT) - 1);
         let end = pa.saturating_add(len);
         while line < end {
-            self.i.invalidate_line(line);
-            self.d.invalidate_line(line);
+            // The RTL snoop carries the index only, so it drops a conflicting
+            // cached tag at the same index too.
+            let index = (line >> LINE_SHIFT) as usize & (self.i.tags.len() - 1);
+            self.i.tags[index] = INVALID;
+            self.d.tags[index] = INVALID;
             line = line.wrapping_add(1 << LINE_SHIFT);
             if line == 0 {
                 break;
@@ -242,6 +245,7 @@ pub fn connect_cache(bus: &mut crate::bus::Bus) -> Rc<RefCell<L1Cache>> {
         .find(|region| region.name == "Main RAM")
         .map_or((0, 0), |region| (region.start, region.size));
     let cache = Rc::new(RefCell::new(L1Cache::new(start, size)));
+    bus.attach_l1_cache(Rc::clone(&cache));
     bus.add_device(
         CACHE_REG_BASE,
         "L1 Cache Registers",

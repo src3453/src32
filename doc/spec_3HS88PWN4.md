@@ -1,5 +1,7 @@
 # 3HS88PWN4 WASM音源カード仕様
 
+> この文書は Rust の WASM 音源カード（`examples/wasm-3ws88pwn4/`）の契約です。整数演算だけの C++ モデル（`chips/3hs88pwn4/`、Furnace の S3HS が使用）は [spec_3HS816.md](spec_3HS816.md) の「3HS88PWN4（整数モデル）」の節で定めます。WTSync を `+8` への書き込みにする点と Gate の扱いは共通です。
+
 ## 資料と互換性
 
 本カードの名前は3HS88PWN4とする。参照元はFurnaceの `src/engine/platform/sound/s3hs88pwn4/` にある3HS88PWN4実装 (`sound.cpp`, `envelove.cpp`, `ram.cpp`, `lib/`) と、ユーザー提供の `3HS88PWN4 Register Sheet 2.xlsx` の第1シート。シートはレジスタ配置の資料として扱う。
@@ -57,10 +59,10 @@ Gate onでenvelope、位相、各operatorのfeedback履歴をresetする。Attac
 
 ### 固定小数点位相
 
-内部生成rateは48,000 Hz、pitch量子化clockは192,000 Hz。
-`F>0` なら `P=floor(192000/F)`、`F=0`なら増分0。HS位相はu64のQ32.32 turns。
+内部生成rateは48,000 Hz。周波数registerはそのままHzで、周期への量子化はしない (旧実装の `P=floor(192000/F)` による量子化は廃止)。
+HS位相はu64のQ32.32 turns。F=0なら増分0。
 OP1の倍率は4096、OP2..8の倍率はregister `R`。増分は整数演算で
-`round((4 * 2^32 * R)/(P*4096))` とし、sampleごとにwrapping加算する。
+`round(F * R * 2^20 / 48000)` (F×R/4096/48000 turns) とし、sampleごとにwrapping加算する。
 最大丸め誤差は1 sampleあたり半LSB。位相をf32/f64に戻して蓄積しない。発音は位相加算後の値を参照する。
 
 変調信号の振幅演算はf32、位相変位は `trunc(signal*4*2^32)` のsigned整数に変換する。
@@ -119,7 +121,7 @@ Attackは0から1へ線形、Decay/Releaseは `1-2^(-10*t)` の補間、Sustain�
 
 | offset | 内容 |
 |---|---|
-| `00..01` | 周波数F (u16)、PCMのsample rateは量子化後のF×32 |
+| `00..01` | 周波数F (u16, Hz)、PCMのsample rateはF×32 |
 | `02` | volume、`value/255` |
 | `03` | mode |
 | `04` | filter mode (0 LP、1 HP、2 BP、3 notch、それ以外LPの別resonance scale) |
@@ -131,7 +133,7 @@ Attackは0から1へ線形、Decay/Releaseは `1-2^(-10*t)` の補間、Sustain�
 | `10..2F` | 32 unsigned wave samples、PCM時は先頭9 bytesがstart/end/loop-startのu24 |
 
 WTSyncはシート `K34,K37,K40,K43` に従い `W+8` の任意byte書き込みで該当cursorだけを0にする。filter、FIFO、RAMを変更しない。
-cursorはu64 Q32.32 sample positions、増分 `round(128*2^32/P)`。整数部でsample選択し、小数部は線形補間時のみ振幅計算に変換する。元の `twt += float` によるsampleごとの小数周波数切り捨ては行わない。
+cursorはu64 Q32.32 sample positions、増分 `round(F*2^32/1500)` (F Hzで32点を1周)。整数部でsample選択し、小数部は線形補間時のみ振幅計算に変換する。元の `twt += float` によるsampleごとの小数周波数切り捨ては行わない。
 
 | mode | 動作 |
 |---|---|
@@ -178,6 +180,7 @@ compressorはabs(input)を50 Hz/Q1/48kHz LPに通して検出し、target gain=t
 | WTSync | シートの+8を採用、旧関数操作をMMIO化 |
 | Comp RateU/L | 元コード未使用、追加実装せず保存のみ |
 | FIFO | 元コードmode5を保持、予約領域にMMIO data/countを追加 |
+| ピッチ | 旧コードの192 kHz周期への量子化 (`P=floor(192000/F)`) を廃止し、registerのHzそのまま |
 | 0 Hz | 旧コードの0除算/未定義変換を再現せず位相停止 |
 | 位相 | 全oscillator/cursorは整数32.32、旧float累積とPCMの小数pitch切り捨てを廃止 |
 

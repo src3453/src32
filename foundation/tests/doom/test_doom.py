@@ -21,12 +21,13 @@ class DoomPlatformTests(unittest.TestCase):
                        '-I', str(Path(SOURCE).resolve() / 'doomgeneric'),
                        '-I', str(ROOT / 'foundation/include'),
                        str(Path(__file__).with_name('host.c')), '-o', str(lib)]
-            command += ['-Xlinker', '/export:test_platform', '-Xlinker', '/export:test_wad'] if os.name == 'nt' else ['-fPIC']
+            command += ['-Xlinker', '/export:test_platform', '-Xlinker', '/export:test_wad', '-Xlinker', '/export:test_tang'] if os.name == 'nt' else ['-fPIC']
             result = subprocess.run(command, capture_output=True, text=True)
             self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
             dll = ctypes.CDLL(str(lib))
             try:
                 self.assertEqual(dll.test_platform(), 0, 'failing host.c line')
+                self.assertEqual(dll.test_tang(), 0, 'failing host.c Tang line')
                 wad = Path(directory) / 'test.wad'
                 wad.write_bytes(bytes(range(256)))
                 dll.test_wad.argtypes = [ctypes.c_char_p]

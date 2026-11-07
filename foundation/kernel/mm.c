@@ -80,18 +80,35 @@ void kmem_copy(uint32_t dst, uint32_t src, uint32_t len) {
     if (len >= FND_COPY_DMA_MIN && copy_dma(dst, src, len)) return;
 #endif
     uint32_t at = 0;
-    if (((dst | src) & 3u) == 0) {
-        volatile uint32_t *d = (volatile uint32_t *)(uintptr_t)dst;
-        const volatile uint32_t *s = (const volatile uint32_t *)(uintptr_t)src;
-        for (; at + 32u <= len; at += 32u, d += 8, s += 8) {
-            d[0] = s[0], d[1] = s[1], d[2] = s[2], d[3] = s[3];
-            d[4] = s[4], d[5] = s[5], d[6] = s[6], d[7] = s[7];
-        }
-        for (; at + 4u <= len; at += 4u)
-            *d++ = *s++;
-    }
     volatile uint8_t *d = (volatile uint8_t *)(uintptr_t)dst;
     const volatile uint8_t *s = (const volatile uint8_t *)(uintptr_t)src;
+    if (len >= 16u) {
+        /* Align the destination; when the source then is aligned too, copy by
+         * words, else read aligned source words and compose each destination
+         * word (big-endian). The aligned source word holding the last needed
+         * byte never leaves its page. */
+        for (; (dst + at) & 3u; ++at)
+            d[at] = s[at];
+        volatile uint32_t *dw = (volatile uint32_t *)(uintptr_t)(dst + at);
+        uint32_t shift = 8u * ((src + at) & 3u);
+        if (!shift) {
+            const volatile uint32_t *sw = (const volatile uint32_t *)(uintptr_t)(src + at);
+            for (; at + 32u <= len; at += 32u, dw += 8, sw += 8) {
+                dw[0] = sw[0], dw[1] = sw[1], dw[2] = sw[2], dw[3] = sw[3];
+                dw[4] = sw[4], dw[5] = sw[5], dw[6] = sw[6], dw[7] = sw[7];
+            }
+            for (; at + 4u <= len; at += 4u)
+                *dw++ = *sw++;
+        } else {
+            const volatile uint32_t *sw = (const volatile uint32_t *)(uintptr_t)((src + at) & ~3u);
+            uint32_t prev = *sw++;
+            for (; at + 4u <= len; at += 4u) {
+                uint32_t next = *sw++;
+                *dw++ = (prev << shift) | (next >> (32u - shift));
+                prev = next;
+            }
+        }
+    }
     for (; at < len; ++at)
         d[at] = s[at];
 }

@@ -204,7 +204,7 @@ impl Device for Si22Device {
     }
 }
 
-/// Reads `sgu.version` (`"1"`, `"2"`, `"2.1"` or `"3"`; default 3) from config.yaml.
+/// Reads `sgu.version` (`"1"`, `"2"`, `"2.1"`, `"3"` or `"3.1"`; default 3.1) from config.yaml.
 /// A missing file selects the default.
 pub fn sgu_version_from_config(path: &Path) -> Result<SguVersion, String> {
     let contents = match std::fs::read_to_string(path) {
@@ -231,10 +231,10 @@ pub fn sgu_version_from_yaml(contents: &str) -> Result<SguVersion, String> {
     let text = match value {
         yaml_serde::Value::String(text) => text.clone(),
         yaml_serde::Value::Number(number) => number.to_string(),
-        _ => return Err("`sgu.version` must be 1, 2, 2.1 or 3".into()),
+        _ => return Err("`sgu.version` must be 1, 2, 2.1, 3 or 3.1".into()),
     };
     SguVersion::parse(&text)
-        .ok_or_else(|| format!("`sgu.version` must be 1, 2, 2.1 or 3 (got `{text}`)"))
+        .ok_or_else(|| format!("`sgu.version` must be 1, 2, 2.1, 3 or 3.1 (got `{text}`)"))
 }
 
 pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
@@ -298,7 +298,7 @@ mod tests {
 
     #[test]
     fn config_selects_sgu_version() {
-        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3));
+        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3_1));
         assert_eq!(
             sgu_version_from_yaml("sgu:\n  version: 3\n"),
             Ok(SguVersion::V3)
@@ -314,6 +314,10 @@ mod tests {
         assert_eq!(
             sgu_version_from_yaml("sgu:\n  version: 2.1\n"),
             Ok(SguVersion::V2_1)
+        );
+        assert_eq!(
+            sgu_version_from_yaml("sgu:\n  version: 3.1\n"),
+            Ok(SguVersion::V3_1)
         );
         assert!(sgu_version_from_yaml("sgu:\n  version: 4\n").is_err());
         assert!(sgu_version_from_yaml("sgu: 2\n").is_err());

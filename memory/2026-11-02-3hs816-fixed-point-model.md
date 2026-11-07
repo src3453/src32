@@ -1,0 +1,12 @@
+# 3HS816: integer-only C++ model of the 3HS88PWN4 harmonic synth
+
+`chips/3hs816/` is a 16-channel, PCM-less, effect-less rewrite of Furnace's `s3hs88pwn4/sound.cpp`, kept integer-only as the RTL reference. Contract: `doc/spec_3HS816.md`. No Issue was filed (FPGA worktree policy in AGENTS.md).
+
+- **No float in `include/` or `src/`.** `tests/test_sources.py` greps for it. Anything transcendental (built-in waves, 2^-x) goes in `tools/gen_tables.py`, which writes `src/generated_tables.hpp`; the test also fails if that header is stale.
+- **Bit-exactness vs the reference is only possible where its float math is exact** (750/375 Hz, integer ratios, flat envelopes). `hs816_legacy_compare` requires ±1 LSB there for every algorithm/wave; that tier is what proves routing, modulation scale (`sum << 19`), feedback (`(h0+h1)(fb-128) << 11`) and the DAC constant (`2159*32767 >> 32`). Realistic non-FM is SNR ≥ 40 dB; realistic FM is report-only, because the reference rounds each lookup phase to float32 and FM chains amplify the boundary flips. Don't chase FM SNR with tolerance hacks.
+- Things that looked like rounding noise but were real behavior differences, each found by the compare:
+  - **Index truncates toward zero on a signed phase** (dead zone around 0 at note start and in direct-phase modes 10–12). Plain wrapping Q32 (floor) broke every FM chain. Hence the saturating `turns` counter (≤32) on top of the Q32 phase.
+  - **Phase steps must round up** (`ceil`). An exactly periodic pitch hits a table boundary every cycle; truncating lands 1 LSB short and square/noise waves jump by 255. (Found with the old period quantization, where 440 Hz became P=436 = 109 samples/cycle; that quantization has since been removed, see [[2026-11-02-remove-pitch-quantization]].)
+  - **Envelope time is elapsed half-samples, not a progress fraction.** The reference re-scales position when A/D/R change mid-segment and carries the leftover into the next segment.
+- The very first float port was bit-exact (102/102) before the integer rewrite; that is the baseline these rules were derived from.
+- Run: `cmake -S chips/3hs816 -B build/hs816 -DHS816_LEGACY_SOURCE=<furnace>/src/engine/platform/sound/s3hs88pwn4/sound.cpp && cmake --build build/hs816 --config Release && ctest --test-dir build/hs816 -C Release --output-on-failure`. On Windows only MSVC Build Tools is installed (no g++); CMake's VS generator finds it without vcvars.
