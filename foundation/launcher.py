@@ -105,7 +105,8 @@ def selection_argument(selected, available):
 def default_settings(catalog):
     return {
         "commands": list(catalog.commands), "libs": list(catalog.libs),
-        "disk": False, "build_only": False, "nommu": False,
+        "disk": False, "build_only": False, "nommu": False, "lua": False,
+        "lua_source": "", "newlib_source": "",
         "ram_mib": "16", "disk_blocks": "", "clang": "", "jobs": "", "root": "", "bin_dirs": [],
         "extra_args": "",
     }
@@ -124,7 +125,13 @@ def validate(settings, catalog):
         for lib in catalog.needs.get(name, ()):
             if lib not in settings["libs"]:
                 problems.append(f"{name} には {lib} ライブラリが必要です")
-    for key in ("root",):
+    if settings["lua"]:
+        # run.py also reads SRC32_LUA_SOURCE / SRC32_NEWLIB_SOURCE when the fields are empty.
+        for key, variable, label in (("lua_source", "SRC32_LUA_SOURCE", "Lua ソース"),
+                                     ("newlib_source", "SRC32_NEWLIB_SOURCE", "Newlib ソース")):
+            if not (settings[key].strip() or os.environ.get(variable)):
+                problems.append(f"{label}を指定してください")
+    for key in ("root", "lua_source", "newlib_source"):
         if settings[key].strip() and not Path(settings[key]).is_dir():
             problems.append(f"ディレクトリがありません: {settings[key]}")
     for directory in settings["bin_dirs"]:
@@ -152,6 +159,11 @@ def build_invocation(settings, catalog, python=None):
         argv += ["--root", settings["root"].strip()]
     for directory in settings["bin_dirs"]:
         argv += ["--bin-dir", directory]
+    if settings["lua"]:
+        argv.append("--lua")
+        for key, option in (("lua_source", "--lua-source"), ("newlib_source", "--newlib-source")):
+            if settings[key].strip():
+                argv += [option, settings[key].strip()]
     if settings["disk"]:
         argv.append("--disk")
     if settings["build_only"]:
@@ -221,7 +233,9 @@ def run_gui():
             self.build_only = tk.BooleanVar(value=settings["build_only"])
             self.nommu = tk.BooleanVar(value=settings["nommu"])
             self.text = {key: tk.StringVar(value=settings[key])
-                         for key in ("ram_mib", "disk_blocks", "clang", "jobs", "root", "extra_args")}
+                         for key in ("ram_mib", "disk_blocks", "clang", "jobs", "root", "extra_args",
+                                     "lua_source", "newlib_source")}
+            self.lua = tk.BooleanVar(value=settings["lua"])
             self._build_ui(settings)
             self.after(100, self._poll)
             self.protocol("WM_DELETE_WINDOW", self._close)
@@ -276,11 +290,16 @@ def run_gui():
             ttk.Checkbutton(options, text="ビルドのみ（エミュレータを開かない）", variable=self.build_only
                             ).grid(row=row, column=0, columnspan=3, sticky="w", padx=4, pady=2)
             row += 1
+            ttk.Checkbutton(options, text="Lua 5.5 を /bin/lua.wax として追加（--lua）", variable=self.lua
+                            ).grid(row=row, column=0, columnspan=3, sticky="w", padx=4, pady=2)
+            row += 1
             for key, label, chooser in (("ram_mib", "Main RAM (MiB)", None),
                                         ("disk_blocks", "ディスク (512B ブロック)", None),
                                         ("jobs", "並列ビルド数", None),
                                         ("clang", "Clang", "file"),
-                                        ("root", "--root ディレクトリ", "dir")):
+                                        ("root", "--root ディレクトリ", "dir"),
+                                        ("lua_source", "Lua ソース（Lua 時）", "dir"),
+                                        ("newlib_source", "Newlib ソース（Lua 時）", "dir")):
                 ttk.Label(options, text=label).grid(row=row, column=0, sticky="w", padx=4, pady=2)
                 ttk.Entry(options, textvariable=self.text[key]).grid(row=row, column=1, sticky="ew", pady=2)
                 if chooser:
@@ -377,7 +396,7 @@ def run_gui():
             result.update(
                 commands=[n for n in catalog.commands if n in self.selected["commands"]],
                 libs=[n for n in catalog.libs if n in self.selected["libs"]],
-                disk=self.disk.get(), build_only=self.build_only.get(), nommu=self.nommu.get(),
+                lua=self.lua.get(), disk=self.disk.get(), build_only=self.build_only.get(), nommu=self.nommu.get(),
                 bin_dirs=list(self.bin_dirs.get(0, "end")))
             return result
 

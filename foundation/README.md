@@ -226,7 +226,7 @@ python foundation/run.py --commands ls,cat,tinybasic --libs ""
 `python foundation/launcher.py`（Python 3.10+、Tkinter、標準ライブラリのみ）は、上のモジュールの選択と起動オプションをリストとチェックボックスで設定して `run.py` を実行します。`tools/cpt32-launcher`（任意のゲストを起動する汎用ランチャー）とは別物で、Foundation のビルドと起動だけを扱います。
 
 - モジュール一覧は `boot/build.py` の `COMMANDS` / `LIBS` から読むので、コマンドを足せば自動で一覧に出ます（説明は `launcher.py` の `DESCRIPTIONS` に足します）。`chip8` を選ぶと `sgc` も選ばれ、`sgc` を外すと `chip8` も外れます。
-- オプション：ディスク起動（`--disk`）、nommu（`FND_MM=nommu`）、ビルドのみ、Main RAM、ディスクブロック数、並列数、Clang、`--root`、外部 `--bin-dir`（複数）、エミュレータ引数（`--arg`）。実行する前に「コマンドをコピー」で実際のコマンドラインを取り出せます。
+- オプション：ディスク起動（`--disk`）、nommu（`FND_MM=nommu`）、ビルドのみ、Main RAM、ディスクブロック数、並列数、Clang、`--root`、外部 `--bin-dir`（複数）、Lua 5.5（`--lua` とソースの場所。空欄なら環境変数 `SRC32_LUA_SOURCE`／`SRC32_NEWLIB_SOURCE`）、エミュレータ引数（`--arg`）。実行する前に「コマンドをコピー」で実際のコマンドラインを取り出せます。
 - 設定は起動時に `~/.config/CPT32/Launcher/foundation.json`（Windows は `%LOCALAPPDATA%\CPT32\Launcher\foundation.json`）へ保存します。前回の保存後に増えたモジュールは有効で始まります。「停止」はビルドとエミュレータのプロセスをまとめて終了します。
 
 検証：`python -m unittest discover -s foundation/tests/launcher -v`（表示不要。一覧の依存、コマンドライン、保存状態、`build.py`／`run.py` の選択の検証）。

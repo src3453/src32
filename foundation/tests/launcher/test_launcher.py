@@ -62,6 +62,15 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(argv[-3:], ["--arg", "--frames", "3"])
         self.assertEqual(env, {"FND_MM": "nommu"})
 
+    def test_lua(self):
+        settings = launcher.default_settings(self.catalog)
+        settings.update(lua=True, lua_source="/l", newlib_source="/n")
+        argv, _ = launcher.build_invocation(settings, self.catalog)
+        self.assertEqual(argv[argv.index("--lua-source") + 1], "/l")
+        self.assertEqual(argv[argv.index("--newlib-source") + 1], "/n")
+        with patch.dict(launcher.os.environ, {}, clear=True):
+            self.assertEqual(len(launcher.validate(dict(settings, lua_source="", newlib_source=""), self.catalog)), 2)
+
     def test_validation(self):
         settings = launcher.default_settings(self.catalog)
         settings.update(commands=["chip8"], libs=[], ram_mib="0", jobs="x", bin_dirs=["/no/such"])
