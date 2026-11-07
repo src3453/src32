@@ -43,6 +43,8 @@ void task_probe(volatile uint32_t *box) {
     box[PROBE_CPU_ALIGNMENT] = (uint32_t)fnd_sys_info(2u, (void *)((uintptr_t)cpu + 1u), 16u);
     /* 6 is FND_SYSINFO_CPU_PERF (FPGA-only counters); 7 is the first unassigned selector. */
     box[PROBE_CPU_BAD_SELECTOR] = (uint32_t)fnd_sys_info(7u, cpu, sizeof cpu);
+    /* The CPU_PERF counters exist only on the FPGA (FND_PLATFORM_TANG); this build has none. */
+    box[PROBE_CPU_PERF] = (uint32_t)fnd_sys_info(FND_SYSINFO_CPU_PERF, cpu, sizeof cpu);
     int32_t needed = fnd_sys_info(2u, cpu, 16u);
     box[PROBE_CPU_PREFIX] = needed == 48 && cpu[4] == 0x12345678u && cpu[0] > 0 && cpu[1] > 0;
     box[PROBE_CPU_CLOCK] = cpu[3];

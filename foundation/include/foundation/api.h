@@ -141,7 +141,7 @@
 #define FND_INFO_PROCESSES 1u
 #define FND_INFO_CPU 2u
 #define FND_INFO_MEMORY 3u
-#define FND_INFO_CPU_PERF 6u /* FPGA-only 64-byte, eight-counter snapshot */
+#define FND_INFO_CPU_PERF 6u /* FPGA-only 64-byte, eight-counter snapshot; FND_E_UNSUPPORTED elsewhere */
 #define FND_CPUINFO_HEADER_BYTES 16u
 #define FND_CPUINFO_RECORD_BYTES 8u
 #define FND_SYSINFO_BYTES 32u
