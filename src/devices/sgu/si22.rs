@@ -14,9 +14,9 @@ use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
 
 /// Register window of the chip (6-bit address).
 pub const SI22_REG_COUNT: u32 = 0x40;
-/// Playback volume, Q15, 4 dB per step, 15 = 0 dB, 0 = mute.
+/// Playback volume, Q15, 2.5 dB per step, 15 = 0 dB, 1 = -35 dB, 0 = mute.
 pub const VOL_LUT: [i32; 16] = [
-    0, 52, 82, 130, 207, 328, 519, 823, 1305, 2068, 3277, 5193, 8231, 13045, 20675, 32768,
+    0, 583, 777, 1036, 1382, 1843, 2457, 3277, 4370, 5827, 7771, 10362, 13818, 18427, 24573, 32768,
 ];
 /// Record gain, Q8, 4 dB per step, 0 = 0 dB, 15 = +60 dB.
 pub const GAIN_LUT: [i32; 16] = [
@@ -226,8 +226,9 @@ impl Si22 {
                 self.play[0].volume = value & 0x0F;
                 self.play[1].volume = value >> 4;
             }
-            0x0E => self.play[0].div = value,
-            0x0F => self.play[1].div = value,
+            // DIV is 4 bits (1/1..1/16); bits 7..4 are reserved.
+            0x0E => self.play[0].div = value & 0x0F,
+            0x0F => self.play[1].div = value & 0x0F,
             0x10..=0x12 => set_addr_byte(&mut self.rec[0].start, offset - 0x10, value),
             0x13..=0x15 => set_addr_byte(&mut self.rec[0].stop, offset - 0x13, value),
             0x16..=0x18 => set_addr_byte(&mut self.rec[1].start, offset - 0x16, value),
@@ -241,8 +242,8 @@ impl Si22 {
                 self.rec[0].gain = value & 0x0F;
                 self.rec[1].gain = value >> 4;
             }
-            0x1E => self.rec[0].div = value,
-            0x1F => self.rec[1].div = value,
+            0x1E => self.rec[0].div = value & 0x0F,
+            0x1F => self.rec[1].div = value & 0x0F,
             0x20 => {
                 self.agc_enable = [value & 1 != 0, value & 2 != 0];
                 self.flags &= !(value & 0xF4);
@@ -647,7 +648,7 @@ mod tests {
         chip.write_register(0x0D, 0x0E, &mut ram);
         chip.write_register(0x0C, 0x01, &mut ram);
         let (l, r) = chip.tick((0, 0), &mut ram);
-        let y = ((0x7F00 * 20675) >> 15) as i16;
+        let y = ((0x7F00 * 24573) >> 15) as i16;
         assert_eq!((l, r), (y, y));
         chip.write_register(0x0D, 0, &mut ram);
         assert_eq!(chip.tick((0, 0), &mut ram), (0, 0));
@@ -726,6 +727,25 @@ mod tests {
         chip.tick((i16::MIN, i16::MAX), &mut ram);
         let regs: Vec<u8> = (0x25..=0x28).map(|o| chip.read_register(o)).collect();
         assert_eq!(regs, [0x80, 0x00, 0x7F, 0xFF]);
+    }
+
+    #[test]
+    fn divider_is_four_bits_with_reserved_upper_bits() {
+        let mut ram = Ram(vec![0x80; 0x100]);
+        ram.0[0] = 0xC0;
+        ram.0[1] = 0x40;
+        let mut chip = Si22::new();
+        set_addr(&mut chip, 0x03, 0x02, &mut ram);
+        chip.write_register(0x0D, 0x0F, &mut ram);
+        chip.write_register(0x0E, 0xF3, &mut ram); // DIV 3: one sample per 4 ticks
+        assert_eq!(chip.read_register(0x0E), 0x03);
+        for (off, v) in [(0x0F, 0xFF), (0x1E, 0x10), (0x1F, 0xAB)] {
+            chip.write_register(off, v, &mut ram);
+            assert_eq!(chip.read_register(off), v & 0x0F);
+        }
+        chip.write_register(0x0C, 0x01, &mut ram);
+        let out: Vec<i16> = (0..9).map(|_| chip.tick((0, 0), &mut ram).0).collect();
+        assert_eq!(out, [0x4000, 0x4000, 0x4000, 0x4000, -0x4000, -0x4000, -0x4000, -0x4000, 0]);
     }
 
     #[test]

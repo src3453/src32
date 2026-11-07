@@ -15,5 +15,5 @@ void con_tang_init(void) {
         MMIO8(0x10020000u + i) = tang_fonts[i];
     for (uint32_t i = 0; i < sizeof tang_palette; ++i)
         MMIO8(0x10012C00u + i) = tang_palette[i];
-    MMIO8(0x8000F008u) = 0xFE; /* underline; two lines in 8x16 mode */
+    MMIO8(0x8000F008u) = 0x00; /* block cursor, same as the emulator's register reset */
 }

@@ -335,7 +335,7 @@ class ShellTests(unittest.TestCase):
                                final=[(0x8000F007, 1), (0x10001000 + 27 * 80, 63),
                                       (0x10002000 + 27 * 80, 0)])
             self.assertIn('shortcuts', rows)
-            # STOP_TICKS halts with a mounted (DIRTY) volume: inspect only.
+            # STOP_TICKS halts without unmounting: inspect only.
             vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
             self.assertEqual(vol.read(vol.resolve('/hex.bin')), b'q\x00\x00\x00')
         finally:

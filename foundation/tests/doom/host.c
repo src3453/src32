@@ -17,6 +17,8 @@ static int32_t mock_time(uint32_t selector) { return selector == FND_TIME_TICK_H
 pixel_t screen[320 * 200];
 pixel_t *DG_ScreenBuffer = screen;
 struct color colors[256];
+int detailLevel, screenblocks = 10;
+void R_SetViewSize(int blocks, int detail) { (void)blocks; (void)detail; }
 void doomgeneric_Create(int argc, char **argv) { (void)argc; (void)argv; }
 void doomgeneric_Tick(void) {}
 static fnd_keyboard physical;
@@ -28,7 +30,14 @@ fnd_status fnd_file_open(const char *p, uint32_t f, uint32_t m, fnd_handle *h) {
     (void)p; (void)f; (void)m; *h = 2; return FND_OK;
 }
 fnd_status fnd_close(fnd_handle h) { (void)h; ++closed; return FND_OK; }
-fnd_status fnd_con_pollkey(fnd_key_t *key) { (void)key; return FND_END; }
+static fnd_key_t queued[8];
+static unsigned queued_count, queued_next;
+static uint8_t clut[768];
+static fnd_status format_status;
+fnd_status fnd_con_pollkey(fnd_key_t *key) {
+    if (queued_next >= queued_count) return FND_END;
+    *key = queued[queued_next++]; return FND_OK;
+}
 fnd_status fnd_write(fnd_handle h, const void *p, uint32_t n, uint32_t *put) {
     (void)h;
     /* Force short writes, including across scanline boundaries. */
@@ -47,7 +56,8 @@ fnd_status fnd_call(fnd_handle h, uint32_t op, const uint32_t a[4], const void *
         fnd_fb_info info = {320, 240, 320, 320 * 240, 0, 256};
         memcpy(out, &info, sizeof info); reply->len = sizeof info;
     } else if (op == FND_ST_SEEK) position = a[2];
-    else if (op == FND_FB_CLUT_WRITE) ++clut_writes;
+    else if (op == FND_FB_CLUT_WRITE) { ++clut_writes; memcpy(clut + a[0] * 3, data, n); }
+    else if (op == FND_FB_SET_FORMAT) return format_status;
     return FND_OK;
 }
 #define CHECK(x) do { if (!(x)) return __LINE__; } while (0)
@@ -90,6 +100,58 @@ int test_platform(void) {
     return 0;
 }
 
+/* Tang: INDEX8 only. Indices go to fb0 untouched, colours through the CLUT,
+ * and serial keys are held for a while because a terminal has no key release. */
+int test_tang(void) {
+    memset(display, 99, sizeof display);
+    position = clut_writes = 0;
+    fb = 0; indexed = 0; clut_valid = 0; frames = 0;
+    format_status = FND_E_NO_MEDIA; /* RGB888 refused */
+    clock_tick = 0;
+    DG_Init();
+    CHECK(!fb); /* fb0 stays closed until the first frame */
+    colors[7].r = 17; colors[7].g = 83; colors[7].b = 241;
+    colors[9].r = 1; colors[9].g = 2; colors[9].b = 3;
+    memset(screen, 7, sizeof screen);
+    screen[0] = 9;
+    DG_DrawFrame();
+    CHECK(fb && indexed);
+    CHECK(clut_writes == 4 && clut[21] == 17 && clut[22] == 83 && clut[23] == 241 && clut[27] == 1);
+    for (unsigned i = 0; i < 320 * 240; ++i) {
+        int image = i >= 320 * 20 && i < 320 * 220;
+        CHECK(display[i] == (image ? (i == 320 * 20 ? 9 : 7) : 0));
+    }
+    DG_DrawFrame(); /* unchanged palette: no CLUT traffic */
+    CHECK(clut_writes == 4);
+    colors[7].r = 18;
+    DG_DrawFrame();
+    CHECK(clut_writes == 8 && clut[21] == 18);
+    int p; unsigned char k;
+    scan();
+    queued[0] = (fnd_key_t){FND_KEY_UP, 0, 0};
+    queued[1] = (fnd_key_t){FND_KEY_CHAR, 'F', 0};
+    queued[2] = (fnd_key_t){FND_KEY_CHAR, ' ', 0};
+    queued_count = 3; queued_next = 0;
+    CHECK(DG_GetKey(&p, &k) && p && k == KEY_UPARROW);
+    CHECK(DG_GetKey(&p, &k) && p && k == KEY_FIRE);
+    CHECK(DG_GetKey(&p, &k) && p && k == KEY_USE);
+    CHECK(!DG_GetKey(&p, &k)); /* all held */
+    clock_tick += 10; /* 100 ms: still held; the terminal repeats UP */
+    queued[0] = (fnd_key_t){FND_KEY_UP, 0, 0};
+    queued_count = 1; queued_next = 0;
+    CHECK(!DG_GetKey(&p, &k));
+    clock_tick += 15; /* 250 ms after the repeat of UP: FIRE and USE expire */
+    int released = 0;
+    while (DG_GetKey(&p, &k)) { CHECK(!p && (k == KEY_FIRE || k == KEY_USE)); ++released; }
+    CHECK(released == 2);
+    clock_tick += 30;
+    CHECK(DG_GetKey(&p, &k) && !p && k == KEY_UPARROW);
+    CHECK(!DG_GetKey(&p, &k));
+    cleanup();
+    format_status = FND_OK;
+    return 0;
+}
+
 int test_wad(const char *path) {
     wad_file_t *wad = stdc_wad_file.OpenFile((char *)path);
     CHECK(wad && wad->mapped && wad->length == 256);
@@ -101,5 +163,18 @@ int test_wad(const char *path) {
     CHECK(stdc_wad_file.Read(wad, 0xffffffffu, data, sizeof data) == 0);
     stdc_wad_file.CloseFile(wad);
     CHECK(!stdc_wad_file.OpenFile("missing-foundation-doom-test-file.wad"));
+    /* Streamed mode (WADs above wad_ram_limit): same reads without a RAM copy. */
+    extern unsigned wad_ram_limit;
+    unsigned saved = wad_ram_limit;
+    wad_ram_limit = 100;
+    wad = stdc_wad_file.OpenFile((char *)path);
+    CHECK(wad && !wad->mapped && wad->length == 256);
+    CHECK(stdc_wad_file.Read(wad, 10, data, sizeof data) == 16 && data[0] == 10 && data[15] == 25);
+    CHECK(stdc_wad_file.Read(wad, 250, data, sizeof data) == 6 && data[0] == 250 && data[5] == 255);
+    CHECK(stdc_wad_file.Read(wad, 3, data, sizeof data) == 16 && data[0] == 3); /* seek backwards */
+    CHECK(stdc_wad_file.Read(wad, 256, data, sizeof data) == 0);
+    CHECK(stdc_wad_file.Read(wad, 0xffffffffu, data, sizeof data) == 0);
+    stdc_wad_file.CloseFile(wad);
+    wad_ram_limit = saved;
     return 0;
 }

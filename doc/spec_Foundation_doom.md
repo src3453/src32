@@ -40,6 +40,26 @@ python tools/doomgeneric/build.py --doomgeneric-source target/doomgeneric --newl
 
 `/bin/doom.wax` と対応する `/lib/fnd.1.wal`、WAD をディスクに配置します。古いカーネル／libfnd の実行形式上限は 1 MiB なので、今回の 3 MiB 上限を含む Foundation を再ビルドしてください。WAX と WAL の staging 合計は引き続き 3 MiB 以下です。
 
+## Tang Console 実機（Main RAM 16 MiB）
+
+実機の Foundation（`--platform tang-console`）でも `doom` が動きます。エミュレータ向けの設定（RAM 64 MiB）とは次の点が違います。
+
+```powershell
+python tools/doomgeneric/run.py --doomgeneric-source target/doomgeneric --newlib-source target/newlib-work/newlib-4.5.0.20241231 --wad C:/Users/y2k34/Downloads/doom/DOOM.WAD --platform tang-console --out target/foundation-doom-tang
+```
+
+出力された `fpga-boot.json` を RTL リポジトリの `scripts/uart_load.py COM7 --foundation ...` で転送し、シェルで次を入力します。
+
+```text
+doom -iwad /doom.wad -mb 4 -fnd-light
+```
+
+- **ディスク**: UART ロードの RAM ディスク（最大 16 MiB）に収めるため、`run.py` は doom に不要な `/bin` のプログラム（tinybasic、chip8、hex、sgubplay、wavplay、bmpview）と `/lib/lzma.1.wal` を取り除きます。`--root-drive microsd` ではこの削減をしません。
+- **メモリ**: Main RAM は 16 MiB（起動直後の空きは約 9.9 MiB）です。ゾーンは `-mb 4`（4 MiB）にします。5 MiB を超える WAD は RAM に載せず、`/doom.wad` を開いたまま必要な lump だけ `lseek` + `read` で読みます（`w_file_foundation.c`、しきい値 `WAD_RAM_LIMIT`）。
+- **映像**: Tang のビットマップ VDP は INDEX8 だけなので、`FB_SET_FORMAT` の RGB888 が `FND_E_NO_MEDIA` で拒否されたら、エンジンのパレット番号をそのまま `/dev/fb0` に書き、256 色の CLUT をパレットの変化時だけ更新します。上下 20 行は番号 0（黒）です。`/dev/fb0` は最初のフレームで開きます。開いている間はビットマップがコンソールを隠し、初期化中のコンソール出力がビットマップの先頭行に混ざるためです。
+- **入力**: Tang には物理キーボードがなく、UART の端末入力だけです。端末にはキーの離す操作がないので、押された時刻から 200 ms 押したままとして扱い、端末のオートリピートで延長します。矢印キー＝移動／旋回、`f`＝射撃、スペース＝使用、`z`＝走る、`x`＝横移動の修飾、Enter／Esc／Tab、英数字、`,` `.` `-` `=` はそのまま渡します。
+- **速度（実機の計測、DOOM.WAD 11.2 MB、1-1）**: 起動は約 140 秒（うち WAD の読み込みが約 115 秒）、ゲーム中は約 2.2 秒/フレームです。内訳はエンジンの計算が約 1.9 秒、`/dev/fb0` への書き込みが約 0.22 秒です。`doom -fnd-frames N` は N フレーム描画して `/doomstats.txt` に `frames/elapsed/draw/init/last10` と WAD 読み込み統計を書いて終了します。実用的な速度ではなく、動作確認の段階です。
+
 ## プラットフォーム契約
 
 - 移植コードは `tools/doomgeneric/doomgeneric_foundation.c`。upstream の DG API を実装します。WAX v3 の再配置可能なアプリで、pkcl の `pkcl_start` から通常の `main(argc, argv)` を呼びます。

@@ -34,6 +34,10 @@
  * latency (spec_IDC.md, 10 ms on an HDD), and chains are mostly contiguous. */
 #define FS2_READ_AHEAD 8u
 #define FS2_HINTS 8u
+/* Contiguous runs of a chain seen so far: blocks index..index+len-1 of inode
+ * `ino` are at lba..lba+len-1. FS2 allocates the lowest free block first, so a
+ * big file is usually one or a few runs and a seek into it needs no walk. */
+#define FS2_EXTENTS 64u
 
 typedef struct {
     uint32_t type, mode, uid, parent, first, count;
@@ -53,6 +57,10 @@ typedef struct {
     uint32_t ino, index, lba, age;
 } fs2_hint;
 
+typedef struct {
+    uint32_t ino, index, lba, len;
+} fs2_extent;
+
 /* Folded-key hashes of the used entries of one directory, so a lookup reads
  * one entry instead of scanning the chain (entries are 1040 bytes). Any
  * change drops all of them (begin_change). */
@@ -67,6 +75,8 @@ typedef struct {
     uint32_t writable; /* mounted read-write */
     uint32_t dirty;    /* DIRTY=1 is on the media */
     uint32_t failed;   /* an I/O error stopped new updates (§9.1) */
+    uint32_t suspect;  /* an operation failed after changing the media: keep DIRTY */
+    uint32_t tx_writes; /* sectors written by the running operation after DIRTY was set */
     uint32_t flags;    /* superblock flags as read */
     uint32_t total_blocks, boot_blocks, boot_size;
     uint32_t bitmap_start, bitmap_blocks;
@@ -80,6 +90,8 @@ typedef struct {
     uint32_t scan, scan_lba, scan_n; /* sec_get bypasses the cache: see dir_index_get */
     fs2_cache_line cache[FS2_CACHE_SECTORS];
     fs2_hint hints[FS2_HINTS];
+    fs2_extent extents[FS2_EXTENTS];
+    uint32_t extent_next;
     fs2_dir_index dir_index[FS2_DIRIDX];
     uint8_t ahead[FS2_READ_AHEAD * FS2_BLOCK];
 } fs2_vol;
