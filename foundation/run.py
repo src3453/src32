@@ -66,6 +66,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--build-only", action="store_true", help="build without opening the emulator")
     parser.add_argument("--clang", help="Clang executable passed to the SRC32 compiler")
+    parser.add_argument("--cache-dir", type=Path, metavar="DIR",
+                        help="reuse Foundation WAX/WAL and kernel outputs (default: FND_ARTIFACT_CACHE or disabled)")
     parser.add_argument("-j", "--jobs", type=int, metavar="N",
                         help="parallel compiler processes (default: physical core count)")
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
@@ -104,6 +106,8 @@ def main():
     if args.clang:
         command += ["--clang", args.clang]
     command += ["-j", str(args.jobs if args.jobs and args.jobs > 0 else physical_cores())]
+    if args.cache_dir is not None:
+        command += ["--cache-dir", str(args.cache_dir.resolve())]
     if args.root:
         command += ["--root", str(args.root.resolve())]
     for directory in args.bin_dir:

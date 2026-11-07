@@ -273,7 +273,13 @@ python foundation/boot/build.py target/foundation-boot --cache-dir target/founda
 
 同じ出力先で再ビルドすると、再利用した成果物を `Reused` の行で確認できます。ソース、依存ヘッダー、エクスポート一覧、リンク先 WAL、ツールやビルド引数が変わると、対応する成果物を再生成します。FNDBOOT と FS2 イメージは毎回組み立てるので、`--root` や `--bin-dir` の変更も反映されます。
 
-`FND_ARTIFACT_CACHE` を設定すると、`foundation/run.py` などから起動するビルドにも適用されます。キャッシュはローカルの作業用ディレクトリに置き、ディスクに取り込むツリーの外を指定してください。
+`run.py` から起動する場合も同じキャッシュを指定できます。
+
+```sh
+python foundation/run.py --cache-dir target/foundation-artifacts
+```
+
+`FND_ARTIFACT_CACHE` でも保存先を設定できます。`--cache-dir` を指定した場合はそちらが優先されます。キャッシュはディスクに取り込むツリーの外に置いてください。
 
 1. BIOS が IDC dd0〜dd3 のうち署名のある最初の drive の LBA 0（`boot/stage1.a`、512 bytes）を `0x0` に読み、R1 = drive で分岐します。
 2. stage1 は superblock（LBA 1）を検査し（magic、version、flags = 0 なので DIRTY = 0、`total_blocks` ≤ 容量、`boot_start` = 2、`bitmap_start` = 2 + `boot_blocks` ≤ `data_start` ≤ `total_blocks`、0 < `boot_size` ≤ 2 MiB、予約領域に収まること）、予約ブート領域から FNDBOOT を `0x00200000` に読みます。FNDBOOT のヘッダを検査してカーネルを `0x00010000` へコピーし、R1 = drive、R2 = `0x00200000` で `kernel_entry` へ分岐します。失敗すると R1 = 1（IDENTIFY か superblock の読み込み）、2（superblock）、3（FNDBOOT）で HALT します。画面には何も出ません（510 bytes に収めるため）。
