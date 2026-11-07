@@ -265,6 +265,16 @@ python -m unittest discover -s foundation/tests/shell -v
 
 再ビルドで Clang のコンパイル結果を再利用するには、ccache をインストールして `SRC32_CLANG_LAUNCHER=ccache` をビルド環境に設定します。[コンパイルキャッシュの設定例](../tools/llvm-src32/README.md#コンパイルキャッシュ)
 
+Foundation の WAX/WAL とカーネルは、`--cache-dir` を指定するとリンク済みの成果物ごと再利用できます。
+
+```sh
+python foundation/boot/build.py target/foundation-boot --cache-dir target/foundation-artifacts
+```
+
+同じ出力先で再ビルドすると、再利用した成果物を `Reused` の行で確認できます。ソース、依存ヘッダー、エクスポート一覧、リンク先 WAL、ツールやビルド引数が変わると、対応する成果物を再生成します。FNDBOOT と FS2 イメージは毎回組み立てるので、`--root` や `--bin-dir` の変更も反映されます。
+
+`FND_ARTIFACT_CACHE` を設定すると、`foundation/run.py` などから起動するビルドにも適用されます。キャッシュはローカルの作業用ディレクトリに置き、ディスクに取り込むツリーの外を指定してください。
+
 1. BIOS が IDC dd0〜dd3 のうち署名のある最初の drive の LBA 0（`boot/stage1.a`、512 bytes）を `0x0` に読み、R1 = drive で分岐します。
 2. stage1 は superblock（LBA 1）を検査し（magic、version、flags = 0 なので DIRTY = 0、`total_blocks` ≤ 容量、`boot_start` = 2、`bitmap_start` = 2 + `boot_blocks` ≤ `data_start` ≤ `total_blocks`、0 < `boot_size` ≤ 2 MiB、予約領域に収まること）、予約ブート領域から FNDBOOT を `0x00200000` に読みます。FNDBOOT のヘッダを検査してカーネルを `0x00010000` へコピーし、R1 = drive、R2 = `0x00200000` で `kernel_entry` へ分岐します。失敗すると R1 = 1（IDENTIFY か superblock の読み込み）、2（superblock）、3（FNDBOOT）で HALT します。画面には何も出ません（510 bytes に収めるため）。
 3. カーネル（`main(drive, fndboot)`）は `boot_drive` を記録し（`sys_info`）、`fnd_boot_check` でモジュール表全体を検査してから、表の順に `fnd_boot_spawn` します。表が不正なら main が `FND_E_FORMAT` を返し、カーネルはその値を R1 に入れて HALT します。

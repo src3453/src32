@@ -8,7 +8,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 
 
-def build(out, fnd, clang=None, optimization="-O2"):
+def build(out, fnd, clang=None, optimization="-O2", *, run=None):
     """fnd is the built fnd WAL (lib/fnd.1.wal) that libsgc imports."""
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -19,8 +19,12 @@ def build(out, fnd, clang=None, optimization="-O2"):
                "-o", str(out / "libsgc.wal")]
     if clang:
         command += ["--clang", clang]
-    subprocess.run(command, check=True)
-    return out / "libsgc.wal"
+    output = out / "libsgc.wal"
+    if run is None:
+        subprocess.run(command, check=True)
+    else:
+        run(command, output)
+    return output
 
 
 def main():

@@ -8,7 +8,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 
 
-def build(out, clang=None, optimization="-O2"):
+def build(out, clang=None, optimization="-O2", *, run=None):
     out = Path(out).resolve()
     out.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, str(ROOT / "tools/llvm-src32/driver.py"),
@@ -18,8 +18,12 @@ def build(out, clang=None, optimization="-O2"):
                "--exports", str(HERE / "code.exports"), "-o", str(out / "libcode.wal")]
     if clang:
         command += ["--clang", clang]
-    subprocess.run(command, check=True)
-    return out / "libcode.wal"
+    output = out / "libcode.wal"
+    if run is None:
+        subprocess.run(command, check=True)
+    else:
+        run(command, output)
+    return output
 
 
 def main():

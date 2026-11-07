@@ -47,6 +47,31 @@ def find_testbench():
     raise RuntimeError('Build cargo build --bin src32_testbench or set SRC32_TESTBENCH')
 
 
+class ArtifactCacheTests(unittest.TestCase):
+    def test_header_change_invalidates_artifact(self):
+        from artifact_cache import ArtifactCache, TOOLCHAIN
+
+        with tempfile.TemporaryDirectory(prefix='foundation cache ') as directory:
+            work = Path(directory)
+            header = work / 'value.h'
+            source = work / 'main.c'
+            source.write_text('#include "value.h"\nint main(void) { return VALUE; }\n', encoding='utf-8')
+            header.write_text('#define VALUE 1\n', encoding='utf-8')
+            out = work / 'out'
+            out.mkdir()
+            image = out / 'program.wax'
+            cache = ArtifactCache(work / 'cache', None)
+            command = [sys.executable, str(TOOLCHAIN / 'driver.py'), str(source), '-o', str(image)]
+            cache.run(command, image)
+            first = image.read_bytes()
+            image.unlink()
+            cache.run(command, image)
+            self.assertEqual(image.read_bytes(), first)
+            header.write_text('#define VALUE 2\n', encoding='utf-8')
+            cache.run(command, image)
+            self.assertNotEqual(image.read_bytes(), first)
+
+
 class DiskBootTests(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -55,14 +80,17 @@ class DiskBootTests(unittest.TestCase):
         cls.work = Path(cls.temp.name)
         cls.build = cls.work / 'build'
         command = [sys.executable, str(ROOT / 'foundation/boot/build.py'), str(cls.build),
-                   '--stop-ticks', str(STOP_TICKS)]
+                   '--stop-ticks', str(STOP_TICKS), '--cache-dir', str(cls.work / 'cache')]
         clang = os.environ.get('CLANG') or shutil.which('clang')
         if clang:
             command += ['--clang', clang]
-        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
-                                errors='replace', timeout=600)
-        if result.returncode != 0:
-            raise RuntimeError(result.stdout + result.stderr)
+        for _ in range(2):
+            result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8',
+                                    errors='replace', timeout=600)
+            if result.returncode != 0:
+                raise RuntimeError(result.stdout + result.stderr)
+        cls.reused = {Path(line.removeprefix('Reused ')).name for line in result.stdout.splitlines()
+                      if line.startswith('Reused ')}
         cls.image = (cls.build / 'foundation.img').read_bytes()
 
     @classmethod
@@ -117,6 +145,10 @@ class DiskBootTests(unittest.TestCase):
             inode = volume.resolve(path)
             self.assertEqual(volume.read(inode), (self.build / 'root' / path[1:]).read_bytes())
             self.assertEqual(inode['mode'], 0x003D)
+
+    def test_compiler_outputs_reused(self):
+        self.assertLessEqual({'foundation.wax', 'kernel.bin', 'shell.wax', 'fnd.1.wal', 'libsgc.wal'},
+                             self.reused)
 
     def corrupt(self, offset, mask):
         image = bytearray(self.image)

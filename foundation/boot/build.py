@@ -112,7 +112,10 @@ def driver(sources, output, args, *extra):
                "-j", "1", *extra, "-o", str(output)]
     if args.clang:
         command[2:2] = ["--clang", args.clang]
-    subprocess.run(command, check=True)
+    if args.artifact_cache:
+        args.artifact_cache.run(command, output)
+    else:
+        subprocess.run(command, check=True)
     return output
 
 
@@ -219,6 +222,8 @@ def main(argv=None):
     parser.add_argument("--ramdisk", choices=("sdram0-split", "sdram1"), default="sdram0-split",
                         help="Tang Console RAM disk: split SDRAM0 16+16 MiB (default), or separate 32 MiB SDRAM1")
     parser.add_argument("--clang")
+    parser.add_argument("--cache-dir", type=Path, default=os.environ.get("FND_ARTIFACT_CACHE") or None,
+                        help="reuse compiler outputs from this directory (default: FND_ARTIFACT_CACHE or disabled)")
     parser.add_argument("-j", "--jobs", type=int, default=0, metavar="N",
                         help="parallel driver processes (default: CPU count; the images do not depend on N)")
     parser.add_argument("--stop-ticks", type=int)
@@ -255,6 +260,17 @@ def main(argv=None):
         bins = external_bins(args.bin_dir)
     except (OSError, ValueError) as error:
         parser.error(str(error))
+    args.artifact_cache = None
+    if args.cache_dir:
+        from artifact_cache import ArtifactCache
+        if any(args.cache_dir.resolve().is_relative_to(tree.resolve())
+               for tree in (args.out / "root", args.root) if tree is not None):
+            parser.error("--cache-dir must be outside the trees copied into the disk image")
+        try:
+            args.artifact_cache = ArtifactCache(args.cache_dir, args.clang)
+        except (OSError, ValueError) as error:
+            parser.error(str(error))
+    cached_run = args.artifact_cache.run if args.artifact_cache else None
     out = args.out
     root = out / "root"
     (root / "bin").mkdir(parents=True, exist_ok=True)
@@ -277,22 +293,22 @@ def main(argv=None):
     lzma_spec = importlib.util.spec_from_file_location("lzma_build", LZMA_DIR / "build.py")
     lzma_build = importlib.util.module_from_spec(lzma_spec)
     lzma_spec.loader.exec_module(lzma_build)
-    lzma_job = None if "lzma" not in libs else pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization)
+    lzma_job = None if "lzma" not in libs else pool.submit(lzma_build.build, out / "lzma", args.clang, args.optimization, run=cached_run)
     # /lib/rle.1.wal: PackBits RLE (lib/rle, WAL "rle" 1.0), also self-contained. Both follow conde.
     rle_spec = importlib.util.spec_from_file_location("rle_build", RLE_DIR / "build.py")
     rle_build = importlib.util.module_from_spec(rle_spec)
     rle_spec.loader.exec_module(rle_build)
-    rle_job = None if "rle" not in libs else pool.submit(rle_build.build, out / "rle", args.clang, args.optimization)
+    rle_job = None if "rle" not in libs else pool.submit(rle_build.build, out / "rle", args.clang, args.optimization, run=cached_run)
     # /lib/code.1.wal: character code conversion (lib/code, WAL "code" 1.0), also self-contained.
     code_spec = importlib.util.spec_from_file_location("code_build", CODE_DIR / "build.py")
     code_build = importlib.util.module_from_spec(code_spec)
     code_spec.loader.exec_module(code_build)
-    code_job = None if "code" not in libs else pool.submit(code_build.build, out / "code", args.clang, args.optimization)
+    code_job = None if "code" not in libs else pool.submit(code_build.build, out / "code", args.clang, args.optimization, run=cached_run)
     # /lib/crypt.1.wal: ChaCha20 and Poly1305, self-contained and with no work area.
     crypt_spec = importlib.util.spec_from_file_location("crypt_build", CRYPT_DIR / "build.py")
     crypt_build = importlib.util.module_from_spec(crypt_spec)
     crypt_spec.loader.exec_module(crypt_build)
-    crypt_job = None if "crypt" not in libs else pool.submit(crypt_build.build, out / "crypt", args.clang, args.optimization)
+    crypt_job = None if "crypt" not in libs else pool.submit(crypt_build.build, out / "crypt", args.clang, args.optimization, run=cached_run)
 
     kernel_args = ["--origin", hex(KERNEL_LOAD), "--stack-top", hex(KERNEL_STACK_TOP)]
     if fpga:
@@ -346,7 +362,7 @@ def main(argv=None):
     sgc_spec = importlib.util.spec_from_file_location("sgc_build", SGC_DIR / "build.py")
     sgc_build = importlib.util.module_from_spec(sgc_spec)
     sgc_spec.loader.exec_module(sgc_build)
-    sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization) if "sgc" in libs else None
+    sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization, run=cached_run) if "sgc" in libs else None
     program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args,
                                 "foundation.shell", fnd)]
     # The commands that import libsgc go last, so the others start while it builds.

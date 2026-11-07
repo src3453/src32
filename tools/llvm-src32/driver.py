@@ -227,7 +227,7 @@ def load_python(path: Path, name: str):
 def read_dependencies(path: Path) -> set[Path]:
     """Decode Clang's single Make rule (including escaped filenames)."""
     text = path.read_text(encoding="utf-8").replace("\\\r\n", "").replace("\\\n", "")
-    _, separator, text = text.partition(":")
+    _, separator, text = text.partition(": ")
     if not separator:
         raise DriverError(f"invalid Clang dependency file: {path}")
     words, word = [], []
