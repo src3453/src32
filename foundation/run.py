@@ -1,10 +1,12 @@
 """Build and launch the Foundation shell with its own emulator configuration."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -67,7 +69,7 @@ def main():
     parser.add_argument("--build-only", action="store_true", help="build without opening the emulator")
     parser.add_argument("--clang", help="Clang executable passed to the SRC32 compiler")
     parser.add_argument("--cache-dir", type=Path, metavar="DIR",
-                        help="reuse Foundation WAX/WAL and kernel outputs (default: FND_ARTIFACT_CACHE or disabled)")
+                        help="reuse Foundation WAX/WAL and kernel outputs (default: FND_ARTIFACT_CACHE or OS temp)")
     parser.add_argument("-j", "--jobs", type=int, metavar="N",
                         help="parallel compiler processes (default: physical core count)")
     parser.add_argument("--root", type=Path, help="host directory copied into the boot disk root")
@@ -108,6 +110,13 @@ def main():
     command += ["-j", str(args.jobs if args.jobs and args.jobs > 0 else physical_cores())]
     if args.cache_dir is not None:
         command += ["--cache-dir", str(args.cache_dir.resolve())]
+    elif not environment.get("FND_ARTIFACT_CACHE"):
+        checkout = hashlib.sha256(os.fsencode(ROOT)).hexdigest()[:16]
+        cache_dir = Path(tempfile.gettempdir()) / f"src32-foundation-{checkout}"
+        cache_dir.mkdir(mode=0o700, exist_ok=True)
+        if cache_dir.is_symlink() or (os.name == "posix" and cache_dir.stat().st_uid != os.getuid()):
+            parser.error(f"unsafe default cache directory: {cache_dir}")
+        command += ["--cache-dir", str(cache_dir)]
     if args.root:
         command += ["--root", str(args.root.resolve())]
     for directory in args.bin_dir:
