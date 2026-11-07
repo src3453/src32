@@ -28,11 +28,13 @@ static uint32_t ticks, switches, need_resched;
 #define CPU_CLOCK_CTRL 0x80040440u
 #define CPU_CLOCK_LO 0x80040448u
 #define CPU_CLOCK_PRESCALER 0x80040460u
+#ifdef FND_PLATFORM_TANG
 #define CPU_PERF_BASE 0xFFFF02A0u
 static const uint32_t cpu_perf_addr[8] = {
     CPU_PERF_BASE + 0u, CPU_PERF_BASE + 8u, CPU_PERF_BASE + 16u, CPU_PERF_BASE + 24u,
     CPU_PERF_BASE + 32u, CPU_PERF_BASE + 40u, CPU_PERF_BASE + 48u, CPU_PERF_BASE + 56u,
 };
+#endif
 static uint32_t cpu_last, cpu_origin, cpu_kernel, cpu_idle;
 
 void sched_cpu_enter(void) {
@@ -59,6 +61,7 @@ void sched_cpu_snapshot(uint32_t info[4]) {
     info[3] = 48000000u;
 }
 
+#ifdef FND_PLATFORM_TANG
 /* Privileged, read-only snapshot for sys_info(6). Retry a pair if its high
  * word changes across the low-word read; counters continue while reading. */
 void sched_perf_snapshot(uint32_t info[16]) {
@@ -75,6 +78,7 @@ void sched_perf_snapshot(uint32_t info[16]) {
         info[2u * i + 1u] = hi_after;
     }
 }
+#endif
 
 uint32_t fnd_ticks(void) { return ticks; }
 uint32_t fnd_context_switches(void) { return switches; }

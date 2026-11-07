@@ -172,6 +172,12 @@ impl L1Cache {
         }
     }
 
+    /// Account for hits of skipped, identical loop iterations (spin fast-forward).
+    pub fn add_hits(&mut self, i_hits: u32, d_hits: u32) {
+        self.i.hits = self.i.hits.wrapping_add(i_hits);
+        self.d.hits = self.d.hits.wrapping_add(d_hits);
+    }
+
     pub fn ctrl(&self) -> u32 {
         u32::from(self.i.enabled) * CTRL_I_EN | u32::from(self.d.enabled) * CTRL_D_EN
     }

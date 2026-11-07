@@ -754,7 +754,11 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
     else if (sel == 4)
         size = SELFINFO_BYTES;
     else if (sel == FND_SYSINFO_CPU_PERF)
+#ifdef FND_PLATFORM_TANG
         size = CPUPERF_BYTES;
+#else
+        return FND_E_UNSUPPORTED; /* the counters are FPGA-only; the emulator has no such registers */
+#endif
     else
         return FND_E_BAD_ARG;
     if (cap > size)
@@ -783,6 +787,7 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
         put_word(caller, buf, cap, 4u, caller->parent);
         return (int32_t)size;
     }
+#ifdef FND_PLATFORM_TANG
     if (sel == FND_SYSINFO_CPU_PERF) {
         uint32_t info[16];
         sched_perf_snapshot(info);
@@ -790,6 +795,7 @@ int32_t proc_sys_info(const struct fnd_proc *caller, uint32_t sel, uint32_t buf,
             put_word(caller, buf, cap, 4u * w, info[w]);
         return (int32_t)size;
     }
+#endif
     if (sel == 3) {
         uint32_t info[4] = {mm_ram_bytes(), bmc_vram_bytes(), bmc_pcmram_bytes(), 0};
         for (uint32_t w = 0; w < 4u; ++w)
