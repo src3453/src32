@@ -7,7 +7,7 @@
 | [`cpt32`](cpt32/) | ベアメタル（BIOS なし、S モード）。HALT／Extension P の intrinsic、MMIO、PCG 文字画面、UART、panic handler |
 | [`fnd`](fnd/) | Foundation OS のプログラム。libfnd（`/lib/fnd.1.wal`）の束縛、引数・環境変数、`print!`/`println!`、ファイル、コンソール、panic handler、`alloc` 用 global allocator |
 
-実例: [`examples/rust-baremetal`](../../examples/rust-baremetal/README.md)、[`examples/rust-foundation`](../../examples/rust-foundation/README.md)。
+実例: [`examples/rust-baremetal`](../../examples/rust-baremetal/README.md)、[`examples/rust-foundation`](../../examples/rust-foundation/README.md)。C との速度・メモリ比較は [`examples/bench-c-rust`](../../examples/bench-c-rust/README.md)。
 
 ## 必要なもの
 

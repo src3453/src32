@@ -1,0 +1,15 @@
+[package]
+name = "bench-c-rust"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+cpt32 = { path = "../../../sdk/rust/cpt32" }
+
+# run.py overrides the level with CARGO_PROFILE_RELEASE_OPT_LEVEL (--rust-opt).
+[profile.release]
+opt-level = 2

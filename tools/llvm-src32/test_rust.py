@@ -6,6 +6,7 @@ Run: python -m unittest discover -s tools/llvm-src32 -p 'test_rust.py' -v
 CARGO, CLANG and SRC32_TESTBENCH override executable discovery. The Foundation
 side is foundation/tests/rust.
 """
+import json
 import os
 from pathlib import Path
 import re
@@ -22,6 +23,7 @@ import cargo_src32  # noqa: E402
 
 CONFORMANCE = HERE / 'rust/conformance/Cargo.toml'
 BAREMETAL = ROOT / 'examples/rust-baremetal/Cargo.toml'
+BENCH = ROOT / 'examples/bench-c-rust/run.py'
 
 
 def find_testbench():
@@ -92,6 +94,25 @@ class RustTests(unittest.TestCase):
         lines = stdout.splitlines()
         screen = [row for row in lines[lines.index('PCG SCREEN BEGIN') + 1:lines.index('PCG SCREEN END')] if row]
         self.assertEqual(screen, ['Hello from Rust on CPT32!', 'checks: ok'])
+
+    def test_bench_c_rust(self):
+        # The C and Rust versions of the benchmark kernels agree with run.py's Python reference.
+        report = self.work / 'bench.json'
+        command = [sys.executable, str(BENCH), '--work', str(self.work / 'bench'), '--testbench', str(self.harness),
+                   '--json', str(report)]
+        if self.clang:
+            command += ['--clang', self.clang]
+        result = subprocess.run(command, capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                timeout=1800)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        measured = json.loads(report.read_text(encoding='utf-8'))
+        self.assertEqual(measured['problems'], [])
+        for language in ('c', 'rust'):
+            for kernel, expected in measured['expected'].items():
+                with self.subTest(language=language, kernel=kernel):
+                    self.assertEqual(measured['results'][language][kernel]['value'], expected)
+                    self.assertGreater(measured['results'][language][kernel]['cycles'], 0)
+                    self.assertGreater(measured['results'][language][kernel]['stack'], 0)
 
     def test_missing_foundation_wal_is_reported(self):
         result = subprocess.run([sys.executable, str(HERE / 'cargo_src32.py'), '--manifest-path', str(CONFORMANCE),
