@@ -172,6 +172,58 @@ uint64_t __floatdidf(int64_t a) { return i64_to_f64(a).v; }
 uint64_t __floatundidf(uint64_t a) { return ui64_to_f64(a).v; }
 #endif
 
+/* Saturating conversions for llvm.fptosi.sat / llvm.fptoui.sat (Rust's `as`):
+ * NaN is 0, values beyond the range clamp to its ends, others truncate. The
+ * float versions widen exactly to double first. Not compiler-rt routines. */
+static int32_t sat_i32(float64_t x) {
+    if (!f64_eq(x, x)) return 0;
+    if (f64_le(i64_to_f64(INT64_C(2147483648)), x)) return INT32_MAX;
+    if (f64_le(x, i64_to_f64(-INT64_C(2147483648)))) return INT32_MIN;
+    return f64_to_i32_r_minMag(x, 0);
+}
+static uint32_t sat_u32(float64_t x) {
+    if (!f64_eq(x, x) || f64_le(x, i32_to_f64(0))) return 0;
+    if (f64_le(i64_to_f64(INT64_C(4294967296)), x)) return UINT32_MAX;
+    return f64_to_ui32_r_minMag(x, 0);
+}
+static int64_t sat_i64(float64_t x) {
+    float64_t limit = f64(UINT64_C(0x43E0000000000000)); /* 2^63 */
+    if (!f64_eq(x, x)) return 0;
+    if (f64_le(limit, x)) return INT64_MAX;
+    limit.v |= UINT64_C(0x8000000000000000);
+    if (f64_le(x, limit)) return INT64_MIN;
+    return f64_to_i64_r_minMag(x, 0);
+}
+static uint64_t sat_u64(float64_t x) {
+    if (!f64_eq(x, x) || f64_le(x, i32_to_f64(0))) return 0;
+    if (f64_le(f64(UINT64_C(0x43F0000000000000)), x)) return UINT64_MAX; /* 2^64 */
+    return f64_to_ui64_r_minMag(x, 0);
+}
+#ifndef SRC32_HAVE___src32_fixsfsi_sat
+int32_t __src32_fixsfsi_sat(uint32_t a) { return sat_i32(f32_to_f64(f32(a))); }
+#endif
+#ifndef SRC32_HAVE___src32_fixunssfsi_sat
+uint32_t __src32_fixunssfsi_sat(uint32_t a) { return sat_u32(f32_to_f64(f32(a))); }
+#endif
+#ifndef SRC32_HAVE___src32_fixdfsi_sat
+int32_t __src32_fixdfsi_sat(uint64_t a) { return sat_i32(f64(a)); }
+#endif
+#ifndef SRC32_HAVE___src32_fixunsdfsi_sat
+uint32_t __src32_fixunsdfsi_sat(uint64_t a) { return sat_u32(f64(a)); }
+#endif
+#ifndef SRC32_HAVE___src32_fixsfdi_sat
+int64_t __src32_fixsfdi_sat(uint32_t a) { return sat_i64(f32_to_f64(f32(a))); }
+#endif
+#ifndef SRC32_HAVE___src32_fixunssfdi_sat
+uint64_t __src32_fixunssfdi_sat(uint32_t a) { return sat_u64(f32_to_f64(f32(a))); }
+#endif
+#ifndef SRC32_HAVE___src32_fixdfdi_sat
+int64_t __src32_fixdfdi_sat(uint64_t a) { return sat_i64(f64(a)); }
+#endif
+#ifndef SRC32_HAVE___src32_fixunsdfdi_sat
+uint64_t __src32_fixunsdfdi_sat(uint64_t a) { return sat_u64(f64(a)); }
+#endif
+
 /* libm routines the compiler lowers intrinsics to (and C code may call). */
 #ifndef SRC32_HAVE_sqrtf
 uint32_t sqrtf(uint32_t a) { return f32_sqrt(f32(a)).v; }

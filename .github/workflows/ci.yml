@@ -147,6 +147,13 @@ jobs:
         run: |
           chmod +x target/debug/src32_testbench
           echo "SRC32_TESTBENCH=$PWD/target/debug/src32_testbench" >> "$GITHUB_ENV"
+      # Rust ゲスト (tools/llvm-src32/cargo_src32.py) は core を rust-src から作る。
+      # rustc の LLVM メジャー版が llvmlite と違うときはテストが理由を出して skip する。
+      - name: Rust source for Rust guests
+        if: matrix.suite == 'toolchain' || matrix.suite == 'shell'
+        run: |
+          rustup component add rust-src
+          rustc -vV
       - name: Toolchain tests
         if: matrix.suite == 'toolchain'
         run: |
@@ -156,7 +163,9 @@ jobs:
           python -m unittest discover -s tools/llvm-src32 -p 'test_*.py' -v
       - name: Foundation shell (testbench, PCG screen)
         if: matrix.suite == 'shell'
-        run: python -m unittest discover -s foundation/tests/shell -v
+        run: |
+          python -m unittest discover -s foundation/tests/shell -v
+          python -m unittest discover -s foundation/tests/rust -v
       - name: Foundation disk boot (testbench, BIOS -> stage1 -> FNDBOOT)
         if: matrix.suite == 'disk'
         run: python -m unittest discover -s foundation/tests/disk -v

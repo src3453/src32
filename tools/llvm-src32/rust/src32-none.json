@@ -1,0 +1,20 @@
+{
+  "llvm-target": "mips-unknown-none",
+  "arch": "mips",
+  "os": "none",
+  "target-endian": "big",
+  "target-pointer-width": 32,
+  "target-c-int-width": 32,
+  "data-layout": "E-m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64",
+  "cpu": "mips32r2",
+  "features": "+mips32r2,+soft-float,+noabicalls",
+  "llvm-abiname": "o32",
+  "max-atomic-width": 0,
+  "singlethread": true,
+  "panic-strategy": "abort",
+  "relocation-model": "static",
+  "executables": true,
+  "linker-flavor": "gnu-lld",
+  "linker": "rust-lld",
+  "emit-debug-gdb-scripts": false
+}

@@ -198,6 +198,123 @@ int main(void) {
                 self.execute(image, 42)
                 self.execute(image, 42, 'pipeline')
 
+    def test_rustc_intrinsics_and_constants(self):
+        # The lowerings rustc's IR needs (tools/llvm-src32/cargo_src32.py), as plain
+        # IR so they are checked without a Rust toolchain: overflow intrinsics in
+        # narrow and 64-bit widths, three-way compares with i8 results,
+        # saturating float-to-int casts, is.constant, noalias scope declarations,
+        # the empty inline-asm barrier, llvm.trap and undef padding in constants.
+        source = self.ir('''
+@pad = constant { i8, [3 x i8], i32 } { i8 7, [3 x i8] undef, i32 9 }
+define i32 @main() {
+entry:
+  call void @llvm.experimental.noalias.scope.decl(metadata !0)
+  call void asm sideeffect "", "r,~{memory}"(ptr @pad)
+  %s8 = call { i8, i1 } @llvm.sadd.with.overflow.i8(i8 100, i8 28)
+  %s8v = extractvalue { i8, i1 } %s8, 0
+  %s8o = extractvalue { i8, i1 } %s8, 1
+  %c1a = icmp eq i8 %s8v, -128
+  %c1 = and i1 %c1a, %s8o
+  %u64 = call { i64, i1 } @llvm.usub.with.overflow.i64(i64 4294967296, i64 1)
+  %u64v = extractvalue { i64, i1 } %u64, 0
+  %u64o = extractvalue { i64, i1 } %u64, 1
+  %c2a = icmp eq i64 %u64v, 4294967295
+  %c2b = xor i1 %u64o, true
+  %c2 = and i1 %c2a, %c2b
+  %b64 = call { i64, i1 } @llvm.usub.with.overflow.i64(i64 5, i64 6)
+  %c3 = extractvalue { i64, i1 } %b64, 1
+  %a64 = call { i64, i1 } @llvm.sadd.with.overflow.i64(i64 9223372036854775807, i64 1)
+  %c4 = extractvalue { i64, i1 } %a64, 1
+  %m32 = call { i32, i1 } @llvm.smul.with.overflow.i32(i32 -46341, i32 46341)
+  %c5 = extractvalue { i32, i1 } %m32, 1
+  %m16 = call { i16, i1 } @llvm.umul.with.overflow.i16(i16 255, i16 257)
+  %m16v = extractvalue { i16, i1 } %m16, 0
+  %m16o = extractvalue { i16, i1 } %m16, 1
+  %c6a = icmp eq i16 %m16v, -1
+  %c6b = xor i1 %m16o, true
+  %c6 = and i1 %c6a, %c6b
+  %cmp1 = call i8 @llvm.scmp.i8.i64(i64 -1, i64 1)
+  %cmp2 = call i8 @llvm.ucmp.i8.i64(i64 -1, i64 1)
+  %cmp3 = call i8 @llvm.scmp.i8.i16(i16 -3, i16 5)
+  %cmp4 = call i8 @llvm.ucmp.i8.i64(i64 8589934593, i64 8589934594)
+  %c7a = icmp eq i8 %cmp1, -1
+  %c7b = icmp eq i8 %cmp2, 1
+  %c7c = icmp eq i8 %cmp3, -1
+  %c7d = icmp eq i8 %cmp4, -1
+  %c7ab = and i1 %c7a, %c7b
+  %c7cd = and i1 %c7c, %c7d
+  %c7 = and i1 %c7ab, %c7cd
+  %f1 = call i8 @llvm.fptosi.sat.i8.f32(float 1.000000e+03)
+  %f2 = call i32 @llvm.fptoui.sat.i32.f64(double -5.000000e+00)
+  %f3 = call i64 @llvm.fptosi.sat.i64.f64(double 0x7FF8000000000000)
+  %f4 = call i32 @llvm.fptosi.sat.i32.f32(float -7.500000e+00)
+  %c8a = icmp eq i8 %f1, 127
+  %c8b = icmp eq i32 %f2, 0
+  %c8c = icmp eq i64 %f3, 0
+  %c8d = icmp eq i32 %f4, -7
+  %c8ab = and i1 %c8a, %c8b
+  %c8cd = and i1 %c8c, %c8d
+  %c8 = and i1 %c8ab, %c8cd
+  %k = call i1 @llvm.is.constant.i32(i32 3)
+  %c9 = xor i1 %k, true
+  %byte = load i8, ptr @pad
+  %field = getelementptr { i8, [3 x i8], i32 }, ptr @pad, i32 0, i32 2
+  %word = load i32, ptr %field
+  %c10a = icmp eq i8 %byte, 7
+  %c10b = icmp eq i32 %word, 9
+  %c10 = and i1 %c10a, %c10b
+  %all1 = and i1 %c1, %c2
+  %all2 = and i1 %all1, %c3
+  %all3 = and i1 %all2, %c4
+  %all4 = and i1 %all3, %c5
+  %all5 = and i1 %all4, %c6
+  %all6 = and i1 %all5, %c7
+  %all7 = and i1 %all6, %c8
+  %all8 = and i1 %all7, %c9
+  %all = and i1 %all8, %c10
+  br i1 %all, label %ok, label %bad
+ok:
+  ret i32 42
+bad:
+  %code = select i1 %c1, i32 101, i32 100
+  ret i32 %code
+never:
+  call void @llvm.trap()
+  unreachable
+}
+declare void @llvm.experimental.noalias.scope.decl(metadata)
+declare { i8, i1 } @llvm.sadd.with.overflow.i8(i8, i8)
+declare { i64, i1 } @llvm.usub.with.overflow.i64(i64, i64)
+declare { i64, i1 } @llvm.sadd.with.overflow.i64(i64, i64)
+declare { i32, i1 } @llvm.smul.with.overflow.i32(i32, i32)
+declare { i16, i1 } @llvm.umul.with.overflow.i16(i16, i16)
+declare i8 @llvm.scmp.i8.i64(i64, i64)
+declare i8 @llvm.ucmp.i8.i64(i64, i64)
+declare i8 @llvm.scmp.i8.i16(i16, i16)
+declare i8 @llvm.fptosi.sat.i8.f32(float)
+declare i32 @llvm.fptoui.sat.i32.f64(double)
+declare i64 @llvm.fptosi.sat.i64.f64(double)
+declare i32 @llvm.fptosi.sat.i32.f32(float)
+declare i1 @llvm.is.constant.i32(i32)
+declare void @llvm.trap()
+!0 = !{!1}
+!1 = distinct !{!1, !2}
+!2 = distinct !{!2}
+''')
+        image = self.work / 'rustc.wax'
+        self.driver(source, '-o', image)
+        self.execute(image, 42)
+        self.execute(image, 42, 'pipeline')
+        # Inline assembly other than the empty barrier stays an error.
+        source = self.ir('''
+define i32 @main() {
+  call void asm sideeffect "nop", ""()
+  ret i32 0
+}
+''', name='asm.ll')
+        result = self.driver(source, '-o', self.work / 'asm.wax', success=False)
+        self.assertIn('inline assembly is unsupported', result.stderr)
+
     def test_constant_pointer_arithmetic(self):
         source = self.ir('''
 @data = global [4 x i8] c"abc\\00"

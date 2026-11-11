@@ -1,0 +1,14 @@
+[package]
+name = "rust-foundation"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[dependencies]
+fnd = { path = "../../sdk/rust/fnd", features = ["global-allocator"] }
+
+[profile.release]
+opt-level = "s"

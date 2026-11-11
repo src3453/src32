@@ -992,6 +992,13 @@ class _Function:
         c, target, values = self.c, args[-1], args[:-1]
         name = target.name if target.value_kind == llvm.ValueKind.function else ""
         text = str(inst)
+        if target.value_kind == llvm.ValueKind.inline_asm:
+            # Only the empty template without outputs: the compiler barrier of
+            # core::hint::black_box and `asm volatile("" ::: "memory")`. Every value
+            # already lives in memory here, so it needs no code.
+            if str(inst.type) == "void" and re.search(r'\basm\s+(?:sideeffect\s+)?(?:alignstack\s+)?""\s*,', text):
+                return
+            self.fail("inline assembly is unsupported (only an empty barrier without outputs)")
         syntax = _mask_identifiers(text)
         if re.search(r"\b(?:musttail|(?!(?:ccc|fastcc)\b)[a-zA-Z_0-9]+cc|spir_func|spir_kernel|ptx_kernel|ptx_device|amdgpu_[a-z_]+|cc\s+\d+)\b", syntax):
             self.fail("unsupported call convention or musttail call")
@@ -1480,16 +1487,139 @@ class _Function:
         else:
             self.store(inst, 5)
 
+    def overflow_arithmetic(self, inst, signed, op, bits, values):
+        """llvm.{s,u}{add,sub,mul}.with.overflow: { iN result, i1 overflow } for
+        i1..i32 (all three) and i64 (add, sub; umul.i64 is handled before)."""
+        c = self.c
+        if bits == 64 and op in ("add", "sub"):
+            # A = R2:R1, B = R4:R3 (high:low); result R7:R5, flag R8.
+            self.load(values[0], 1, 1)
+            self.load(values[0], 2, 0)
+            self.load(values[1], 3, 1)
+            self.load(values[1], 4, 0)
+            c.imm(9, 31)
+            if op == "add":
+                c.emit("ADD R5, R1, R3")
+                c.emit("SLTU R6, R5, R1")  # carry out of the low word
+                c.emit("ADD R10, R2, R4")
+                c.emit("ADD R7, R10, R6")
+                if signed:
+                    c.emit("XOR R8, R2, R7")
+                    c.emit("XOR R6, R4, R7")
+                    c.emit("AND R8, R8, R6")
+                    c.emit("SRL R8, R8, R9")
+                else:
+                    c.emit("SLTU R8, R10, R2")
+                    c.emit("SLTU R6, R7, R10")
+                    c.emit("OR R8, R8, R6")
+            else:
+                c.emit("SUB R5, R1, R3")
+                c.emit("SLTU R6, R1, R3")  # borrow from the high word
+                c.emit("SUB R10, R2, R4")
+                c.emit("SUB R7, R10, R6")
+                if signed:
+                    c.emit("XOR R8, R2, R4")
+                    c.emit("XOR R6, R2, R7")
+                    c.emit("AND R8, R8, R6")
+                    c.emit("SRL R8, R8, R9")
+                else:
+                    c.emit("SLTU R8, R2, R4")
+                    c.emit("SLTU R6, R10, R6")
+                    c.emit("OR R8, R8, R6")
+            slot = self.slots[inst]
+            c.mem("ST", 7, 29, slot)
+            c.mem("ST", 5, 29, slot + 4)
+            c.mem("ST", 0, 29, slot + 8)
+            c.mem("STB", 8, 29, slot + self.layout.offset(inst.type, 1))
+            return
+        if bits > 32:
+            self.fail(f"unsupported LLVM intrinsic @llvm.{'s' if signed else 'u'}{op}.with.overflow.i{bits}")
+        self.load(values[0], 1)
+        self.load(values[1], 2)
+        for reg in (1, 2):
+            self.signed(reg, bits) if signed else self.narrow(reg, bits)
+        c.emit({"add": "ADD", "sub": "SUB", "mul": "MUL"}[op] + " R3, R1, R2")
+        # Overflow flag into R5.
+        exact = bits < 32 and (op != "mul" or bits <= 16)  # the 32-bit result is the exact one
+        if signed and exact:
+            c.move(4, 3)
+            self.signed(4, bits)
+            c.emit("XOR R5, R4, R3")
+            c.emit("SLTU R5, R0, R5")
+        elif signed and op in ("add", "sub"):
+            c.emit("XOR R4, R1, R3")
+            c.emit("XOR R5, R2, R3" if op == "add" else "XOR R5, R1, R2")
+            c.emit("AND R5, R4, R5")
+            c.imm(9, 31)
+            c.emit("SRL R5, R5, R9")
+        elif signed:
+            # 17..32-bit multiply: the 64-bit product must be the sign extension of the result.
+            c.emit("MULH R4, R1, R2")
+            c.imm(9, 31)
+            c.emit("SRA R6, R3, R9")
+            c.emit("XOR R5, R4, R6")
+            c.emit("SLTU R5, R0, R5")
+            if bits < 32:
+                c.move(7, 3)
+                self.signed(7, bits)
+                c.emit("XOR R7, R7, R3")
+                c.emit("SLTU R7, R0, R7")
+                c.emit("OR R5, R5, R7")
+        elif op == "sub":
+            c.emit("SLTU R5, R1, R2")
+        elif op == "add" and bits == 32:
+            c.emit("SLTU R5, R3, R1")
+        elif exact:
+            c.imm(9, bits)
+            c.emit("SRL R5, R3, R9")
+            c.emit("SLTU R5, R0, R5")
+        else:
+            # Unsigned 17..32-bit multiply overflows exactly when b != 0 and a > max / b.
+            c.move(5, 0)
+            done = c.fresh("mul_overflow_done")
+            c.emit(f"BEQ R2, R0, {done}")
+            c.imm(4, (1 << bits) - 1)
+            c.emit("DIVU R4, R4, R2")
+            c.emit("SLTU R5, R4, R1")
+            c.label(done)
+        self.narrow(3, bits)
+        slot = self.slots[inst]
+        for offset in range(0, self.storage(inst.type), 4):
+            c.mem("ST", 0, 29, slot + offset)
+        c.mem("STB" if bits <= 8 else "STH" if bits <= 16 else "ST", 3, 29, slot)
+        c.mem("STB", 5, 29, slot + self.layout.offset(inst.type, 1))
+
     def intrinsic(self, inst, name, values):
         c = self.c
-        if name in ("llvm.scmp.i32.i32", "llvm.ucmp.i32.i32"):
-            self.load(values[0], 1)
-            self.load(values[1], 2)
-            compare = "SLT" if ".scmp." in name else "SLTU"
-            c.emit(f"{compare} R3, R1, R2")
-            c.emit(f"{compare} R4, R2, R1")
+        three_way = re.fullmatch(r"llvm\.([su])cmp\.i(\d+)\.i(\d+)", name)
+        if three_way:
+            # -1 / 0 / 1 in any result width (rustc uses i8) of i1..i32 or i64 operands.
+            signed, width = three_way.group(1) == "s", int(three_way.group(3))
+            compare = "SLT" if signed else "SLTU"
+            if width <= 32:
+                self.load(values[0], 1)
+                self.load(values[1], 2)
+                if width < 32:
+                    for reg in (1, 2):
+                        self.signed(reg, width) if signed else self.narrow(reg, width)
+                c.emit(f"{compare} R3, R1, R2")
+                c.emit(f"{compare} R4, R2, R1")
+            elif width == 64:
+                self.load(values[0], 1, 0)  # high words
+                self.load(values[1], 2, 0)
+                c.emit(f"{compare} R3, R1, R2")
+                c.emit(f"{compare} R4, R2, R1")
+                done = c.fresh("cmp64_done")
+                c.emit(f"BNE R1, R2, {done}")
+                self.load(values[0], 5, 1)  # equal high words: the low words decide, unsigned
+                self.load(values[1], 6, 1)
+                c.emit("SLTU R3, R5, R6")
+                c.emit("SLTU R4, R6, R5")
+                c.label(done)
+            else:
+                self.fail(f"unsupported LLVM intrinsic @{name}")
             c.emit("SUB R1, R4, R3")
-            self.store(inst)
+            self.store_result(inst)
             return
         if name == "llvm.umul.with.overflow.i32":
             # a*b overflows exactly when b != 0 and a > UINT32_MAX/b.
@@ -1555,6 +1685,11 @@ class _Function:
             self.store(inst, 2, 0)
             self.store(inst, 1, 1)
             return
+        overflow = re.fullmatch(r"llvm\.([su])(add|sub|mul)\.with\.overflow\.i(\d+)", name)
+        if overflow:
+            # rustc's overflow checks (debug builds) and checked_*/overflowing_* arithmetic.
+            self.overflow_arithmetic(inst, overflow.group(1) == "s", overflow.group(2), int(overflow.group(3)), values)
+            return
         if name.startswith("llvm.uadd.sat.") and _bits(inst.type) <= 32:
             bits = _bits(inst.type)
             self.load(values[0], 1)
@@ -1610,13 +1745,40 @@ class _Function:
                 self.narrow(1, bits)
                 self.store(inst)
             return
+        if name.startswith(("llvm.fptosi.sat.", "llvm.fptoui.sat.")):
+            # rt.c saturates to 32 or 64 bits; clamp narrower results to their own range.
+            signed = name.startswith("llvm.fptosi.")
+            bits = _bits(inst.type)
+            self.runtime_call(fp.saturating_routine(name, inst.type, values[0].type), values)
+            if bits < 32:
+                bounds = (((1 << (bits - 1)) - 1, -(1 << (bits - 1))) if signed else ((1 << bits) - 1, None))
+                compare = "SLT" if signed else "SLTU"
+                for bound, above in ((bounds[0], True), (bounds[1], False)):
+                    if bound is None:
+                        continue
+                    done = c.fresh("sat_clamp")
+                    c.imm(9, bound & 0xFFFFFFFF)
+                    c.emit(f"{compare} R10, R9, R1" if above else f"{compare} R10, R1, R9")
+                    c.emit(f"BEQ R10, R0, {done}")
+                    c.move(1, 9)
+                    c.label(done)
+            self.store_result(inst)
+            return
         if name.split(".")[1] in ("fabs", "copysign", "sqrt", "fma", "fmuladd"):
             self.float_intrinsic(inst, name, values)
             return
         if name.split(".")[1] in ("smin", "smax", "umin", "umax", "abs", "bswap", "ctpop", "ctlz", "cttz", "fshl", "fshr"):
             self.integer_intrinsic(inst, name, values)
             return
-        if name.startswith(("llvm.lifetime.", "llvm.dbg.")):
+        if name.startswith(("llvm.lifetime.", "llvm.dbg.")) or name == "llvm.experimental.noalias.scope.decl":
+            # Optimisation hints only (rustc emits noalias scope declarations after inlining).
+            return
+        if name in ("llvm.trap", "llvm.debugtrap", "llvm.ubsantrap"):
+            # Same as `unreachable`: HALT (privileged, so it faults in U mode), then never continue.
+            c.emit("HALT")
+            trap = c.fresh("trap")
+            c.label(trap)
+            c.jump(trap)
             return
         if name.startswith("llvm.stacksave"):
             self.store(inst, 28)
@@ -1668,6 +1830,11 @@ class _Function:
             return
         if name.startswith("llvm.expect."):
             self.copy(values[0], self.slots[inst])
+            return
+        if name.startswith("llvm.is.constant."):
+            # Left after optimisation means "not known to be constant" (as in LLVM's codegen).
+            c.move(1, 0)
+            self.store(inst)
             return
         if name.startswith("llvm.assume"):
             # assume has no runtime side effect; invalid assumptions already imply UB.

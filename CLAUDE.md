@@ -14,9 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 - **エミュレータ（Rust, `src/`）**: `bus.rs` が MMIO バスで、`src/devices/` の各デバイス（BMC/DMAC、IRQC、PeC（タイマー・キーボード・IDC ディスク・RNG）、VDP（PCG 文字画面・GP・CLUT 合成）、SGC（2D）、VPU（3D）、SGU（音声）、拡張カード（wasmtime の WASM カード））をつなぎます。CPU は `cpu.rs`（スカラー）、`cpu_pipeline.rs`（既定、Extension p）、Cached／cached-relaxed、`cpu_jit.rs`（`--features jit`、Cranelift）があり、`cpu_select.rs` で切り替えます。特権レベルと SYSCALL は `cpu_privilege.rs`（`doc/spec_CPU_priv.md`）。
 - **バイナリ（`src/bin/`）**: `cpt32`（GUI、`src/main.rs`）、`src32_testbench`（ヘッドレス実行。`--frames`、`--expect-mem-u8`、`--type FRAME=TEXT` のキー入力、`--dump-pcg` の画面ダンプなど。Python 側のゲストテストはほぼ全部これを使う）、`cpt32-tool`、`music_editor`、各種ベンチ。
-- **ゲストの作り方は 2 系統**:
+- **ゲストの作り方は 3 系統**:
   - sol（スタック言語）: `tools/solc/solc.py compile X.sol -o X.a` → `tools/asm/asm.py X.a -o X.bin|.wax`。標準ライブラリは `sol/solstd`、`sol/cpt32`。
   - C/C++: `tools/llvm-src32/driver.py`（Clang で LLVM IR → llvmlite で SRC32 アセンブリ）。`--protected`（ユーザーモード WAX v2）、`--wal`／`--wax3`／`--import-wal`（WAX/WAL v3）。C ライブラリは `sdk/cpt32`。
+  - Rust（`no_std`）: `tools/llvm-src32/cargo_src32.py`（Cargo の `-Zbuild-std` と fat LTO で LLVM IR → `driver.py`）。ベアメタルは `sdk/rust/cpt32`、Foundation は `sdk/rust/fnd`（`--foundation-wal`）。rustc の LLVM メジャー版は llvmlite と一致が必要。ガイドは `sdk/rust/README.md`。
 - **実行形式**: raw `.bin`、WAX v2（`doc/spec_WAX.md`）、WAX/WAL v3（`doc/spec_WAX_v3.md`、位置独立ライブラリと import）。
 - **BIOS**（`bios/`, `doc/spec_BIOS.md`）: `config.yaml` に `bios` があると BIOS が起動し、渡した RAM プログラムは実行されません。ゲストを直接動かすときは BIOS のない config の directory から実行します。
 

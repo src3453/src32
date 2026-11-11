@@ -70,6 +70,7 @@ GitHub の Issue や PR の検索・作成・更新には、利用可能な GitH
 - Foundation CPU 統計（ホスト、カウンタ wrap と user/kernel/idle の帰属）: `python3 -m unittest discover -s foundation/tests/cpu`（ホスト C コンパイラが必要）
 - Foundation ディスク起動（BIOS → stage1 → FNDBOOT、testbench）: `python3 -m unittest discover -s foundation/tests/disk`（`src32_testbench` と Clang が必要）
 - FS2 ホストツール: `python3 -m unittest discover -s tools/fs2`
+- Rust ゲスト（`tools/llvm-src32/cargo_src32.py`、`sdk/rust`）: `python3 -m unittest discover -s tools/llvm-src32 -p test_rust.py` と `python3 -m unittest discover -s foundation/tests/rust`（Cargo、`rust-src`、llvmlite と LLVM メジャー版が同じ rustc が必要。なければ skip するので、skip を通過と報告しない）。rustc の IR だけが使う lowering は `test_toolchain.py` の `test_rustc_intrinsics_and_constants` が Rust なしで確かめる
 - WASM SDK package builder: `python3 -m unittest discover -s sdk/wasm-expansion-card -p 'test_*.py' -v`
 - WASM starter／example: `cargo build --manifest-path templates/wasm-expansion-card/Cargo.toml --release --target wasm32-unknown-unknown` と同じ形式で example の manifest も build。
 - sol ゲストの実行確認は、必要に応じて `tools/solc/solc.py compile` → `tools/asm/asm.py` → `src32_testbench` またはエミュレータの順に行います。

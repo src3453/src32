@@ -1,0 +1,15 @@
+[package]
+name = "cpt32"
+version = "0.1.0"
+edition = "2024"
+description = "Bare-metal CPT32 support for Rust guests built with tools/llvm-src32/cargo_src32.py"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["panic-handler"]
+# A #[panic_handler] that prints the location to the UART and stops the CPU.
+# Turn it off (default-features = false) to provide your own.
+panic-handler = []

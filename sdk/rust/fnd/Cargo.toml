@@ -1,0 +1,17 @@
+[package]
+name = "fnd"
+version = "0.1.0"
+edition = "2024"
+description = "Foundation OS libfnd bindings for Rust programs built with tools/llvm-src32/cargo_src32.py"
+publish = false
+
+[lib]
+path = "src/lib.rs"
+
+[features]
+default = ["panic-handler"]
+# A #[panic_handler] that writes the location to STDERR and exits with 101.
+panic-handler = []
+# A #[global_allocator] on fnd_mem_alloc / fnd_mem_free (the process heap).
+# Build with --build-std core,alloc and `extern crate alloc;` in the program.
+global-allocator = []

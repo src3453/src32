@@ -59,7 +59,18 @@ def entry_points():
         for width in ("si", "di"):
             names.update((f"__fix{k}{width}", f"__fixuns{k}{width}"))
             names.update((f"__float{width}{k}", f"__floatun{width}{k}"))
+            names.update((f"__src32_fix{k}{width}_sat", f"__src32_fixuns{k}{width}_sat"))
     return names
+
+
+def saturating_routine(name, result, operand):
+    """Routine of llvm.fptosi.sat / llvm.fptoui.sat: rt.c's __src32_fix*_sat, by
+    result width (narrower results are clamped again by the backend)."""
+    width = result.type_width
+    if width > 64:
+        raise CompileError(f"@{name}: results wider than 64 bits are not supported")
+    unsigned = "uns" if name.startswith("llvm.fptoui.") else ""
+    return f"__src32_fix{unsigned}{kind(operand)}{'di' if width > 32 else 'si'}_sat"
 
 
 def kind(ty):
@@ -132,6 +143,8 @@ def instruction_routines(inst):
         name = callee.name if callee.value_kind == llvm.ValueKind.function else ""
         if name.startswith("llvm.") and name.split(".")[1] in ("sqrt", "fma", "fmuladd"):
             return intrinsic_routines(name, inst.type)
+        if name.startswith(("llvm.fptosi.sat.", "llvm.fptoui.sat.")):
+            return [saturating_routine(name, inst.type, operands[0].type)]
     return []
 
 

@@ -450,7 +450,9 @@ class DataImage:
         """Serialize an untyped initializer, including ABI padding, exactly once."""
         size = self.layout.size(typ)
         text = text.strip()
-        if text == "zeroinitializer":
+        if text == "zeroinitializer" or (text in ("undef", "poison") and (typ.is_array or typ.is_struct)):
+            # rustc writes padding and uninitialized parts of constants as undef aggregates;
+            # zero is a valid concrete value for them.
             return bytes(size)
         if str(typ) in ("float", "double"):
             from fp import literal_bits

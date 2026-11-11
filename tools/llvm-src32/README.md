@@ -4,7 +4,7 @@
 `tools/csc` は非推奨 (deprecated) です。今後更新しません。C guest の新規開発にはこの LLVM/SRC32 ツールチェーンを使用してください。
 CPT32 の RAM 上で起動し、引数なしの `int main(void)` を呼び、戻り値を R1 に残して HALT します。入口は `uint32_t` 引数を 2 つまで受け取れます（例：`int main(uint32_t r1, uint32_t r2)`）。その場合、起動時点の R1 と R2 がそのまま引数になります（ローダからの引き渡し用。Foundation の stage1 → カーネルで使用）。
 
-`<cpt32/cpu.h>` の `cpt32_halt()` はSRC32の`HALT`命令を出力するintrinsicです。引数・戻り値はなく、有効なIRQが受理されると呼出し直後から再開します。この関数名は予約済みで、ユーザー定義しないでください。inline assembly全般が使えるわけではなく、引き続き拒否されます。
+`<cpt32/cpu.h>` の `cpt32_halt()` はSRC32の`HALT`命令を出力するintrinsicです。引数・戻り値はなく、有効なIRQが受理されると呼出し直後から再開します。この関数名は予約済みで、ユーザー定義しないでください。inline assembly全般が使えるわけではなく、引き続き拒否されます（出力のない空のテンプレート、つまりコンパイラバリアだけは受け付けてコードを出しません）。
 拡張P（特権レベルとSYSCALL）用のintrinsicとSYSCALLハンドラーは下の「Extension P」を参照してください。
 
 CMake 用モジュールは `cmake/SRC32.cmake`。
@@ -165,6 +165,20 @@ python tools/llvm-src32/driver.py app.c --wax3 --import-wal lib.wal --origin 0x8
 - `--image-id` の既定は出力ファイル名（小文字）、`--abi-version` の既定は `1.0` です。WAX では `abi_major` はアプリケーションの契約の版です。
 - 実例：[`foundation/tests/wal`](../../foundation/tests/wal)（WAL から WAL を import する例）、libfnd の WAL 化（`foundation/boot/build.py` がシェルと `/bin` のコマンドをそれを import する WAX v3 にする。export 一覧は `foundation/lib/fnd/fnd.exports`）。
 
+## Rust
+
+`no_std` の Rust クレートは `cargo_src32.py` でビルドします。Cargo で `core`（と `alloc`）を rust-src からビルドし、fat LTO 後の LLVM IR（[`rust/src32-none.json`](rust/src32-none.json) のターゲット、C と同じデータレイアウト）を globaldce で整理してから `driver.py` に渡します。`-o` などそれ以外のオプションは `driver.py` へそのまま渡ります。
+
+```sh
+python tools/llvm-src32/cargo_src32.py --manifest-path game/Cargo.toml -o game.wax
+python tools/llvm-src32/cargo_src32.py --manifest-path cmd/Cargo.toml --build-std core,alloc \
+    --foundation-wal target/foundation-boot/root/lib/fnd.1.wal -o hello.wax
+```
+
+rustc の LLVM メジャー版は llvmlite と一致している必要があり、stable の Rust は `RUSTC_BOOTSTRAP=1` で起動します。ベアメタル用の [`cpt32`](../../sdk/rust/cpt32/)、Foundation 用の [`fnd`](../../sdk/rust/fnd/) クレートと使い方・制約は [Rust ガイド](../../sdk/rust/README.md) にあります。テスト: `test_rust.py`（[`rust/conformance`](rust/conformance/) を opt-level 0/2 で実行。Rust がない環境では skip）と `foundation/tests/rust`。
+
+rustc の IR のために、バックエンドは次も扱います（C からも使えます）: `llvm.{s,u}{add,sub,mul}.with.overflow`（i1〜i32 と i64 の add/sub）、任意の結果幅の `llvm.scmp`/`llvm.ucmp`（i1〜i32、i64 のオペランド）、飽和変換 `llvm.fptosi.sat`/`llvm.fptoui.sat`（NaN は 0、範囲外は端の値。SoftFloat の `__src32_fix*_sat`）、`llvm.trap`（`unreachable` と同じく HALT して停止）、`llvm.is.constant`（常に偽）、`llvm.experimental.noalias.scope.decl`（無視）、出力のない空のインラインアセンブリ（`core::hint::black_box` のバリア。コードなし）、定数の `undef` の配列・構造体（0 で埋める）。
+
 ## C++ 開発サンプル
 
 [`examples/hello-cpp`](../../examples/hello-cpp/README.md) はクラスを使う複数翻訳単位と C SDK の混在プロジェクトです。CMake と CLI の両方でビルドできます。
@@ -185,7 +199,7 @@ C++ の起動関数は `extern "C" int main()` とし、C SDK ヘッダーも `e
 | ランタイム | memcpy、memmove、memset、memcmp、strlen。未解決のものだけ同梱実装をリンク。ユーザー実装を優先 |
 | 可変長引数 | `<stdarg.h>`（`va_list`/`va_start`/`va_arg`/`va_copy`/`va_end`）と可変長関数の直接・間接呼出。Clang の MIPS o32 規約（`va_list` は `char *`）に従い、`va_arg` は Clang がインライン展開し、バックエンドは `llvm.va_start`/`va_copy`/`va_end` と `llvm.ptrmask` を実装。可変部の引数は型のアラインメント（最大8 byte）に揃えて積む。`printf` 系のようなユーザー実装の整形関数や `vprintf` へ `va_list` を渡す呼出に使える（`printf` 自体は付属しない） |
 | 浮動小数点 | `float`/`double` を IEEE-754 のビット列として整数と同じスロット・引数 word・戻り値で運ぶ（double は上位 word が先）。算術・比較・変換・`fneg`/`fabs`/`copysign`/`sqrt`/`fma`/`fmuladd` は FPU を使わず、compiler-rt 互換ルーチン（`__addsf3` など）の呼出に変換する。実体は Berkeley SoftFloat（`runtime/softfloat`）で、必要なときだけリンクし、到達できる関数だけを出力 |
-| LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、符号なし飽和減算 `llvm.usub.sat`（i1–i32/i64）、`llvm.umul.with.overflow.i32`、32-bit三方向比較 scmp/ucmp、expect/assume、lifetime/debug 等の対応部分 |
+| LLVM intrinsic | メモリ操作、整数 min/max/abs/bswap/ctpop/ctlz/cttz、符号なし飽和減算 `llvm.usub.sat`（i1–i32/i64）、`llvm.{s,u}{add,sub,mul}.with.overflow`（i1–i32、i64 は add/sub と umul）、三方向比較 scmp/ucmp（i1–i32/i64、結果は任意幅）、飽和変換 `llvm.fpto{s,u}i.sat`、trap/debugtrap、is.constant、noalias.scope.decl、expect/assume、lifetime/debug 等の対応部分 |
 
 ### 浮動小数点ランタイム
 
@@ -207,7 +221,7 @@ LLVM の `ccc` / `fastcc` と元ターゲット ABI ヒント `inreg` は、直�
 
 ### 明示的に非対応
 
-SIMD・ベクトル、`half`/`fp128`、atomic、例外、inline asm、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、`ccc` / `fastcc` 以外の calling convention、`musttail`、i33–i63/i65以上。
+SIMD・ベクトル、`half`/`fp128`、atomic、例外、inline asm（空のバリアを除く）、TLS、alias/ifunc、weak/comdat 等の未対応 linkage、`ccc` / `fastcc` 以外の calling convention、`musttail`、i33–i63/i65以上。
 未対応命令・intrinsic・定数は位置情報を含むエラーにし、不正な命令へ置換しません。
 LLVM IR 全仕様／C11 全仕様を実装したという意味ではありません。
 

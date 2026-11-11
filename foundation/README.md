@@ -207,7 +207,7 @@ python foundation/run.py
 
 `--arg` 以降の引数は、そのままエミュレーターへ渡します。`run.py` のオプションは `--arg` より前に指定してください。空白を含む値は通常のシェル引数と同様に引用符で囲みます。
 
-外部でビルドしたコマンドは `--bin-dir DIR` で毎回ディスクへ追加できます。
+外部でビルドしたコマンドは `--bin-dir DIR` で毎回ディスクへ追加できます。Rust で書いたコマンド（[`sdk/rust/fnd`](../sdk/rust/README.md)、例は [`examples/rust-foundation`](../examples/rust-foundation/README.md)）もこの方法で入れます。
 
 ```sh
 python foundation/run.py --bin-dir target/foundation-doom --bin-dir target/busybox
