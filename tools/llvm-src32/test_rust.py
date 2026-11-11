@@ -107,7 +107,7 @@ class RustTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
         measured = json.loads(report.read_text(encoding='utf-8'))
         self.assertEqual(measured['problems'], [])
-        for language in ('c', 'rust'):
+        for language in ('c', 'rust', 'rust-unchecked'):
             for kernel, expected in measured['expected'].items():
                 with self.subTest(language=language, kernel=kernel):
                     self.assertEqual(measured['results'][language][kernel]['value'], expected)

@@ -10,6 +10,10 @@ path = "src/lib.rs"
 [dependencies]
 cpt32 = { path = "../../../sdk/rust/cpt32" }
 
+[features]
+# Unchecked slice indexing in the kernels (run.py's "Rust unchecked" variant).
+unchecked = []
+
 # run.py overrides the level with CARGO_PROFILE_RELEASE_OPT_LEVEL (--rust-opt).
 [profile.release]
 opt-level = 2

@@ -156,12 +156,16 @@ def build_c(work: Path, c_opt: str, clang: str | None, verbose: bool) -> tuple[P
     return image, temps / "output.a"
 
 
-def build_rust(work: Path, c_opt: str, rust_opt: str, clang: str | None, verbose: bool) -> tuple[Path, Path]:
-    temps = work / "rust-temps"
-    image = work / "bench-rust.wax"
+def build_rust(work: Path, c_opt: str, rust_opt: str, clang: str | None, verbose: bool,
+               unchecked: bool = False) -> tuple[Path, Path]:
+    name = "rust-unchecked" if unchecked else "rust"
+    temps = work / f"{name}-temps"
+    image = work / f"bench-{name}.wax"
     command = [sys.executable, str(LLVM_SRC32 / "cargo_src32.py"), "--manifest-path", str(HERE / "rust" / "Cargo.toml"),
                "--target-dir", str(work / "cargo"), *harness_inputs(c_opt),
                "--save-temps", str(temps), "-o", str(image)]
+    if unchecked:
+        command[4:4] = ["--features", "unchecked"]
     if clang:
         command += ["--clang", clang]
     env = dict(os.environ)
@@ -295,23 +299,38 @@ def ratio(rust: int, c: int) -> str:
     return f"{rust / c:.2f}" if c else "-"
 
 
+VARIANTS = {"c": "C", "rust": "Rust", "rust-unchecked": "Rust unchecked"}
+
+
 def table(results: dict, sizes: dict) -> str:
-    rows = ["| kernel | C cycles | Rust cycles | Rust/C | C stack | Rust stack | C code | Rust code |",
-            "|---|--:|--:|--:|--:|--:|--:|--:|"]
+    rusts = [variant for variant in VARIANTS if variant != "c"]
+    titles = [VARIANTS[variant] for variant in rusts]
+
+    def header(*columns):
+        return [f"| {' | '.join(columns)} |", "|---" + "|--:" * (len(columns) - 1) + "|"]
+
+    rows = header("cycles", "C", *(column for t in titles for column in (t, f"{t}/C")))
     for kernel in KERNELS:
-        c, rust = results["c"][kernel], results["rust"][kernel]
-        c_code, rust_code = sizes["c"]["kernels"][kernel], sizes["rust"]["kernels"][kernel]
-        rows.append(f"| {kernel} | {c['cycles']:,} | {rust['cycles']:,} | {ratio(rust['cycles'], c['cycles'])} "
-                    f"| {c['stack']:,} | {rust['stack']:,} | {c_code:,} | {rust_code:,} |")
-    c_total = sum(results["c"][kernel]["cycles"] for kernel in KERNELS)
-    rust_total = sum(results["rust"][kernel]["cycles"] for kernel in KERNELS)
-    rows.append(f"| **total** | {c_total:,} | {rust_total:,} | {ratio(rust_total, c_total)} | | "
-                f"| {sum(sizes['c']['kernels'].values()):,} | {sum(sizes['rust']['kernels'].values()):,} |")
-    rows += ["", "| image (bytes) | C | Rust | Rust/C |", "|---|--:|--:|--:|"]
+        c = results["c"][kernel]["cycles"]
+        cells = [f"{results[v][kernel]['cycles']:,} | {ratio(results[v][kernel]['cycles'], c)}" for v in rusts]
+        rows.append(f"| {kernel} | {c:,} | {' | '.join(cells)} |")
+    totals = {v: sum(results[v][kernel]["cycles"] for kernel in KERNELS) for v in VARIANTS}
+    cells = [f"{totals[v]:,} | {ratio(totals[v], totals['c'])}" for v in rusts]
+    rows.append(f"| **total** | {totals['c']:,} | {' | '.join(cells)} |")
+
+    rows += ["", *header("stack / code (bytes)", *(f"{t} stack" for t in VARIANTS.values()),
+                         *(f"{t} code" for t in VARIANTS.values()))]
+    for kernel in KERNELS:
+        stacks = [f"{results[v][kernel]['stack']:,}" for v in VARIANTS]
+        codes = [f"{sizes[v]['kernels'][kernel]:,}" for v in VARIANTS]
+        rows.append(f"| {kernel} | {' | '.join(stacks + codes)} |")
+    codes = [f"{sum(sizes[v]['kernels'].values()):,}" for v in VARIANTS]
+    rows.append(f"| **total** | {' | '.join([''] * len(VARIANTS) + codes)} |")
+
+    rows += ["", *header("image (bytes)", *VARIANTS.values())]
     for key, title in (("code", "code"), ("other_code", "  harness + runtime + core"),
                        ("data", "data (incl. zero-initialised)"), ("image", "image end")):
-        rows.append(f"| {title} | {sizes['c'][key]:,} | {sizes['rust'][key]:,} "
-                    f"| {ratio(sizes['rust'][key], sizes['c'][key])} |")
+        rows.append(f"| {title} | {' | '.join(f'{sizes[v][key]:,}' for v in VARIANTS)} |")
     return "\n".join(rows)
 
 
@@ -345,7 +364,9 @@ def main(argv=None) -> int:
         args.work.mkdir(parents=True, exist_ok=True)
         expected = reference()
         builds = {"c": build_c(args.work, args.c_opt, args.clang, args.verbose),
-                  "rust": build_rust(args.work, args.c_opt, args.rust_opt, args.clang, args.verbose)}
+                  "rust": build_rust(args.work, args.c_opt, args.rust_opt, args.clang, args.verbose),
+                  "rust-unchecked": build_rust(args.work, args.c_opt, args.rust_opt, args.clang, args.verbose,
+                                               unchecked=True)}
         layouts, sizes, reports, results, problems = {}, {}, {}, {}, []
         for language, (image, assembly) in builds.items():
             layouts[language] = symbol_sizes(assembly)
@@ -359,7 +380,7 @@ def main(argv=None) -> int:
     print(f"C -O{args.c_opt}, Rust opt-level {args.rust_opt}, --cpu {args.cpu} "
           f"(cycles of the 48 MHz system clock; stack and code in bytes)\n")
     print(table(results, sizes))
-    for language in ("c", "rust") if args.symbols else ():
+    for language in VARIANTS if args.symbols else ():
         print(f"\nlargest non-kernel functions ({language}):")
         for size, name in largest_other(layouts[language], args.symbols):
             print(f"  {size:8,}  {name}")

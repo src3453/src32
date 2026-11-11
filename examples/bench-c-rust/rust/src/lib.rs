@@ -4,6 +4,12 @@
 //! ordinary safe Rust over slices (with bounds checks): only turning the raw
 //! buffer into a slice is `unsafe`. Each kernel lives in a `bench_<kernel>`
 //! module so that run.py can attribute its code size.
+//!
+//! The feature `unchecked` (run.py's "Rust unchecked" variant) turns every
+//! slice index of the kernels, which go through [`at`], [`set`] and [`swap`],
+//! into an unchecked access, to measure what the bounds checks cost. Its
+//! soundness then rests on the algorithms staying in bounds; it is for
+//! measurement only.
 #![no_std]
 
 use cpt32 as _; // panic handler
@@ -23,36 +29,77 @@ fn bytes<'a>(buffer: *mut u32, count: usize) -> &'a mut [u8] {
     unsafe { core::slice::from_raw_parts_mut(buffer.cast::<u8>(), count) }
 }
 
+/// `slice[index]`.
+#[inline(always)]
+fn at<T: Copy>(slice: &[T], index: usize) -> T {
+    #[cfg(feature = "unchecked")]
+    // SAFETY: measurement build only; every kernel index is in bounds.
+    return unsafe { *slice.get_unchecked(index) };
+    #[cfg(not(feature = "unchecked"))]
+    slice[index]
+}
+
+/// `slice[index] = value`.
+#[inline(always)]
+fn set<T>(slice: &mut [T], index: usize, value: T) {
+    #[cfg(feature = "unchecked")]
+    // SAFETY: as in `at`.
+    unsafe {
+        *slice.get_unchecked_mut(index) = value
+    }
+    #[cfg(not(feature = "unchecked"))]
+    {
+        slice[index] = value
+    }
+}
+
+/// `slice.swap(a, b)`.
+#[inline(always)]
+fn swap<T>(slice: &mut [T], a: usize, b: usize) {
+    #[cfg(feature = "unchecked")]
+    // SAFETY: as in `at`; `ptr::swap` allows a == b.
+    unsafe {
+        let base = slice.as_mut_ptr();
+        core::ptr::swap(base.add(a), base.add(b))
+    }
+    #[cfg(not(feature = "unchecked"))]
+    slice.swap(a, b)
+}
+
 mod bench_crc32 {
+    use super::{at, set};
+
     pub fn run(data: &[u8]) -> u32 {
         let mut table = [0u32; 256];
-        for (i, entry) in table.iter_mut().enumerate() {
+        for i in 0..256 {
             let mut c = i as u32;
             for _ in 0..8 {
                 c = if c & 1 != 0 { 0xEDB8_8320 ^ (c >> 1) } else { c >> 1 };
             }
-            *entry = c;
+            set(&mut table, i, c);
         }
         let mut crc = 0xFFFF_FFFFu32;
         for &byte in data {
-            crc = table[((crc ^ byte as u32) & 0xFF) as usize] ^ (crc >> 8);
+            crc = at(&table, ((crc ^ byte as u32) & 0xFF) as usize) ^ (crc >> 8);
         }
         !crc
     }
 }
 
 mod bench_sieve {
+    use super::{at, set};
+
     pub fn run(flags: &mut [u8]) -> u32 {
         let n = flags.len();
         flags.fill(1);
-        flags[0] = 0;
-        flags[1] = 0;
+        set(flags, 0, 0);
+        set(flags, 1, 0);
         let mut i = 2;
         while i * i < n {
-            if flags[i] != 0 {
+            if at(flags, i) != 0 {
                 let mut j = i * i;
                 while j < n {
-                    flags[j] = 0;
+                    set(flags, j, 0);
                     j += i;
                 }
             }
@@ -63,22 +110,24 @@ mod bench_sieve {
 }
 
 mod bench_sort {
+    use super::{at, set, swap};
+
     /// Hoare partition of `a[lo..=hi]` around the middle element.
     fn partition(a: &mut [u32], lo: usize, hi: usize) -> usize {
-        let pivot = a[lo + (hi - lo) / 2];
+        let pivot = at(a, lo + (hi - lo) / 2);
         let mut i = lo;
         let mut j = hi;
         loop {
-            while a[i] < pivot {
+            while at(a, i) < pivot {
                 i += 1;
             }
-            while a[j] > pivot {
+            while at(a, j) > pivot {
                 j -= 1;
             }
             if i >= j {
                 return j;
             }
-            a.swap(i, j);
+            swap(a, i, j);
             i += 1;
             j -= 1;
         }
@@ -86,13 +135,13 @@ mod bench_sort {
 
     fn insertion(a: &mut [u32], lo: usize, hi: usize) {
         for i in lo + 1..=hi {
-            let value = a[i];
+            let value = at(a, i);
             let mut j = i;
-            while j > lo && a[j - 1] > value {
-                a[j] = a[j - 1];
+            while j > lo && at(a, j - 1) > value {
+                set(a, j, at(a, j - 1));
                 j -= 1;
             }
-            a[j] = value;
+            set(a, j, value);
         }
     }
 
@@ -117,7 +166,7 @@ mod bench_sort {
         }
         let mut sum = 0u32;
         for (i, &value) in a.iter().enumerate() {
-            if i > 0 && a[i - 1] > value {
+            if i > 0 && at(a, i - 1) > value {
                 return 0xFFFF_FFFF;
             }
             sum = sum.wrapping_add(value.wrapping_mul(i as u32 + 1));
@@ -127,6 +176,8 @@ mod bench_sort {
 }
 
 mod bench_matmul {
+    use super::{at, set};
+
     pub fn run(buffer: &mut [u32], n: usize) -> u32 {
         let (a, rest) = buffer.split_at_mut(n * n);
         let (b, c) = rest.split_at_mut(n * n);
@@ -135,9 +186,9 @@ mod bench_matmul {
             for j in 0..n {
                 let mut sum = 0u32; // the int32 values, wrapping
                 for k in 0..n {
-                    sum = sum.wrapping_add(a[i * n + k].wrapping_mul(b[k * n + j]));
+                    sum = sum.wrapping_add(at(a, i * n + k).wrapping_mul(at(b, k * n + j)));
                 }
-                c[i * n + j] = sum;
+                set(c, i * n + j, sum);
             }
         }
         c.iter().fold(0u32, |hash, &value| hash.wrapping_mul(31).wrapping_add(value))
