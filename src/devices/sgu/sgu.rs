@@ -1,7 +1,7 @@
 // SGU: Sound Generator Unit
 // This module provides the bus device wrapper for the 3WS8PN (S3W2) sound generator.
 // SGU MMIO: 0x80020000 - 0x800208FF and 0x80021000 - 0x800218FF
-// 34SI22:   0x80022000 - 0x800220FF (SGU v3; doc/spec_34SI22.md section 10)
+// 34SI22:   0x80022000 - 0x800220FF (SGU v3; 34SI22A from v3.2; doc/spec_34SI22.md)
 // PCMRAM:   0x18000000 - 0x180FFFFF (1MB)
 
 use std::cell::RefCell;
@@ -11,7 +11,7 @@ use crate::bus::{Bus, Device};
 use std::path::Path;
 
 use crate::devices::sgu::s3w2::{PCM_RAM_SIZE, S3w2Sound, SguVersion, saturate_output};
-use crate::devices::sgu::si22::{SI22_REG_COUNT, Si22, Si22Memory};
+use crate::devices::sgu::si22::{SI22_REG_COUNT, Si22, Si22Memory, Si22Variant};
 
 pub const SGU_REG_BASE: u32 = 0x8002_0000;
 pub const SGU2_REG_BASE: u32 = 0x8002_1000;
@@ -107,9 +107,9 @@ pub struct Si22Unit {
 }
 
 impl Si22Unit {
-    pub fn new(pcm_ram: Rc<RefCell<Vec<u8>>>) -> Self {
+    pub fn new(pcm_ram: Rc<RefCell<Vec<u8>>>, variant: Si22Variant) -> Self {
         Self {
-            chip: Si22::new(),
+            chip: Si22::with_variant(variant),
             pcm_ram,
             adc: None,
             adc_read: std::cell::Cell::new(false),
@@ -204,7 +204,7 @@ impl Device for Si22Device {
     }
 }
 
-/// Reads `sgu.version` (`"1"`, `"2"`, `"2.1"`, `"3"` or `"3.1"`; default 3.1) from config.yaml.
+/// Reads `sgu.version` (`"1"`, `"2"`, `"2.1"`, `"3"`, `"3.1"` or `"3.2"`; default 3.2) from config.yaml.
 /// A missing file selects the default.
 pub fn sgu_version_from_config(path: &Path) -> Result<SguVersion, String> {
     let contents = match std::fs::read_to_string(path) {
@@ -231,10 +231,10 @@ pub fn sgu_version_from_yaml(contents: &str) -> Result<SguVersion, String> {
     let text = match value {
         yaml_serde::Value::String(text) => text.clone(),
         yaml_serde::Value::Number(number) => number.to_string(),
-        _ => return Err("`sgu.version` must be 1, 2, 2.1, 3 or 3.1".into()),
+        _ => return Err("`sgu.version` must be 1, 2, 2.1, 3, 3.1 or 3.2".into()),
     };
     SguVersion::parse(&text)
-        .ok_or_else(|| format!("`sgu.version` must be 1, 2, 2.1, 3 or 3.1 (got `{text}`)"))
+        .ok_or_else(|| format!("`sgu.version` must be 1, 2, 2.1, 3, 3.1 or 3.2 (got `{text}`)"))
 }
 
 pub fn connect_sgu(bus: &mut Bus) -> [Rc<RefCell<S3w2Sound>>; 2] {
@@ -280,7 +280,12 @@ pub fn connect_sound_with_version(bus: &mut Bus, version: SguVersion) -> SoundUn
     );
     let si22 = version.has_34si22().then(|| {
         let pcm_ram = Rc::clone(&sgus[0].borrow().pcm_ram);
-        let unit = Rc::new(RefCell::new(Si22Unit::new(pcm_ram)));
+        let variant = if version.has_34si22a() {
+            Si22Variant::A
+        } else {
+            Si22Variant::Base
+        };
+        let unit = Rc::new(RefCell::new(Si22Unit::new(pcm_ram, variant)));
         bus.add_device(
             SI22_REG_BASE,
             "34SI22 MMIO",
@@ -298,7 +303,13 @@ mod tests {
 
     #[test]
     fn config_selects_sgu_version() {
-        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3_1));
+        assert_eq!(sgu_version_from_yaml(""), Ok(SguVersion::V3_2));
+        assert_eq!(
+            sgu_version_from_yaml("sgu:
+  version: 3.2
+"),
+            Ok(SguVersion::V3_2)
+        );
         assert_eq!(
             sgu_version_from_yaml("sgu:\n  version: 3\n"),
             Ok(SguVersion::V3)
@@ -402,6 +413,22 @@ mod tests {
         assert!(!si22.borrow().wants_adc());
         assert_eq!(bus.read_u8(SI22_REG_BASE + 0x26), 0x00);
         assert!(si22.borrow().wants_adc());
+    }
+
+    #[test]
+    fn v3_2_maps_the_34si22a_fifo_dac() {
+        for (version, fifo) in [(SguVersion::V3_1, false), (SguVersion::V3_2, true)] {
+            let mut bus = Bus::new();
+            let si22 = connect_sound_with_version(&mut bus, version).si22.unwrap();
+            for (offset, value) in [(0x27, 0x40), (0x28, 0x00), (0x21, 0x50), (0x0D, 0xF0), (0x0C, 0x04)] {
+                bus.write_u8(SI22_REG_BASE + offset, value);
+            }
+            assert_eq!(bus.read_u8(SI22_REG_BASE + 0x2C), u8::from(fifo));
+            let (mut l, mut r) = ([0i32; 2], [0i32; 2]);
+            si22.borrow_mut().clock_mixed_into_i32(&mut l, &mut r);
+            // 34SI22A: the pushed 0x4000; 34SI22: format 5 is PCM8 and stops at once.
+            assert_eq!(r, if fifo { [0x4000; 2] } else { [0; 2] });
+        }
     }
 
     #[test]

@@ -7,8 +7,13 @@
 // an argument, and `tick` returns the saturated DAC pair. The CPT32 binding
 // (PCM RAM, SGU mixer, OS audio input) lives in sgu.rs.
 //
+// The 34SI22A variant (SGU v3.2) adds a 2048-sample FIFO DAC per playback
+// channel, fed through the REC_x_ADC registers (spec section 11).
+//
 // This file is also included unmodified by the FPGA comparison runner
 // (src32-sv sim/sgu_golden), so it depends only on sqv4.rs.
+
+use std::collections::VecDeque;
 
 use super::sqv4::{self, State as Sqv4State, Variant as Sqv4Variant};
 
@@ -32,6 +37,9 @@ const SQV4_FRAME_SAMPLES: u32 = 64;
 const BASE_RATE: u32 = 48_000;
 const ADDR_MASK: u32 = 0xFF_FFFF;
 
+/// FIFO DAC capacity per playback channel (34SI22A), in 16-bit samples.
+pub const SI22A_FIFO_CAPACITY: usize = 2048;
+
 pub const ST_STOPPED: u8 = 0;
 pub const ST_RUNNING: u8 = 1;
 pub const ST_WAITING: u8 = 2;
@@ -43,22 +51,33 @@ pub trait Si22Memory {
     fn write(&mut self, address: u32, value: u8);
 }
 
+/// Chip variant: the 34SI22 (SGU v3) or the 34SI22A with the FIFO DAC (SGU v3.2).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum Si22Variant {
+    #[default]
+    Base,
+    A,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Format {
     #[default]
     Pcm8,
     Pcm16,
     Sqv4(Sqv4Variant),
+    /// PLAY_FORMAT 5 on the 34SI22A.
+    FifoDac,
 }
 
 impl Format {
-    /// Format field value; 5..7 are reserved and act as PCM8.
-    pub fn from_field(value: u8) -> Self {
+    /// Format field value; reserved values (5..7, or 6..7 with the FIFO DAC) act as PCM8.
+    pub fn from_field(value: u8, fifo_dac: bool) -> Self {
         match value & 7 {
             1 => Self::Pcm16,
             2 => Self::Sqv4(Sqv4Variant::H),
             3 => Self::Sqv4(Sqv4Variant::L),
             4 => Self::Sqv4(Sqv4Variant::LPlus),
+            5 if fifo_dac => Self::FifoDac,
             _ => Self::Pcm8,
         }
     }
@@ -103,6 +122,9 @@ pub struct PlayChannel {
     sample: i16,
     header_pending: bool,
     sqv4: PlaySqv4,
+    /// FIFO DAC samples (34SI22A) and the high byte latched by REC_x_ADC high.
+    pub fifo: VecDeque<i16>,
+    fifo_high: u8,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -130,9 +152,10 @@ pub struct RecChannel {
     wptr: u32,
 }
 
-/// One 34SI22 chip.
+/// One 34SI22 / 34SI22A chip.
 #[derive(Debug, Clone, Default)]
 pub struct Si22 {
+    pub variant: Si22Variant,
     pub play: [PlayChannel; 2],
     pub rec: [RecChannel; 2],
     pub agc_enable: [bool; 2],
@@ -158,8 +181,19 @@ impl Si22 {
         Self::default()
     }
 
+    pub fn with_variant(variant: Si22Variant) -> Self {
+        Self {
+            variant,
+            ..Self::default()
+        }
+    }
+
     pub fn reset(&mut self) {
-        *self = Self::default();
+        *self = Self::with_variant(self.variant);
+    }
+
+    fn has_fifo_dac(&self) -> bool {
+        self.variant == Si22Variant::A
     }
 
     /// True while a record channel is armed or recording (the host opens its input then).
@@ -206,6 +240,10 @@ impl Si22 {
             0x26 => self.adc.0 as u8,
             0x27 => (self.adc.1 >> 8) as u8,
             0x28 => self.adc.1 as u8,
+            0x29..=0x2C if self.has_fifo_dac() => {
+                let count = self.play[((offset - 0x29) / 2) as usize].fifo.len() as u16;
+                if offset & 1 == 1 { (count >> 8) as u8 } else { count as u8 }
+            }
             _ => 0,
         }
     }
@@ -261,17 +299,33 @@ impl Si22 {
             }
             0x23 => self.vox_threshold = value,
             0x24 => self.vox_hold = value,
+            // 34SI22A: REC_x_ADC writes feed the FIFO DAC (high byte, then low byte pushes).
+            0x25..=0x28 if self.has_fifo_dac() => {
+                let c = &mut self.play[((offset - 0x25) / 2) as usize];
+                if offset & 1 == 1 {
+                    c.fifo_high = value;
+                } else if c.fifo.len() < SI22A_FIFO_CAPACITY {
+                    c.fifo.push_back(i16::from_be_bytes([c.fifo_high, value]));
+                }
+            }
             _ => {}
         }
     }
 
     fn play_control(&mut self, ch: usize, ctrl: u8) {
+        let fifo_dac = self.has_fifo_dac();
         let c = &mut self.play[ch];
         match ctrl {
-            0 => c.status = ST_STOPPED,
+            0 => {
+                // Stopping a running FIFO DAC drops what it has not played.
+                if c.status == ST_RUNNING && c.format == Format::FifoDac {
+                    c.fifo.clear();
+                }
+                c.status = ST_STOPPED;
+            }
             1 if c.status == ST_STOPPED || c.status == ST_FINISHED => {
                 c.status = ST_RUNNING;
-                c.format = Format::from_field(c.format_field);
+                c.format = Format::from_field(c.format_field, fifo_dac);
                 c.addr = c.start & ADDR_MASK;
                 c.end = c.stop & ADDR_MASK;
                 c.cnt = 0;
@@ -297,7 +351,7 @@ impl Si22 {
                 let c = &mut self.rec[ch];
                 c.status = if ctrl == 1 { ST_RUNNING } else { ST_WAITING };
                 c.auto = ctrl == 2;
-                c.format = Format::from_field(c.format_field);
+                c.format = Format::from_field(c.format_field, false);
                 c.base = c.start & ADDR_MASK;
                 c.end = c.stop & ADDR_MASK;
                 c.addr = match c.format {
@@ -330,7 +384,9 @@ impl Si22 {
             if c.status != ST_RUNNING {
                 continue;
             }
-            let y = (i32::from(c.sample) * VOL_LUT[c.volume as usize]) >> 15;
+            // The FIFO DAC has a fixed gain (0 dB) like the SGU FIFO DAC; panning applies.
+            let gain = if c.format == Format::FifoDac { 32768 } else { VOL_LUT[c.volume as usize] };
+            let y = (i32::from(c.sample) * gain) >> 15;
             if !c.l_disable {
                 left += y;
             }
@@ -348,6 +404,14 @@ impl Si22 {
         }
         if c.cnt > 0 {
             c.cnt -= 1;
+            return;
+        }
+        if c.format == Format::FifoDac {
+            // One sample per DIV + 1 ticks; when empty, hold and try again next tick.
+            if let Some(sample) = c.fifo.pop_front() {
+                c.sample = sample;
+                c.cnt = c.div;
+            }
             return;
         }
         c.cnt = c.div;
@@ -368,6 +432,7 @@ impl Si22 {
     fn fetch(c: &mut PlayChannel, mem: &mut dyn Si22Memory) -> Result<i16, bool> {
         let rd = |mem: &mut dyn Si22Memory, a: u32| mem.read(a & ADDR_MASK);
         match c.format {
+            Format::FifoDac => unreachable!("the FIFO DAC is played in play_step"),
             Format::Pcm8 => {
                 if c.addr >= c.end {
                     return Err(false);
@@ -506,7 +571,8 @@ impl Si22 {
     /// Store one sample; false when it does not fit before STOP.
     fn record_sample(c: &mut RecChannel, y: i16, mem: &mut dyn Si22Memory) -> bool {
         match c.format {
-            Format::Pcm8 => {
+            // REC_FORMAT 5 is reserved (PCM8); FifoDac is a playback format only.
+            Format::Pcm8 | Format::FifoDac => {
                 if c.addr + 1 > c.end {
                     return false;
                 }
@@ -753,6 +819,69 @@ mod tests {
         chip.write_register(0x0C, 0x01, &mut ram);
         let out: Vec<i16> = (0..9).map(|_| chip.tick((0, 0), &mut ram).0).collect();
         assert_eq!(out, [0x4000, 0x4000, 0x4000, 0x4000, -0x4000, -0x4000, -0x4000, -0x4000, 0]);
+    }
+
+    #[test]
+    fn si22a_fifo_dac_plays_rec_adc_writes_at_the_divided_rate() {
+        let mut ram = Ram(vec![0; 0x100]);
+        let mut base = Si22::new();
+        let mut chip = Si22::with_variant(Si22Variant::A);
+        for c in [&mut base, &mut chip] {
+            // prefill A with 0x1234, -2, 0x0100 and B with 0x7FFF
+            for (off, v) in [(0x25, 0x12), (0x26, 0x34), (0x25, 0xFF), (0x26, 0xFE), (0x25, 0x01), (0x26, 0x00)]
+                .into_iter()
+                .chain([(0x27, 0x7F), (0x28, 0xFF)])
+            {
+                c.write_register(off, v, &mut ram);
+            }
+            c.write_register(0x21, 0x55, &mut ram);
+            c.write_register(0x0D, 0xFF, &mut ram);
+            c.write_register(0x0E, 1, &mut ram);
+            c.write_register(0x0C, 0x05 | 0x40 | 0x20, &mut ram); // A left only, B right only
+        }
+        // 34SI22: no FIFO; format 5 is PCM8 from address 0 (STOP 0 ends at once).
+        assert_eq!(base.read_register(0x29), 0);
+        base.tick((0, 0), &mut ram);
+        assert_eq!(base.read_register(0x0C) & 0x0F, 0x0F);
+
+        assert_eq!(
+            (0x29..=0x2C).map(|o| chip.read_register(o)).collect::<Vec<_>>(),
+            [0, 3, 0, 1]
+        );
+        assert_eq!(chip.read_register(0x25), 0); // reads still show the ADC
+        let out: Vec<(i16, i16)> = (0..8).map(|_| chip.tick((0, 0), &mut ram)).collect();
+        assert_eq!(
+            out,
+            [
+                (0x1234, 0x7FFF),
+                (0x1234, 0x7FFF),
+                (-2, 0x7FFF),
+                (-2, 0x7FFF),
+                (0x0100, 0x7FFF),
+                (0x0100, 0x7FFF),
+                (0x0100, 0x7FFF), // underrun: hold, retry every tick
+                (0x0100, 0x7FFF),
+            ]
+        );
+        chip.write_register(0x25, 0x40, &mut ram);
+        chip.write_register(0x26, 0x00, &mut ram);
+        assert_eq!(chip.tick((0, 0), &mut ram).0, 0x4000); // no wait for the divider
+        // PLAY_VOL does not apply to the FIFO DAC (fixed 0 dB, even at 0); panning does.
+        chip.write_register(0x0D, 0x00, &mut ram);
+        assert_eq!(chip.tick((0, 0), &mut ram), (0x4000, 0x7FFF));
+        chip.write_register(0x0D, 0xFF, &mut ram);
+        assert_eq!(chip.read_register(0x0C) & 0x0F, 0x05); // never finishes
+        assert_eq!(chip.read_register(0x20), 0);
+
+        // Full FIFO drops pushes; stopping a running FIFO DAC empties it.
+        for _ in 0..SI22A_FIFO_CAPACITY + 5 {
+            chip.write_register(0x27, 0, &mut ram);
+            chip.write_register(0x28, 1, &mut ram);
+        }
+        assert_eq!((chip.read_register(0x2B), chip.read_register(0x2C)), (0x08, 0x00));
+        chip.write_register(0x0C, 0x03, &mut ram); // A: keep, B: stop
+        assert_eq!(chip.play[1].fifo.len(), 0);
+        assert_eq!(chip.read_register(0x0C) & 0x0F, 0x01);
     }
 
     #[test]

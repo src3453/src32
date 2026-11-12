@@ -9,4 +9,4 @@
 - REC_x_ADC は「最後に処理した tick の生の ADC 値」。RTL では取り込みレジスタ（`adc_q*`、`fs_tick` で更新）とは別に、標本周期の処理を始めるときに `adc_r*` へ写して公開する。`fs_tick` と同じクロックではレジスタ操作を始めない。こうしないと、処理前の tick の値が見えてエミュレータと 1 標本ずれる。
 - 34SI22 の PCM RAM への書き込みで、エミュレータの SGU の SQV4 復号キャッシュは無効化されない（仕様 §10 に記載）。
 - 検証: `cargo test --lib sgu`。RTL 比較は src32-sv で `python scripts/si22_gen_scripts.py` → `python scripts/sgu_cmp.py`（`--pcmlat 20`、`--x2` も）。比較スクリプトでは chip 2 が 34SI22、`I l r` が ADC 入力、`D addr len` が PCM RAM のダンプ（RTL は書き込みバッファが空になるのを待ってから読む）。
-- 未確認: Gowin での合成・タイミング、実機での動作。
+- 未確認: 実機での動作（合成は単体で確認済み）。34SI22A（FIFO DAC）は `2026-11-12-34si22a-fifo-dac.md`。
