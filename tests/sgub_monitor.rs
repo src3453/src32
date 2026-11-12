@@ -426,3 +426,79 @@ fn wave_preview_draws_exactly_the_playing_samples() {
     assert_eq!(last[0], width);
     assert_eq!(last[1], height - 128.0 / 255.0 * height);
 }
+
+/// v4 stream with no pools: `initial` operations, then one frame of `frame`.
+fn ops_stream(initial: &[Vec<u8>], frame: &[Vec<u8>]) -> Vec<u8> {
+    wave_pool_stream(&[], initial, frame)
+}
+
+/// Register writes that point SGU0 `channel` at `start..=end` and start it.
+fn pcm_voice(channel: u32, waveform: u8, start: u32, end: u32, looped: bool) -> Vec<Vec<u8>> {
+    let base = 0x800 + channel * 0x20;
+    let mut ops = vec![write_op(0, base + 2, waveform)];
+    for (offset, value) in [(0x10, start), (0x13, end), (0x16, start)] {
+        for (i, byte) in value.to_be_bytes()[1..].iter().enumerate() {
+            ops.push(write_op(0, base + offset + i as u32, *byte));
+        }
+    }
+    ops.push(write_op(0, base, 0x01)); // FREQUENCY 0x100
+    ops.push(write_op(0, base + 3, 0xFF));
+    ops.push(write_op(0, base + 0x19, 1 | if looped { 2 } else { 0 }));
+    ops
+}
+
+#[test]
+fn pcm_overview_covers_start_through_end_and_progress_follows_playback() {
+    // 256 bytes at 0x1000: a ramp, so column c of 128 holds bytes 2c and 2c+1.
+    let mut initial: Vec<Vec<u8>> = (0..256u32)
+        .map(|i| write_op(2, 0x1000 + i, i as u8))
+        .collect();
+    initial.extend(pcm_voice(0, 1, 0x1000, 0x10FF, true));
+    let mut engine = Engine::new(ops_stream(&initial, &[]), SguVersion::V3_1).unwrap();
+    // Initial operations apply on the first frame.
+    engine.tick(FRAME_SAMPLES);
+    let overview = engine.pcm_overview(0, 128);
+    assert_eq!(overview.len(), 128);
+    for (column, pair) in overview.iter().enumerate() {
+        assert_eq!(*pair, [2 * column as u8, 2 * column as u8 + 1]);
+    }
+    // More columns than bytes: each column still shows one byte.
+    let wide = engine.pcm_overview(0, 512);
+    assert_eq!(wide[0], [0, 0]);
+    assert_eq!(wide[511], [255, 255]);
+
+    let (position, loop_start) = engine.channel(0).pcm_progress().unwrap();
+    assert!(position > 0.0 && position <= 1.0, "{position}");
+    assert_eq!(loop_start, 0.0);
+    // Wavetable voices have no PCM progress.
+    assert_eq!(engine.channel(1).pcm_progress(), None);
+}
+
+#[test]
+fn sqv4_progress_uses_decoded_length_and_voice_history_records_output() {
+    use cpt32::devices::sgu::sqv4::{Variant, encode_interleaved};
+    let pcm: Vec<i16> = (0..4000)
+        .map(|i| ((i as f32 * 0.05).sin() * 12000.0) as i16)
+        .collect();
+    let file = encode_interleaved(&pcm, 1, 48_000, Variant::H, 255).unwrap();
+    let mut initial: Vec<Vec<u8>> = file
+        .iter()
+        .enumerate()
+        .map(|(i, &byte)| write_op(2, 0x2000 + i as u32, byte))
+        .collect();
+    let end = 0x2000 + file.len() as u32;
+    initial.extend(pcm_voice(0, 4, 0x2000, end, false));
+    let mut engine = Engine::new(ops_stream(&initial, &[]), SguVersion::V3_1).unwrap();
+    assert!(engine.voice_history(0).iter().all(|&s| s == 0));
+    engine.tick(FRAME_SAMPLES);
+    let view = engine.channel(0);
+    assert_eq!(view.sqv4_samples.map(|(n, _)| n), Some(4000));
+    let (position, _) = view.pcm_progress().unwrap();
+    assert!(position > 0.0 && position < 1.0, "{position}");
+    let recent = engine.voice_history(0);
+    assert_eq!(recent.len(), cpt32::music::monitor::VOICE_HISTORY);
+    assert!(recent.iter().any(|&s| s > 500) && recent.iter().any(|&s| s < -500));
+    // Seek clears the per-voice history with the rest of the monitor state.
+    engine.seek(0);
+    assert!(engine.voice_history(0).iter().all(|&s| s == 0));
+}

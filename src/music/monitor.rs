@@ -27,6 +27,8 @@ pub const VOICES: usize = NUM_CHANNELS * 2;
 pub const FRAME_SAMPLES: usize = SAMPLE_RATE / 60;
 /// Length of the retained stereo history used by the scope and spectrum.
 pub const HISTORY: usize = 2048;
+/// Recent output samples kept per voice for the SQV4 track scope.
+pub const VOICE_HISTORY: usize = 256;
 
 /// Snapshot of one channel's visible register state for display.
 #[derive(Clone, Debug)]
@@ -46,6 +48,8 @@ pub struct ChannelView {
     pub pcm_control: u8,
     /// Sample offset from PCM_START (PCM/SQV4 only).
     pub pcm_position: u32,
+    /// SQV4 decoded length and loop start in samples, once validated.
+    pub sqv4_samples: Option<(usize, usize)>,
     pub fifo_len: usize,
     pub wavetable: [u8; 256],
     /// Samples per wavetable cycle (3WS8PNB SAMPLE_CONTROL; 256 otherwise).
@@ -75,12 +79,33 @@ impl ChannelView {
             pcm_loop: c.pcm_loop_addr,
             pcm_control: c.pcm_control,
             pcm_position: (c.phase >> PHASE_FRAC_BITS) as u32,
+            sqv4_samples: c.sqv4_samples(),
             fifo_len: c.fifo.len(),
             wavetable: c.wavetable,
             wave_length: core.wavetable_length(channel),
             interpolate: core.interpolates(channel),
             wave_pool: None,
         }
+    }
+
+    /// Play position and loop start as fractions (0..=1) of the sample:
+    /// PCM bytes PCM_START..=PCM_END, or the decoded SQV4 length. `None`
+    /// for other waveforms and for SQV4 not yet validated by the core.
+    pub fn pcm_progress(&self) -> Option<(f32, f32)> {
+        let (length, position, loop_start) = match self.waveform {
+            WaveformType::Pcm => (
+                self.pcm_end.checked_sub(self.pcm_start)? as usize + 1,
+                self.pcm_position as usize,
+                self.pcm_loop.saturating_sub(self.pcm_start) as usize,
+            ),
+            WaveformType::Sqv4 => {
+                let (length, loop_start) = self.sqv4_samples?;
+                (length.max(1), self.pcm_position as usize, loop_start)
+            }
+            _ => return None,
+        };
+        let fraction = |value: usize| (value as f32 / length as f32).clamp(0.0, 1.0);
+        Some((fraction(position), fraction(loop_start)))
     }
 
     /// One wavetable cycle as display points in a `width` x `height` box
@@ -620,6 +645,8 @@ pub struct Engine {
     /// Cycles until the next frame; <= 0 means a frame is due now.
     until_frame: i64,
     history: [VecDeque<i16>; 2],
+    /// Recent per-voice output, (L + R) / 2 before muting.
+    voice_history: [VecDeque<i16>; VOICES],
 }
 
 impl Engine {
@@ -677,6 +704,7 @@ impl Engine {
             error: None,
             until_frame: 0,
             history: std::array::from_fn(|_| VecDeque::from(vec![0; HISTORY])),
+            voice_history: std::array::from_fn(|_| VecDeque::from(vec![0; VOICE_HISTORY])),
         })
     }
 
@@ -736,6 +764,37 @@ impl Engine {
     /// Most recent `HISTORY` output samples of one side (0 = left).
     pub fn history(&self, side: usize) -> &VecDeque<i16> {
         &self.history[side]
+    }
+    /// The voice's most recent `VOICE_HISTORY` output samples (mono, after
+    /// volume and pan, before mute), oldest first.
+    pub fn voice_history(&self, voice: usize) -> &VecDeque<i16> {
+        &self.voice_history[voice]
+    }
+
+    /// Whole-sample overview of a PCM voice: `columns` [min, max] pairs of the
+    /// unsigned 8-bit PCMRAM bytes from PCM_START through PCM_END (the core
+    /// plays the byte at PCM_END before it loops or stops). Empty when the
+    /// range is empty or `columns` is 0.
+    pub fn pcm_overview(&self, voice: usize, columns: usize) -> Vec<[u8; 2]> {
+        let view = self.channel(voice);
+        let core = self.cores[voice / NUM_CHANNELS].borrow();
+        let ram = core.pcm_ram.borrow();
+        let (start, end) = (view.pcm_start as usize, view.pcm_end as usize);
+        if columns == 0 || end < start || start >= ram.len() {
+            return Vec::new();
+        }
+        let samples = &ram[start..=end.min(ram.len() - 1)];
+        (0..columns)
+            .map(|column| {
+                let from = samples.len() * column / columns;
+                let to = (samples.len() * (column + 1) / columns).max(from + 1);
+                let part = &samples[from.min(samples.len() - 1)..to.min(samples.len())];
+                [
+                    part.iter().copied().min().unwrap_or(0x80),
+                    part.iter().copied().max().unwrap_or(0x80),
+                ]
+            })
+            .collect()
     }
 
     fn advance_stream(&mut self) {
@@ -860,9 +919,12 @@ impl Engine {
             for (channel, sides) in output.iter().enumerate() {
                 let voice = core_index * NUM_CHANNELS + channel;
                 let mut peak = 0i32;
+                let recent = &mut self.voice_history[voice];
                 for i in 0..n {
                     let (l, r) = (i32::from(sides[0][i]), i32::from(sides[1][i]));
                     peak = peak.max(l.abs()).max(r.abs());
+                    recent.pop_front();
+                    recent.push_back(((l + r) / 2) as i16);
                     if !self.muted[voice] {
                         left[offset + i] += l;
                         right[offset + i] += r;
@@ -922,7 +984,7 @@ impl Engine {
         }
         self.transport = transport;
         self.muted = muted;
-        for history in &mut self.history {
+        for history in self.history.iter_mut().chain(&mut self.voice_history) {
             history.iter_mut().for_each(|s| *s = 0);
         }
     }

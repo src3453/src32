@@ -658,6 +658,7 @@ impl Monitor {
                 draw,
                 [x0, y],
                 voice,
+                self.engine.as_ref(),
                 view.as_ref(),
                 meter,
                 muted,
@@ -1212,10 +1213,12 @@ fn format_time(seconds: f64) -> String {
     )
 }
 
+#[allow(clippy::too_many_arguments)]
 fn draw_track(
     draw: &DrawListMut,
     [x, y]: [f32; 2],
     voice: usize,
+    engine: Option<&Engine>,
     view: Option<&ChannelView>,
     meter: Meter,
     muted: bool,
@@ -1309,20 +1312,70 @@ fn draw_track(
             );
         }
         WaveformType::Pcm | WaveformType::Sqv4 => {
-            let length = view.pcm_end.saturating_sub(view.pcm_start).max(1) as f32;
-            let to_x = |offset: f32| bx + 1.0 + (bw - 2.0) * (offset / length).clamp(0.0, 1.0);
-            let loop_x = to_x(view.pcm_loop.saturating_sub(view.pcm_start) as f32);
-            let pos_x = to_x(view.pcm_position as f32);
-            draw.add_rect([bx + 1.0, by + 12.0], [pos_x, by + bh - 2.0], color)
+            let inner = bw - 2.0;
+            let progress = view.pcm_progress();
+            // Played part as the background gauge, behind the waveform.
+            if let Some((position, _)) = progress {
+                let gauge = if audible {
+                    [color[0] * 0.3, color[1] * 0.3, color[2] * 0.3, 1.0]
+                } else {
+                    [0.12, 0.13, 0.14, 1.0]
+                };
+                draw.add_rect(
+                    [bx + 1.0, by + 1.0],
+                    [bx + 1.0 + inner * position, by + bh - 1.0],
+                    gauge,
+                )
                 .filled(true)
                 .build();
-            if view.pcm_control & 2 != 0 {
+            }
+            match (view.waveform, engine) {
+                // PCM: the whole sample, min..max of the bytes under each column.
+                (WaveformType::Pcm, Some(engine)) => {
+                    let to_y = |value: u8| by + 1.0 + f32::from(255 - value) / 255.0 * (bh - 2.0);
+                    let overview = engine.pcm_overview(voice, inner as usize);
+                    for (column, [low, high]) in overview.into_iter().enumerate() {
+                        let cx = bx + 1.0 + column as f32;
+                        draw.add_rect([cx, to_y(high)], [cx + 1.0, to_y(low) + 1.0], color)
+                            .filled(true)
+                            .build();
+                    }
+                }
+                // SQV4 is ADPCM: show the voice's recent output instead,
+                // auto-scaled so quiet passages keep their shape.
+                (WaveformType::Sqv4, Some(engine)) => {
+                    let recent = engine.voice_history(voice);
+                    let peak = recent
+                        .iter()
+                        .map(|s| i32::from(*s).abs())
+                        .max()
+                        .unwrap_or(0)
+                        .max(256) as f32;
+                    let mid = by + bh / 2.0;
+                    let last = (recent.len().max(2) - 1) as f32;
+                    draw_polyline(
+                        draw,
+                        recent.iter().enumerate().map(|(i, &sample)| {
+                            [
+                                bx + 1.0 + i as f32 * inner / last,
+                                mid - f32::from(sample) / peak * (bh / 2.0 - 1.0),
+                            ]
+                        }),
+                        color,
+                    );
+                }
+                _ => {}
+            }
+            if let Some((_, loop_start)) = progress
+                && view.pcm_control & 2 != 0
+            {
+                let loop_x = bx + 1.0 + inner * loop_start;
                 draw.add_line([loop_x, by + 1.0], [loop_x, by + bh - 1.0], KEY_ON)
                     .build();
             }
             draw.add_text(
-                [bx + 3.0, by],
-                LABEL,
+                [bx + 14.0, y + 1.0],
+                if audible { TEXT } else { LABEL },
                 format!("{:05X}-{:05X}", view.pcm_start, view.pcm_end),
             );
         }

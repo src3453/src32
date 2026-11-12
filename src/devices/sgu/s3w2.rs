@@ -216,6 +216,16 @@ pub struct Channel {
     pub wavetable: [u8; WAVETABLE_SIZE],
 }
 
+impl Channel {
+    /// Decoded SQV4 length and loop start in samples, once the file at
+    /// PCM_START has been validated (the first sample generated after a
+    /// waveform or address change).
+    pub fn sqv4_samples(&self) -> Option<(usize, usize)> {
+        self.sqv4_validated
+            .then_some((self.sqv4_sample_count, self.sqv4_loop_sample))
+    }
+}
+
 impl Default for Channel {
     fn default() -> Self {
         let mut ch = Self {
