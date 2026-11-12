@@ -515,6 +515,66 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
     bus.install_expansion_cards(cards)
 }
 
+/// One expansion card driven directly by a host tool instead of a [`crate::bus::Bus`]
+/// (the SGUB player). It keeps its own 48 MHz cycle clock for `cpt32_tick` deadlines.
+pub struct HostedCard {
+    card: ExpansionCard,
+    cycles: Rc<Cell<u64>>,
+}
+
+impl HostedCard {
+    /// Load a `.cpt32card` / `.cpt32pkg` package for `slot` (0..7).
+    pub fn load(slot: u8, path: &Path) -> Result<Self, String> {
+        let cycles = Rc::new(Cell::new(0));
+        let card = ExpansionRuntime::new()?.load_card_package(slot, path, Rc::clone(&cycles))?;
+        Ok(Self { card, cycles })
+    }
+
+    pub fn slot(&self) -> u8 {
+        self.card.slot()
+    }
+
+    /// Slot-relative MMIO read (may have card-defined side effects).
+    pub fn read(&mut self, offset: u32) -> u8 {
+        Device::read(&mut self.card, offset)
+    }
+
+    /// Slot-relative MMIO write.
+    pub fn write(&mut self, offset: u32, value: u8) {
+        Device::write(&mut self.card, offset, value);
+    }
+
+    pub fn reset(&mut self) {
+        self.card.reset_card();
+    }
+
+    /// Advance the card clock by `cycles` and run any `cpt32_tick` that became due.
+    pub fn advance_cycles(&mut self, cycles: u64) {
+        let now = self.cycles.get().saturating_add(cycles);
+        self.cycles.set(now);
+        // A tick may schedule the next deadline in the past; bound the catch-up.
+        for _ in 0..64 {
+            match self.card.next_event_cycle() {
+                Some(deadline) if deadline <= now => self.card.run_scheduled_event(now),
+                _ => break,
+            }
+        }
+    }
+
+    /// Add the card's output at `sample_rate` to the buffers (saturating).
+    pub fn render_audio(&mut self, sample_rate: u32, left: &mut [i16], right: &mut [i16]) {
+        Device::render_audio(&mut self.card, sample_rate, left, right);
+    }
+
+    pub fn is_faulted(&self) -> bool {
+        self.card.is_faulted()
+    }
+
+    pub fn debug_info(&self) -> ExpansionCardDebugInfo {
+        self.card.debug_info()
+    }
+}
+
 struct HostState {
     cycles: Rc<Cell<u64>>,
     deadline: Option<u64>,

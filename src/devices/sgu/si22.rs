@@ -159,6 +159,11 @@ impl Si22 {
         *self = Self::default();
     }
 
+    /// Current read address of play channel `ch` (0 = A, 1 = B), for monitors.
+    pub fn play_address(&self, ch: usize) -> u32 {
+        self.play[ch].addr
+    }
+
     /// True while a record channel is armed or recording (the host opens its input then).
     pub fn input_active(&self) -> bool {
         self.rec

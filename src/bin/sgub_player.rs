@@ -1,16 +1,19 @@
 //! SGUB Player: standalone SGUB stream player with a real-time playback monitor.
 //!
-//! Usage: `sgub_player [--sgu-version 1|2|2.1|3|3.1] [song.sgub]`. A file can
-//! also be dropped onto the window.
+//! Usage: `sgub_player [--sgu-version 1|2|2.1|3|3.1] [--card SLOT=PACKAGE]... [song.sgub]`.
+//! A file can also be dropped onto the window. Expansion cards required by a
+//! v3/v4 stream are loaded from `--card`, or found by file name next to the
+//! stream, next to the executable, or in the repository's example targets.
 
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpt32::devices::sgu::s3w2::{FIFO_CAPACITY, ModulationType, SguVersion, WaveformType};
+use cpt32::music::CardRequirement;
 use cpt32::music::monitor::{
-    ChannelView, Engine, FRAME_SAMPLES, Meter, Transport, VOICES, modulation_tag, note_name,
-    spectrum_db, waveform_tag,
+    CardKind, CardSlot, CardStatus, ChannelView, Engine, FRAME_SAMPLES, HsView, Meter, Transport,
+    VOICES, WtView, midi_from_hz, modulation_tag, note_name, spectrum_db, waveform_tag,
 };
 use imgui::{Condition, DrawListMut, MouseButton, Ui, WindowFlags};
 use imgui_wgpu::{Renderer, RendererConfig};
@@ -28,8 +31,8 @@ mod audio;
 
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 const FAST_FACTOR: usize = 4;
-const SEEK_FRAMES: u64 = 5 * 60;
-const DESIGN_SIZE: [f32; 2] = [1328.0, 848.0];
+const SEEK_SECONDS: f64 = 5.0;
+const DESIGN_SIZE: [f32; 2] = [1328.0, 864.0];
 const BANDS: usize = 36;
 
 type Rgba = [f32; 4];
@@ -225,9 +228,22 @@ impl MonitorWindow {
 // ---------------------------------------------------------------------------
 // Monitor state and drawing.
 
+/// What the left panel shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum View {
+    Sgu,
+    Si22,
+    /// Index into `Engine::cards`.
+    Card(usize),
+}
+
 struct Monitor {
     engine: Option<Engine>,
     sgu_version: SguVersion,
+    view: View,
+    /// Card channel whose registers the right panel dumps (16.. = PCM/WT).
+    selected: usize,
+    card_paths: [Option<PathBuf>; 8],
     file_name: String,
     status: String,
     fast: bool,
@@ -237,10 +253,13 @@ struct Monitor {
 }
 
 impl Monitor {
-    fn new(sgu_version: SguVersion) -> Self {
+    fn new(sgu_version: SguVersion, card_paths: [Option<PathBuf>; 8]) -> Self {
         Self {
             engine: None,
             sgu_version,
+            view: View::Sgu,
+            selected: 0,
+            card_paths,
             file_name: String::new(),
             status: "Drop an .sgub file onto this window".into(),
             fast: false,
@@ -251,17 +270,43 @@ impl Monitor {
     }
 
     fn open(&mut self, path: &Path) {
+        let explicit = self.card_paths.clone();
+        let dirs = card_search_dirs(path);
+        let mut resolve =
+            |requirement: &CardRequirement, kind: CardKind| -> Result<Option<PathBuf>, String> {
+                if let Some(path) = &explicit[usize::from(requirement.slot)] {
+                    return Ok(Some(path.clone()));
+                }
+                Ok(kind.package_file_name().and_then(|name| {
+                    dirs.iter()
+                        .map(|dir| dir.join(name))
+                        .find(|candidate| candidate.is_file())
+                }))
+            };
         let result = std::fs::read(path)
             .map_err(|error| error.to_string())
-            .and_then(|bytes| Engine::new(bytes, self.sgu_version).map_err(|e| e.to_string()));
+            .and_then(|bytes| {
+                Engine::with_cards(bytes, self.sgu_version, &mut resolve).map_err(|e| e.to_string())
+            });
         match result {
             Ok(engine) => {
+                let problems = engine.cards.iter().filter(|card| !card.is_ready()).count();
+                let devices = engine.cards.len() + usize::from(engine.uses_si22());
                 self.engine = Some(engine);
+                self.view = View::Sgu;
+                self.selected = 0;
                 self.file_name = path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
                     .unwrap_or_default();
-                self.status = format!("Loaded {}", path.display());
+                let name = &self.file_name;
+                self.status = if problems > 0 {
+                    format!("Loaded {name}: {problems} card slot(s) not ready (Tab)")
+                } else if devices > 0 {
+                    format!("Loaded {name}  (Tab: device views)")
+                } else {
+                    format!("Loaded {name}")
+                };
                 self.fast = false;
             }
             Err(error) => self.status = format!("Cannot open {}: {error}", path.display()),
@@ -325,9 +370,10 @@ impl Monitor {
         self.fast = false;
     }
 
-    fn seek_relative(&mut self, delta: i64) {
+    fn seek_relative(&mut self, seconds: f64) {
         if let Some(engine) = self.engine.as_mut() {
-            let target = (engine.elapsed_frames as i64 + delta).max(0) as u64;
+            let delta = (seconds * engine.frames_per_second()).round() as i64;
+            let target = (engine.elapsed_frames as i64).saturating_add(delta).max(0) as u64;
             engine.seek(target);
             if engine.transport == Transport::Stop {
                 engine.transport = Transport::Pause;
@@ -363,11 +409,13 @@ impl Monitor {
             KeyCode::Space => self.toggle_play(),
             KeyCode::KeyS | KeyCode::Escape => self.stop(),
             KeyCode::KeyF => self.fast = !self.fast,
-            KeyCode::ArrowLeft => self.seek_relative(-(SEEK_FRAMES as i64)),
-            KeyCode::ArrowRight => self.seek_relative(SEEK_FRAMES as i64),
-            KeyCode::PageUp => self.seek_relative(-(SEEK_FRAMES as i64) * 6),
-            KeyCode::PageDown => self.seek_relative(SEEK_FRAMES as i64 * 6),
-            KeyCode::Home => self.seek_relative(i64::MIN / 2),
+            KeyCode::ArrowLeft => self.seek_relative(-SEEK_SECONDS),
+            KeyCode::ArrowRight => self.seek_relative(SEEK_SECONDS),
+            KeyCode::PageUp => self.seek_relative(-SEEK_SECONDS * 6.0),
+            KeyCode::PageDown => self.seek_relative(SEEK_SECONDS * 6.0),
+            KeyCode::Home => self.seek_relative(-1e9),
+            KeyCode::Tab => self.cycle_view(if shift { -1 } else { 1 }),
+            KeyCode::KeyM => self.toggle_device_mute(),
             KeyCode::Digit0 => {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.muted = [false; VOICES];
@@ -378,6 +426,105 @@ impl Monitor {
                     self.toggle_mute(index + if shift { 8 } else { 0 }, false);
                 }
             }
+        }
+    }
+
+    fn views(&self) -> Vec<View> {
+        let mut views = vec![View::Sgu];
+        if let Some(engine) = &self.engine {
+            if engine.uses_si22() {
+                views.push(View::Si22);
+            }
+            views.extend((0..engine.cards.len()).map(View::Card));
+        }
+        views
+    }
+
+    fn cycle_view(&mut self, step: isize) {
+        let views = self.views();
+        let index = views.iter().position(|v| *v == self.view).unwrap_or(0) as isize;
+        self.view = views[(index + step).rem_euclid(views.len() as isize) as usize];
+        self.selected = 0;
+    }
+
+    fn view_label(&self, view: View) -> String {
+        match (view, &self.engine) {
+            (View::Sgu, _) => "SGU+SI22 18CH".into(),
+            (View::Si22, _) => "34SI22".into(),
+            (View::Card(index), Some(engine)) => {
+                let card = &engine.cards[index];
+                format!("SLOT{} {}", card.slot, card.kind.name())
+            }
+            (View::Card(_), None) => "-".into(),
+        }
+    }
+
+    /// M: mute the device shown in the left panel (SGU voices use 1-8).
+    fn toggle_device_mute(&mut self) {
+        let Some(engine) = self.engine.as_mut() else {
+            return;
+        };
+        match self.view {
+            View::Sgu => {}
+            View::Si22 => engine.si22_muted = !engine.si22_muted,
+            View::Card(index) => {
+                if let Some(card) = engine.cards.get_mut(index) {
+                    card.muted = !card.muted;
+                }
+            }
+        }
+    }
+
+    fn device_muted(&self, view: View) -> bool {
+        match (view, &self.engine) {
+            (View::Si22, Some(engine)) => engine.si22_muted,
+            (View::Card(index), Some(engine)) => engine.cards[index].muted,
+            _ => false,
+        }
+    }
+
+    fn draw_left(&mut self, ui: &Ui, draw: &DrawListMut, [x0, y0]: [f32; 2]) {
+        // View tabs.
+        let mut tx = x0;
+        let mut chosen = None;
+        let mouse = ui.io().mouse_pos;
+        for view in self.views() {
+            let label = self.view_label(view);
+            let w = label.len() as f32 * 7.0 + 16.0;
+            let active = view == self.view;
+            let muted = self.device_muted(view);
+            let max = [tx + w, y0 + 15.0];
+            let hovered =
+                mouse[0] >= tx && mouse[0] < max[0] && mouse[1] >= y0 && mouse[1] < max[1];
+            if active {
+                draw.add_rect([tx, y0], max, TEXT).filled(true).build();
+            } else if hovered {
+                draw.add_rect([tx, y0], max, PANEL).filled(true).build();
+            }
+            draw.add_rect([tx, y0], max, DIM).build();
+            let color = if active {
+                BG
+            } else if muted {
+                METER_HI
+            } else {
+                ACCENT
+            };
+            draw.add_text([tx + 8.0, y0 + 1.0], color, label);
+            if hovered && ui.is_mouse_clicked(MouseButton::Left) {
+                chosen = Some(view);
+            }
+            tx += w + 4.0;
+        }
+        draw.add_text([tx + 6.0, y0 + 1.0], DIM, "TAB / click");
+        if let Some(view) = chosen {
+            self.view = view;
+            self.selected = 0;
+        }
+        let origin = [x0, y0 + 18.0];
+        match self.view {
+            View::Sgu => self.draw_tracks(ui, draw, origin),
+            View::Si22 => self.draw_si22(draw, origin),
+            View::Card(index) => self.draw_card(ui, draw, origin, index),
         }
     }
 
@@ -396,13 +543,14 @@ impl Monitor {
             .build(|| {
                 let draw = ui.get_window_draw_list();
                 draw.add_rect([0.0, 0.0], display, BG).filled(true).build();
-                self.draw_tracks(ui, &draw, [8.0, 8.0]);
+                self.draw_left(ui, &draw, [8.0, 8.0]);
                 self.draw_header(ui, &draw, [724.0, 8.0]);
                 self.draw_transport(ui, &draw, [724.0, 64.0]);
                 self.draw_spectrum(&draw, [724.0, 192.0]);
                 self.draw_scope(&draw, [724.0, 398.0]);
                 self.draw_registers(&draw, [724.0, 486.0]);
-                draw.add_text([724.0, 800.0], LABEL, &self.status);
+                let status: String = self.status.chars().take(84).collect();
+                draw.add_text([724.0, 800.0], LABEL, status);
                 draw.add_text(
                     [724.0, 816.0],
                     DIM,
@@ -411,23 +559,27 @@ impl Monitor {
                 draw.add_text(
                     [724.0, 830.0],
                     DIM,
-                    "1-8 / Shift+1-8 mute  0 unmute all  click track: mute  right-click: solo",
+                    "1-8/Shift+1-8 mute  0 unmute  click: mute  right: solo  TAB view  M mute device",
                 );
             });
     }
 
     fn draw_tracks(&mut self, ui: &Ui, draw: &DrawListMut, origin: [f32; 2]) {
-        const TRACK_H: f32 = 51.0;
+        // 18 rows: SGU0/SGU1 x 8 channels, then 34SI22 PLAY A/B.
+        const TRACK_H: f32 = 46.0;
         let [x0, y0] = origin;
-        draw.add_text([x0, y0], ACCENT, "SGU TRACK MONITOR");
-        draw.add_text(
-            [x0 + 160.0, y0],
-            LABEL,
-            "2 x 3WS8PN  /  8 CH x 2  /  48 kHz",
-        );
         let mut clicked = None;
+        for ch in 0..2 {
+            let y = y0 + (VOICES + ch) as f32 * TRACK_H;
+            draw_si22_track(draw, [x0, y], ch, self.engine.as_ref());
+            if hit(ui, [x0, y], [x0 + 700.0, y + TRACK_H - 3.0]) {
+                if let Some(engine) = self.engine.as_mut() {
+                    engine.si22_muted = !engine.si22_muted;
+                }
+            }
+        }
         for voice in 0..VOICES {
-            let y = y0 + 18.0 + voice as f32 * TRACK_H;
+            let y = y0 + voice as f32 * TRACK_H;
             let (view, meter, muted) = match &self.engine {
                 Some(engine) => (
                     Some(engine.channel(voice)),
@@ -473,14 +625,16 @@ impl Monitor {
         let (info, file) = match &self.engine {
             Some(engine) => (
                 format!(
-                    "SGUB v{}  {} bytes{}",
+                    "SGUB v{}  {} bytes  {}\n{}  {} frames",
                     engine.stream_version(),
                     engine.stream_size(),
-                    if engine.repeats() {
-                        "  REPEAT"
+                    if engine.repeats() { "REPEAT" } else { "ONCE" },
+                    if engine.frame_period() == 0 {
+                        "VSYNC 60 Hz".to_string()
                     } else {
-                        "  ONCE"
-                    }
+                        format!("TIMER {:.2} Hz", engine.frames_per_second())
+                    },
+                    engine.frame_count()
                 ),
                 self.file_name.as_str(),
             ),
@@ -559,21 +713,21 @@ impl Monitor {
             }
             Some(2) => self.stop(),
             Some(3) => self.fast = !self.fast,
-            Some(4) => self.seek_relative(-(SEEK_FRAMES as i64)),
-            Some(5) => self.seek_relative(SEEK_FRAMES as i64),
+            Some(4) => self.seek_relative(-SEEK_SECONDS),
+            Some(5) => self.seek_relative(SEEK_SECONDS),
             _ => {}
         }
 
         // Time display.
         let (elapsed, total, index, count, loops) = match &self.engine {
             Some(e) => (
-                e.elapsed_frames,
-                u64::from(e.frame_count()),
+                e.elapsed_frames as f64 / e.frames_per_second(),
+                f64::from(e.frame_count()) / e.frames_per_second(),
                 e.frame_index(),
                 e.frame_count(),
                 e.loops,
             ),
-            None => (0, 0, 0, 1, 0),
+            None => (0.0, 0.0, 0, 1, 0),
         };
         let tx = x + 318.0;
         draw.add_rect([tx, y + 2.0], [tx + 3.0, y + 46.0], TEXT)
@@ -760,12 +914,38 @@ impl Monitor {
             .filled(true)
             .build();
         draw.add_text([x + 8.0, y], TEXT, "REGISTER");
+        let Some(engine) = &self.engine else { return };
+        let mut notes = Vec::new();
+        for card in &engine.cards {
+            if !card.is_ready() {
+                notes.push(card_status_line(card));
+            }
+        }
+        if engine.stray_writes > 0 {
+            notes.push(format!(
+                "writes to undeclared slots: {}",
+                engine.stray_writes
+            ));
+        }
+        if let Some(error) = &engine.error {
+            notes.push(format!("STREAM ERROR: {error}"));
+        }
+        for (index, note) in notes.iter().take(2).enumerate() {
+            let note: String = note.chars().take(84).collect();
+            draw.add_text([x + 8.0, y + 290.0 + index as f32 * 13.0], METER_HI, note);
+        }
+        match self.view {
+            View::Sgu => {}
+            View::Si22 => return draw_si22_registers(draw, [x, y], engine),
+            View::Card(index) => {
+                return draw_card_registers(draw, [x, y], engine, index, self.selected);
+            }
+        }
         draw.add_text(
             [x + 20.0, y + 18.0],
             LABEL,
             "CH   WAVE FREQ  VL PN MOD    P1   P2   START  END    LOOP   C  FIFO",
         );
-        let Some(engine) = &self.engine else { return };
         for voice in 0..VOICES {
             let c = engine.channel(voice);
             let row = format!(
@@ -796,22 +976,149 @@ impl Monitor {
             } else {
                 LABEL
             };
-            draw.add_text([x + 20.0, y + 32.0 + voice as f32 * 15.0], color, row);
+            draw.add_text([x + 20.0, y + 32.0 + voice as f32 * 14.0], color, row);
         }
-        let mut notes = Vec::new();
-        if engine.card_writes > 0 {
-            notes.push(format!(
-                "v3 card writes ignored: {} (no expansion card attached)",
-                engine.card_writes
-            ));
-        }
-        if let Some(error) = &engine.error {
-            notes.push(format!("STREAM ERROR: {error}"));
-        }
-        for (index, note) in notes.iter().enumerate() {
-            draw.add_text([x + 20.0, y + 276.0 + index as f32 * 14.0], METER_HI, note);
+        // 34SI22 play channels as rows 17 and 18.
+        let chip = engine.si22();
+        for (ch, p) in chip.play.iter().enumerate() {
+            let row = format!(
+                "S.{}  {} {:<5} VL {:2} DIV {:2} OUT {}{}  START {:06X} STOP {:06X} ADDR {:06X}",
+                if ch == 0 { 'A' } else { 'B' },
+                ["STOP", "PLAY", "WAIT", "END "][usize::from(p.status & 3)],
+                si22_format(p.format_field).trim_end(),
+                p.volume,
+                p.div,
+                if p.l_disable { '-' } else { 'L' },
+                if p.r_disable { '-' } else { 'R' },
+                p.start,
+                p.stop,
+                chip.play_address(ch)
+            );
+            let color = if engine.si22_muted {
+                DIM
+            } else if p.status == 1 {
+                TEXT
+            } else {
+                LABEL
+            };
+            draw.add_text(
+                [x + 20.0, y + 32.0 + (VOICES + ch) as f32 * 14.0],
+                color,
+                row,
+            );
         }
     }
+}
+
+/// 34SI22 play channel `ch` as an SGU-style track row (tracks 17 and 18).
+fn draw_si22_track(draw: &DrawListMut, [x, y]: [f32; 2], ch: usize, engine: Option<&Engine>) {
+    draw.add_rect([x, y], [x + 700.0, y + 44.0], PANEL)
+        .filled(true)
+        .build();
+    let muted = engine.is_some_and(|e| e.si22_muted);
+    draw.add_text([x + 2.0, y + 1.0], LABEL, "SI22");
+    draw.add_text([x + 2.0, y + 13.0], LABEL, "TRACK");
+    draw_segments(
+        draw,
+        [x + 2.0, y + 25.0],
+        17.0,
+        &format!("{:02}", VOICES + ch + 1),
+        if muted { DIM } else { TEXT },
+    );
+    let lx = x + 44.0;
+    let Some(engine) = engine else { return };
+    let chip = engine.si22();
+    let p = &chip.play[ch];
+    let running = p.status == 1 && !muted;
+    if muted {
+        draw.add_rect([lx, y + 2.0], [lx + 36.0, y + 14.0], METER_HI)
+            .filled(true)
+            .build();
+        draw.add_text([lx + 3.0, y + 1.0], BG, "MUTE");
+    } else {
+        draw.add_text(
+            [lx, y + 1.0],
+            if running { [0.4, 1.0, 0.6, 1.0] } else { LABEL },
+            ["STOP", "PLAY", "WAIT", "END "][usize::from(p.status & 3)],
+        );
+    }
+    let rate = 48_000 / (u32::from(p.div) + 1);
+    let fields = [
+        (
+            40.0,
+            format!(
+                "{} {}",
+                if ch == 0 { "A" } else { "B" },
+                si22_format(p.format_field)
+            ),
+        ),
+        (100.0, format!("RT:{rate:5}")),
+        (174.0, format!("VL:{:3}", p.volume)),
+        (
+            230.0,
+            format!(
+                "OUT:{}{}",
+                if p.l_disable { '-' } else { 'L' },
+                if p.r_disable { '-' } else { 'R' }
+            ),
+        ),
+    ];
+    for (dx, text) in fields {
+        draw.add_text([lx + dx, y + 1.0], if running { TEXT } else { LABEL }, text);
+    }
+    // Playback position from START to STOP over the keyboard and wave box.
+    let (bx, by, bw, bh) = (lx, y + 18.0, 472.0, 24.0);
+    draw.add_rect([bx, by], [bx + bw, by + bh], BG)
+        .filled(true)
+        .build();
+    draw.add_rect([bx, by], [bx + bw, by + bh], DIM).build();
+    let address = chip.play_address(ch);
+    let length = p.stop.saturating_sub(p.start).max(1) as f32;
+    let fraction = match p.status {
+        1 => (address.saturating_sub(p.start) as f32 / length).clamp(0.0, 1.0),
+        3 => 1.0,
+        _ => 0.0,
+    };
+    draw.add_rect(
+        [bx + 1.0, by + 13.0],
+        [bx + 1.0 + (bw - 2.0) * fraction, by + bh - 2.0],
+        if running { [0.4, 1.0, 0.6, 1.0] } else { DIM },
+    )
+    .filled(true)
+    .build();
+    draw.add_text(
+        [bx + 4.0, by],
+        LABEL,
+        format!(
+            "START {:06X}  STOP {:06X}  ADDR {:06X}",
+            p.start, p.stop, address
+        ),
+    );
+    // The chip output meter is shared by both channels; show it on the active ones.
+    let mx = bx + bw + 8.0;
+    let level = if running {
+        engine.si22_meters[0].level.max(engine.si22_meters[1].level)
+    } else {
+        0.0
+    };
+    draw.add_text([mx, y + 1.0], LABEL, "LV");
+    draw_meter(
+        draw,
+        [mx + 18.0, y + 4.0],
+        [x + 696.0, y + 12.0],
+        level_meter(level),
+        24,
+    );
+    draw_pan(
+        draw,
+        [mx, y],
+        x + 696.0,
+        (
+            if p.l_disable { 0 } else { 15 },
+            if p.r_disable { 0 } else { 15 },
+        ),
+        running,
+    );
 }
 
 /// "PHS>3" (absolute target) / "PHS+1" (relative), or "---" without modulation.
@@ -827,8 +1134,8 @@ fn modulation_label(view: &ChannelView) -> String {
     )
 }
 
-fn format_time(frames: u64) -> String {
-    let centis = frames * 100 / 60;
+fn format_time(seconds: f64) -> String {
+    let centis = (seconds * 100.0) as u64;
     format!(
         "{:03}:{:02}.{:02}",
         centis / 6000,
@@ -847,7 +1154,7 @@ fn draw_track(
     animation: u32,
 ) {
     let audible = view.is_some_and(|v| v.audible()) && !muted;
-    draw.add_rect([x, y], [x + 700.0, y + 48.0], PANEL)
+    draw.add_rect([x, y], [x + 700.0, y + 44.0], PANEL)
         .filled(true)
         .build();
     // Track label: chip and two-digit 7-segment channel number.
@@ -1254,14 +1561,29 @@ impl ApplicationHandler for PlayerApp {
     }
 }
 
-const USAGE: &str = "Usage: sgub_player [--sgu-version 1|2|2.1|3|3.1] [song.sgub]";
+const USAGE: &str =
+    "Usage: sgub_player [--sgu-version 1|2|2.1|3|3.1] [--card SLOT=PACKAGE]... [song.sgub]";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let mut path = None;
     let mut version = SguVersion::default();
+    let mut card_paths: [Option<PathBuf>; 8] = Default::default();
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--card") => {
+                let value = args.next().ok_or(USAGE)?;
+                let text = value.to_str().ok_or(USAGE)?;
+                let (slot, package) = text
+                    .split_once('=')
+                    .ok_or_else(|| format!("--card expects SLOT=PACKAGE\n{USAGE}"))?;
+                let slot: usize = slot
+                    .parse()
+                    .ok()
+                    .filter(|slot| *slot < 8)
+                    .ok_or_else(|| format!("--card slot must be 0..7\n{USAGE}"))?;
+                card_paths[slot] = Some(PathBuf::from(package));
+            }
             Some("--sgu-version") => {
                 let value = args.next().ok_or(USAGE)?;
                 version = value
@@ -1286,7 +1608,7 @@ fn run() -> Result<(), String> {
     let event_loop =
         EventLoop::new().map_err(|error| format!("Cannot create event loop: {error}"))?;
     let mut app = PlayerApp {
-        monitor: Monitor::new(version),
+        monitor: Monitor::new(version, card_paths),
         initial_path: path,
         audio: audio::AudioHost::new()?,
         display: Some(event_loop.owned_display_handle()),
@@ -1311,5 +1633,757 @@ fn main() {
         tracing::error!(%error, "SGUB Player failed");
         eprintln!("{error}");
         std::process::exit(1);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Device views: 34SI22 and expansion cards.
+
+const ROW_H: f32 = 51.0;
+const SELECTED: Rgba = [0.09, 0.11, 0.14, 1.0];
+const CARD_TAG: Rgba = [1.0, 0.7, 0.35, 1.0];
+
+/// Places to look for a card package that `--card` did not name.
+fn card_search_dirs(stream: &Path) -> Vec<PathBuf> {
+    let mut roots = Vec::new();
+    if let Some(dir) = stream.parent() {
+        roots.push(dir.to_path_buf());
+    }
+    if let Some(dir) = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(Path::to_path_buf))
+    {
+        // target/release/sgub_player(.exe) -> repository root two levels up.
+        if let Some(repo) = dir.parent().and_then(Path::parent) {
+            roots.push(repo.to_path_buf());
+        }
+        roots.push(dir);
+    }
+    if let Ok(dir) = std::env::current_dir() {
+        roots.push(dir);
+    }
+    let mut dirs = Vec::new();
+    for root in roots {
+        for sub in [
+            "",
+            "cards",
+            "examples/wasm-3hs816/target",
+            "examples/wasm-3ws88pwn4/target",
+        ] {
+            let dir = if sub.is_empty() {
+                root.clone()
+            } else {
+                root.join(sub)
+            };
+            if !dirs.contains(&dir) {
+                dirs.push(dir);
+            }
+        }
+    }
+    dirs
+}
+
+fn card_status_line(card: &CardSlot) -> String {
+    let slot = card.slot;
+    match &card.status {
+        CardStatus::Ready => format!(
+            "SLOT{slot} {} READY  writes {}",
+            card.kind.name(),
+            card.writes
+        ),
+        CardStatus::Missing => format!(
+            "SLOT{slot} MISSING: no package for ID '{}' (--card {slot}=PATH{})",
+            card.required_id(),
+            card.kind
+                .package_file_name()
+                .map(|name| format!(" or {name}"))
+                .unwrap_or_default()
+        ),
+        CardStatus::LoadError(error) => format!("SLOT{slot} LOAD ERROR: {error}"),
+        CardStatus::IdMismatch => format!(
+            "SLOT{slot} ID MISMATCH: card does not report '{}' at +0x{:X}",
+            card.required_id(),
+            card.requirement.id_offset
+        ),
+        CardStatus::Faulted(reason) => format!("SLOT{slot} FAULTED: {reason}"),
+    }
+}
+
+fn si22_format(field: u8) -> &'static str {
+    match field & 7 {
+        1 => "PCM16",
+        2 => "SQV4H",
+        3 => "SQV4L",
+        4 => "SQV4+",
+        _ => "PCM8 ",
+    }
+}
+
+fn hit(ui: &Ui, min: [f32; 2], max: [f32; 2]) -> bool {
+    let mouse = ui.io().mouse_pos;
+    ui.is_mouse_clicked(MouseButton::Left)
+        && mouse[0] >= min[0]
+        && mouse[0] < max[0]
+        && mouse[1] >= min[1]
+        && mouse[1] < max[1]
+}
+
+fn level_meter(level: f32) -> Meter {
+    let mut meter = Meter::default();
+    meter.level = level;
+    meter
+}
+
+/// L/R pan bars in the right column of a track row.
+fn draw_pan(draw: &DrawListMut, [mx, y]: [f32; 2], right: f32, (l, r): (u8, u8), active: bool) {
+    let pw = right - (mx + 18.0);
+    for (row, (label, value)) in [("L", l), ("R", r)].into_iter().enumerate() {
+        let py = y + 20.0 + row as f32 * 13.0;
+        draw.add_text([mx, py - 3.0], LABEL, label);
+        draw.add_rect(
+            [mx + 18.0, py + 1.0],
+            [mx + 18.0 + pw, py + 7.0],
+            [0.13, 0.14, 0.15, 1.0],
+        )
+        .filled(true)
+        .build();
+        draw.add_rect(
+            [mx + 18.0, py + 1.0],
+            [mx + 18.0 + pw * f32::from(value) / 15.0, py + 7.0],
+            if active {
+                [0.5, 0.52, 0.55, 1.0]
+            } else {
+                [0.2, 0.21, 0.22, 1.0]
+            },
+        )
+        .filled(true)
+        .build();
+    }
+}
+
+fn draw_row_label(draw: &DrawListMut, [x, y]: [f32; 2], top: &str, number: usize, dim: bool) {
+    draw.add_text([x + 2.0, y + 1.0], LABEL, top);
+    draw.add_text([x + 2.0, y + 13.0], LABEL, "CH");
+    draw_segments(
+        draw,
+        [x + 2.0, y + 27.0],
+        17.0,
+        &format!("{number:02}"),
+        if dim { DIM } else { TEXT },
+    );
+}
+
+fn draw_polyline(draw: &DrawListMut, points: impl Iterator<Item = [f32; 2]>, color: Rgba) {
+    let mut prev = None;
+    for point in points {
+        if let Some(prev) = prev {
+            draw.add_line(prev, point, color).build();
+        }
+        prev = Some(point);
+    }
+}
+
+/// One 8-operator harmonic channel (3HS816, or the HS part of 3HS88PWN4).
+fn draw_hs_track(
+    draw: &DrawListMut,
+    [x, y]: [f32; 2],
+    ch: usize,
+    hs: &HsView,
+    card_muted: bool,
+    selected: bool,
+) {
+    let loudest = hs.volumes.iter().copied().max().unwrap_or(0);
+    let active = hs.gate && !hs.muted && !card_muted && loudest > 0;
+    draw.add_rect(
+        [x, y],
+        [x + 700.0, y + 48.0],
+        if selected { SELECTED } else { PANEL },
+    )
+    .filled(true)
+    .build();
+    draw_row_label(draw, [x, y], "HS", ch + 1, hs.muted || card_muted);
+    let lx = x + 44.0;
+    let lamp = if hs.key_flash > 0 {
+        KEY_ON
+    } else if hs.gate {
+        [0.55, 0.1, 0.08, 1.0]
+    } else {
+        [0.15, 0.15, 0.16, 1.0]
+    };
+    draw.add_rect([lx, y + 3.0], [lx + 22.0, y + 12.0], lamp)
+        .filled(true)
+        .build();
+    let note = if hs.frequency > 0 {
+        note_name(midi_from_hz(f32::from(hs.frequency)))
+    } else {
+        "---".into()
+    };
+    let (l, r) = hs.pan_lr();
+    let fields = [
+        (28.0, format!("NT:{note}")),
+        (88.0, format!("FQ:{:5}", hs.frequency)),
+        (162.0, format!("AL:{:2}", hs.algorithm)),
+        (
+            210.0,
+            format!("FB:{:3}>{}", hs.feedback, hs.feedback_target + 1),
+        ),
+        (290.0, format!("PN:{l:X}/{r:X}")),
+    ];
+    for (dx, text) in fields {
+        draw.add_text([lx + dx, y + 1.0], if active { TEXT } else { LABEL }, text);
+    }
+    let key = (active && hs.frequency > 0).then(|| midi_from_hz(f32::from(hs.frequency)));
+    let level = f32::from(loudest) / 255.0;
+    draw_keyboard(draw, [lx, y + 18.0], key, level);
+
+    // Operator volumes, OP1..OP8.
+    let bx = lx + 342.0;
+    let (bw, bh) = (130.0, 26.0);
+    let by = y + 18.0;
+    draw.add_rect([bx, by], [bx + bw, by + bh], BG)
+        .filled(true)
+        .build();
+    draw.add_rect([bx, by], [bx + bw, by + bh], DIM).build();
+    if hs.muted {
+        draw.add_rect([bx, y + 2.0], [bx + 36.0, y + 14.0], METER_HI)
+            .filled(true)
+            .build();
+        draw.add_text([bx + 3.0, y + 1.0], BG, "MUTE");
+    } else {
+        draw.add_text([bx, y + 1.0], LABEL, "OP 1-8");
+    }
+    let slot_w = (bw - 2.0) / 8.0;
+    for (op, &volume) in hs.volumes.iter().enumerate() {
+        let ox = bx + 1.0 + op as f32 * slot_w;
+        let height = f32::from(volume) / 255.0 * (bh - 4.0);
+        draw.add_rect(
+            [ox + 2.0, by + bh - 2.0 - height],
+            [ox + slot_w - 2.0, by + bh - 2.0],
+            if active { CARD_TAG } else { DIM },
+        )
+        .filled(true)
+        .build();
+    }
+    let mx = bx + bw + 8.0;
+    draw.add_text([mx, y + 1.0], LABEL, "VL");
+    let shown = if active { level } else { 0.0 };
+    draw_meter(
+        draw,
+        [mx + 18.0, y + 4.0],
+        [x + 696.0, y + 12.0],
+        level_meter(shown),
+        24,
+    );
+    draw_pan(draw, [mx, y], x + 696.0, (l, r), active);
+}
+
+/// One 3HS88PWN4 PCM/WT channel.
+fn draw_wt_track(
+    draw: &DrawListMut,
+    [x, y]: [f32; 2],
+    w: usize,
+    wt: &WtView,
+    card_muted: bool,
+    selected: bool,
+    animation: u32,
+) {
+    let active = wt.volume > 0 && wt.frequency > 0 && wt.mode <= 5 && !wt.muted && !card_muted;
+    draw.add_rect(
+        [x, y],
+        [x + 700.0, y + 48.0],
+        if selected { SELECTED } else { PANEL },
+    )
+    .filled(true)
+    .build();
+    draw_row_label(draw, [x, y], "WT", w + 1, wt.muted || card_muted);
+    let lx = x + 44.0;
+    draw.add_text(
+        [lx, y + 1.0],
+        if active { CARD_TAG } else { DIM },
+        wt.mode_name(),
+    );
+    let pitched = matches!(wt.mode, 1 | 4) && wt.frequency > 0;
+    let note = if pitched {
+        note_name(midi_from_hz(f32::from(wt.frequency)))
+    } else {
+        "---".into()
+    };
+    let (l, r) = if wt.pan == 0 {
+        (15, 15)
+    } else {
+        (wt.pan >> 4, wt.pan & 15)
+    };
+    let fields = [
+        (40.0, format!("NT:{note}")),
+        (100.0, format!("FQ:{:5}", wt.frequency)),
+        (174.0, format!("VL:{:3}", wt.volume)),
+        (
+            230.0,
+            format!("FL:{} {:3}/{:3}", wt.filter_name(), wt.cutoff, wt.resonance),
+        ),
+    ];
+    for (dx, text) in fields {
+        draw.add_text([lx + dx, y + 1.0], if active { TEXT } else { LABEL }, text);
+    }
+    let key = (active && pitched).then(|| midi_from_hz(f32::from(wt.frequency)));
+    let level = f32::from(wt.volume) / 255.0;
+    draw_keyboard(draw, [lx, y + 18.0], key, level);
+
+    let bx = lx + 342.0;
+    let (bw, bh) = (130.0, 26.0);
+    let by = y + 18.0;
+    draw.add_rect([bx, by], [bx + bw, by + bh], BG)
+        .filled(true)
+        .build();
+    draw.add_rect([bx, by], [bx + bw, by + bh], DIM).build();
+    if wt.muted {
+        draw.add_rect([bx, y + 2.0], [bx + 36.0, y + 14.0], METER_HI)
+            .filled(true)
+            .build();
+        draw.add_text([bx + 3.0, y + 1.0], BG, "MUTE");
+    }
+    let color = if active { CARD_TAG } else { DIM };
+    match wt.mode {
+        0 => {
+            let (start, end, loop_start) = wt.pcm_range();
+            draw.add_text([bx + 3.0, by], LABEL, format!("{start:06X}-{end:06X}"));
+            draw.add_text([bx + 3.0, by + 12.0], color, format!("LP {loop_start:06X}"));
+        }
+        1 | 4 => draw_polyline(
+            draw,
+            wt.table.iter().enumerate().map(|(i, &value)| {
+                [
+                    bx + 1.0 + i as f32 * (bw - 2.0) / 31.0,
+                    by + bh - 1.0 - f32::from(value) / 255.0 * (bh - 2.0),
+                ]
+            }),
+            color,
+        ),
+        2 | 3 if active => {
+            let mut seed = animation.wrapping_mul(2_654_435_761) ^ (w as u32 + 77);
+            draw_polyline(
+                draw,
+                (0..32).map(|i| {
+                    seed ^= seed << 13;
+                    seed ^= seed >> 17;
+                    seed ^= seed << 5;
+                    [
+                        bx + 1.0 + i as f32 * (bw - 2.0) / 31.0,
+                        by + bh - 1.0 - (seed & 0xFF) as f32 / 255.0 * (bh - 2.0),
+                    ]
+                }),
+                color,
+            );
+        }
+        5 => {
+            draw.add_text([bx + 3.0, by + 6.0], color, "FIFO DAC");
+        }
+        _ => {}
+    }
+    let mx = bx + bw + 8.0;
+    draw.add_text([mx, y + 1.0], LABEL, "VL");
+    draw_meter(
+        draw,
+        [mx + 18.0, y + 4.0],
+        [x + 696.0, y + 12.0],
+        level_meter(if active { level } else { 0.0 }),
+        24,
+    );
+    draw_pan(draw, [mx, y], x + 696.0, (l, r), active);
+}
+
+impl Monitor {
+    fn draw_si22(&self, draw: &DrawListMut, [x0, y0]: [f32; 2]) {
+        let Some(engine) = &self.engine else { return };
+        let chip = engine.si22();
+        let muted = engine.si22_muted;
+        const PLAY: [&str; 4] = ["STOP", "PLAY", "WAIT", "END "];
+        const REC: [&str; 4] = ["STOP", "REC ", "WAIT", "END "];
+        for ch in 0..2 {
+            let y = y0 + ch as f32 * ROW_H;
+            let p = &chip.play[ch];
+            let running = p.status == 1 && !muted;
+            draw.add_rect([x0, y], [x0 + 700.0, y + 48.0], PANEL)
+                .filled(true)
+                .build();
+            draw_row_label(draw, [x0, y], "PLAY", ch + 1, muted);
+            let lx = x0 + 44.0;
+            draw.add_text(
+                [lx, y + 1.0],
+                if running { ACCENT } else { LABEL },
+                PLAY[usize::from(p.status & 3)],
+            );
+            let rate = 48_000 / (u32::from(p.div) + 1);
+            let fields = [
+                (40.0, si22_format(p.format_field).to_string()),
+                (96.0, format!("VL:{:2}", p.volume)),
+                (150.0, format!("DIV:{:2} {:5} Hz", p.div, rate)),
+                (
+                    270.0,
+                    format!(
+                        "OUT:{}{}",
+                        if p.l_disable { '-' } else { 'L' },
+                        if p.r_disable { '-' } else { 'R' }
+                    ),
+                ),
+            ];
+            for (dx, text) in fields {
+                draw.add_text([lx + dx, y + 1.0], if running { TEXT } else { LABEL }, text);
+            }
+            // Playback position between START and STOP.
+            let (bx, by, bw) = (lx, y + 18.0, 470.0);
+            draw.add_rect([bx, by], [bx + bw, by + 26.0], BG)
+                .filled(true)
+                .build();
+            draw.add_rect([bx, by], [bx + bw, by + 26.0], DIM).build();
+            let length = p.stop.saturating_sub(p.start).max(1) as f32;
+            let position = chip.play_address(ch).saturating_sub(p.start) as f32;
+            let fraction = if p.status == 3 {
+                1.0
+            } else if p.status == 1 {
+                (position / length).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            draw.add_rect(
+                [bx + 1.0, by + 14.0],
+                [bx + 1.0 + (bw - 2.0) * fraction, by + 24.0],
+                if running { ACCENT } else { DIM },
+            )
+            .filled(true)
+            .build();
+            draw.add_text(
+                [bx + 4.0, by],
+                LABEL,
+                format!(
+                    "START {:06X}  STOP {:06X}  ADDR {:06X}",
+                    p.start,
+                    p.stop,
+                    chip.play_address(ch)
+                ),
+            );
+            let mx = bx + bw + 8.0;
+            for (side, label) in ["L", "R"].into_iter().enumerate() {
+                let my = y + 4.0 + side as f32 * 14.0;
+                draw.add_text([mx, my - 3.0], LABEL, label);
+                draw_meter(
+                    draw,
+                    [mx + 18.0, my],
+                    [x0 + 696.0, my + 8.0],
+                    engine.si22_meters[side],
+                    24,
+                );
+            }
+            draw.add_text([mx, y + 32.0], DIM, "chip output");
+        }
+        for ch in 0..2 {
+            let y = y0 + (2 + ch) as f32 * ROW_H;
+            let rec = &chip.rec[ch];
+            let active = rec.status == 1 || rec.status == 2;
+            draw.add_rect([x0, y], [x0 + 700.0, y + 48.0], PANEL)
+                .filled(true)
+                .build();
+            draw_row_label(draw, [x0, y], "REC", ch + 1, false);
+            let lx = x0 + 44.0;
+            let rate = 48_000 / (u32::from(rec.div) + 1);
+            let fields = [
+                (0.0, REC[usize::from(rec.status & 3)].to_string()),
+                (40.0, si22_format(rec.format_field).to_string()),
+                (96.0, format!("GAIN:{:2}", rec.gain)),
+                (170.0, format!("DIV:{:2} {:5} Hz", rec.div, rate)),
+                (
+                    290.0,
+                    format!("AGC:{}", if chip.agc_enable[ch] { "ON" } else { "--" }),
+                ),
+            ];
+            for (dx, text) in fields {
+                draw.add_text([lx + dx, y + 1.0], if active { TEXT } else { LABEL }, text);
+            }
+            draw.add_text(
+                [lx, y + 22.0],
+                LABEL,
+                format!(
+                    "START {:06X}  STOP {:06X}  (ADC {})",
+                    rec.start,
+                    rec.stop,
+                    if ch == 0 { "L" } else { "R" }
+                ),
+            );
+        }
+        let y = y0 + 4.0 * ROW_H + 4.0;
+        draw.add_text(
+            [x0, y],
+            LABEL,
+            format!(
+                "STATUS_CTRL flags {:02X}   VOX threshold {:3}  hold {:3}{}",
+                chip.flags,
+                chip.vox_threshold,
+                chip.vox_hold,
+                if muted { "   MUTED (M)" } else { "" }
+            ),
+        );
+        draw.add_text(
+            [x0, y + 16.0],
+            DIM,
+            "34SI22 plays from the shared PCM RAM; the stream writes its registers as target 11.",
+        );
+    }
+
+    fn draw_card(&mut self, ui: &Ui, draw: &DrawListMut, [x0, y0]: [f32; 2], index: usize) {
+        let Some(engine) = &self.engine else { return };
+        let Some(card) = engine.cards.get(index) else {
+            return;
+        };
+        if !card.is_ready() {
+            draw.add_rect([x0, y0], [x0 + 700.0, y0 + 110.0], PANEL)
+                .filled(true)
+                .build();
+            draw.add_text(
+                [x0 + 12.0, y0 + 10.0],
+                TEXT,
+                format!(
+                    "SLOT {}  requires ID '{}' at +0x{:X}",
+                    card.slot,
+                    card.required_id(),
+                    card.requirement.id_offset
+                ),
+            );
+            draw.add_text([x0 + 12.0, y0 + 30.0], METER_HI, card_status_line(card));
+            if let Some(path) = &card.path {
+                draw.add_text(
+                    [x0 + 12.0, y0 + 50.0],
+                    LABEL,
+                    format!("package: {}", path.display()),
+                );
+            }
+            draw.add_text(
+                [x0 + 12.0, y0 + 70.0],
+                LABEL,
+                "Writes to this slot are dropped; SGU and 34SI22 keep playing.",
+            );
+            draw.add_text(
+                [x0 + 12.0, y0 + 86.0],
+                LABEL,
+                "Load a card with --card SLOT=PACKAGE, or place the package next to the .sgub.",
+            );
+            return;
+        }
+        let mut clicked = None;
+        match card.kind {
+            CardKind::Hs816 | CardKind::Hs88pwn4 => {
+                for ch in 0..card.kind.hs_channels() {
+                    let y = y0 + ch as f32 * ROW_H;
+                    draw_hs_track(
+                        draw,
+                        [x0, y],
+                        ch,
+                        &card.hs(ch),
+                        card.muted,
+                        self.selected == ch,
+                    );
+                    if hit(ui, [x0, y], [x0 + 700.0, y + 48.0]) {
+                        clicked = Some(ch);
+                    }
+                }
+                if card.kind == CardKind::Hs88pwn4 {
+                    for w in 0..4 {
+                        let y = y0 + (8 + w) as f32 * ROW_H;
+                        draw_wt_track(
+                            draw,
+                            [x0, y],
+                            w,
+                            &card.wt(w),
+                            card.muted,
+                            self.selected == 16 + w,
+                            self.animation,
+                        );
+                        if hit(ui, [x0, y], [x0 + 700.0, y + 48.0]) {
+                            clicked = Some(16 + w);
+                        }
+                    }
+                    let y = y0 + 12.0 * ROW_H + 4.0;
+                    let m = |i: u32| card.reg(0x4002C0 + i);
+                    draw.add_text(
+                        [x0, y],
+                        LABEL,
+                        format!(
+                            "MASTER  VOL {:3}   COMP {} THR {:3} SPD {:3}   EQ {} L {:3} M {:3} H {:3}{}",
+                            m(4),
+                            if m(0) == 1 { "ON " } else { "OFF" },
+                            m(2),
+                            m(3),
+                            if m(1) == 1 { "ON " } else { "OFF" },
+                            m(5),
+                            m(6),
+                            m(7),
+                            if card.muted { "   MUTED (M)" } else { "" }
+                        ),
+                    );
+                }
+            }
+            CardKind::Unknown => {
+                draw.add_rect([x0, y0], [x0 + 700.0, y0 + 60.0], PANEL)
+                    .filled(true)
+                    .build();
+                draw.add_text(
+                    [x0 + 12.0, y0 + 10.0],
+                    TEXT,
+                    format!(
+                        "SLOT {}: card ID '{}' has no monitor layout",
+                        card.slot,
+                        card.required_id()
+                    ),
+                );
+                draw.add_text(
+                    [x0 + 12.0, y0 + 30.0],
+                    LABEL,
+                    format!("It plays normally; {} writes delivered.", card.writes),
+                );
+            }
+        }
+        if let Some(channel) = clicked {
+            self.selected = channel;
+        }
+    }
+}
+
+fn draw_hex_rows(
+    draw: &DrawListMut,
+    [x, y]: [f32; 2],
+    base: u32,
+    length: u32,
+    read: impl Fn(u32) -> u8,
+) -> f32 {
+    let mut row_y = y;
+    for row in (0..length).step_by(16) {
+        let bytes: Vec<String> = (row..(row + 16).min(length))
+            .map(|offset| format!("{:02X}", read(base + offset)))
+            .collect();
+        draw.add_text(
+            [x, row_y],
+            TEXT,
+            format!("{:06X}: {}", base + row, bytes.join(" ")),
+        );
+        row_y += 14.0;
+    }
+    row_y
+}
+
+fn draw_si22_registers(draw: &DrawListMut, [x, y]: [f32; 2], engine: &Engine) {
+    draw.add_text([x + 90.0, y], LABEL, "34SI22  0x80022000 + offset");
+    let chip = engine.si22();
+    let end = draw_hex_rows(draw, [x + 20.0, y + 20.0], 0, 0x30, |offset| {
+        chip.read_register(offset)
+    });
+    draw.add_text(
+        [x + 20.0, end + 6.0],
+        LABEL,
+        "00-0B PLAY START/STOP  0C PLAY_CTRL  0D VOL  0E/0F DIV",
+    );
+    draw.add_text(
+        [x + 20.0, end + 20.0],
+        LABEL,
+        "10-1B REC START/STOP   1C REC_CTRL   1D GAIN 20 STATUS 21/22 FORMAT",
+    );
+}
+
+fn draw_card_registers(
+    draw: &DrawListMut,
+    [x, y]: [f32; 2],
+    engine: &Engine,
+    index: usize,
+    selected: usize,
+) {
+    let Some(card) = engine.cards.get(index) else {
+        return;
+    };
+    draw.add_text(
+        [x + 90.0, y],
+        LABEL,
+        format!(
+            "SLOT{} {}  writes {}  dropped {}{}",
+            card.slot,
+            card.kind.name(),
+            card.writes,
+            card.dropped,
+            if card.muted { "  MUTED" } else { "" }
+        ),
+    );
+    for (side, label) in ["L", "R"].into_iter().enumerate() {
+        let my = y + 18.0 + side as f32 * 12.0;
+        draw.add_text([x + 20.0, my - 3.0], LABEL, label);
+        draw_meter(
+            draw,
+            [x + 34.0, my],
+            [x + 596.0, my + 8.0],
+            card.meters[side],
+            48,
+        );
+    }
+    if !card.is_ready() || card.kind == CardKind::Unknown {
+        if let Some(path) = &card.path {
+            draw.add_text([x + 20.0, y + 46.0], LABEL, path.display().to_string());
+        }
+        return;
+    }
+    let wt = selected >= 16 && card.kind == CardKind::Hs88pwn4;
+    let (title, base, length) = if wt {
+        let w = selected - 16;
+        (
+            format!("WT{} REGISTER", w + 1),
+            0x400200 + 48 * w as u32,
+            48,
+        )
+    } else {
+        let ch = selected.min(card.kind.hs_channels() - 1);
+        let base = match card.kind {
+            CardKind::Hs88pwn4 => 0x400000,
+            _ => 0,
+        } + 0x40 * ch as u32;
+        (
+            format!("HS{} REGISTER (click a row to select)", ch + 1),
+            base,
+            64,
+        )
+    };
+    draw.add_text([x + 20.0, y + 44.0], ACCENT, title);
+    let end = draw_hex_rows(draw, [x + 20.0, y + 60.0], base, length, |a| card.reg(a));
+    if wt {
+        return;
+    }
+    // Decoded operators of the selected HS channel.
+    draw.add_text(
+        [x + 20.0, end + 4.0],
+        LABEL,
+        "OP  RATIO   VL WV   A   D   S   R",
+    );
+    for op in 0..8u32 {
+        let ratio = if op == 0 {
+            4096
+        } else {
+            card.reg16(base + 2 * op)
+        };
+        let wave_byte = card.reg(base + 0x18 + op / 2);
+        let wave = if op % 2 == 0 {
+            wave_byte >> 4
+        } else {
+            wave_byte & 15
+        };
+        let adsr = base + 0x20 + op * 4;
+        draw.add_text(
+            [x + 20.0, end + 18.0 + op as f32 * 13.0],
+            TEXT,
+            format!(
+                "{}  {:6.3} {:3} {:2} {:3} {:3} {:3} {:3}",
+                op + 1,
+                f32::from(ratio) / 4096.0,
+                card.reg(base + 0x10 + op),
+                wave,
+                card.reg(adsr),
+                card.reg(adsr + 1),
+                card.reg(adsr + 2),
+                card.reg(adsr + 3)
+            ),
+        );
     }
 }

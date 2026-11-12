@@ -1471,6 +1471,11 @@ impl StreamPlayer {
         self.frame_period
     }
 
+    /// True when a v4 stream writes the 34SI22 (target 11).
+    pub fn uses_si22(&self) -> bool {
+        self.uses_si22
+    }
+
     /// v4 card requirements (empty for v1..v3, whose v3 card is slot 0).
     pub fn card_requirements(&self) -> &[CardRequirement] {
         &self.cards
