@@ -154,7 +154,7 @@ Furnace fork（`../furnace`）の **File > Export > ROM > CPT32 SGUB** と CLI `
 | S3HS 1 基だけ、VSync 進行 | v3（従来どおり。slot 0） |
 | それ以外（34SI22、3HS816、複数カード、組み合わせ、タイマ進行） | v4 |
 
-v4 で受け付ける chip は S3W2 0〜2 基、34SI22（chipType 0。34SI22A は未対応で拒否）0〜1 基、拡張カード chip（S3HS = 3WS88PWN4 カード、3HS816 = 3HS816 カード）合わせて 0〜8 基。カード chip は曲の system 順に slot 0 から割り当てる。
+v4 で受け付ける chip は S3W2 0〜2 基、34SI22 0〜1 基（34SI22A も可。ただし FIFO DAC を使う書き込み、つまり PLAY_FORMAT 5 と `0x25..0x2C` が現れたら export を失敗させる。CPT32 の SGU v3 には FIFO がない）、拡張カード chip（S3HS = 3WS88PWN4 カード、3HS816 = 3HS816 カード）合わせて 0〜8 基。カード chip は曲の system 順に slot 0 から割り当てる。
 
 - **進行**: `-romconf clock=auto|vsync|timer`（既定 `auto`）、`rate=<Hz>`（既定は曲の tick rate）。`auto` は rate が 60 Hz なら VSync、それ以外ならタイマ。`frame_period = round(48000000 / rate)`。書き込みは 48 kHz の累積時間（1 sample = 1000 サイクル）で、そのとき属する frame（`floor(t / frame_period)`）へ量子化する。途中で tick rate が変わる曲も、時刻は保たれ、frame 内の間隔だけが失われる。
 - **34SI22**: Furnace の sample memory（PCM8 は符号なし、PCM16 は big endian、SQV4 はヘッダ付き）をそのまま type 2 pool にし、S3W2 の PCM の後ろ（16 byte 境界、1 byte 以上の無音ガードを空ける）にコピーする。START/STOP（`0x00..0x0B`）の書き込みは配置先へ移し、3 byte をまとめて書き直す（桁上がりを伝えるため）。共有 PCM RAM 1 MiB を超える場合は拒否する。frame 0 で PLAY_CTRL を 0、STATUS_CTRL に `0xF4`（sticky bit のクリア）を書き、Furnace の reset 直後の音量・分周・形式を書き直す。
