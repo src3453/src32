@@ -490,11 +490,25 @@ fn sqv4_progress_uses_decoded_length_and_voice_history_records_output() {
     initial.extend(pcm_voice(0, 4, 0x2000, end, false));
     let mut engine = Engine::new(ops_stream(&initial, &[]), SguVersion::V3_1).unwrap();
     assert!(engine.voice_history(0).iter().all(|&s| s == 0));
+    assert_eq!(
+        engine.sqv4_overview(0, 128),
+        None,
+        "not loaded before frame 0"
+    );
     engine.tick(FRAME_SAMPLES);
     let view = engine.channel(0);
     assert_eq!(view.sqv4_samples.map(|(n, _)| n), Some(4000));
     let (position, _) = view.pcm_progress().unwrap();
     assert!(position > 0.0 && position < 1.0, "{position}");
+    // The core validated the file, so the whole sample decodes for the preview.
+    let overview = engine.sqv4_overview(0, 128).unwrap();
+    assert_eq!(overview.len(), 128);
+    let low = overview.iter().map(|[low, _]| *low).min().unwrap();
+    let high = overview.iter().map(|[_, high]| *high).max().unwrap();
+    assert!(low < -10_000 && high > 10_000, "{low}..{high}");
+    // Cached result is identical; other waveforms have none.
+    assert_eq!(engine.sqv4_overview(0, 128).unwrap(), overview);
+    assert_eq!(engine.sqv4_overview(1, 128), None);
     let recent = engine.voice_history(0);
     assert_eq!(recent.len(), cpt32::music::monitor::VOICE_HISTORY);
     assert!(recent.iter().any(|&s| s > 500) && recent.iter().any(|&s| s < -500));

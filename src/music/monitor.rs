@@ -20,6 +20,7 @@ use crate::devices::sgu::s3w2::{
 };
 use crate::devices::sgu::sgu::Si22Unit;
 use crate::devices::sgu::si22::Si22;
+use crate::devices::sgu::sqv4;
 
 /// Voices across both SGU cores.
 pub const VOICES: usize = NUM_CHANNELS * 2;
@@ -647,6 +648,9 @@ pub struct Engine {
     history: [VecDeque<i16>; 2],
     /// Recent per-voice output, (L + R) / 2 before muting.
     voice_history: [VecDeque<i16>; VOICES],
+    /// Decoded SQV4 overviews by (start, end, columns), checked against a hash
+    /// of the encoded bytes so PCMRAM writes are never shown stale.
+    sqv4_overviews: RefCell<BTreeMap<(u32, u32, usize), (u64, Vec<[i16; 2]>)>>,
 }
 
 impl Engine {
@@ -705,6 +709,7 @@ impl Engine {
             until_frame: 0,
             history: std::array::from_fn(|_| VecDeque::from(vec![0; HISTORY])),
             voice_history: std::array::from_fn(|_| VecDeque::from(vec![0; VOICE_HISTORY])),
+            sqv4_overviews: RefCell::new(BTreeMap::new()),
         })
     }
 
@@ -769,6 +774,56 @@ impl Engine {
     /// volume and pan, before mute), oldest first.
     pub fn voice_history(&self, voice: usize) -> &VecDeque<i16> {
         &self.voice_history[voice]
+    }
+
+    /// Whole-sample overview of an SQV4 voice: `columns` [min, max] pairs of
+    /// the decoded samples, once the core has validated the file at
+    /// PCM_START..PCM_END (so it is a mono file of the version this SGU
+    /// plays). Decoding is cached; the encoded bytes are hashed on every call
+    /// and a changed file is decoded again.
+    pub fn sqv4_overview(&self, voice: usize, columns: usize) -> Option<Vec<[i16; 2]>> {
+        let view = self.channel(voice);
+        if view.waveform != WaveformType::Sqv4 || view.sqv4_samples.is_none() || columns == 0 {
+            return None;
+        }
+        let core = self.cores[voice / NUM_CHANNELS].borrow();
+        let ram = core.pcm_ram.borrow();
+        let data = ram.get(view.pcm_start as usize..view.pcm_end as usize)?;
+        let hash = data
+            .chunks(8)
+            .fold(0xcbf2_9ce4_8422_2325u64, |hash, chunk| {
+                let mut word = [0u8; 8];
+                word[..chunk.len()].copy_from_slice(chunk);
+                (hash ^ u64::from_le_bytes(word)).wrapping_mul(0x0100_0000_01b3)
+            });
+        let key = (view.pcm_start, view.pcm_end, columns);
+        let mut cache = self.sqv4_overviews.borrow_mut();
+        if let Some((cached, overview)) = cache.get(&key)
+            && *cached == hash
+        {
+            return Some(overview.clone());
+        }
+        let decoded = sqv4::decode(data).ok()?;
+        if decoded.channels != 1 || decoded.samples.is_empty() {
+            return None;
+        }
+        let samples = &decoded.samples;
+        let overview: Vec<[i16; 2]> = (0..columns)
+            .map(|column| {
+                let from = (samples.len() * column / columns).min(samples.len() - 1);
+                let to = (samples.len() * (column + 1) / columns).clamp(from + 1, samples.len());
+                let part = &samples[from..to];
+                [
+                    part.iter().copied().min().unwrap_or(0),
+                    part.iter().copied().max().unwrap_or(0),
+                ]
+            })
+            .collect();
+        if cache.len() >= 64 {
+            cache.clear();
+        }
+        cache.insert(key, (hash, overview.clone()));
+        Some(overview)
     }
 
     /// Whole-sample overview of a PCM voice: `columns` [min, max] pairs of the

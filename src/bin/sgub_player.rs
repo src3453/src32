@@ -43,6 +43,8 @@ const TEXT: Rgba = [0.86, 0.88, 0.9, 1.0];
 const LABEL: Rgba = [0.55, 0.58, 0.62, 1.0];
 const ACCENT: Rgba = [0.55, 0.85, 1.0, 1.0];
 const KEY_ON: Rgba = [0.95, 0.12, 0.1, 1.0];
+/// PCM/SQV4 play position line (the loop start uses KEY_ON).
+const PLAYHEAD: Rgba = [0.4, 1.0, 0.55, 1.0];
 const METER_LO: Rgba = [0.75, 0.78, 0.8, 1.0];
 const METER_HI: Rgba = [1.0, 0.35, 0.25, 1.0];
 
@@ -1329,20 +1331,36 @@ fn draw_track(
                 .filled(true)
                 .build();
             }
-            match (view.waveform, engine) {
-                // PCM: the whole sample, min..max of the bytes under each column.
-                (WaveformType::Pcm, Some(engine)) => {
-                    let to_y = |value: u8| by + 1.0 + f32::from(255 - value) / 255.0 * (bh - 2.0);
-                    let overview = engine.pcm_overview(voice, inner as usize);
-                    for (column, [low, high]) in overview.into_iter().enumerate() {
-                        let cx = bx + 1.0 + column as f32;
-                        draw.add_rect([cx, to_y(high)], [cx + 1.0, to_y(low) + 1.0], color)
-                            .filled(true)
-                            .build();
-                    }
+            // Whole sample: min..max under each column; `level` is 0..=1, 1 at the top.
+            let draw_overview = |columns: Vec<[f32; 2]>| {
+                let to_y = |level: f32| by + 1.0 + (1.0 - level) * (bh - 2.0);
+                for (column, [low, high]) in columns.into_iter().enumerate() {
+                    let cx = bx + 1.0 + column as f32;
+                    draw.add_rect([cx, to_y(high)], [cx + 1.0, to_y(low) + 1.0], color)
+                        .filled(true)
+                        .build();
                 }
-                // SQV4 is ADPCM: show the voice's recent output instead,
-                // auto-scaled so quiet passages keep their shape.
+            };
+            let sqv4_overview = engine
+                .filter(|_| view.waveform == WaveformType::Sqv4)
+                .and_then(|engine| engine.sqv4_overview(voice, inner as usize));
+            match (view.waveform, engine) {
+                (WaveformType::Pcm, Some(engine)) => draw_overview(
+                    engine
+                        .pcm_overview(voice, inner as usize)
+                        .into_iter()
+                        .map(|pair| pair.map(|v| f32::from(v) / 255.0))
+                        .collect(),
+                ),
+                (WaveformType::Sqv4, Some(_)) if sqv4_overview.is_some() => draw_overview(
+                    sqv4_overview
+                        .unwrap()
+                        .into_iter()
+                        .map(|pair| pair.map(|v| (f32::from(v) + 32768.0) / 65535.0))
+                        .collect(),
+                ),
+                // Not decodable yet (the core validates SQV4 on its first
+                // sample): show the voice's recent output, auto-scaled.
                 (WaveformType::Sqv4, Some(engine)) => {
                     let recent = engine.voice_history(voice);
                     let peak = recent
@@ -1366,12 +1384,19 @@ fn draw_track(
                 }
                 _ => {}
             }
-            if let Some((_, loop_start)) = progress
-                && view.pcm_control & 2 != 0
-            {
-                let loop_x = bx + 1.0 + inner * loop_start;
-                draw.add_line([loop_x, by + 1.0], [loop_x, by + bh - 1.0], KEY_ON)
-                    .build();
+            if let Some((position, loop_start)) = progress {
+                if view.pcm_control & 2 != 0 {
+                    let loop_x = bx + 1.0 + inner * loop_start;
+                    draw.add_line([loop_x, by + 1.0], [loop_x, by + bh - 1.0], KEY_ON)
+                        .build();
+                }
+                let head_x = (bx + 1.0 + inner * position).min(bx + bw - 2.0);
+                draw.add_line(
+                    [head_x, by + 1.0],
+                    [head_x, by + bh - 1.0],
+                    if audible { PLAYHEAD } else { DIM },
+                )
+                .build();
             }
             draw.add_text(
                 [bx + 14.0, y + 1.0],
