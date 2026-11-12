@@ -14,3 +14,11 @@
 - **18ch 表示**: SGU 表示は 16 トラックの下に 34SI22 PLAY A／B を 17／18 として並べる（行高 46、ウィンドウ高 864）。34SI22 のメーターはチップ出力の共有値で、チャンネル別ではない（`Si22::tick` は合計しか返さない）。チャンネル別ミュートも同じ理由でなく、クリックはチップ全体のミュート。
 - テスト用カードは `tests/sgub_monitor.rs` の WAT（ID を `0x4F8` に置き、Gate が 1 の間 +1000 を出す）。実カードのパッケージは `examples/*/target`（git 管理外）にしかないので、テストは実カードに依存しない。
 - 検証: `cargo test --test sgub_monitor`、`cargo test --test furnace_sgub`、`cargo test --test wasm_expansion`。GUI は `furnace_v4_mix.sgub` の repeat flag（byte 6 bit 0）を立てたコピーで目視（元は 1.6 秒で終わる）。
+
+## 文字と 7 セグメントのぼけ・不揃い（ピクセル表示の統一）
+
+- 原因は 4 つあった。(1) imgui-wgpu のフォントアトラスは linear サンプラ（`TextureConfig::default()`）。(2) `HiDpiMode::Default` だと OS の 125%／150% がそのまま framebuffer scale になり、1 ドットが 1 画素と 2 画素に分かれる。(3) 線と塗りのアンチエイリアス。(4) メーター・スペクトラム・7 セグメントの幅が小数で、要素ごとに 1 画素違う。
+- 対策: 倍率は `HiDpiMode::Locked(整数)`。ウィンドウに収まる最大の整数で、`Resized` で変われば `attach_window` し直す。`--scale N` で固定できる。最小サイズは物理画素のデザインサイズ。フォントは `Renderer::new` の後に nearest サンプラでアトラスを作り直す（`install_nearest_font`。`clear_tex_data` の後でも `build_rgba32_texture` は再構築する）。style の `anti_aliased_lines`／`anti_aliased_lines_use_tex`／`anti_aliased_fill` は false。タイトルの font scale は整数（3.0）。
+- 繰り返し要素の幅は整数に切り捨てて全部同じにする（メーターの `seg_w`、スペクトラムの `bar_w`。軸と目盛は `bar_w × BANDS` に合わせる）。鍵盤の黒鍵の −0.5 は削除。
+- 7 セグメント（`draw_segments`）は整数格子で描く。太さ `t = floor(h/8)`、`h - t` が奇数なら h を 1 減らして上下を同じ高さにし、隙間は `t >= 3` のときだけ 1 画素にする（細い字に隙間を入れると点の並びに見える）。
+- imgui は文字位置を切り捨てるので、整数倍率なら文字はずれない。新しく描画を足すときは座標・幅を整数にし、小数の倍率や `set_window_font_scale` の小数を使わない。

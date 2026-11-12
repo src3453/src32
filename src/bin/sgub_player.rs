@@ -19,7 +19,7 @@ use imgui::{Condition, DrawListMut, MouseButton, Ui, WindowFlags};
 use imgui_wgpu::{Renderer, RendererConfig};
 use imgui_winit_support::{HiDpiMode, WinitPlatform};
 use winit::application::ApplicationHandler;
-use winit::dpi::{LogicalSize, PhysicalSize};
+use winit::dpi::PhysicalSize;
 use winit::event::{ElementState, Event, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop, OwnedDisplayHandle};
 use winit::keyboard::{KeyCode, ModifiersState, PhysicalKey};
@@ -61,10 +61,58 @@ struct MonitorWindow {
     renderer: Renderer,
     last_frame: Instant,
     render_error: Option<String>,
+    /// Whole-number pixel scale (1 design pixel = `scale` x `scale` screen pixels).
+    scale: u32,
+    fixed_scale: Option<u32>,
+}
+
+/// Largest whole-number scale at which the design fits the window, or the
+/// user's `--scale`. Fractional scales would map one font or 7-segment pixel to
+/// 1 or 2 screen pixels and blur them through filtering.
+fn pixel_scale(size: PhysicalSize<u32>, fixed: Option<u32>) -> u32 {
+    fixed.unwrap_or_else(|| {
+        let fit_w = size.width as f32 / DESIGN_SIZE[0];
+        let fit_h = size.height as f32 / DESIGN_SIZE[1];
+        (fit_w.min(fit_h).floor() as u32).max(1)
+    })
+}
+
+/// Rebuild the font atlas texture with nearest-neighbour sampling so glyphs stay
+/// pixel-exact at integer scales (imgui-wgpu's default sampler is linear).
+fn install_nearest_font(
+    imgui: &mut imgui::Context,
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    renderer: &mut Renderer,
+) {
+    let fonts = imgui.fonts();
+    renderer.textures.remove(fonts.tex_id);
+    let handle = fonts.build_rgba32_texture();
+    let mut config = imgui_wgpu::TextureConfig {
+        label: Some("SGUB Player font atlas"),
+        size: wgpu::Extent3d {
+            width: handle.width,
+            height: handle.height,
+            ..Default::default()
+        },
+        format: Some(wgpu::TextureFormat::Rgba8Unorm),
+        ..Default::default()
+    };
+    config.sampler_desc.mag_filter = wgpu::FilterMode::Nearest;
+    config.sampler_desc.min_filter = wgpu::FilterMode::Nearest;
+    config.sampler_desc.mipmap_filter = wgpu::MipmapFilterMode::Nearest;
+    let texture = imgui_wgpu::Texture::new(device, renderer, config);
+    texture.write(queue, handle.data, handle.width, handle.height);
+    fonts.tex_id = renderer.textures.insert(texture);
+    fonts.clear_tex_data();
 }
 
 impl MonitorWindow {
-    fn new(window: Arc<Window>, display: OwnedDisplayHandle) -> Result<Self, String> {
+    fn new(
+        window: Arc<Window>,
+        display: OwnedDisplayHandle,
+        fixed_scale: Option<u32>,
+    ) -> Result<Self, String> {
         let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_with_display_handle(
             Box::new(display),
         ));
@@ -122,9 +170,15 @@ impl MonitorWindow {
         surface.configure(&device, &config);
         let mut imgui = imgui::Context::create();
         imgui.set_ini_filename(None);
+        // Hard pixel edges everywhere: anti-aliased fringes look like blur at 1x.
+        let style = imgui.style_mut();
+        style.anti_aliased_lines = false;
+        style.anti_aliased_lines_use_tex = false;
+        style.anti_aliased_fill = false;
+        let scale = pixel_scale(size, fixed_scale);
         let mut platform = WinitPlatform::new(&mut imgui);
-        platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Default);
-        let renderer = Renderer::new(
+        platform.attach_window(imgui.io_mut(), &window, HiDpiMode::Locked(f64::from(scale)));
+        let mut renderer = Renderer::new(
             &mut imgui,
             &device,
             &queue,
@@ -133,6 +187,7 @@ impl MonitorWindow {
                 ..RendererConfig::default()
             },
         );
+        install_nearest_font(&mut imgui, &device, &queue, &mut renderer);
         Ok(Self {
             surface,
             window,
@@ -145,11 +200,22 @@ impl MonitorWindow {
             renderer,
             last_frame: Instant::now(),
             render_error: None,
+            scale,
+            fixed_scale,
         })
     }
 
     fn resize(&mut self, size: PhysicalSize<u32>) {
         self.size = size;
+        let scale = pixel_scale(size, self.fixed_scale);
+        if scale != self.scale {
+            self.scale = scale;
+            self.platform.attach_window(
+                self.imgui.io_mut(),
+                &self.window,
+                HiDpiMode::Locked(f64::from(scale)),
+            );
+        }
         if size.width != 0 && size.height != 0 {
             self.config.width = size.width;
             self.config.height = size.height;
@@ -617,7 +683,7 @@ impl Monitor {
 
     fn draw_header(&self, ui: &Ui, draw: &DrawListMut, [x, y]: [f32; 2]) {
         ui.set_cursor_screen_pos([x, y]);
-        ui.set_window_font_scale(2.6);
+        ui.set_window_font_scale(3.0);
         ui.text_colored(TEXT, "SGUB PLAYER");
         ui.set_window_font_scale(1.0);
         draw.add_text([x + 250.0, y + 6.0], LABEL, "for CPT32 SGU");
@@ -824,14 +890,16 @@ impl Monitor {
                 }
                 draw.add_text([x + 150.0, y], LABEL, "dB / 40 Hz - 20 kHz");
             }
+            // Whole-pixel bar width so every band is the same width.
+            let bar_w = ((w - 12.0) / BANDS as f32).floor();
+            let area = bar_w * BANDS as f32;
             for db in [-24.0, -48.0, -72.0] {
                 let ly = py + h * (-db / 96.0);
-                draw.add_line([px, ly], [px + w - 12.0, ly], [0.12, 0.13, 0.14, 1.0])
+                draw.add_line([px, ly], [px + area, ly], [0.12, 0.13, 0.14, 1.0])
                     .build();
             }
-            draw.add_line([px, py + h + 1.0], [px + w - 12.0, py + h + 1.0], DIM)
+            draw.add_line([px, py + h + 1.0], [px + area, py + h + 1.0], DIM)
                 .build();
-            let bar_w = (w - 12.0) / BANDS as f32;
             for band in 0..BANDS {
                 let value = self.spectrum[side][band];
                 let level = ((value + 96.0) / 96.0).clamp(0.0, 1.0);
@@ -846,7 +914,7 @@ impl Monitor {
                 }
                 let peak = ((self.spectrum_peaks[side][band] + 96.0) / 96.0).clamp(0.0, 1.0);
                 if peak > 0.0 {
-                    let sy = py + h - peak * h;
+                    let sy = (py + h - peak * h).floor();
                     draw.add_rect([bx + 1.0, sy], [bx + bar_w - 1.0, sy + 2.0], ACCENT)
                         .filled(true)
                         .build();
@@ -861,7 +929,7 @@ impl Monitor {
                 (4000.0, "4K"),
                 (10000.0, "10K"),
             ] {
-                let fx = px + (w - 12.0) * ((hz / 40.0f32).ln() / ratio);
+                let fx = (px + area * ((hz / 40.0f32).ln() / ratio)).floor();
                 draw.add_line([fx, py + h + 1.0], [fx, py + h + 4.0], DIM)
                     .build();
                 draw.add_text([fx - 6.0, py + h + 5.0], LABEL, label);
@@ -1345,7 +1413,7 @@ fn draw_keyboard(draw: &DrawListMut, [x, y]: [f32; 2], key: Option<f32>, level: 
             .build();
         }
         for (semitone, after) in BLACK {
-            let kx = ox + (after + 1) as f32 * ww - bw / 2.0 - 0.5;
+            let kx = ox + (after + 1) as f32 * ww - bw / 2.0;
             let on = pressed == Some(base + i32::from(semitone));
             draw.add_rect([kx, y], [kx + bw, y + bh], if on { lit } else { BG })
                 .filled(true)
@@ -1357,7 +1425,9 @@ fn draw_keyboard(draw: &DrawListMut, [x, y]: [f32; 2], key: Option<f32>, level: 
 /// Segmented horizontal level meter.
 fn draw_meter(draw: &DrawListMut, min: [f32; 2], max: [f32; 2], meter: Meter, segments: usize) {
     let width = max[0] - min[0];
-    let seg_w = width / segments as f32;
+    // Every segment gets the same whole-pixel width; any remainder is left blank.
+    let seg_w = (width / segments as f32).floor().max(2.0);
+    let (min, max) = ([min[0].floor(), min[1].floor()], [max[0], max[1].floor()]);
     let lit = (meter.level * segments as f32).round() as usize;
     let peak = ((meter.peak * segments as f32).round() as usize).min(segments);
     for s in 0..segments {
@@ -1377,55 +1447,62 @@ fn draw_meter(draw: &DrawListMut, min: [f32; 2], max: [f32; 2], meter: Meter, se
 }
 
 /// Seven-segment digits for `0-9`, `:` and `.`; `h` is the digit height.
+/// Every size is a whole number of pixels so all digits of one height look
+/// identical: stroke `t`, cell width `w`, and a 1-pixel gap between segments.
 fn draw_segments(draw: &DrawListMut, [x, y]: [f32; 2], h: f32, text: &str, color: Rgba) {
     // Segment bits: a b c d e f g.
     const DIGITS: [u8; 10] = [
         0b1111110, 0b0110000, 0b1101101, 0b1111001, 0b0110011, 0b1011011, 0b1011111, 0b1110000,
         0b1111111, 0b1111011,
     ];
-    let w = h * 0.5;
-    let t = (h * 0.12).max(1.5);
+    let h = h.round().max(7.0);
+    let t = (h / 8.0).floor().max(1.0);
+    // Equal upper and lower halves need an even (h - t).
+    let h = if (h - t) % 2.0 == 1.0 { h - 1.0 } else { h };
+    let w = (h * 0.55).round();
+    // Gaps between segments only where the strokes are thick enough to keep them.
+    let g = if t >= 3.0 { 1.0 } else { 0.0 };
+    // Top of the middle bar; the two halves are equal when (h - t) is even.
+    let mid = ((h - t) / 2.0).floor();
+    let (x, y) = (x.floor(), y.floor());
     let off = [color[0] * 0.12, color[1] * 0.12, color[2] * 0.12, 1.0];
+    let rect = |min: [f32; 2], max: [f32; 2], color: Rgba| {
+        draw.add_rect(min, max, color).filled(true).build();
+    };
     let mut cx = x;
     for ch in text.chars() {
         match ch {
             ':' => {
-                for dy in [h * 0.3, h * 0.7] {
-                    draw.add_rect(
-                        [cx + t * 0.5, y + dy - t / 2.0],
-                        [cx + t * 1.5, y + dy + t / 2.0],
-                        color,
-                    )
-                    .filled(true)
-                    .build();
+                let upper = y + (h * 0.3).round();
+                let lower = y + (h * 0.7).round() - t;
+                for dy in [upper, lower] {
+                    rect([cx + 1.0, dy], [cx + 1.0 + t, dy + t], color);
                 }
-                cx += t * 2.5;
+                cx += t + 3.0;
             }
             '.' => {
-                draw.add_rect([cx + t * 0.3, y + h - t], [cx + t * 1.3, y + h], color)
-                    .filled(true)
-                    .build();
-                cx += t * 2.0;
+                rect([cx + 1.0, y + h - t], [cx + 1.0 + t, y + h], color);
+                cx += t + 3.0;
             }
             '0'..='9' => {
                 let bits = DIGITS[ch as usize - '0' as usize];
-                let mid = y + h / 2.0;
+                let (left, right) = (cx, cx + w);
+                let (inner_l, inner_r) = (left + t + g, right - t - g);
                 let segments = [
-                    ([cx + t, y], [cx + w - t, y + t]),
-                    ([cx + w - t, y + t], [cx + w, mid]),
-                    ([cx + w - t, mid], [cx + w, y + h - t]),
-                    ([cx + t, y + h - t], [cx + w - t, y + h]),
-                    ([cx, mid], [cx + t, y + h - t]),
-                    ([cx, y + t], [cx + t, mid]),
-                    ([cx + t, mid - t / 2.0], [cx + w - t, mid + t / 2.0]),
+                    // a, b, c, d, e, f, g
+                    ([inner_l, y], [inner_r, y + t]),
+                    ([right - t, y + t + g], [right, y + mid - g]),
+                    ([right - t, y + mid + t + g], [right, y + h - t - g]),
+                    ([inner_l, y + h - t], [inner_r, y + h]),
+                    ([left, y + mid + t + g], [left + t, y + h - t - g]),
+                    ([left, y + t + g], [left + t, y + mid - g]),
+                    ([inner_l, y + mid], [inner_r, y + mid + t]),
                 ];
                 for (index, (min, max)) in segments.into_iter().enumerate() {
                     let on = bits & (0b1000000 >> index) != 0;
-                    draw.add_rect(min, max, if on { color } else { off })
-                        .filled(true)
-                        .build();
+                    rect(min, max, if on { color } else { off });
                 }
-                cx += w + t * 1.5;
+                cx += w + t + 1.0;
             }
             _ => cx += w,
         }
@@ -1437,6 +1514,8 @@ fn draw_segments(draw: &DrawListMut, [x, y]: [f32; 2], h: f32, text: &str, color
 
 struct PlayerApp {
     monitor: Monitor,
+    /// `--scale N`: fixed whole-number pixel scale instead of fitting the window.
+    fixed_scale: Option<u32>,
     initial_path: Option<PathBuf>,
     audio: audio::AudioHost,
     display: Option<OwnedDisplayHandle>,
@@ -1473,15 +1552,35 @@ impl ApplicationHandler for PlayerApp {
         if self.window.is_some() {
             return;
         }
+        // Start at the OS scale rounded down to a whole number, but never larger
+        // than the monitor; resizing picks the largest whole scale that fits.
+        let initial_scale = self.fixed_scale.unwrap_or_else(|| {
+            event_loop.primary_monitor().map_or(1, |monitor| {
+                let size = monitor.size();
+                let fit = (size.width as f32 / DESIGN_SIZE[0])
+                    .min(size.height as f32 * 0.9 / DESIGN_SIZE[1])
+                    .floor();
+                (monitor.scale_factor().floor() as f32).min(fit).max(1.0) as u32
+            })
+        });
+        let fixed_scale = self.fixed_scale;
         let result = event_loop
             .create_window(
                 Window::default_attributes()
                     .with_title("SGUB Player")
-                    .with_inner_size(LogicalSize::new(DESIGN_SIZE[0], DESIGN_SIZE[1]))
-                    .with_min_inner_size(LogicalSize::new(DESIGN_SIZE[0], DESIGN_SIZE[1])),
+                    .with_inner_size(PhysicalSize::new(
+                        (DESIGN_SIZE[0] * initial_scale as f32) as u32,
+                        (DESIGN_SIZE[1] * initial_scale as f32) as u32,
+                    ))
+                    .with_min_inner_size(PhysicalSize::new(
+                        DESIGN_SIZE[0] as u32,
+                        DESIGN_SIZE[1] as u32,
+                    )),
             )
             .map_err(|error| format!("Cannot create player window: {error}"))
-            .and_then(|window| MonitorWindow::new(Arc::new(window), self.display.take().unwrap()));
+            .and_then(|window| {
+                MonitorWindow::new(Arc::new(window), self.display.take().unwrap(), fixed_scale)
+            });
         match result {
             Ok(window) => {
                 self.window = Some(window);
@@ -1561,16 +1660,26 @@ impl ApplicationHandler for PlayerApp {
     }
 }
 
-const USAGE: &str =
-    "Usage: sgub_player [--sgu-version 1|2|2.1|3|3.1] [--card SLOT=PACKAGE]... [song.sgub]";
+const USAGE: &str = "Usage: sgub_player [--sgu-version 1|2|2.1|3|3.1] [--card SLOT=PACKAGE]... [--scale 1..8] [song.sgub]";
 
 fn run() -> Result<(), String> {
     let mut args = std::env::args_os().skip(1);
     let mut path = None;
     let mut version = SguVersion::default();
     let mut card_paths: [Option<PathBuf>; 8] = Default::default();
+    let mut fixed_scale = None;
     while let Some(arg) = args.next() {
         match arg.to_str() {
+            Some("--scale") => {
+                let value = args.next().ok_or(USAGE)?;
+                fixed_scale = Some(
+                    value
+                        .to_str()
+                        .and_then(|text| text.parse::<u32>().ok())
+                        .filter(|scale| (1..=8).contains(scale))
+                        .ok_or_else(|| format!("--scale must be 1..8\n{USAGE}"))?,
+                );
+            }
             Some("--card") => {
                 let value = args.next().ok_or(USAGE)?;
                 let text = value.to_str().ok_or(USAGE)?;
@@ -1609,6 +1718,7 @@ fn run() -> Result<(), String> {
         EventLoop::new().map_err(|error| format!("Cannot create event loop: {error}"))?;
     let mut app = PlayerApp {
         monitor: Monitor::new(version, card_paths),
+        fixed_scale,
         initial_path: path,
         audio: audio::AudioHost::new()?,
         display: Some(event_loop.owned_display_handle()),
@@ -1855,7 +1965,7 @@ fn draw_hs_track(
     let slot_w = (bw - 2.0) / 8.0;
     for (op, &volume) in hs.volumes.iter().enumerate() {
         let ox = bx + 1.0 + op as f32 * slot_w;
-        let height = f32::from(volume) / 255.0 * (bh - 4.0);
+        let height = (f32::from(volume) / 255.0 * (bh - 4.0)).round();
         draw.add_rect(
             [ox + 2.0, by + bh - 2.0 - height],
             [ox + slot_w - 2.0, by + bh - 2.0],
