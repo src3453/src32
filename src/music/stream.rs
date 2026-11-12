@@ -1270,6 +1270,31 @@ impl StreamPlayer {
         }
     }
 
+    /// SGUB format version (1, 2 or 3).
+    pub fn version(&self) -> u8 {
+        self.version
+    }
+
+    /// Number of 60 Hz frames in one pass of the stream.
+    pub fn frame_count(&self) -> u32 {
+        self.frame_count
+    }
+
+    /// Frames applied in the current pass (0 before the first VSYNC).
+    pub fn frame_index(&self) -> u32 {
+        self.frame_index
+    }
+
+    /// Whether the header requests restarting at the first frame after the last one.
+    pub fn repeats(&self) -> bool {
+        self.repeat
+    }
+
+    /// True once a non-repeating stream has played its last frame and silenced all voices.
+    pub fn is_finished(&self) -> bool {
+        self.finished
+    }
+
     /// Drain ordered v3 writes for the expansion card in slot 0.
     pub fn take_card_writes(&mut self) -> Vec<(u32, u8)> {
         std::mem::take(&mut self.card_writes)

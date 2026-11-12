@@ -232,6 +232,23 @@ Windows で Python が `python3` として見つからない場合は `py -3` �
 stream は主 RAM の `0x00200000` にロードされます。driver image は2 MiB未満、stream は `0x00E00000` byte 以下。
 driver は IRQ0 ごとに1 frame を処理し、repeat／非repeat終端停止を扱います。`--expect-mem-u8` は複数指定でき、各 frame の IRQ0 処理後に全指定値を検査します。
 
+## SGUB Player
+
+エミュレータもゲストドライバも使わず、SGUB（v1／v2／v3）をホスト上の 2 基の SGU コアで直接再生する単体プレイヤーです。演奏中のレジスタ状態をモニタ表示します。
+
+```sh
+cargo run --release --bin sgub_player -- path/to/song.sgub
+cargo run --release --bin sgub_player -- --sgu-version 2.1 path/to/song.sgub
+```
+
+ファイルはウィンドウへのドラッグ＆ドロップでも開けます。`--sgu-version` は SGU の版（`1`／`2`／`2.1`／`3`／`3.1`、既定は `3.1`）です。
+
+- 左: 16 トラック（SGU0／SGU1 × 8ch）。波形種別、ノート名（Wavetable のみ。FREQUENCY 1 = 1 Hz）、FREQUENCY、VOLUME、PAN、変調、鍵盤、波形テーブル／PCM 再生位置／FIFO 残量、チャンネルレベルと左右パン。
+- 右: 再生状態、経過時間と総時間、seek バー、マスターレベル、左右のスペクトラムアナライザ、オシロスコープ、全チャンネルのレジスタ表。
+- 操作: Space 再生／一時停止、S 停止、F 早送り（4 倍）、←／→ 5 秒、PageUp／PageDown 30 秒、Home 先頭、`1`〜`8`／Shift+`1`〜`8` で各チャンネルをミュート、`0` で全解除。トラックを左クリックでミュート、右クリックでソロ。
+
+seek は先頭から指定フレームまでレジスタ書き込みだけを適用するため、PCM／FIFO の再生位置は厳密には再現しません。v3 の拡張カード（S3HS）宛ての書き込みは数えて表示するだけで、カードは接続しません。
+
 ## ドキュメント
 
 仕様・ガイド・設計資料は、Obsidian 互換の Wiki 形式で整理した [日本語ドキュメントホーム](doc/ja/Home.md) または [Documentation Home](doc/Home.md) から参照できます。

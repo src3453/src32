@@ -1,5 +1,6 @@
 pub mod guest;
 pub mod gui;
+pub mod monitor;
 pub mod project;
 
 pub mod stream;
