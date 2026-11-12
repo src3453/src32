@@ -12,8 +12,17 @@ const RECORD_SIZE: usize = 5;
 const STREAM_VERSION: u8 = 1;
 const STREAM_VERSION_2: u8 = 2;
 const STREAM_VERSION_3: u8 = 3;
+const STREAM_VERSION_4: u8 = 4;
 const V2_HEADER_SIZE: usize = 40;
+const V4_HEADER_SIZE: usize = 48;
+const V4_CARD_ENTRY_SIZE: usize = 32;
 const V2_POOL_ENTRY_SIZE: usize = 16;
+const SLOT_APERTURE: u32 = 0x0200_0000;
+/// SGUB v4 target for the 34SI22 registers (`0x00..0x3F`).
+pub const SGUB_TARGET_SI22: u8 = 11;
+/// v4 frame period limits in 48 MHz cycles (1 kHz..1 Hz); 0 selects VSync.
+const MIN_FRAME_PERIOD: u32 = 48_000;
+const MAX_FRAME_PERIOD: u32 = 48_000_000;
 const VOICE_COUNT: u8 = 16;
 const MAX_STREAM_SIZE: usize = 0x00E0_0000;
 const REGISTER_SPACE: usize = 0x900;
@@ -791,6 +800,124 @@ fn read_u32(bytes: &[u8], offset: usize) -> Option<u32> {
     ))
 }
 
+/// One v4 card requirement: the ID a slot must expose and its bulk window.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CardRequirement {
+    pub slot: u8,
+    pub id_offset: u32,
+    pub id: Vec<u8>,
+    pub bulk_start: u32,
+    pub bulk_length: u32,
+}
+
+fn validate_v4_operation(
+    bytes: &[u8],
+    offset: usize,
+    end: usize,
+    pools: &[(u8, usize, usize)],
+    cards: &[CardRequirement],
+) -> Result<usize, MusicError> {
+    let opcode = *bytes
+        .get(offset)
+        .filter(|_| offset < end)
+        .ok_or_else(|| error("truncated SGUB v4 operation"))?;
+    let size = match opcode {
+        0 => 7,
+        1 => 11,
+        2 => 16,
+        _ => return Err(error("unknown SGUB v4 operation")),
+    };
+    let op_end = offset
+        .checked_add(size)
+        .filter(|value| *value <= end)
+        .ok_or_else(|| error("truncated SGUB v4 operation"))?;
+    let target = bytes[offset + 1];
+    let address = read_u32(bytes, offset + 2).unwrap();
+    // (inclusive WRITE limit, bulk destination range) per target.
+    let (limit, bulk): (u32, Option<(u32, u32)>) = match target {
+        0 | 1 => (0x8ff, Some((0, 0x800))),
+        2 => (0x0f_ffff, Some((0, 0x10_0000))),
+        3..=10 => {
+            let slot = target - 3;
+            let card = cards
+                .iter()
+                .find(|card| card.slot == slot)
+                .ok_or_else(|| error(format!("SGUB v4 slot {slot} has no card requirement")))?;
+            let bulk = (card.bulk_length != 0)
+                .then_some((card.bulk_start, card.bulk_start + card.bulk_length));
+            (SLOT_APERTURE - 1, bulk)
+        }
+        SGUB_TARGET_SI22 => (0x3f, None),
+        _ => return Err(error("SGUB v4 operation has invalid target")),
+    };
+    if opcode == 0 {
+        if address > limit {
+            return Err(error("SGUB v4 WRITE address is out of range"));
+        }
+        return Ok(op_end);
+    }
+    let length = read_u32(bytes, offset + if opcode == 1 { 6 } else { 12 }).unwrap();
+    let (bulk_start, bulk_end) =
+        bulk.ok_or_else(|| error("SGUB v4 target does not accept FILL or COPY_POOL"))?;
+    let dest_end = u64::from(address) + u64::from(length);
+    if length == 0 || address < bulk_start || dest_end > u64::from(bulk_end) {
+        return Err(error("SGUB v4 bulk destination is out of range"));
+    }
+    if opcode == 2 {
+        let id = read_u16(bytes, offset + 6).unwrap() as usize;
+        let source = read_u32(bytes, offset + 8).unwrap();
+        let (kind, _, pool_len) = pools
+            .get(id)
+            .copied()
+            .ok_or_else(|| error("SGUB v4 COPY_POOL references an invalid pool ID"))?;
+        let type_ok = match kind {
+            1 => target < 2 && address % 0x100 == 0 && source % 256 == 0 && length % 256 == 0,
+            2 => target == 2,
+            3 => (3..=10).contains(&target),
+            _ => false,
+        };
+        if !type_ok || u64::from(source) + u64::from(length) > pool_len as u64 {
+            return Err(error("SGUB v4 COPY_POOL range or type is invalid"));
+        }
+    }
+    Ok(op_end)
+}
+
+fn parse_v4_cards(bytes: &[u8], count: usize) -> Result<Vec<CardRequirement>, MusicError> {
+    let mut cards: Vec<CardRequirement> = Vec::with_capacity(count);
+    for index in 0..count {
+        let entry = bytes
+            .get(V4_HEADER_SIZE + index * V4_CARD_ENTRY_SIZE..)
+            .and_then(|rest| rest.get(..V4_CARD_ENTRY_SIZE))
+            .ok_or_else(|| error("SGUB v4 card table is truncated"))?;
+        let slot = entry[0];
+        let id_length = entry[1] as usize;
+        let id_offset = read_u32(entry, 4).unwrap();
+        let bulk_start = read_u32(entry, 8).unwrap();
+        let bulk_length = read_u32(entry, 12).unwrap();
+        let aperture = u64::from(SLOT_APERTURE);
+        if slot > 7
+            || cards.last().is_some_and(|last| last.slot >= slot)
+            || !(1..=16).contains(&id_length)
+            || entry[2] != 0
+            || entry[3] != 0
+            || entry[16 + id_length..].iter().any(|byte| *byte != 0)
+            || u64::from(id_offset) + id_length as u64 > aperture
+            || u64::from(bulk_start) + u64::from(bulk_length) > aperture
+        {
+            return Err(error("SGUB v4 card requirement is invalid"));
+        }
+        cards.push(CardRequirement {
+            slot,
+            id_offset,
+            id: entry[16..16 + id_length].to_vec(),
+            bulk_start,
+            bulk_length,
+        });
+    }
+    Ok(cards)
+}
+
 fn validate_v2_operation(
     bytes: &[u8],
     offset: usize,
@@ -928,14 +1055,17 @@ pub struct StreamPlayer {
     repeat: bool,
     initialized: bool,
     finished: bool,
-    card_writes: Vec<(u32, u8)>,
+    frame_period: u32,
+    cards: Vec<CardRequirement>,
+    uses_si22: bool,
+    device_writes: Vec<(u8, u32, u8)>,
 }
 
 impl StreamPlayer {
     pub fn from_bytes(bytes: &[u8]) -> Result<Self, MusicError> {
         if bytes
             .get(4)
-            .is_some_and(|version| *version == STREAM_VERSION_2 || *version == STREAM_VERSION_3)
+            .is_some_and(|version| (STREAM_VERSION_2..=STREAM_VERSION_4).contains(version))
         {
             return Self::from_v2_bytes(bytes);
         }
@@ -1018,28 +1148,47 @@ impl StreamPlayer {
             repeat: bytes[6] & 1 != 0,
             initialized: false,
             finished: false,
-            card_writes: Vec::new(),
+            frame_period: 0,
+            cards: Vec::new(),
+            uses_si22: false,
+            device_writes: Vec::new(),
         })
     }
 
     fn from_v2_bytes(bytes: &[u8]) -> Result<Self, MusicError> {
         let fail = || error("invalid SGUB v2 stream");
-        if bytes.len() < V2_HEADER_SIZE || &bytes[..4] != b"SGUB" {
-            return Err(error("SGUB v2 header is truncated"));
+        let version = bytes.get(4).copied().unwrap_or(0);
+        let version4 = version == STREAM_VERSION_4;
+        let header_size = if version4 {
+            V4_HEADER_SIZE
+        } else {
+            V2_HEADER_SIZE
+        };
+        if bytes.len() < header_size || &bytes[..4] != b"SGUB" {
+            return Err(error("SGUB pooled header is truncated"));
         }
-        let version = bytes[4];
-        if (version != STREAM_VERSION_2 && version != STREAM_VERSION_3) || bytes[5] != VOICE_COUNT {
+        if !(STREAM_VERSION_2..=STREAM_VERSION_4).contains(&version) || bytes[5] != VOICE_COUNT {
             return Err(error("invalid SGUB pooled version or voice count"));
         }
+        let (card_count, frame_period) = if version4 {
+            (bytes[38] as usize, read_u32(bytes, 40).unwrap())
+        } else {
+            (0, 0)
+        };
         if bytes[6] & !1 != 0
             || bytes[7] != 0
-            || read_u16(bytes, 36) != Some(40)
-            || read_u16(bytes, 38) != Some(0)
+            || read_u16(bytes, 36) != Some(header_size as u16)
+            || (!version4 && read_u16(bytes, 38) != Some(0))
+            || (version4 && (bytes[39] != 0 || read_u32(bytes, 44) != Some(0) || card_count > 8))
         {
             return Err(error(
-                "SGUB v2 header contains invalid flags or reserved values",
+                "SGUB pooled header contains invalid flags or reserved values",
             ));
         }
+        if frame_period != 0 && !(MIN_FRAME_PERIOD..=MAX_FRAME_PERIOD).contains(&frame_period) {
+            return Err(error("SGUB v4 frame period is out of range"));
+        }
+        let cards = parse_v4_cards(bytes, card_count)?;
         let frame_count = read_u32(bytes, 8).ok_or_else(fail)?;
         let pool_count = read_u32(bytes, 12).ok_or_else(fail)? as usize;
         let initial_count = read_u32(bytes, 16).ok_or_else(fail)?;
@@ -1051,7 +1200,7 @@ impl StreamPlayer {
             || pool_count > 65_536
             || total_size != bytes.len()
             || total_size > MAX_STREAM_SIZE
-            || directory_offset != V2_HEADER_SIZE
+            || directory_offset != header_size + card_count * V4_CARD_ENTRY_SIZE
         {
             return Err(fail());
         }
@@ -1089,6 +1238,7 @@ impl StreamPlayer {
                 }
                 1 | 2 => {}
                 3 if version == STREAM_VERSION_3 && raw_size <= 0x400000 => {}
+                3 if version4 && raw_size <= SLOT_APERTURE as usize => {}
                 _ => return Err(error("unsupported SGUB pooled stream pool type")),
             }
             if kind == 2 && raw_size > PCM_RAM_SIZE {
@@ -1106,9 +1256,19 @@ impl StreamPlayer {
         {
             return Err(fail());
         }
+        let validate = |cursor: usize, end: usize| {
+            if version4 {
+                validate_v4_operation(bytes, cursor, end, &pools, &cards)
+            } else {
+                validate_v2_operation(bytes, cursor, end, &pools)
+            }
+        };
+        let mut uses_si22 = false;
         let mut cursor = initial_start;
         for _ in 0..initial_count {
-            cursor = validate_v2_operation(bytes, cursor, frame_start, &pools)?;
+            let next = validate(cursor, frame_start)?;
+            uses_si22 |= version4 && bytes[cursor + 1] == SGUB_TARGET_SI22;
+            cursor = next;
         }
         if cursor != frame_start {
             return Err(error(
@@ -1119,7 +1279,9 @@ impl StreamPlayer {
             let count = read_u16(bytes, cursor).ok_or_else(fail)? as u32;
             cursor = cursor.checked_add(2).ok_or_else(fail)?;
             for _ in 0..count {
-                cursor = validate_v2_operation(bytes, cursor, total_size, &pools)?;
+                let next = validate(cursor, total_size)?;
+                uses_si22 |= version4 && bytes[cursor + 1] == SGUB_TARGET_SI22;
+                cursor = next;
             }
         }
         if cursor != total_size {
@@ -1138,7 +1300,10 @@ impl StreamPlayer {
             repeat: bytes[6] & 1 != 0,
             initialized: false,
             finished: false,
-            card_writes: Vec::new(),
+            frame_period,
+            cards,
+            uses_si22,
+            device_writes: Vec::new(),
         })
     }
 
@@ -1183,7 +1348,7 @@ impl StreamPlayer {
         for _ in 0..count {
             let opcode = self.bytes[cursor];
             let target = self.bytes[cursor + 1];
-            let address_size = if self.version == STREAM_VERSION_3 {
+            let address_size = if self.version >= STREAM_VERSION_3 {
                 4
             } else {
                 3
@@ -1208,7 +1373,7 @@ impl StreamPlayer {
                             sgu.borrow_mut().write_pcm_ram(address, value);
                         }
                     } else {
-                        self.card_writes.push((address, value));
+                        self.device_writes.push((target, address, value));
                     }
                     cursor += 2 + address_size + 1;
                 }
@@ -1226,7 +1391,8 @@ impl StreamPlayer {
                                     .write_pcm_ram(address + index as u32, value);
                             }
                         } else {
-                            self.card_writes.push((address + index as u32, value));
+                            self.device_writes
+                                .push((target, address + index as u32, value));
                         }
                     }
                     cursor += 2 + address_size + 5;
@@ -1248,7 +1414,8 @@ impl StreamPlayer {
                                     .write_pcm_ram(address + index as u32, value);
                             }
                         } else {
-                            self.card_writes.push((address + index as u32, value));
+                            self.device_writes
+                                .push((target, address + index as u32, value));
                         }
                     }
                     cursor += 2 + address_size + 10;
@@ -1259,7 +1426,10 @@ impl StreamPlayer {
         Ok(cursor)
     }
 
-    fn stop_all(sgus: &[Rc<RefCell<S3w2Sound>>; 2]) {
+    fn stop_all(&mut self, sgus: &[Rc<RefCell<S3w2Sound>>; 2]) {
+        if self.uses_si22 {
+            self.device_writes.push((SGUB_TARGET_SI22, 0x0c, 0));
+        }
         for sgu in sgus.iter() {
             let mut sgu = sgu.borrow_mut();
             for channel in 0..8u32 {
@@ -1270,7 +1440,7 @@ impl StreamPlayer {
         }
     }
 
-    /// SGUB format version (1, 2 or 3).
+    /// SGUB format version (1..=4).
     pub fn version(&self) -> u8 {
         self.version
     }
@@ -1295,9 +1465,22 @@ impl StreamPlayer {
         self.finished
     }
 
-    /// Drain ordered v3 writes for the expansion card in slot 0.
-    pub fn take_card_writes(&mut self) -> Vec<(u32, u8)> {
-        std::mem::take(&mut self.card_writes)
+    /// Frame period in 48 MHz cycles; 0 means one frame per VSync (v1..v3
+    /// always). Hosts call [`Self::advance_vsync`] once per frame period.
+    pub fn frame_period(&self) -> u32 {
+        self.frame_period
+    }
+
+    /// v4 card requirements (empty for v1..v3, whose v3 card is slot 0).
+    pub fn card_requirements(&self) -> &[CardRequirement] {
+        &self.cards
+    }
+
+    /// Drain ordered writes for targets the player cannot apply itself:
+    /// `(target, address, value)` with target 3..=10 for expansion slots 0..7
+    /// and [`SGUB_TARGET_SI22`] for the 34SI22, including the end-of-stream stop.
+    pub fn take_card_writes(&mut self) -> Vec<(u8, u32, u8)> {
+        std::mem::take(&mut self.device_writes)
     }
 
     /// Apply initial uploads on the first call, then exactly one frame per VSYNC.
@@ -1318,7 +1501,7 @@ impl StreamPlayer {
                 self.frame_index = 0;
                 self.cursor = self.frame_start;
             } else {
-                Self::stop_all(sgus);
+                self.stop_all(sgus);
                 self.finished = true;
                 return Ok(());
             }
@@ -1701,6 +1884,280 @@ mod tests {
         assert_eq!(cores[1].borrow().channels[0].volume, 0xff);
         player.advance_vsync(&cores).unwrap();
         assert_eq!(cores[1].borrow().channels[0].volume, 0);
+    }
+
+    // --- SGUB v4 -----------------------------------------------------------
+
+    struct V4 {
+        flags: u8,
+        period: u32,
+        cards: Vec<[u8; 32]>,
+        pools: Vec<(u8, Vec<u8>)>,
+        initial: Vec<Vec<u8>>,
+        frames: Vec<Vec<Vec<u8>>>,
+    }
+
+    fn card(slot: u8, id_offset: u32, id: &[u8], bulk: (u32, u32)) -> [u8; 32] {
+        let mut entry = [0u8; 32];
+        entry[0] = slot;
+        entry[1] = id.len() as u8;
+        entry[4..8].copy_from_slice(&id_offset.to_be_bytes());
+        entry[8..12].copy_from_slice(&bulk.0.to_be_bytes());
+        entry[12..16].copy_from_slice(&bulk.1.to_be_bytes());
+        entry[16..16 + id.len()].copy_from_slice(id);
+        entry
+    }
+
+    fn write4(target: u8, address: u32, value: u8) -> Vec<u8> {
+        let mut op = vec![0, target];
+        op.extend_from_slice(&address.to_be_bytes());
+        op.push(value);
+        op
+    }
+
+    fn fill4(target: u8, address: u32, length: u32, value: u8) -> Vec<u8> {
+        let mut op = vec![1, target];
+        op.extend_from_slice(&address.to_be_bytes());
+        op.extend_from_slice(&length.to_be_bytes());
+        op.push(value);
+        op
+    }
+
+    fn copy4(target: u8, address: u32, pool: u16, source: u32, length: u32) -> Vec<u8> {
+        let mut op = vec![2, target];
+        op.extend_from_slice(&address.to_be_bytes());
+        op.extend_from_slice(&pool.to_be_bytes());
+        op.extend_from_slice(&source.to_be_bytes());
+        op.extend_from_slice(&length.to_be_bytes());
+        op
+    }
+
+    impl V4 {
+        fn new() -> Self {
+            Self {
+                flags: 0,
+                period: 0,
+                cards: Vec::new(),
+                pools: Vec::new(),
+                initial: Vec::new(),
+                frames: vec![Vec::new()],
+            }
+        }
+
+        fn build(&self) -> Vec<u8> {
+            let directory = 48 + 32 * self.cards.len();
+            let mut payload_offset = directory + 16 * self.pools.len();
+            let mut body = Vec::new();
+            for card in &self.cards {
+                body.extend_from_slice(card);
+            }
+            for (id, (kind, data)) in self.pools.iter().enumerate() {
+                body.extend_from_slice(&(id as u16).to_be_bytes());
+                body.extend_from_slice(&[*kind, 0]);
+                body.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                body.extend_from_slice(&(data.len() as u32).to_be_bytes());
+                body.extend_from_slice(&(payload_offset as u32).to_be_bytes());
+                payload_offset += data.len();
+            }
+            for (_, data) in &self.pools {
+                body.extend_from_slice(data);
+            }
+            let initial_offset = 48 + body.len();
+            for op in &self.initial {
+                body.extend_from_slice(op);
+            }
+            let frame_offset = 48 + body.len();
+            for frame in &self.frames {
+                body.extend_from_slice(&(frame.len() as u16).to_be_bytes());
+                for op in frame {
+                    body.extend_from_slice(op);
+                }
+            }
+            let total = 48 + body.len();
+            let mut bytes = b"SGUB".to_vec();
+            bytes.extend_from_slice(&[4, 16, self.flags, 0]);
+            for value in [
+                self.frames.len(),
+                self.pools.len(),
+                self.initial.len(),
+                directory,
+                initial_offset,
+                frame_offset,
+                total,
+            ] {
+                bytes.extend_from_slice(&(value as u32).to_be_bytes());
+            }
+            bytes.extend_from_slice(&48u16.to_be_bytes());
+            bytes.extend_from_slice(&[self.cards.len() as u8, 0]);
+            bytes.extend_from_slice(&self.period.to_be_bytes());
+            bytes.extend_from_slice(&0u32.to_be_bytes());
+            bytes.extend_from_slice(&body);
+            bytes
+        }
+    }
+
+    const HS816_ID: &[u8] = b"3HS816\x01";
+
+    #[test]
+    fn v4_routes_si22_and_cards_in_order_and_stops_si22() {
+        let mut stream = V4::new();
+        stream.period = 400_000;
+        stream.cards = vec![
+            card(0, 0x4003F0, b"3WS88PWN4", (0, 0x400000)),
+            card(5, 0x4F8, HS816_ID, (0, 0)),
+        ];
+        stream.pools = vec![(2, vec![1, 2, 3]), (3, vec![9, 8])];
+        stream.initial = vec![copy4(2, 0x100, 0, 0, 3), copy4(3, 0x10, 1, 0, 2)];
+        stream.frames = vec![vec![
+            write4(SGUB_TARGET_SI22, 0x0c, 0x0f),
+            write4(8, 0x1e, 1),
+            write4(8, 0x1e, 1),
+            write4(0, 0x803, 0x40),
+        ]];
+        let bytes = stream.build();
+        let cores = cores();
+        let mut player = StreamPlayer::from_bytes(&bytes).unwrap();
+        assert_eq!(player.version(), 4);
+        assert_eq!(player.frame_period(), 400_000);
+        assert_eq!(player.card_requirements().len(), 2);
+        assert_eq!(player.card_requirements()[1].id, HS816_ID);
+        player.advance_vsync(&cores).unwrap();
+        assert_eq!(cores[0].borrow().read_pcm_ram(0x101), 2);
+        assert_eq!(cores[0].borrow().channels[0].volume, 0x40);
+        assert_eq!(
+            player.take_card_writes(),
+            vec![
+                (3, 0x10, 9),
+                (3, 0x11, 8),
+                (SGUB_TARGET_SI22, 0x0c, 0x0f),
+                (8, 0x1e, 1),
+                (8, 0x1e, 1),
+            ]
+        );
+        player.advance_vsync(&cores).unwrap();
+        assert!(player.is_finished());
+        assert_eq!(player.take_card_writes(), vec![(SGUB_TARGET_SI22, 0x0c, 0)]);
+        assert_eq!(cores[0].borrow().channels[0].volume, 0);
+    }
+
+    #[test]
+    fn v4_without_si22_does_not_touch_it_at_the_end() {
+        let mut stream = V4::new();
+        stream.frames = vec![vec![write4(1, 0x803, 1)]];
+        let mut player = StreamPlayer::from_bytes(&stream.build()).unwrap();
+        let cores = cores();
+        player.advance_vsync(&cores).unwrap();
+        player.advance_vsync(&cores).unwrap();
+        assert!(player.is_finished());
+        assert!(player.take_card_writes().is_empty());
+    }
+
+    #[test]
+    fn v4_rejects_invalid_headers_cards_and_operations() {
+        let valid = || {
+            let mut stream = V4::new();
+            stream.cards = vec![card(2, 0x4F8, HS816_ID, (0, 0))];
+            stream.frames = vec![vec![write4(5, 0x1e, 1)]];
+            stream
+        };
+        assert!(StreamPlayer::from_bytes(&valid().build()).is_ok());
+        let rejects = |stream: V4| StreamPlayer::from_bytes(&stream.build()).is_err();
+        // Frame period range.
+        for period in [1, 47_999, 48_000_001] {
+            let mut stream = valid();
+            stream.period = period;
+            assert!(rejects(stream), "period {period}");
+        }
+        for period in [48_000, 800_000, 48_000_000] {
+            let mut stream = valid();
+            stream.period = period;
+            assert!(!rejects(stream), "period {period}");
+        }
+        // A slot without a requirement.
+        let mut stream = valid();
+        stream.frames[0].push(write4(3, 0, 0));
+        assert!(rejects(stream));
+        // Slots must ascend; IDs need padding of zeros; windows inside the aperture.
+        let mut stream = valid();
+        stream.cards.push(card(2, 0, b"X", (0, 0)));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.cards[0][30] = 1;
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.cards[0] = card(2, 0x01FF_FFFF, b"AB", (0, 0));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.cards[0] = card(2, 0, b"A", (0x01FF_0000, 0x10001));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.cards[0] = card(8, 0, b"A", (0, 0));
+        assert!(rejects(stream));
+        // 34SI22: WRITE up to 0x3F only, never bulk.
+        let mut stream = valid();
+        stream.frames[0].push(write4(SGUB_TARGET_SI22, 0x3f, 0));
+        assert!(!rejects(stream));
+        let mut stream = valid();
+        stream.frames[0].push(write4(SGUB_TARGET_SI22, 0x40, 0));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.frames[0].push(fill4(SGUB_TARGET_SI22, 0, 1, 0));
+        assert!(rejects(stream));
+        // Card bulk only inside the declared window; no window means WRITE only.
+        let mut stream = valid();
+        stream.frames[0].push(fill4(5, 0, 1, 0));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.cards[0] = card(2, 0x4F8, HS816_ID, (0x100, 0x100));
+        stream.frames[0].push(fill4(5, 0x100, 0x100, 0));
+        assert!(!rejects(stream));
+        let mut stream = valid();
+        stream.cards[0] = card(2, 0x4F8, HS816_ID, (0x100, 0x100));
+        stream.frames[0].push(fill4(5, 0x101, 0x100, 0));
+        assert!(rejects(stream));
+        // Pool type and target must agree.
+        let mut stream = valid();
+        stream.cards[0] = card(2, 0x4F8, HS816_ID, (0, 0x10));
+        stream.pools = vec![(2, vec![0; 4])];
+        stream.frames[0].push(copy4(5, 0, 0, 0, 4));
+        assert!(rejects(stream));
+        let mut stream = valid();
+        stream.pools = vec![(3, vec![0; 4])];
+        stream.frames[0].push(copy4(2, 0, 0, 0, 4));
+        assert!(rejects(stream));
+        // Reserved targets, header fields and trailing bytes.
+        let mut stream = valid();
+        stream.frames[0].push(write4(12, 0, 0));
+        assert!(rejects(stream));
+        let mut bytes = valid().build();
+        bytes[44] = 1;
+        assert!(StreamPlayer::from_bytes(&bytes).is_err());
+        let mut bytes = valid().build();
+        bytes[36..38].copy_from_slice(&40u16.to_be_bytes());
+        assert!(StreamPlayer::from_bytes(&bytes).is_err());
+        let mut bytes = valid().build();
+        bytes.push(0);
+        let total = bytes.len() as u32;
+        bytes[32..36].copy_from_slice(&total.to_be_bytes());
+        assert!(StreamPlayer::from_bytes(&bytes).is_err());
+    }
+
+    #[test]
+    fn v4_repeat_restarts_frames_without_initial_operations() {
+        let mut stream = V4::new();
+        stream.flags = 1;
+        stream.initial = vec![write4(0, 0x803, 7)];
+        stream.frames = vec![vec![write4(SGUB_TARGET_SI22, 0x0d, 1)], vec![]];
+        let mut player = StreamPlayer::from_bytes(&stream.build()).unwrap();
+        let cores = cores();
+        for _ in 0..5 {
+            player.advance_vsync(&cores).unwrap();
+        }
+        assert!(!player.is_finished());
+        assert_eq!(
+            player.take_card_writes(),
+            vec![(SGUB_TARGET_SI22, 0x0d, 1); 3]
+        );
     }
 }
 

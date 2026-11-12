@@ -101,7 +101,7 @@ Writer と reader の相互運用テストでは、最低限、v1 との version
 
 ## Furnace exporter への適用
 
-Furnace の S3W2 ROM exporter は v2 を出力し、次のpool化を行う。過去のv1ファイルもreaderとguest driverで再生できる。S3HS outputは [SGUB v3](spec_SGUB_v3.md) を使う。
+Furnace の S3W2 ROM exporter は v2 を出力し、次のpool化を行う。過去のv1ファイルもreaderとguest driverで再生できる。S3HS outputは [SGUB v3](spec_SGUB_v3.md)、34SI22・3HS816・複数カード・タイマ周期の曲は [SGUB v4](spec_SGUB_v4.md) を使う。
 
 - 同一の256 byte波形を1つの wave pool entry にまとめ、初期化または必要な frame で SGU 波形 SRAM に COPY_POOL する。
 - PCM bank を PCM pool entry とし、必要な destination 範囲だけ COPY_POOL する。未使用領域は FILL で `0x80` に初期化して決定性を保つ。
@@ -126,9 +126,10 @@ to the stream; compile it with the SDK sources and include directory above.
 Old Sol driver copies must be replaced with the current C driver. SGUB files do
 not need to be re-exported.
 
-The C SDK player accepts SGUB v1/v2/v3. The Sol source
+The C SDK player accepts SGUB v1/v2/v3/v4. The Sol source
 `sol/cpt32/sgu_music_driver.sol` remains a v1/v2 player; use the C driver for
-v3 S3HS streams. v3 output requires the 3WS88PWN4 card in expansion slot 0.
+v3 S3HS streams and v4. v3 output requires the 3WS88PWN4 card in expansion slot 0;
+v4 checks the cards its card table declares and may run from the PeC timer.
 
 During playback the driver uses the PCG text screen to show all 16 channels'
 volume and frequency registers in hexadecimal. It refreshes the display once

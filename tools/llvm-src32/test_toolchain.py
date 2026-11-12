@@ -1367,6 +1367,143 @@ int main(void) {
                 self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
                 self.assertIn('PASS:', result.stdout)
 
+    def build_3hs816_card(self):
+        """Package examples/wasm-3hs816, or skip without the wasm32 target."""
+        installed = subprocess.run(['rustup', 'target', 'list', '--installed'],
+                                   capture_output=True, text=True)
+        if 'wasm32-unknown-unknown' not in installed.stdout:
+            self.skipTest('rustup target wasm32-unknown-unknown is not installed')
+        manifest = ROOT / 'examples/wasm-3hs816/Cargo.toml'
+        result = subprocess.run(
+            ['cargo', 'build', '--manifest-path', str(manifest), '--release',
+             '--target', 'wasm32-unknown-unknown'],
+            capture_output=True, text=True, timeout=600)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        card = self.work / '3hs816.cpt32card'
+        result = subprocess.run(
+            [sys.executable, str(ROOT / 'sdk/wasm-expansion-card/package.py'),
+             str(ROOT / 'examples/wasm-3hs816/target/wasm32-unknown-unknown/release/cpt32_3hs816.wasm'),
+             str(card)], capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return card
+
+    @staticmethod
+    def sgub_v4(period, cards, pools, initial, frames, flags=0):
+        """Canonical SGUB v4 bytes (doc/spec_SGUB_v4.md)."""
+        def u32(value):
+            return value.to_bytes(4, 'big')
+        body = bytearray()
+        for slot, id_offset, ident, bulk_start, bulk_length in cards:
+            entry = bytes([slot, len(ident), 0, 0]) + u32(id_offset) + u32(bulk_start) + u32(bulk_length)
+            body += entry + ident.ljust(16, b'\0')
+        directory = 48 + len(body)
+        offset = directory + 16 * len(pools)
+        for index, (kind, data) in enumerate(pools):
+            body += index.to_bytes(2, 'big') + bytes([kind, 0]) + u32(len(data)) * 2 + u32(offset)
+            offset += len(data)
+        for _, data in pools:
+            body += data
+        initial_offset = 48 + len(body)
+        body += b''.join(initial)
+        frame_offset = 48 + len(body)
+        for frame in frames:
+            body += len(frame).to_bytes(2, 'big') + b''.join(frame)
+        header = (b'SGUB' + bytes([4, 16, flags, 0]) + u32(len(frames)) + u32(len(pools))
+                  + u32(len(initial)) + u32(directory) + u32(initial_offset)
+                  + u32(frame_offset) + u32(48 + len(body)) + (48).to_bytes(2, 'big')
+                  + bytes([len(cards), 0]) + u32(period) + u32(0))
+        return header + bytes(body)
+
+    def test_sgub_v4_timer_frames_drive_si22_and_3hs816_card(self):
+        def write(target, address, value):
+            return bytes([0, target]) + address.to_bytes(4, 'big') + bytes([value])
+
+        def copy(target, address, pool, length):
+            return (bytes([2, target]) + address.to_bytes(4, 'big') + pool.to_bytes(2, 'big')
+                    + (0).to_bytes(4, 'big') + length.to_bytes(4, 'big'))
+
+        card = self.build_3hs816_card()
+        sources = [ROOT / 'sol/cpt32/sgu_music_driver.c'] + [
+            ROOT / 'sdk/cpt32/src' / name for name in ('sgub.c', 'irqc.c', 'pcg.c')]
+        image = self.work / 'driver.wax'
+        self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', '-O1', '-o', image)
+        # Ten 120 Hz frames: each writes its number to SGU0 wave RAM, the
+        # 34SI22 volume register and the 3HS816 (slot 2) ch3 frequency.
+        # Eight VSyncs reach at most frame 9, so the stream ends (34SI22
+        # stopped) only if the timer, not VSync, drives the frames.
+        pcm = bytes([0x80, 0xff, 0x00, 0x80] * 64)
+        frames = []
+        for number in range(1, 11):
+            frame = [write(0, 0x000, number), write(11, 0x0d, number),
+                     write(5, 0x0c1, number)]
+            if number == 1:
+                frame += [write(11, a, v) for a, v in (
+                    (0x00, 0), (0x01, 0x10), (0x02, 0), (0x03, 0), (0x04, 0x11), (0x05, 0),
+                    (0x0e, 15), (0x21, 0), (0x0c, 0x01))]
+                frame.append(write(5, 0x0de, 1))  # ch3 gate: key-on
+            frames.append(frame)
+        stream = self.sgub_v4(400_000, [(2, 0x4F8, b'3HS816\x01', 0, 0)], [(2, pcm)],
+                              [copy(2, 0x1000, 0, len(pcm))], frames)
+        song = self.work / 'song.sgub'
+        song.write_bytes(stream)
+
+        def run(config, *expectations):
+            (self.work / 'config.yaml').write_text(config, encoding='utf-8')
+            args = [str(self.harness), str(image), '--cpu', 'pipeline',
+                    '--music-stream', str(song), '--frames', '8', '--allow-running',
+                    '--irq-drain-cycles', '40000000']
+            # Checked after the last frame: the testbench's startup budget
+            # already spans many timer periods but no VSync.
+            for expectation in expectations:
+                args += ['--expect-final-mem-u8', expectation]
+            return subprocess.run(args, cwd=self.work, capture_output=True, text=True,
+                                  timeout=180)
+
+        installed = f'expansion_card:\n  - slot: 2\n    package: "{card.as_posix()}"\n'
+        result = run(installed,
+                     '0x80020000=10',      # last frame reached SGU0
+                     '0x8002200D=10',      # and the 34SI22 volume register
+                     '0xA40000C1=10',      # and the card in slot 2
+                     '0xA40000DE=1',       # gate stored
+                     '0x8002200C=0',       # end of stream stopped the 34SI22
+                     '0x18001001=255')     # PCM pool copied to shared RAM
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn('PASS:', result.stdout)
+        # The card is in another slot: the driver stops before any write.
+        moved = installed.replace('slot: 2', 'slot: 1')
+        result = run(moved, '0x18001001=0', '0x8002200D=0', '0xA20000C1=0')
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_sgub_v4_furnace_mix_plays_si22_and_3hs816(self):
+        # Furnace export (test/sgub/v4_check.py "mix"): S3W2 PCM + 34SI22 +
+        # 3HS816 in slot 0, A4 on each from stream frame 6, VSync frames.
+        card = self.build_3hs816_card()
+        sources = [ROOT / 'sol/cpt32/sgu_music_driver.c'] + [
+            ROOT / 'sdk/cpt32/src' / name for name in ('sgub.c', 'irqc.c', 'pcg.c')]
+        image = self.work / 'driver.wax'
+        self.driver(*sources, '-I', ROOT / 'sdk/cpt32/include', '-O1', '-o', image)
+        (self.work / 'config.yaml').write_text(
+            f'expansion_card:\n  - slot: 0\n    package: "{card.as_posix()}"\n', encoding='utf-8')
+
+        def run(frames, *expectations):
+            args = [str(self.harness), str(image), '--cpu', 'pipeline',
+                    '--music-stream', str(ROOT / 'tests/fixtures/furnace_v4_mix.sgub'),
+                    '--frames', str(frames), '--allow-running', '--irq-drain-cycles', '40000000']
+            for expectation in expectations:
+                args += ['--expect-final-mem-u8', expectation]
+            result = subprocess.run(args, cwd=self.work, capture_output=True, text=True, timeout=180)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+        run(8,
+            # 34SI22 bank after the S3W2 PCM (0x1010..0x2010), pointers
+            # relocated, channel A playing (status 1).
+            '0x18001011=64', '0x80022001=16', '0x80022002=16',
+            '0x80022004=32', '0x80022005=16', '0x8002200C=1',
+            # 3HS816 ch0: neutral feedback from the reset snapshot, 440 Hz, gate on.
+            '0xA000001F=128', '0xA0000000=1', '0xA0000001=184', '0xA000001E=1')
+        # The one-shot sample has finished: status 3, sticky PLAY_A_DONE.
+        run(30, '0x8002200C=3', '0x80022020=16')
+
     def test_irq_drain_rejects_handler_that_never_returns(self):
         source = self.work / 'stuck-irq.c'
         source.write_text('''

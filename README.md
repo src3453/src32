@@ -219,7 +219,7 @@ initial record の後に各 frame の big-endian u16 record count と record を
 record は target u8 / address u24 big-endian / value u8 の5 byte。target 0/1 は各 SGU の offset `0..8FF`、target 2 は共有 PCMRAM の offset `0..FFFFF`。
 不正 header、範囲外 address、切り詰め、余剰 byte は再生前に拒否します。VSYNC は60 Hz、tracker tick は accumulator に BPM を加え150ごとに発生します。
 
-Music Editorはv1を出力し、FurnaceのROM exporterはpool参照方式のv2を出力します。共通driverは両方に対応します。v2の詳細は [SGUB v2仕様](doc/spec_SGUB_v2.md) を参照してください。古いdriver binaryやSGUBと同じ場所にあるdriver sourceのコピーを使用している場合は、最新の `sol/cpt32/sgu_music_driver.sol` に更新し再コンパイルしてください。SGUBの再exportは不要です。
+Music Editorはv1を出力し、FurnaceのROM exporterはpool参照方式のv2（S3W2）、v3（S3HS）、v4（34SI22、3HS816カード、複数カード、PeCタイマ周期のフレーム）を出力します。C driver（`sol/cpt32/sgu_music_driver.c`）はv1〜v4に対応します。v2の詳細は [SGUB v2仕様](doc/spec_SGUB_v2.md)、v4は [SGUB v4仕様](doc/spec_SGUB_v4.md) を参照してください。古いdriver binaryやSGUBと同じ場所にあるdriver sourceのコピーを使用している場合は、最新の `sol/cpt32/sgu_music_driver.sol` に更新し再コンパイルしてください。SGUBの再exportは不要です。
 
 ```sh
 python3 tools/solc/solc.py compile sol/cpt32/sgu_music_driver.sol -O speed --out target/sgu_music_driver.asm

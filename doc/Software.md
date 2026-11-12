@@ -35,6 +35,7 @@ tags:
 - [[doc/spec_SGUB|SGUB v1 music stream]] — 60 Hz SGU レジスタ列、Furnace ROM エクスポート
 - [[doc/spec_SGUB_v2|SGUB v2 音楽ストリーム仕様案]] — pool ID参照と連続領域操作を使う Draft形式
 - [[doc/spec_SGUB_v3|SGUB v3 音楽ストリーム仕様案]] — WASM拡張カードへの順序付き書き込みとS3HSカード出力
+- [[doc/spec_SGUB_v4|SGUB v4 音楽ストリーム仕様]] — 34SI22、PeCタイマ周期のフレーム、カード要件表による複数カード（3HS816・3WS88PWN4）
 
 ## 開発 SDK と拡張
 

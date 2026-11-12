@@ -1,0 +1,16 @@
+[package]
+name = "cpt32-3hs816"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+cpt32-wasm-expansion-card = { path = "../../sdk/wasm-expansion-card" }
+
+[profile.release]
+codegen-units = 1
+lto = true
+panic = "abort"

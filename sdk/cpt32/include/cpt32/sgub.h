@@ -18,7 +18,9 @@ typedef enum {
   SGUB_STATUS_ERROR_BOUNDS = -4,
   SGUB_STATUS_ERROR_STATE = -5,
   SGUB_STATUS_ERROR_TARGET = -6,
-  SGUB_STATUS_ERROR_IO = -7
+  SGUB_STATUS_ERROR_IO = -7,
+  /* v4: a declared expansion card ID did not match (MMIO backend only). */
+  SGUB_STATUS_ERROR_DEVICE = -8
 } sgub_status_t;
 
 typedef struct {
@@ -27,13 +29,16 @@ typedef struct {
   size_t frame_cursor;
   uint32_t frame_count;
   uint32_t frame_index;
+  /* v4 frame length in 48 MHz cycles; 0 = one frame per VSync (v1..v3). */
+  uint32_t frame_period;
   uint8_t version;
   uint8_t repeat;
   sgub_status_t status;
 } sgub_state_t;
 
 /* Optional stream output instead of direct MMIO. targets is a bit mask of
- * accepted target IDs. write returns zero on success, negative on failure;
+ * accepted target IDs (v4: 0..1 SGU, 2 PCM RAM, 3..10 slots, 11 34SI22).
+ * Card ID checks are the output's responsibility. write returns zero on success, negative on failure;
  * it must preserve byte order and duplicate writes, and consume all bytes.
  * The output and context must remain valid until playback ends. */
 typedef struct {
@@ -49,14 +54,15 @@ sgub_status_t sgub_init_output(const uint8_t *stream, size_t size,
                                const sgub_output_t *output);
 
 /*
- * Validate the complete bounded v1/v2/v3 stream before performing any MMIO.
- * On success, execute initialization operations once and enter PLAYING.
- * The stream storage must remain readable and unchanged until playback ends.
+ * Validate the complete bounded v1..v4 stream before performing any MMIO,
+ * check v4 card IDs, then execute initialization operations once and enter
+ * PLAYING. The stream storage must remain readable and unchanged until
+ * playback ends. The caller drives sgub_step at state->frame_period.
  */
-/* SGUB v1/v2/v3全体を検証し、初期化列を実行して再生を開始します。 */
+/* SGUB v1〜v4全体を検証し、v4のカードIDを確認して初期化列を実行します。 */
 sgub_status_t sgub_init(const uint8_t *stream, size_t size);
 
-/* Run one VSync/IRQ0 frame. Returns READY while a frame was applied,
+/* Run one frame (VSync, or one v4 frame_period). Returns READY while a frame was applied,
  * COMPLETE after the non-repeating final frame has been silenced, or a
  * negative status if no valid player is initialized. */
 /* 再生を1フレーム進め、非リピート終端では次の呼出しで全voiceを停止します。 */

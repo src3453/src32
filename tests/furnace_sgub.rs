@@ -328,3 +328,43 @@ fn furnace_whole_song_repeat_replays_frame_zero_resets() {
     player.advance_vsync(&chips).unwrap();
     assert_eq!(chips[0].borrow().channels[0].frequency, 440);
 }
+
+// Furnace SGUB v4 export (furnace test/sgub/v4_check.py "mix"): S3W2 with
+// PCM, a 34SI22 whose bank follows the S3W2 PCM at 0x1010, and a 3HS816 in
+// slot 0. Notes start at stream frame 6.
+const V4_MIX: &[u8] = include_bytes!("fixtures/furnace_v4_mix.sgub");
+
+#[test]
+fn furnace_v4_mix_routes_si22_and_card_writes() {
+    use cpt32::music::SGUB_TARGET_SI22;
+    let chips = std::array::from_fn(|_| Rc::new(RefCell::new(S3w2Sound::new())));
+    let mut player = StreamPlayer::from_bytes(V4_MIX).unwrap();
+    assert_eq!((player.version(), player.frame_period()), (4, 0));
+    let cards = player.card_requirements();
+    assert_eq!(cards.len(), 1);
+    assert_eq!((cards[0].slot, cards[0].id_offset), (0, 0x4f8));
+    assert_eq!(cards[0].id, b"3HS816\x01");
+    let mut writes = Vec::new();
+    for _ in 0..8 {
+        player.advance_vsync(&chips).unwrap();
+        writes.extend(player.take_card_writes());
+    }
+    // 34SI22 bank copied after the S3W2 PCM.
+    assert_eq!(chips[0].borrow().read_pcm_ram(0x1011), 64);
+    let si22: Vec<_> = writes.iter().filter(|w| w.0 == SGUB_TARGET_SI22).collect();
+    assert!(si22.contains(&&(SGUB_TARGET_SI22, 0x01, 0x10)));
+    assert!(si22.contains(&&(SGUB_TARGET_SI22, 0x0c, 0x0d)));
+    // 3HS816: neutral feedback in frame 0, then a key-on on channel 0.
+    assert!(writes.contains(&(3, 0x1f, 0x80)));
+    assert!(writes.contains(&(3, 0x1e, 1)));
+    // Non-repeating: the last frame releases all 16 card channels.
+    for _ in 8..player.frame_count() {
+        player.advance_vsync(&chips).unwrap();
+    }
+    let release = player.take_card_writes();
+    let tail: Vec<_> = (0..16u32).map(|ch| (3u8, ch * 64 + 0x1e, 0u8)).collect();
+    assert!(release.ends_with(&tail));
+    player.advance_vsync(&chips).unwrap();
+    assert!(player.is_finished());
+    assert_eq!(player.take_card_writes(), vec![(SGUB_TARGET_SI22, 0x0c, 0)]);
+}

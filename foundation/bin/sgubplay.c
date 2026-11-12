@@ -127,7 +127,11 @@ static int32_t sgubplay(uint32_t argc) {
         cmd_out("sgubplay: playing "); cmd_out(path); cmd_out(" (Esc/q to stop)\n");
         result = sound_step(&sound); /* frame zero follows initialization */
     }
-    uint32_t last = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO), phase = 0;
+    uint32_t last = (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO);
+    /* Frame clock in 48 MHz cycles: VSync streams run at 60 Hz (800000),
+     * SGUB v4 streams at their frame period. */
+    uint64_t period = sgub_state()->frame_period ? sgub_state()->frame_period : 800000u;
+    uint64_t frame_cost = (uint64_t)hz * period, phase = 0;
     while (st == FND_OK && result >= 0 && result != SGUB_STATUS_COMPLETE) {
         fnd_key_t key;
         fnd_status ks = fnd_con_pollkey(&key);
@@ -139,15 +143,15 @@ static int32_t sgubplay(uint32_t argc) {
         /* Bound catch-up and avoid overflow after a long stall; never derive
          * frame timing from CPU cycles or generate an independent IRQ. */
         if (elapsed > hz) elapsed = hz;
-        phase += elapsed * 60u;
-        if (phase > hz * 60u) phase = hz * 60u;
+        phase += (uint64_t)elapsed * 48000000u;
+        if (phase > (uint64_t)hz * 48000000u) phase = (uint64_t)hz * 48000000u;
         /* Poll the keyboard between every frame, including catch-up frames. */
-        if (phase >= hz) {
-            phase -= hz;
+        if (phase >= frame_cost) {
+            phase -= frame_cost;
             result = sound_step(&sound);
             if (sound.error < 0) st = sound.error;
         }
-        if (result >= 0 && result != SGUB_STATUS_COMPLETE && phase < hz) st = fnd_sys_sleep(1);
+        if (result >= 0 && result != SGUB_STATUS_COMPLETE && phase < frame_cost) st = fnd_sys_sleep(1);
     }
     if (result < 0 && st == FND_OK) st = sound.error < 0 ? sound.error : FND_E_IO;
     /* Closing (also on process kill) silences both SGUs in the driver. */

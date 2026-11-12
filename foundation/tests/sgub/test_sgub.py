@@ -31,11 +31,46 @@ def stream(version=1, repeat=False, target=2):
             struct.pack('>IIIIIIIHH', 2, 0, 1, 40, 40, 40 + len(init), 40 + len(init + frames), 40, 0) + init + frames)
 
 
+def stream_v4(frames, initial=(), cards=(), pools=(), period=0, repeat=False):
+    """SGUB v4 (doc/spec_SGUB_v4.md); ops are complete 7/11/16-byte operations."""
+    body = bytearray()
+    for slot, id_offset, ident, bulk_start, bulk_length in cards:
+        body += bytes([slot, len(ident), 0, 0]) + struct.pack('>III', id_offset, bulk_start, bulk_length)
+        body += ident.ljust(16, b'\0')
+    directory = 48 + len(body)
+    offset = directory + 16 * len(pools)
+    for index, (kind, data) in enumerate(pools):
+        body += struct.pack('>HBBIII', index, kind, 0, len(data), len(data), offset)
+        offset += len(data)
+    for _, data in pools:
+        body += data
+    initial_offset = 48 + len(body)
+    body += b''.join(initial)
+    frame_offset = 48 + len(body)
+    for frame in frames:
+        body += struct.pack('>H', len(frame)) + b''.join(frame)
+    return (b'SGUB' + bytes([4, 16, repeat, 0]) +
+            struct.pack('>IIIIIIIHBBII', len(frames), len(pools), len(initial), directory,
+                        initial_offset, frame_offset, 48 + len(body), 48, len(cards), 0, period, 0)
+            + bytes(body))
+
+
+def write4(target, address, value):
+    return bytes([0, target]) + address.to_bytes(4, 'big') + bytes([value])
+
+
 WRITE = C.CFUNCTYPE(C.c_int32, C.c_void_p, C.c_uint8, C.c_uint32, C.POINTER(C.c_uint8), C.c_uint32)
 
 
 class Output(C.Structure):
     _fields_ = [('context', C.c_void_p), ('targets', C.c_uint32), ('write', WRITE)]
+
+
+class State(C.Structure):
+    _fields_ = [('stream', C.c_void_p), ('size', C.c_size_t), ('frame_cursor', C.c_size_t),
+                ('frame_count', C.c_uint32), ('frame_index', C.c_uint32),
+                ('frame_period', C.c_uint32), ('version', C.c_uint8), ('repeat', C.c_uint8),
+                ('status', C.c_int)]
 
 
 class HostTests(unittest.TestCase):
@@ -47,9 +82,12 @@ class HostTests(unittest.TestCase):
         cls.temp = tempfile.TemporaryDirectory(prefix='sgub-host-')
         cls.addClassCleanup(cls.temp.cleanup)
         dll = Path(cls.temp.name) / ('sgub.dll' if os.name == 'nt' else 'sgub.so')
-        result = subprocess.run([cc, '-shared', '-fPIC', '-O1', '-I', str(ROOT / 'sdk/cpt32/include'),
+        # Windows clang rejects -fPIC and exports nothing from a DLL by default.
+        pic = ([f'-Wl,/EXPORT:{name}' for name in ('sgub_init_output', 'sgub_init', 'sgub_step', 'sgub_state')]
+               if os.name == 'nt' else ['-fPIC'])
+        result = subprocess.run([cc, '-shared', *pic, '-O1', '-I', str(ROOT / 'sdk/cpt32/include'),
                                  str(ROOT / 'sdk/cpt32/src/sgub.c'), '-o', str(dll)],
-                                capture_output=True, text=True, timeout=60)
+                                capture_output=True, text=True, errors='replace', timeout=60)
         if result.returncode:
             raise RuntimeError(result.stdout + result.stderr)
         cls.lib = C.CDLL(str(dll))
@@ -59,14 +97,15 @@ class HostTests(unittest.TestCase):
         cls.lib.sgub_init_output.argtypes = [C.c_void_p, C.c_size_t, C.POINTER(Output)]
         cls.lib.sgub_init_output.restype = C.c_int
         cls.lib.sgub_step.restype = C.c_int
+        cls.lib.sgub_state.restype = C.POINTER(State)
 
-    def init(self, data, fail=False):
+    def init(self, data, fail=False, targets=7):
         self.events = []
         def write(context, target, address, data, size):
             self.events.append((target, address, C.string_at(data, size)))
             return -1 if fail else 0
         self.callback = WRITE(write)
-        self.output = Output(None, 7, self.callback)
+        self.output = Output(None, targets, self.callback)
         self.data = C.create_string_buffer(data)
         return self.lib.sgub_init_output(self.data, len(data), C.byref(self.output))
 
@@ -121,6 +160,51 @@ class HostTests(unittest.TestCase):
         self.assertEqual(self.lib.sgub_step(), 0)
         self.assertEqual(self.lib.sgub_step(), 2)
         self.assertEqual(len(self.events), 2)
+
+    def test_v4_si22_cards_period_and_stop(self):
+        hs816 = (5, 0x4F8, b'3HS816', 0, 0)
+        s3hs = (0, 0x4003F0, b'3WS88PWN4', 0, 0x400000)
+        copy = bytes([2, 3]) + struct.pack('>IHII', 0x20, 0, 0, 3)
+        data = stream_v4([[write4(11, 0x0c, 0x0f), write4(8, 0x1e, 1), write4(8, 0x1e, 1)]],
+                         initial=[copy], cards=[s3hs, hs816], pools=[(3, b'abc')], period=400000)
+        self.assertEqual(self.init(data, targets=0xfff), 1)
+        state = self.lib.sgub_state().contents
+        self.assertEqual((state.version, state.frame_period), (4, 400000))
+        self.assertEqual(self.events, [(3, 0x20, b'abc')])
+        self.assertEqual(self.lib.sgub_step(), 0)
+        self.assertEqual(self.events[1:], [(11, 0x0c, b''), (8, 0x1e, b''), (8, 0x1e, b'')])
+        self.assertEqual(self.lib.sgub_step(), 2)
+        # SGU silence, then the 34SI22 stop because the stream used it.
+        self.assertEqual(self.events[-1], (11, 0x0c, b'\0'))
+        self.assertEqual(len(self.events), 4 + 32 + 1)
+
+    def test_v4_rejects_before_any_output(self):
+        hs816 = (2, 0x4F8, b'3HS816', 0, 0)
+        valid = stream_v4([[write4(5, 0x1e, 1)]], cards=[hs816])
+        self.assertEqual(self.init(valid, targets=0xfff), 1)
+        fill = bytes([1, 5]) + struct.pack('>IIB', 0, 1, 0)
+        si22_fill = bytes([1, 11]) + struct.pack('>IIB', 0, 1, 0)
+        bad = [
+            stream_v4([[write4(3, 0, 0)]], cards=[hs816]),         # slot without requirement
+            stream_v4([[fill]], cards=[hs816]),                     # no bulk window
+            stream_v4([[si22_fill]]),                               # 34SI22 is WRITE only
+            stream_v4([[write4(11, 0x40, 0)]]),                     # 34SI22 range
+            stream_v4([[write4(12, 0, 0)]]),                        # reserved target
+            stream_v4([[]], period=47999),                          # period range
+            stream_v4([[]], period=48000001),
+            stream_v4([[]], cards=[hs816, hs816]),                  # slots must ascend
+            stream_v4([[]], cards=[(8, 0, b'X', 0, 0)]),
+            stream_v4([[]], cards=[(0, 0x1FFFFFF, b'XY', 0, 0)]),  # ID outside the aperture
+            valid + b'x',
+        ]
+        for data in bad:
+            with self.subTest(data=data):
+                self.assertLess(self.init(data, targets=0xfff), 0)
+                self.assertEqual(self.events, [])
+        # Unsupported targets are rejected by the output mask.
+        self.assertEqual(self.init(valid), -6)
+        self.assertEqual(self.init(stream_v4([[write4(11, 0, 0)]])), -6)
+        self.assertEqual(self.events, [])
 
     def test_real_furnace_pool_initialization(self):
         for name in ('furnace_minimal_v2.sgub', 'furnace_pcm_v2.sgub'):

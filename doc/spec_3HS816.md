@@ -228,6 +228,21 @@ PCM/WT ブロック（base = `0x400200 + 48w`）：`+0..1` 周波数 F、`+2` �
 | 0 Hz | 3HS88PWN4 は inf を int に変換（未定義）。3HS816 は位相停止 |
 | 積の丸め | float の積の代わりに Q15 積の算術シフト（±1 LSB） |
 
+## CPT32 拡張カード
+
+`examples/wasm-3hs816/` は 3HS816 を CPT32 の WASM 拡張カード（[spec_WASM_expansion_card.md](spec_WASM_expansion_card.md)）にしたものです。整数モデル（`chips/3hs816/`）の Rust 移植で、出力は C++ モデルとビット一致します（`tests/reference.cpp` が作る fixture で確認）。
+
+| 項目 | 割り当て |
+|---|---|
+| MMIO | slot 相対 `0x000..0x4FF` がチップのアドレスマップそのもの（ID は `0x4F8..0x4FF`）。`0x500` 以降は read 0、write 無視 |
+| 音声 | 48 kHz で生成し、ホストのレートへ零次ホールドで変換（3WS88PWN4 カードと同じ方式） |
+| IRQ・tick・asset | 使わない |
+| reset | 全レジスタ 0（ID を除く）、エンジンをリセット |
+
+slot n のチャンネル c の Gate は `0xA0000000 + n × 0x02000000 + 0x40 × c + 0x1E`。ゲストは ID（`3HS816`、`01 00`）を確かめてから使います。SGUB v4 のカード要件表では ID offset `0x4F8`、ID 7 byte（`3HS816` と major version）、bulk window なしとします（[SGUB v4](spec_SGUB_v4.md)）。
+
+Furnace の 3HS816 は reset で全チャンネルのフィードバック量に 128（無効）を書きます。カードのリセット値は 0（−1 倍）なので、Furnace の書き込みを再生するときは exporter が出力する初期状態の書き込みが必要です。
+
 ## 検証
 
 `chips/3hs816/README.md` の手順で実行します。

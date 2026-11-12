@@ -1,6 +1,6 @@
 # SGUB v3 音楽ストリーム仕様案
 
-状態: **Draft**。v3 は v2 の pooled stream を拡張し、CPT32 WASM 拡張カードへの byte write を追加する。v1/v2 の読み取り契約とバイト列は変更しない。拡張slotは最大8枚だが、初版で対応するのはslot 0の1枚のみ。FurnaceのS3HS出力先はslot 0の3WS88PWN4カードとする。target 4..10は将来予約し、初版reader/writerは拒否する。
+状態: **Draft**。後継の [SGUB v4](spec_SGUB_v4.md) は 34SI22、タイマ周期のフレーム、全 slot のカードに対応する。v3 は v2 の pooled stream を拡張し、CPT32 WASM 拡張カードへの byte write を追加する。v1/v2 の読み取り契約とバイト列は変更しない。拡張slotは最大8枚だが、初版で対応するのはslot 0の1枚のみ。FurnaceのS3HS出力先はslot 0の3WS88PWN4カードとする。target 4..10は将来予約し、初版reader/writerは拒否する。
 
 ## v2 からの変更
 
