@@ -1059,6 +1059,8 @@ pub struct StreamPlayer {
     cards: Vec<CardRequirement>,
     uses_si22: bool,
     device_writes: Vec<(u8, u32, u8)>,
+    /// Last wave pool ID copied to each SGU channel's wave SRAM (core, channel).
+    wave_sources: [[Option<u16>; 8]; 2],
 }
 
 impl StreamPlayer {
@@ -1152,6 +1154,7 @@ impl StreamPlayer {
             cards: Vec::new(),
             uses_si22: false,
             device_writes: Vec::new(),
+            wave_sources: [[None; 8]; 2],
         })
     }
 
@@ -1304,6 +1307,7 @@ impl StreamPlayer {
             cards,
             uses_si22,
             device_writes: Vec::new(),
+            wave_sources: [[None; 8]; 2],
         })
     }
 
@@ -1401,7 +1405,12 @@ impl StreamPlayer {
                     let pool_id = read_u16(&self.bytes, data).unwrap() as usize;
                     let source = read_u32(&self.bytes, data + 2).unwrap() as usize;
                     let length = read_u32(&self.bytes, data + 6).unwrap() as usize;
-                    let (_, pool_start, _) = self.pools[pool_id];
+                    let (kind, pool_start, _) = self.pools[pool_id];
+                    if kind == 1 && target < 2 && address < 0x800 {
+                        // Validated: a whole 256-byte entry at a 0x100 boundary.
+                        self.wave_sources[target as usize][(address >> 8) as usize] =
+                            Some(pool_id as u16);
+                    }
                     for index in 0..length {
                         let value = self.bytes[pool_start + source + index];
                         if target < 2 {
@@ -1484,6 +1493,19 @@ impl StreamPlayer {
     /// Drain ordered writes for targets the player cannot apply itself:
     /// `(target, address, value)` with target 3..=10 for expansion slots 0..7
     /// and [`SGUB_TARGET_SI22`] for the 34SI22, including the end-of-stream stop.
+    /// Wave pool entry last copied by COPY_POOL into `core`'s `channel` wave
+    /// SRAM. Later WRITE/FILL to that SRAM do not clear it; compare against
+    /// [`Self::pool_payload`] to know whether the SRAM still holds the entry.
+    pub fn wave_source(&self, core: usize, channel: usize) -> Option<u16> {
+        *self.wave_sources.get(core)?.get(channel)?
+    }
+
+    /// Pool entry type (1 wave, 2 PCM, 3 card) and payload.
+    pub fn pool_payload(&self, id: u16) -> Option<(u8, &[u8])> {
+        let (kind, start, len) = *self.pools.get(usize::from(id))?;
+        Some((kind, &self.bytes[start..start + len]))
+    }
+
     pub fn take_card_writes(&mut self) -> Vec<(u8, u32, u8)> {
         std::mem::take(&mut self.device_writes)
     }

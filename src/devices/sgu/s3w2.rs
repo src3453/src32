@@ -744,7 +744,15 @@ impl S3w2Sound {
         )
     }
 
-    fn interpolates(&self, ch: usize) -> bool {
+    /// Samples per wavetable cycle on `ch`: 256 before 3WS8PNB, else
+    /// SAMPLE_CONTROL bits 1:0 select 256/128/64/32.
+    pub fn wavetable_length(&self, ch: usize) -> usize {
+        self.wavetable_mask(ch) as usize + 1
+    }
+
+    /// True when `ch` uses 2-tap linear interpolation (3WS8PNA and later,
+    /// unless 3WS8PNB SAMPLE_CONTROL bit 2 selects sample hold).
+    pub fn interpolates(&self, ch: usize) -> bool {
         self.version.has_3ws8pna()
             && (self.version != SguVersion::V3_1 || self.channels[ch].sample_control & 4 == 0)
     }

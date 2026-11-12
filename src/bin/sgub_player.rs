@@ -1286,18 +1286,27 @@ fn draw_track(
     let color = if audible { tag_color } else { DIM };
     match view.waveform {
         WaveformType::Wavetable => {
-            let mut prev = None;
-            for i in 0..64 {
-                let value = f32::from(view.wavetable[i * 4]) / 255.0;
-                let point = [
-                    bx + 1.0 + i as f32 * (bw - 2.0) / 63.0,
-                    by + bh - 1.0 - value * (bh - 2.0),
-                ];
-                if let Some(prev) = prev {
-                    draw.add_line(prev, point, color).build();
-                }
-                prev = Some(point);
-            }
+            draw_polyline(
+                draw,
+                view.wave_points(bw - 2.0, bh - 2.0)
+                    .into_iter()
+                    .map(|[px, py]| [bx + 1.0 + px, by + 1.0 + py]),
+                color,
+            );
+            // Pool entry in the wave SRAM, cycle length and interpolation,
+            // above the box (clear of the MD field, which ends by bx + 8).
+            let pool = view
+                .wave_pool
+                .map_or_else(|| "---".into(), |id| format!("{id:03}"));
+            draw.add_text(
+                [bx + 14.0, y + 1.0],
+                if audible { TEXT } else { LABEL },
+                format!(
+                    "WP:{pool} L{}{}",
+                    view.wave_length,
+                    if view.interpolate { "" } else { " HOLD" }
+                ),
+            );
         }
         WaveformType::Pcm | WaveformType::Sqv4 => {
             let length = view.pcm_end.saturating_sub(view.pcm_start).max(1) as f32;

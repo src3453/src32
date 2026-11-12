@@ -48,6 +48,13 @@ pub struct ChannelView {
     pub pcm_position: u32,
     pub fifo_len: usize,
     pub wavetable: [u8; 256],
+    /// Samples per wavetable cycle (3WS8PNB SAMPLE_CONTROL; 256 otherwise).
+    pub wave_length: usize,
+    /// False when the core holds each sample (pre-3WS8PNA, or SAMPLE_CONTROL bit 2).
+    pub interpolate: bool,
+    /// Wave pool entry the wave SRAM currently holds, when the stream copied
+    /// one with COPY_POOL and nothing has changed the SRAM since.
+    pub wave_pool: Option<u16>,
 }
 
 impl ChannelView {
@@ -70,7 +77,34 @@ impl ChannelView {
             pcm_position: (c.phase >> PHASE_FRAC_BITS) as u32,
             fifo_len: c.fifo.len(),
             wavetable: c.wavetable,
+            wave_length: core.wavetable_length(channel),
+            interpolate: core.interpolates(channel),
+            wave_pool: None,
         }
+    }
+
+    /// One wavetable cycle as display points in a `width` x `height` box
+    /// (origin top-left, value 255 at the top). Only the first `wave_length`
+    /// SRAM bytes play. Interpolated tables draw straight segments ending
+    /// back at sample 0, as the core wraps the next tap; held tables draw a
+    /// step per sample. Either way sample `i` starts at `i * width / length`.
+    pub fn wave_points(&self, width: f32, height: f32) -> Vec<[f32; 2]> {
+        let length = self.wave_length;
+        let x = |i: usize| i as f32 * width / length as f32;
+        let y = |i: usize| height - f32::from(self.wavetable[i % length]) / 255.0 * height;
+        let mut points = Vec::with_capacity(length * 2 + 1);
+        for i in 0..length {
+            if self.interpolate {
+                points.push([x(i), y(i)]);
+            } else {
+                points.push([x(i), y(i)]);
+                points.push([x(i + 1), y(i)]);
+            }
+        }
+        if self.interpolate {
+            points.push([width, y(length)]);
+        }
+        points
     }
 
     /// True when the register state can produce sound.
@@ -84,11 +118,11 @@ impl ChannelView {
     }
 
     /// Pitch as a fractional MIDI note. Only Wavetable has a musical pitch:
-    /// one FREQUENCY step is 1 Hz there (256 samples per cycle at freq/750
-    /// samples per 192 kHz tick).
+    /// one FREQUENCY step is 1 Hz for a 256-sample table (freq/750 samples
+    /// per 192 kHz tick); a shorter 3WS8PNB table cycles 256/length times faster.
     pub fn midi_note(&self) -> Option<f32> {
         (self.waveform == WaveformType::Wavetable && self.frequency != 0)
-            .then(|| midi_from_hz(f32::from(self.frequency)))
+            .then(|| midi_from_hz(f32::from(self.frequency) * 256.0 / self.wave_length as f32))
     }
 }
 
@@ -688,10 +722,16 @@ impl Engine {
         self.cores[index].borrow()
     }
     pub fn channel(&self, voice: usize) -> ChannelView {
-        ChannelView::capture(
-            &self.cores[voice / NUM_CHANNELS].borrow(),
-            voice % NUM_CHANNELS,
-        )
+        let (core, channel) = (voice / NUM_CHANNELS, voice % NUM_CHANNELS);
+        let mut view = ChannelView::capture(&self.cores[core].borrow(), channel);
+        // Trust the last COPY_POOL only while the SRAM still matches it
+        // (a later WRITE/FILL or a channel reset changes the bytes).
+        view.wave_pool = self.player.wave_source(core, channel).filter(|&id| {
+            self.player
+                .pool_payload(id)
+                .is_some_and(|(_, data)| data == view.wavetable.as_slice())
+        });
+        view
     }
     /// Most recent `HISTORY` output samples of one side (0 = left).
     pub fn history(&self, side: usize) -> &VecDeque<i16> {

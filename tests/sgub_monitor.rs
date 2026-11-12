@@ -257,3 +257,172 @@ fn timer_streams_advance_on_their_frame_period() {
     assert_eq!(engine.elapsed_frames, 100);
     assert_eq!(engine.loops, 24);
 }
+
+/// v4 stream without cards: `pools` are wave entries, `initial` and the
+/// single frame are raw v4 operations.
+fn wave_pool_stream(pools: &[[u8; 256]], initial: &[Vec<u8>], frame: &[Vec<u8>]) -> Vec<u8> {
+    let directory = 48;
+    let mut payload = directory + 16 * pools.len();
+    let mut body = Vec::new();
+    for (id, _) in pools.iter().enumerate() {
+        body.extend_from_slice(&(id as u16).to_be_bytes());
+        body.extend_from_slice(&[1, 0]);
+        body.extend_from_slice(&256u32.to_be_bytes());
+        body.extend_from_slice(&256u32.to_be_bytes());
+        body.extend_from_slice(&(payload as u32).to_be_bytes());
+        payload += 256;
+    }
+    for pool in pools {
+        body.extend_from_slice(pool);
+    }
+    let initial_offset = 48 + body.len();
+    for op in initial {
+        body.extend_from_slice(op);
+    }
+    let frame_offset = 48 + body.len();
+    body.extend_from_slice(&(frame.len() as u16).to_be_bytes());
+    for op in frame {
+        body.extend_from_slice(op);
+    }
+    let total = 48 + body.len();
+    let mut bytes = b"SGUB".to_vec();
+    bytes.extend_from_slice(&[4, 16, 0, 0]);
+    for value in [
+        1,
+        pools.len(),
+        initial.len(),
+        directory,
+        initial_offset,
+        frame_offset,
+        total,
+    ] {
+        bytes.extend_from_slice(&(value as u32).to_be_bytes());
+    }
+    bytes.extend_from_slice(&48u16.to_be_bytes());
+    bytes.extend_from_slice(&[0, 0]);
+    bytes.extend_from_slice(&[0; 8]);
+    bytes.extend_from_slice(&body);
+    bytes
+}
+
+fn write_op(target: u8, address: u32, value: u8) -> Vec<u8> {
+    let mut op = vec![0, target];
+    op.extend_from_slice(&address.to_be_bytes());
+    op.push(value);
+    op
+}
+
+fn copy_op(target: u8, address: u32, pool: u16) -> Vec<u8> {
+    let mut op = vec![2, target];
+    op.extend_from_slice(&address.to_be_bytes());
+    op.extend_from_slice(&pool.to_be_bytes());
+    op.extend_from_slice(&0u32.to_be_bytes());
+    op.extend_from_slice(&256u32.to_be_bytes());
+    op
+}
+
+/// Wave entries: entry n holds byte value `n * 16 + i` (a ramp).
+fn ramp_pools(count: usize) -> Vec<[u8; 256]> {
+    (0..count)
+        .map(|n| std::array::from_fn(|i| (n * 16 + i) as u8))
+        .collect()
+}
+
+#[test]
+fn channel_view_reports_wave_pool_entry_and_3ws8pnb_length() {
+    let pools = ramp_pools(3);
+    let initial = [
+        copy_op(0, 0x000, 2),                    // SGU0 ch0 <- pool 2
+        copy_op(0, 0x100, 1),                    // SGU0 ch1 <- pool 1
+        copy_op(1, 0x300, 2),                    // SGU1 ch3 <- pool 2 (shared entry)
+        copy_op(0, 0x200, 0),                    // SGU0 ch2 <- pool 0, overwritten in frame 0
+        write_op(0, 0x800 + 0x20 + 0x1A, 3),     // ch1: 32 samples
+        write_op(0, 0x800 + 0x40 + 0x1A, 2 | 4), // ch2: 64 samples, hold
+        write_op(1, 0x800 + 0x60 + 0x1A, 1),     // SGU1 ch3: 128 samples
+    ];
+    let frame = [write_op(0, 0x205, 0xEE)];
+    let stream = wave_pool_stream(&pools, &initial, &frame);
+
+    let mut engine = Engine::new(stream.clone(), SguVersion::V3_1).unwrap();
+    engine.tick(FRAME_SAMPLES);
+    let view = |voice| engine.channel(voice);
+    assert_eq!(view(0).wave_pool, Some(2));
+    assert_eq!((view(0).wave_length, view(0).interpolate), (256, true));
+    assert_eq!(view(1).wave_pool, Some(1));
+    assert_eq!((view(1).wave_length, view(1).interpolate), (32, true));
+    // A WRITE after the copy means the SRAM no longer is that entry.
+    assert_eq!(view(2).wave_pool, None);
+    assert_eq!((view(2).wave_length, view(2).interpolate), (64, false));
+    assert_eq!(view(11).wave_pool, Some(2));
+    assert_eq!((view(11).wave_length, view(11).interpolate), (128, true));
+    // Never copied.
+    assert_eq!(view(4).wave_pool, None);
+
+    // Seek rebuilds the tracking from a fresh player.
+    engine.seek(1);
+    assert_eq!(engine.channel(1).wave_pool, Some(1));
+
+    // Before 3WS8PNB SAMPLE_CONTROL is ignored: 256 samples.
+    let mut engine = Engine::new(stream, SguVersion::V3).unwrap();
+    engine.tick(FRAME_SAMPLES);
+    assert_eq!(engine.channel(1).wave_length, 256);
+    assert!(engine.channel(2).interpolate);
+}
+
+#[test]
+fn wave_preview_draws_exactly_the_playing_samples() {
+    let mut pools = ramp_pools(1);
+    // Mark the bytes past each shorter length so leaking them would show.
+    for (i, byte) in pools[0].iter_mut().enumerate() {
+        *byte = if i == 0 { 0 } else { 0xFF };
+    }
+    pools[0][31] = 0x80;
+    let mut initial = Vec::new();
+    for (channel, control) in [0u32, 1, 2, 3, 4 | 3].into_iter().enumerate() {
+        initial.push(copy_op(0, channel as u32 * 0x100, 0));
+        initial.push(write_op(
+            0,
+            0x800 + channel as u32 * 0x20 + 0x1A,
+            control as u8,
+        ));
+    }
+    let mut engine =
+        Engine::new(wave_pool_stream(&pools, &initial, &[]), SguVersion::V3_1).unwrap();
+    engine.tick(FRAME_SAMPLES);
+    let (width, height) = (128.0, 24.0);
+    for (voice, length) in [(0, 256usize), (1, 128), (2, 64), (3, 32)] {
+        let view = engine.channel(voice);
+        assert_eq!(view.wave_length, length);
+        let points = view.wave_points(width, height);
+        // One point per sample plus the wrap back to sample 0 at the right edge.
+        assert_eq!(points.len(), length + 1, "length {length}");
+        let step = width / length as f32;
+        for (i, [x, _]) in points.iter().enumerate() {
+            assert_eq!(*x, i as f32 * step);
+        }
+        assert_eq!(points[0][1], height);
+        assert_eq!(points[length][1], height, "wraps to sample 0");
+        assert_eq!(points[1][1], 0.0);
+    }
+    // Same FREQUENCY, shorter table: one octave up per halving.
+    let note = |voice: usize| {
+        let mut view = engine.channel(voice);
+        view.frequency = 220;
+        view.midi_note().unwrap()
+    };
+    assert_eq!(note(0), 57.0);
+    assert_eq!(note(1), 69.0);
+    assert_eq!(note(2), 81.0);
+    assert_eq!(note(3), 93.0);
+    // 32 samples held: a step per sample, only bytes 0..31 drawn.
+    let view = engine.channel(4);
+    assert_eq!((view.wave_length, view.interpolate), (32, false));
+    let points = view.wave_points(width, height);
+    assert_eq!(points.len(), 64);
+    assert_eq!(points[0], [0.0, height]);
+    assert_eq!(points[1], [4.0, height]);
+    assert_eq!(points[2], [4.0, 0.0]);
+    let last = points[63];
+    assert_eq!(last[0], width);
+    assert_eq!(last[1], height - 128.0 / 255.0 * height);
+}
