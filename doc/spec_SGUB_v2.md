@@ -104,6 +104,7 @@ Writer と reader の相互運用テストでは、最低限、v1 との version
 Furnace の S3W2 ROM exporter は v2 を出力し、次のpool化を行う。過去のv1ファイルもreaderとguest driverで再生できる。S3HS outputは [SGUB v3](spec_SGUB_v3.md)、34SI22・3HS816・複数カード・タイマ周期の曲は [SGUB v4](spec_SGUB_v4.md) を使う。
 
 - 同一の256 byte波形を1つの wave pool entry にまとめ、初期化または必要な frame で SGU 波形 SRAM に COPY_POOL する。
+- 3WS8PNB（[SGU v3.1](spec_SGU_v3_1.md)）で SAMPLE_CONTROL の波形長が 32/64/128 のチャンネルへ書く短い波形も、256 byte まで繰り返し並べて wave pool entry にし、256 byte の COPY_POOL で書く。再生されるのは先頭の波形長分だけなので、同じ短い波形はチャンネルの SRAM の以前の内容に関係なく同じ entry になる（Wave synth の繰り返しなど）。
 - PCM bank を PCM pool entry とし、必要な destination 範囲だけ COPY_POOL する。未使用領域は FILL で `0x80` に初期化して決定性を保つ。
 - チップごとに異なる register state、wave RAM、共有 PCM RAM の配置・競合を保持する。Pool ID はデータ内容の共有を表し、PCM destination address の同一性を意味しない。
 - v1 と比較する実測ファイルサイズ、波形内容、PCM の signed→unsigned 変換、phase-reset 等の WRITE 順序を regression test に含める。
