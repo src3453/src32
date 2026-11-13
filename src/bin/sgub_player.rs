@@ -13,8 +13,9 @@ use std::time::{Duration, Instant};
 use cpt32::devices::sgu::s3w2::{FIFO_CAPACITY, ModulationType, SguVersion, WaveformType};
 use cpt32::music::CardRequirement;
 use cpt32::music::monitor::{
-    CardKind, CardSlot, CardStatus, ChannelView, Engine, FRAME_SAMPLES, HsView, Meter, Transport,
-    VOICES, WtView, midi_from_hz, modulation_tag, note_name, spectrum_db, waveform_tag,
+    CardKind, CardSlot, CardStatus, ChannelView, Engine, FRAME_SAMPLES, HsView, MAX_GAIN, Meter,
+    Transport, UNITY_GAIN, VOICES, WtView, midi_from_hz, modulation_tag, note_name, spectrum_db,
+    waveform_tag,
 };
 use imgui::{Condition, DrawListMut, MouseButton, Ui, WindowFlags};
 use imgui_wgpu::{Renderer, RendererConfig};
@@ -304,6 +305,98 @@ enum View {
     Si22,
     /// Index into `Engine::cards`.
     Card(usize),
+    /// Gain faders of every chip and expansion card.
+    Mixer,
+}
+
+/// One mixer strip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Strip {
+    /// SGU core 0 or 1.
+    Sgu(usize),
+    Si22,
+    /// Index into `Engine::cards`.
+    Card(usize),
+}
+
+impl Strip {
+    fn gain(self, engine: &Engine) -> u16 {
+        match self {
+            Strip::Sgu(core) => engine.sgu_gains[core],
+            Strip::Si22 => engine.si22_gain,
+            Strip::Card(index) => engine.cards[index].gain,
+        }
+    }
+
+    fn set_gain(self, engine: &mut Engine, gain: u16) {
+        let gain = gain.min(MAX_GAIN);
+        match self {
+            Strip::Sgu(core) => engine.sgu_gains[core] = gain,
+            Strip::Si22 => engine.si22_gain = gain,
+            Strip::Card(index) => engine.cards[index].gain = gain,
+        }
+    }
+
+    /// An SGU core counts as muted when all eight of its voices are.
+    fn muted(self, engine: &Engine) -> bool {
+        match self {
+            Strip::Sgu(core) => engine.muted[core * 8..core * 8 + 8].iter().all(|m| *m),
+            Strip::Si22 => engine.si22_muted,
+            Strip::Card(index) => engine.cards[index].muted,
+        }
+    }
+
+    fn toggle_mute(self, engine: &mut Engine) {
+        let muted = !self.muted(engine);
+        match self {
+            Strip::Sgu(core) => engine.muted[core * 8..core * 8 + 8].fill(muted),
+            Strip::Si22 => engine.si22_muted = muted,
+            Strip::Card(index) => engine.cards[index].muted = muted,
+        }
+    }
+
+    /// What the strip adds to the mix (after mute and gain).
+    fn meters(self, engine: &Engine) -> [Meter; 2] {
+        let (meters, gain) = match self {
+            Strip::Sgu(core) => return engine.sgu_meters[core],
+            Strip::Si22 => (engine.si22_meters, engine.si22_gain),
+            Strip::Card(index) => (engine.cards[index].meters, engine.cards[index].gain),
+        };
+        if self.muted(engine) {
+            return [Meter::default(); 2];
+        }
+        let scale = f32::from(gain) / f32::from(UNITY_GAIN);
+        meters.map(|mut meter| {
+            meter.level = (meter.level * scale).min(1.0);
+            meter.peak = (meter.peak * scale).min(1.0);
+            meter
+        })
+    }
+
+    fn labels(self, engine: &Engine) -> (String, String) {
+        match self {
+            Strip::Sgu(core) => (
+                format!("SGU{core}"),
+                format!("CH{}-{}", core * 8 + 1, core * 8 + 8),
+            ),
+            Strip::Si22 => ("34SI22".into(), "PLAY A/B".into()),
+            Strip::Card(index) => {
+                let card = &engine.cards[index];
+                (format!("SLOT{}", card.slot), card.kind.name().to_string())
+            }
+        }
+    }
+}
+
+/// Mixer gain as text: percent and dB.
+fn gain_text(gain: u16) -> (String, String) {
+    let db = if gain == 0 {
+        "-INF dB".to_string()
+    } else {
+        let ratio = f32::from(gain) / f32::from(UNITY_GAIN);
+        format!("{:+.1} dB", 20.0 * ratio.log10())
+    };
+    (format!("{gain}%"), db)
 }
 
 struct Monitor {
@@ -321,6 +414,8 @@ struct Monitor {
     spectrum_peaks: [Vec<f32>; 2],
     /// Decaying volume-register meters of 3HS card channels.
     volume_meters: HashMap<(usize, usize), Meter>,
+    /// Mixer fader being dragged with the left button.
+    fader_drag: Option<Strip>,
 }
 
 impl Monitor {
@@ -338,6 +433,7 @@ impl Monitor {
             spectrum: [vec![-96.0; BANDS], vec![-96.0; BANDS]],
             spectrum_peaks: [vec![-96.0; BANDS], vec![-96.0; BANDS]],
             volume_meters: HashMap::new(),
+            fader_drag: None,
         }
     }
 
@@ -361,7 +457,18 @@ impl Monitor {
                 Engine::with_cards(bytes, self.sgu_version, &mut resolve).map_err(|e| e.to_string())
             });
         match result {
-            Ok(engine) => {
+            Ok(mut engine) => {
+                // Mixer settings outlive the stream: chips by name, cards by slot.
+                if let Some(old) = &self.engine {
+                    engine.sgu_gains = old.sgu_gains;
+                    engine.si22_gain = old.si22_gain;
+                    for card in &mut engine.cards {
+                        if let Some(previous) = old.cards.iter().find(|c| c.slot == card.slot) {
+                            card.gain = previous.gain;
+                        }
+                    }
+                }
+                self.fader_drag = None;
                 let problems = engine.cards.iter().filter(|card| !card.is_ready()).count();
                 let devices = engine.cards.len() + usize::from(engine.uses_si22());
                 self.engine = Some(engine);
@@ -489,6 +596,14 @@ impl Monitor {
             KeyCode::Home => self.seek_relative(-1e9),
             KeyCode::Tab => self.cycle_view(if shift { -1 } else { 1 }),
             KeyCode::KeyM => self.toggle_device_mute(),
+            KeyCode::KeyX => {
+                self.view = if self.view == View::Mixer {
+                    View::Sgu
+                } else {
+                    View::Mixer
+                };
+                self.selected = 0;
+            }
             KeyCode::Digit0 => {
                 if let Some(engine) = self.engine.as_mut() {
                     engine.muted = [false; VOICES];
@@ -510,6 +625,7 @@ impl Monitor {
             }
             views.extend((0..engine.cards.len()).map(View::Card));
         }
+        views.push(View::Mixer);
         views
     }
 
@@ -529,6 +645,7 @@ impl Monitor {
                 format!("SLOT{} {}", card.slot, card.kind.name())
             }
             (View::Card(_), None) => "-".into(),
+            (View::Mixer, _) => "MIXER".into(),
         }
     }
 
@@ -538,7 +655,7 @@ impl Monitor {
             return;
         };
         match self.view {
-            View::Sgu => {}
+            View::Sgu | View::Mixer => {}
             View::Si22 => engine.si22_muted = !engine.si22_muted,
             View::Card(index) => {
                 if let Some(card) = engine.cards.get_mut(index) {
@@ -598,6 +715,7 @@ impl Monitor {
             View::Sgu => self.draw_tracks(ui, draw, origin),
             View::Si22 => self.draw_si22(draw, origin),
             View::Card(index) => self.draw_card(ui, draw, origin, index),
+            View::Mixer => self.draw_mixer(ui, draw, origin),
         }
     }
 
@@ -627,7 +745,7 @@ impl Monitor {
                 draw.add_text(
                     [724.0, 816.0],
                     DIM,
-                    "SPACE play/pause  S stop  F fast  LEFT/RIGHT 5s  PgUp/PgDn 30s  Home top",
+                    "SPACE play/pause  S stop  F fast  LEFT/RIGHT 5s  PgUp/PgDn 30s  Home top  X mixer",
                 );
                 draw.add_text(
                     [724.0, 830.0],
@@ -1011,7 +1129,7 @@ impl Monitor {
             draw.add_text([x + 8.0, y + 290.0 + index as f32 * 13.0], METER_HI, note);
         }
         match self.view {
-            View::Sgu => {}
+            View::Sgu | View::Mixer => {}
             View::Si22 => return draw_si22_registers(draw, [x, y], engine),
             View::Card(index) => {
                 return draw_card_registers(draw, [x, y], engine, index, self.selected);
@@ -1526,6 +1644,36 @@ fn draw_meter(draw: &DrawListMut, min: [f32; 2], max: [f32; 2], meter: Meter, se
             [0.13, 0.14, 0.15, 1.0]
         };
         draw.add_rect([sx, min[1]], [sx + seg_w - 1.0, max[1]], color)
+            .filled(true)
+            .build();
+    }
+}
+
+/// Segmented vertical level meter, lit from the bottom.
+fn draw_vertical_meter(
+    draw: &DrawListMut,
+    min: [f32; 2],
+    max: [f32; 2],
+    meter: Meter,
+    segments: usize,
+) {
+    // Every segment gets the same whole-pixel height; any remainder is left
+    // blank at the top.
+    let seg_h = ((max[1] - min[1]) / segments as f32).floor().max(2.0);
+    let (left, right, bottom) = (min[0].floor(), max[0].floor(), max[1].floor());
+    let lit = (meter.level * segments as f32).round() as usize;
+    let peak = ((meter.peak * segments as f32).round() as usize).min(segments);
+    for s in 0..segments {
+        let sy = bottom - (s + 1) as f32 * seg_h;
+        let hot = s * 10 >= segments * 8;
+        let color = if s < lit {
+            if hot { METER_HI } else { METER_LO }
+        } else if s + 1 == peak {
+            ACCENT
+        } else {
+            [0.13, 0.14, 0.15, 1.0]
+        };
+        draw.add_rect([left, sy], [right, sy + seg_h - 1.0], color)
             .filled(true)
             .build();
     }
@@ -2344,6 +2492,155 @@ impl Monitor {
             DIM,
             "34SI22 plays from the shared PCM RAM; the stream writes its registers as target 11.",
         );
+    }
+
+    fn strips(&self) -> Vec<Strip> {
+        let Some(engine) = &self.engine else {
+            return Vec::new();
+        };
+        let mut strips = vec![Strip::Sgu(0), Strip::Sgu(1)];
+        if engine.uses_si22() {
+            strips.push(Strip::Si22);
+        }
+        strips.extend((0..engine.cards.len()).map(Strip::Card));
+        strips
+    }
+
+    /// Gain faders (0..MAX_GAIN %, UNITY_GAIN = as recorded) with mute buttons
+    /// and post-fader meters for both SGU cores, the 34SI22 and every card slot.
+    fn draw_mixer(&mut self, ui: &Ui, draw: &DrawListMut, [x0, y0]: [f32; 2]) {
+        // Fader travel in pixels; MAX_GAIN maps to the top.
+        const TRAVEL: f32 = 400.0;
+        let strips = self.strips();
+        let Some(engine) = self.engine.as_mut() else {
+            draw.add_text([x0 + 12.0, y0 + 10.0], LABEL, "NO STREAM");
+            return;
+        };
+        let io = ui.io();
+        let mouse = io.mouse_pos;
+        let shift = io.key_shift;
+        let wheel = io.mouse_wheel;
+        if !ui.is_mouse_down(MouseButton::Left) {
+            self.fader_drag = None;
+        }
+        let gap = 8.0;
+        let width = ((700.0 + gap) / strips.len().max(6) as f32 - gap).floor();
+        let top = y0 + 76.0;
+        let bottom = top + TRAVEL;
+        let to_y = |gain: u16| (bottom - TRAVEL * f32::from(gain) / f32::from(MAX_GAIN)).round();
+        // Guide lines every 25 %, brighter at unity.
+        let right = x0 + strips.len() as f32 * (width + gap) - gap;
+        for gain in (0..=MAX_GAIN).step_by(25) {
+            let color = if gain == UNITY_GAIN { DIM } else { PANEL };
+            draw.add_line([x0, to_y(gain)], [right, to_y(gain)], color)
+                .build();
+        }
+        for (index, strip) in strips.iter().copied().enumerate() {
+            let x = x0 + index as f32 * (width + gap);
+            let (name, sub) = strip.labels(engine);
+            let muted = strip.muted(engine);
+            draw.add_rect([x, y0], [x + width, y0 + 30.0], PANEL)
+                .filled(true)
+                .build();
+            let name_color = if muted { METER_HI } else { ACCENT };
+            draw.add_text([x + 4.0, y0 + 2.0], name_color, name);
+            let sub: String = sub.chars().take(((width - 8.0) / 7.0) as usize).collect();
+            draw.add_text([x + 4.0, y0 + 16.0], LABEL, sub);
+            // Mute button.
+            let (bmin, bmax) = ([x, y0 + 36.0], [x + width, y0 + 54.0]);
+            if muted {
+                draw.add_rect(bmin, bmax, METER_HI).filled(true).build();
+            }
+            draw.add_rect(bmin, bmax, DIM).build();
+            let mute_x = (x + (width - 28.0) / 2.0).floor();
+            draw.add_text([mute_x, y0 + 39.0], if muted { BG } else { TEXT }, "MUTE");
+            if hit(ui, bmin, bmax) {
+                strip.toggle_mute(engine);
+            }
+            // Input: drag, wheel (5 %, Shift 1 %), right or double click = 100 %.
+            let over = mouse[0] >= x
+                && mouse[0] < x + width
+                && mouse[1] >= top - 8.0
+                && mouse[1] < bottom + 8.0;
+            if over
+                && (ui.is_mouse_clicked(MouseButton::Right)
+                    || ui.is_mouse_double_clicked(MouseButton::Left))
+            {
+                strip.set_gain(engine, UNITY_GAIN);
+                self.fader_drag = None;
+            } else if over && ui.is_mouse_clicked(MouseButton::Left) {
+                self.fader_drag = Some(strip);
+            }
+            if over && wheel != 0.0 {
+                let gain = strip.gain(engine);
+                let step = if shift { 1 } else { 5 };
+                let next = if wheel > 0.0 {
+                    gain.saturating_add(step)
+                } else {
+                    gain.saturating_sub(step)
+                };
+                strip.set_gain(engine, next);
+            }
+            if self.fader_drag == Some(strip) {
+                let value = ((bottom - mouse[1]) / TRAVEL * f32::from(MAX_GAIN)).round();
+                let mut value = value.clamp(0.0, f32::from(MAX_GAIN)) as u16;
+                // Snap to unity so the recorded level is easy to get back.
+                if !shift && value.abs_diff(UNITY_GAIN) <= 3 {
+                    value = UNITY_GAIN;
+                }
+                strip.set_gain(engine, value);
+            }
+            // Fader slot and knob.
+            let gain = strip.gain(engine);
+            let slot_x = (x + width / 2.0 - 10.0).floor();
+            draw.add_rect(
+                [slot_x - 1.0, top],
+                [slot_x + 2.0, bottom + 1.0],
+                [0.13, 0.14, 0.15, 1.0],
+            )
+            .filled(true)
+            .build();
+            let ky = to_y(gain);
+            let knob = if self.fader_drag == Some(strip) {
+                ACCENT
+            } else {
+                TEXT
+            };
+            draw.add_rect([slot_x - 9.0, ky - 4.0], [slot_x + 11.0, ky + 5.0], knob)
+                .filled(true)
+                .build();
+            draw.add_line([slot_x - 8.0, ky], [slot_x + 10.0, ky], BG)
+                .build();
+            // Post-fader L/R meters, lit from the bottom.
+            for (side, meter) in strip.meters(engine).iter().enumerate() {
+                let mx = slot_x + 18.0 + side as f32 * 8.0;
+                draw_vertical_meter(draw, [mx, top], [mx + 6.0, bottom + 1.0], *meter, 40);
+            }
+            // Readout.
+            let (percent, db) = gain_text(gain);
+            let color = if gain == UNITY_GAIN { LABEL } else { TEXT };
+            draw.add_text([x + 4.0, bottom + 10.0], color, percent);
+            draw.add_text([x + 4.0, bottom + 24.0], color, db);
+        }
+        let ly = bottom + 48.0;
+        draw.add_text(
+            [x0, ly],
+            DIM,
+            "drag: gain (snaps to 100%, Shift: no snap)  wheel: 5% (Shift: 1%)",
+        );
+        draw.add_text(
+            [x0, ly + 14.0],
+            DIM,
+            "right/double click: 100%   meters: what each device adds to the mix",
+        );
+        let (rmin, rmax) = ([x0, ly + 36.0], [x0 + 120.0, ly + 54.0]);
+        draw.add_rect(rmin, rmax, DIM).build();
+        draw.add_text([x0 + 8.0, ly + 39.0], TEXT, "RESET ALL 100%");
+        if hit(ui, rmin, rmax) {
+            for strip in &strips {
+                strip.set_gain(engine, UNITY_GAIN);
+            }
+        }
     }
 
     fn draw_card(&mut self, ui: &Ui, draw: &DrawListMut, [x0, y0]: [f32; 2], index: usize) {

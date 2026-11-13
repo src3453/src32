@@ -344,6 +344,8 @@ pub struct CardSlot {
     /// Frames left on the key-on flash of each harmonic channel.
     pub key_flash: [u8; 16],
     pub muted: bool,
+    /// Mixer gain in percent (`UNITY_GAIN` = as recorded).
+    pub gain: u16,
     pub meters: [Meter; 2],
     pub writes: u64,
     /// Writes not delivered because the card is missing, mismatched or faulted.
@@ -366,6 +368,7 @@ impl CardSlot {
             shadow: BTreeMap::new(),
             key_flash: [0; 16],
             muted: false,
+            gain: UNITY_GAIN,
             meters: [Meter::default(); 2],
             writes: 0,
             dropped: 0,
@@ -639,6 +642,12 @@ pub struct Engine {
     pub channel_meters: [Meter; VOICES],
     pub si22_muted: bool,
     pub si22_meters: [Meter; 2],
+    /// Mixer gain of SGU0 and SGU1 in percent (`UNITY_GAIN` = as recorded).
+    pub sgu_gains: [u16; 2],
+    /// Mixer gain of the 34SI22 in percent.
+    pub si22_gain: u16,
+    /// What SGU0 and SGU1 add to the mix (unmuted voices, after the gain).
+    pub sgu_meters: [[Meter; 2]; 2],
     pub master_meters: [Meter; 2],
     /// Writes to slots the stream does not declare (should not happen).
     pub stray_writes: u64,
@@ -703,6 +712,9 @@ impl Engine {
             channel_meters: [Meter::default(); VOICES],
             si22_muted: false,
             si22_meters: [Meter::default(); 2],
+            sgu_gains: [UNITY_GAIN; 2],
+            si22_gain: UNITY_GAIN,
+            sgu_meters: [[Meter::default(); 2]; 2],
             master_meters: [Meter::default(); 2],
             stray_writes: 0,
             error: None,
@@ -900,6 +912,7 @@ impl Engine {
         let mut right = vec![0i32; samples];
         let mut peaks = [0f32; VOICES];
         let mut si22_peaks = [0f32; 2];
+        let mut sgu_peaks = [[0f32; 2]; 2];
         for card in &mut self.cards {
             card.audio = [vec![0; samples], vec![0; samples]];
         }
@@ -914,7 +927,8 @@ impl Engine {
                 let cycles = i64::from(CYCLES_PER_SAMPLE);
                 let n = ((self.until_frame + cycles - 1) / cycles).max(1) as usize;
                 let n = n.min(samples - done);
-                self.render_segment(done, n, &mut left, &mut right, &mut peaks, &mut si22_peaks);
+                let peaks = (&mut peaks, &mut si22_peaks, &mut sgu_peaks);
+                self.render_segment(done, n, &mut left, &mut right, peaks);
                 self.until_frame -= n as i64 * cycles;
                 done += n;
             }
@@ -924,6 +938,11 @@ impl Engine {
         }
         for (meter, peak) in self.si22_meters.iter_mut().zip(si22_peaks) {
             meter.update(peak);
+        }
+        for (meters, peaks) in self.sgu_meters.iter_mut().zip(sgu_peaks) {
+            for (meter, peak) in meters.iter_mut().zip(peaks) {
+                meter.update(peak);
+            }
         }
         let mut left: Vec<i16> = left.into_iter().map(saturate_output).collect();
         let mut right: Vec<i16> = right.into_iter().map(saturate_output).collect();
@@ -938,9 +957,11 @@ impl Engine {
                 card.meters[side].update(peak as f32 / 32768.0);
             }
             if !card.muted {
+                let gain = card.gain;
+                let scaled = |s: i16| apply_gain(i32::from(s), gain).clamp(-32768, 32767) as i16;
                 for i in 0..samples {
-                    left[i] = left[i].saturating_add(card.audio[0][i]);
-                    right[i] = right[i].saturating_add(card.audio[1][i]);
+                    left[i] = left[i].saturating_add(scaled(card.audio[0][i]));
+                    right[i] = right[i].saturating_add(scaled(card.audio[1][i]));
                 }
             }
         }
@@ -966,11 +987,13 @@ impl Engine {
         n: usize,
         left: &mut [i32],
         right: &mut [i32],
-        peaks: &mut [f32; VOICES],
-        si22_peaks: &mut [f32; 2],
+        (peaks, si22_peaks, sgu_peaks): SegmentPeaks<'_>,
     ) {
         for (core_index, core) in self.cores.iter().enumerate() {
+            let gain = self.sgu_gains[core_index];
             let output = core.borrow_mut().clock(n);
+            let mut core_l = vec![0i32; n];
+            let mut core_r = vec![0i32; n];
             for (channel, sides) in output.iter().enumerate() {
                 let voice = core_index * NUM_CHANNELS + channel;
                 let mut peak = 0i32;
@@ -981,12 +1004,21 @@ impl Engine {
                     recent.pop_front();
                     recent.push_back(((l + r) / 2) as i16);
                     if !self.muted[voice] {
-                        left[offset + i] += l;
-                        right[offset + i] += r;
+                        core_l[i] += apply_gain(l, gain);
+                        core_r[i] += apply_gain(r, gain);
                     }
                 }
                 // A single channel peaks near 1/4 of full scale (master gain).
                 peaks[voice] = peaks[voice].max((peak as f32 / 8192.0).min(1.0));
+            }
+            for (side, buffer) in [&core_l, &core_r].into_iter().enumerate() {
+                let peak = buffer.iter().map(|s| s.abs()).max().unwrap_or(0);
+                let shown = &mut sgu_peaks[core_index][side];
+                *shown = shown.max((peak as f32 / 32768.0).min(1.0));
+            }
+            for i in 0..n {
+                left[offset + i] += core_l[i];
+                right[offset + i] += core_r[i];
             }
         }
         // The 34SI22 DAC joins the SGU master mix before the single saturation.
@@ -999,8 +1031,8 @@ impl Engine {
         }
         if !self.si22_muted {
             for i in 0..n {
-                left[offset + i] += si22_l[i];
-                right[offset + i] += si22_r[i];
+                left[offset + i] += apply_gain(si22_l[i], self.si22_gain);
+                right[offset + i] += apply_gain(si22_r[i], self.si22_gain);
             }
         }
         for card in &mut self.cards {
@@ -1047,6 +1079,28 @@ impl Engine {
     pub fn stop(&mut self) {
         self.seek(0);
         self.transport = Transport::Stop;
+    }
+}
+
+/// Peaks collected while rendering: per voice, 34SI22 L/R, SGU core L/R.
+type SegmentPeaks<'a> = (
+    &'a mut [f32; VOICES],
+    &'a mut [f32; 2],
+    &'a mut [[f32; 2]; 2],
+);
+
+/// Mixer gain that leaves a device as recorded (percent).
+pub const UNITY_GAIN: u16 = 100;
+/// Largest mixer gain (percent, about +6 dB).
+pub const MAX_GAIN: u16 = 200;
+
+/// Scale one sample by a mixer gain in percent. Unity returns the sample
+/// unchanged, so the default mix stays bit-identical to the reference mixer.
+pub fn apply_gain(sample: i32, gain: u16) -> i32 {
+    if gain == UNITY_GAIN {
+        sample
+    } else {
+        sample * i32::from(gain) / i32::from(UNITY_GAIN)
     }
 }
 

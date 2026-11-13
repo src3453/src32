@@ -188,6 +188,70 @@ fn v4_mix_plays_card_and_si22_through_their_devices() {
     std::fs::remove_dir_all(package.parent().unwrap()).unwrap();
 }
 
+/// Mixer gains scale each device before the shared saturation; unity keeps
+/// the reference mix (checked by `per_channel_mix_matches_reference_mixer`).
+#[test]
+fn mixer_gains_scale_each_chip_and_card() {
+    // SGU: 0 % silences a core, 200 % doubles every channel exactly.
+    let mut unity = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    let mut doubled = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    let mut silent = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    doubled.sgu_gains = [200; 2];
+    silent.sgu_gains = [0; 2];
+    let mut heard = false;
+    for _ in 0..60 {
+        let (l1, r1) = unity.tick(FRAME_SAMPLES);
+        let (l2, r2) = doubled.tick(FRAME_SAMPLES);
+        let (l0, r0) = silent.tick(FRAME_SAMPLES);
+        assert!(l1.iter().chain(&r1).all(|s| s.abs() < 16384), "no clipping");
+        assert_eq!(l2, l1.iter().map(|s| s * 2).collect::<Vec<_>>());
+        assert_eq!(r2, r1.iter().map(|s| s * 2).collect::<Vec<_>>());
+        assert!(l0.iter().chain(&r0).all(|&s| s == 0));
+        heard |= l1.iter().any(|&s| s != 0);
+    }
+    assert!(heard);
+    assert!(
+        silent.channel_meters.iter().any(|m| m.level > 0.0),
+        "voice meters are pre-fader"
+    );
+    assert!(silent.sgu_meters.iter().flatten().all(|m| m.level == 0.0));
+    assert!(unity.sgu_meters.iter().flatten().any(|m| m.level > 0.0));
+
+    // 34SI22 and card: 0 % sounds like a mute; the fake card's +1000 becomes +500 at 50 %.
+    let package = temp_package("3hs816.cpt32card", &fake_card(b"3HS816\x01\x00"));
+    let open = || {
+        Engine::with_cards(V4_MIX.to_vec(), SguVersion::V3_1, &mut |_, _| {
+            Ok(Some(package.clone()))
+        })
+        .unwrap()
+    };
+    let (mut reference, mut si22_muted, mut si22_zero, mut card_half) =
+        (open(), open(), open(), open());
+    si22_muted.si22_muted = true;
+    si22_zero.si22_gain = 0;
+    card_half.cards[0].gain = 50;
+    let mut card_seen = false;
+    for _ in 0..40 {
+        let (left, right) = reference.tick(FRAME_SAMPLES);
+        assert_eq!(
+            si22_zero.tick(FRAME_SAMPLES),
+            si22_muted.tick(FRAME_SAMPLES)
+        );
+        let (half_l, half_r) = card_half.tick(FRAME_SAMPLES);
+        assert_eq!(half_r, right);
+        for (full, half) in left.iter().zip(&half_l) {
+            let diff = full - half;
+            assert!(
+                diff == 0 || diff == 500,
+                "card adds 1000 or nothing: {diff}"
+            );
+            card_seen |= diff == 500;
+        }
+    }
+    assert!(card_seen);
+    std::fs::remove_dir_all(package.parent().unwrap()).unwrap();
+}
+
 #[test]
 fn missing_or_mismatched_card_drops_its_writes_but_keeps_playing() {
     let mut missing =
