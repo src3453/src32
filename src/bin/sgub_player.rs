@@ -302,7 +302,6 @@ impl MonitorWindow {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum View {
     Sgu,
-    Si22,
     /// Index into `Engine::cards`.
     Card(usize),
     /// Gain faders of every chip and expansion card.
@@ -483,7 +482,7 @@ impl Monitor {
                 }
                 self.fader_drag = None;
                 let problems = engine.cards.iter().filter(|card| !card.is_ready()).count();
-                let devices = engine.cards.len() + usize::from(engine.uses_si22());
+                let devices = engine.cards.len();
                 self.engine = Some(engine);
                 self.view = View::Sgu;
                 self.selected = 0;
@@ -633,9 +632,6 @@ impl Monitor {
     fn views(&self) -> Vec<View> {
         let mut views = vec![View::Sgu];
         if let Some(engine) = &self.engine {
-            if engine.uses_si22() {
-                views.push(View::Si22);
-            }
             views.extend((0..engine.cards.len()).map(View::Card));
         }
         views.push(View::Mixer);
@@ -652,7 +648,6 @@ impl Monitor {
     fn view_label(&self, view: View) -> String {
         match (view, &self.engine) {
             (View::Sgu, _) => "SGU+SI22 18CH".into(),
-            (View::Si22, _) => "34SI22".into(),
             (View::Card(index), Some(engine)) => {
                 let card = &engine.cards[index];
                 format!("SLOT{} {}", card.slot, card.kind.name())
@@ -669,7 +664,6 @@ impl Monitor {
         };
         match self.view {
             View::Sgu | View::Mixer => {}
-            View::Si22 => engine.si22_muted = !engine.si22_muted,
             View::Card(index) => {
                 if let Some(card) = engine.cards.get_mut(index) {
                     card.muted = !card.muted;
@@ -680,7 +674,6 @@ impl Monitor {
 
     fn device_muted(&self, view: View) -> bool {
         match (view, &self.engine) {
-            (View::Si22, Some(engine)) => engine.si22_muted,
             (View::Card(index), Some(engine)) => engine.cards[index].muted,
             _ => false,
         }
@@ -726,7 +719,6 @@ impl Monitor {
         let origin = [x0, y0 + 18.0];
         match self.view {
             View::Sgu => self.draw_tracks(ui, draw, origin),
-            View::Si22 => self.draw_si22(draw, origin),
             View::Card(index) => self.draw_card(ui, draw, origin, index),
             View::Mixer => self.draw_mixer(ui, draw, origin),
         }
@@ -1145,7 +1137,6 @@ impl Monitor {
         }
         match self.view {
             View::Sgu | View::Mixer => {}
-            View::Si22 => return draw_si22_registers(draw, [x, y], engine),
             View::Card(index) => {
                 return draw_card_registers(draw, [x, y], engine, index, self.selected);
             }
@@ -2373,142 +2364,6 @@ fn draw_wt_track(
 }
 
 impl Monitor {
-    fn draw_si22(&self, draw: &DrawListMut, [x0, y0]: [f32; 2]) {
-        let Some(engine) = &self.engine else { return };
-        let chip = engine.si22();
-        let muted = engine.si22_muted;
-        const PLAY: [&str; 4] = ["STOP", "PLAY", "WAIT", "END "];
-        const REC: [&str; 4] = ["STOP", "REC ", "WAIT", "END "];
-        for ch in 0..2 {
-            let y = y0 + ch as f32 * ROW_H;
-            let p = &chip.play[ch];
-            let running = p.status == 1 && !muted;
-            draw.add_rect([x0, y], [x0 + 700.0, y + 48.0], PANEL)
-                .filled(true)
-                .build();
-            draw_row_label(draw, [x0, y], "PLAY", ch + 1, muted);
-            let lx = x0 + 44.0;
-            draw.add_text(
-                [lx, y + 1.0],
-                if running { ACCENT } else { LABEL },
-                PLAY[usize::from(p.status & 3)],
-            );
-            let rate = 48_000 / (u32::from(p.div) + 1);
-            let fields = [
-                (40.0, si22_format(p.format_field).to_string()),
-                (96.0, format!("VL:{:2}", p.volume)),
-                (150.0, format!("DIV:{:2} {:5} Hz", p.div, rate)),
-                (
-                    270.0,
-                    format!(
-                        "OUT:{}{}",
-                        if p.l_disable { '-' } else { 'L' },
-                        if p.r_disable { '-' } else { 'R' }
-                    ),
-                ),
-            ];
-            for (dx, text) in fields {
-                draw.add_text([lx + dx, y + 1.0], if running { TEXT } else { LABEL }, text);
-            }
-            // Playback position between START and STOP.
-            let (bx, by, bw) = (lx, y + 18.0, 470.0);
-            draw.add_rect([bx, by], [bx + bw, by + 26.0], BG)
-                .filled(true)
-                .build();
-            draw.add_rect([bx, by], [bx + bw, by + 26.0], DIM).build();
-            let length = p.stop.saturating_sub(p.start).max(1) as f32;
-            let position = chip.play_address(ch).saturating_sub(p.start) as f32;
-            let fraction = if p.status == 3 {
-                1.0
-            } else if p.status == 1 {
-                (position / length).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            draw.add_rect(
-                [bx + 1.0, by + 14.0],
-                [bx + 1.0 + (bw - 2.0) * fraction, by + 24.0],
-                if running { ACCENT } else { DIM },
-            )
-            .filled(true)
-            .build();
-            draw.add_text(
-                [bx + 4.0, by],
-                LABEL,
-                format!(
-                    "START {:06X}  STOP {:06X}  ADDR {:06X}",
-                    p.start,
-                    p.stop,
-                    chip.play_address(ch)
-                ),
-            );
-            let mx = bx + bw + 8.0;
-            for (side, label) in ["L", "R"].into_iter().enumerate() {
-                let my = y + 4.0 + side as f32 * 14.0;
-                draw.add_text([mx, my - 3.0], LABEL, label);
-                draw_meter(
-                    draw,
-                    [mx + 18.0, my],
-                    [x0 + 696.0, my + 8.0],
-                    engine.si22_meters[side],
-                    24,
-                );
-            }
-            draw.add_text([mx, y + 32.0], DIM, "chip output");
-        }
-        for ch in 0..2 {
-            let y = y0 + (2 + ch) as f32 * ROW_H;
-            let rec = &chip.rec[ch];
-            let active = rec.status == 1 || rec.status == 2;
-            draw.add_rect([x0, y], [x0 + 700.0, y + 48.0], PANEL)
-                .filled(true)
-                .build();
-            draw_row_label(draw, [x0, y], "REC", ch + 1, false);
-            let lx = x0 + 44.0;
-            let rate = 48_000 / (u32::from(rec.div) + 1);
-            let fields = [
-                (0.0, REC[usize::from(rec.status & 3)].to_string()),
-                (40.0, si22_format(rec.format_field).to_string()),
-                (96.0, format!("GAIN:{:2}", rec.gain)),
-                (170.0, format!("DIV:{:2} {:5} Hz", rec.div, rate)),
-                (
-                    290.0,
-                    format!("AGC:{}", if chip.agc_enable[ch] { "ON" } else { "--" }),
-                ),
-            ];
-            for (dx, text) in fields {
-                draw.add_text([lx + dx, y + 1.0], if active { TEXT } else { LABEL }, text);
-            }
-            draw.add_text(
-                [lx, y + 22.0],
-                LABEL,
-                format!(
-                    "START {:06X}  STOP {:06X}  (ADC {})",
-                    rec.start,
-                    rec.stop,
-                    if ch == 0 { "L" } else { "R" }
-                ),
-            );
-        }
-        let y = y0 + 4.0 * ROW_H + 4.0;
-        draw.add_text(
-            [x0, y],
-            LABEL,
-            format!(
-                "STATUS_CTRL flags {:02X}   VOX threshold {:3}  hold {:3}{}",
-                chip.flags,
-                chip.vox_threshold,
-                chip.vox_hold,
-                if muted { "   MUTED (M)" } else { "" }
-            ),
-        );
-        draw.add_text(
-            [x0, y + 16.0],
-            DIM,
-            "34SI22 plays from the shared PCM RAM; the stream writes its registers as target 11.",
-        );
-    }
-
     /// Master volume in the transport block: drag or wheel to
     /// change (5 %, Shift 1 %), right click for 100 %. Same value as the
     /// mixer's MASTER fader.
@@ -2911,24 +2766,6 @@ fn draw_hex_rows(
         row_y += 14.0;
     }
     row_y
-}
-
-fn draw_si22_registers(draw: &DrawListMut, [x, y]: [f32; 2], engine: &Engine) {
-    draw.add_text([x + 90.0, y], LABEL, "34SI22  0x80022000 + offset");
-    let chip = engine.si22();
-    let end = draw_hex_rows(draw, [x + 20.0, y + 20.0], 0, 0x30, |offset| {
-        chip.read_register(offset)
-    });
-    draw.add_text(
-        [x + 20.0, end + 6.0],
-        LABEL,
-        "00-0B PLAY START/STOP  0C PLAY_CTRL  0D VOL  0E/0F DIV",
-    );
-    draw.add_text(
-        [x + 20.0, end + 20.0],
-        LABEL,
-        "10-1B REC START/STOP   1C REC_CTRL   1D GAIN 20 STATUS 21/22 FORMAT",
-    );
 }
 
 fn draw_card_registers(
