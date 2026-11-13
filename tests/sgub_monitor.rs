@@ -217,6 +217,23 @@ fn mixer_gains_scale_each_chip_and_card() {
     assert!(silent.sgu_meters.iter().flatten().all(|m| m.level == 0.0));
     assert!(unity.sgu_meters.iter().flatten().any(|m| m.level > 0.0));
 
+    // Master: scales the finished mix; mute silences it and its meters.
+    let mut unity = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    let mut master = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    let mut muted = Engine::new(V2_STREAM.to_vec(), SguVersion::V2_1).unwrap();
+    master.master_gain = 200;
+    muted.master_muted = true;
+    for _ in 0..60 {
+        let (l1, r1) = unity.tick(FRAME_SAMPLES);
+        let (l2, r2) = master.tick(FRAME_SAMPLES);
+        let (l0, r0) = muted.tick(FRAME_SAMPLES);
+        assert_eq!(l2, l1.iter().map(|s| s * 2).collect::<Vec<_>>());
+        assert_eq!(r2, r1.iter().map(|s| s * 2).collect::<Vec<_>>());
+        assert!(l0.iter().chain(&r0).all(|&s| s == 0));
+    }
+    assert!(muted.master_meters.iter().all(|m| m.level == 0.0));
+    assert!(muted.sgu_meters.iter().flatten().any(|m| m.level > 0.0));
+
     // 34SI22 and card: 0 % sounds like a mute; the fake card's +1000 becomes +500 at 50 %.
     let package = temp_package("3hs816.cpt32card", &fake_card(b"3HS816\x01\x00"));
     let open = || {

@@ -317,6 +317,8 @@ enum Strip {
     Si22,
     /// Index into `Engine::cards`.
     Card(usize),
+    /// The finished mix (gain and mute after every device).
+    Master,
 }
 
 impl Strip {
@@ -325,6 +327,7 @@ impl Strip {
             Strip::Sgu(core) => engine.sgu_gains[core],
             Strip::Si22 => engine.si22_gain,
             Strip::Card(index) => engine.cards[index].gain,
+            Strip::Master => engine.master_gain,
         }
     }
 
@@ -334,6 +337,7 @@ impl Strip {
             Strip::Sgu(core) => engine.sgu_gains[core] = gain,
             Strip::Si22 => engine.si22_gain = gain,
             Strip::Card(index) => engine.cards[index].gain = gain,
+            Strip::Master => engine.master_gain = gain,
         }
     }
 
@@ -343,6 +347,7 @@ impl Strip {
             Strip::Sgu(core) => engine.muted[core * 8..core * 8 + 8].iter().all(|m| *m),
             Strip::Si22 => engine.si22_muted,
             Strip::Card(index) => engine.cards[index].muted,
+            Strip::Master => engine.master_muted,
         }
     }
 
@@ -352,6 +357,7 @@ impl Strip {
             Strip::Sgu(core) => engine.muted[core * 8..core * 8 + 8].fill(muted),
             Strip::Si22 => engine.si22_muted = muted,
             Strip::Card(index) => engine.cards[index].muted = muted,
+            Strip::Master => engine.master_muted = muted,
         }
     }
 
@@ -359,6 +365,7 @@ impl Strip {
     fn meters(self, engine: &Engine) -> [Meter; 2] {
         let (meters, gain) = match self {
             Strip::Sgu(core) => return engine.sgu_meters[core],
+            Strip::Master => return engine.master_meters,
             Strip::Si22 => (engine.si22_meters, engine.si22_gain),
             Strip::Card(index) => (engine.cards[index].meters, engine.cards[index].gain),
         };
@@ -380,6 +387,7 @@ impl Strip {
                 format!("CH{}-{}", core * 8 + 1, core * 8 + 8),
             ),
             Strip::Si22 => ("34SI22".into(), "PLAY A/B".into()),
+            Strip::Master => ("MASTER".into(), "OUTPUT".into()),
             Strip::Card(index) => {
                 let card = &engine.cards[index];
                 (format!("SLOT{}", card.slot), card.kind.name().to_string())
@@ -416,6 +424,8 @@ struct Monitor {
     volume_meters: HashMap<(usize, usize), Meter>,
     /// Mixer fader being dragged with the left button.
     fader_drag: Option<Strip>,
+    /// The status-line master volume bar is being dragged.
+    master_drag: bool,
 }
 
 impl Monitor {
@@ -434,6 +444,7 @@ impl Monitor {
             spectrum_peaks: [vec![-96.0; BANDS], vec![-96.0; BANDS]],
             volume_meters: HashMap::new(),
             fader_drag: None,
+            master_drag: false,
         }
     }
 
@@ -462,6 +473,8 @@ impl Monitor {
                 if let Some(old) = &self.engine {
                     engine.sgu_gains = old.sgu_gains;
                     engine.si22_gain = old.si22_gain;
+                    engine.master_gain = old.master_gain;
+                    engine.master_muted = old.master_muted;
                     for card in &mut engine.cards {
                         if let Some(previous) = old.cards.iter().find(|c| c.slot == card.slot) {
                             card.gain = previous.gain;
@@ -740,8 +753,9 @@ impl Monitor {
                 self.draw_spectrum(&draw, [724.0, 192.0]);
                 self.draw_scope(&draw, [724.0, 398.0]);
                 self.draw_registers(&draw, [724.0, 486.0]);
-                let status: String = self.status.chars().take(84).collect();
+                let status: String = self.status.chars().take(60).collect();
                 draw.add_text([724.0, 800.0], LABEL, status);
+                self.draw_master_volume(ui, &draw, [1160.0, 800.0]);
                 draw.add_text(
                     [724.0, 816.0],
                     DIM,
@@ -2494,6 +2508,88 @@ impl Monitor {
         );
     }
 
+    /// Master volume at the right end of the status line: drag or wheel to
+    /// change (5 %, Shift 1 %), right click for 100 %. Same value as the
+    /// mixer's MASTER fader.
+    fn draw_master_volume(&mut self, ui: &Ui, draw: &DrawListMut, [x, y]: [f32; 2]) {
+        let Some(engine) = self.engine.as_mut() else {
+            self.master_drag = false;
+            return;
+        };
+        let io = ui.io();
+        let (mouse, shift, wheel) = (io.mouse_pos, io.key_shift, io.mouse_wheel);
+        let (bar_l, bar_r) = (x + 28.0, x + 112.0);
+        let (top, bottom) = (y + 2.0, y + 11.0);
+        let over =
+            mouse[0] >= x && mouse[0] < x + 160.0 && mouse[1] >= y - 2.0 && mouse[1] < y + 14.0;
+        if !ui.is_mouse_down(MouseButton::Left) {
+            self.master_drag = false;
+        }
+        if over && ui.is_mouse_clicked(MouseButton::Right) {
+            engine.master_gain = UNITY_GAIN;
+        } else if over && ui.is_mouse_clicked(MouseButton::Left) {
+            if mouse[0] >= bar_l - 4.0 && mouse[0] < bar_r + 4.0 {
+                self.master_drag = true;
+            } else if mouse[0] < bar_l {
+                // Clicking the label toggles the master mute.
+                engine.master_muted = !engine.master_muted;
+            }
+        }
+        if over && wheel != 0.0 {
+            let step = if shift { 1 } else { 5 };
+            let gain = engine.master_gain;
+            engine.master_gain = if wheel > 0.0 {
+                gain.saturating_add(step).min(MAX_GAIN)
+            } else {
+                gain.saturating_sub(step)
+            };
+        }
+        if self.master_drag {
+            let value = ((mouse[0] - bar_l) / (bar_r - bar_l) * f32::from(MAX_GAIN)).round();
+            let mut value = value.clamp(0.0, f32::from(MAX_GAIN)) as u16;
+            if !shift && value.abs_diff(UNITY_GAIN) <= 3 {
+                value = UNITY_GAIN;
+            }
+            engine.master_gain = value;
+        }
+        let gain = engine.master_gain;
+        let muted = engine.master_muted;
+        draw.add_text([x, y], if muted { METER_HI } else { LABEL }, "VOL");
+        draw.add_rect([bar_l, top], [bar_r, bottom], [0.13, 0.14, 0.15, 1.0])
+            .filled(true)
+            .build();
+        let fill = ((bar_r - bar_l - 2.0) * f32::from(gain) / f32::from(MAX_GAIN)).round();
+        if fill > 0.0 {
+            let color = if muted {
+                DIM
+            } else if self.master_drag {
+                ACCENT
+            } else {
+                METER_LO
+            };
+            draw.add_rect(
+                [bar_l + 1.0, top + 1.0],
+                [bar_l + 1.0 + fill, bottom - 1.0],
+                color,
+            )
+            .filled(true)
+            .build();
+        }
+        // Unity tick.
+        let ux = (bar_l + 1.0 + (bar_r - bar_l - 2.0) / 2.0).round();
+        draw.add_line([ux, top - 2.0], [ux, bottom + 2.0], TEXT)
+            .build();
+        let (text, color) = if muted {
+            ("MUTE".to_string(), METER_HI)
+        } else {
+            (
+                gain_text(gain).0,
+                if gain == UNITY_GAIN { LABEL } else { TEXT },
+            )
+        };
+        draw.add_text([bar_r + 6.0, y], color, text);
+    }
+
     fn strips(&self) -> Vec<Strip> {
         let Some(engine) = &self.engine else {
             return Vec::new();
@@ -2503,11 +2599,13 @@ impl Monitor {
             strips.push(Strip::Si22);
         }
         strips.extend((0..engine.cards.len()).map(Strip::Card));
+        strips.push(Strip::Master);
         strips
     }
 
     /// Gain faders (0..MAX_GAIN %, UNITY_GAIN = as recorded) with mute buttons
-    /// and post-fader meters for both SGU cores, the 34SI22 and every card slot.
+    /// and post-fader meters for both SGU cores, the 34SI22, every card slot and
+    /// the master output.
     fn draw_mixer(&mut self, ui: &Ui, draw: &DrawListMut, [x0, y0]: [f32; 2]) {
         // Fader travel in pixels; MAX_GAIN maps to the top.
         const TRAVEL: f32 = 400.0;
@@ -2542,7 +2640,13 @@ impl Monitor {
             draw.add_rect([x, y0], [x + width, y0 + 30.0], PANEL)
                 .filled(true)
                 .build();
-            let name_color = if muted { METER_HI } else { ACCENT };
+            let name_color = if muted {
+                METER_HI
+            } else if strip == Strip::Master {
+                TEXT
+            } else {
+                ACCENT
+            };
             draw.add_text([x + 4.0, y0 + 2.0], name_color, name);
             let sub: String = sub.chars().take(((width - 8.0) / 7.0) as usize).collect();
             draw.add_text([x + 4.0, y0 + 16.0], LABEL, sub);

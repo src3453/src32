@@ -648,6 +648,10 @@ pub struct Engine {
     pub si22_gain: u16,
     /// What SGU0 and SGU1 add to the mix (unmuted voices, after the gain).
     pub sgu_meters: [[Meter; 2]; 2],
+    /// Gain of the finished mix in percent, applied after every device.
+    pub master_gain: u16,
+    pub master_muted: bool,
+    /// The output after the master gain and mute.
     pub master_meters: [Meter; 2],
     /// Writes to slots the stream does not declare (should not happen).
     pub stray_writes: u64,
@@ -715,6 +719,8 @@ impl Engine {
             sgu_gains: [UNITY_GAIN; 2],
             si22_gain: UNITY_GAIN,
             sgu_meters: [[Meter::default(); 2]; 2],
+            master_gain: UNITY_GAIN,
+            master_muted: false,
             master_meters: [Meter::default(); 2],
             stray_writes: 0,
             error: None,
@@ -963,6 +969,17 @@ impl Engine {
                     left[i] = left[i].saturating_add(scaled(card.audio[0][i]));
                     right[i] = right[i].saturating_add(scaled(card.audio[1][i]));
                 }
+            }
+        }
+        // Master gain and mute act on the finished mix, as a volume knob after
+        // the host mixer would; the meters, scope and spectrum see the result.
+        if self.master_muted {
+            left.fill(0);
+            right.fill(0);
+        } else if self.master_gain != UNITY_GAIN {
+            let gain = self.master_gain;
+            for sample in left.iter_mut().chain(right.iter_mut()) {
+                *sample = apply_gain(i32::from(*sample), gain).clamp(-32768, 32767) as i16;
             }
         }
         for (side, buffer) in [&left, &right].into_iter().enumerate() {
