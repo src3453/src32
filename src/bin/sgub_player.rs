@@ -5,6 +5,7 @@
 //! v3/v4 stream are loaded from `--card`, or found by file name next to the
 //! stream, next to the executable, or in the repository's example targets.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -318,6 +319,8 @@ struct Monitor {
     animation: u32,
     spectrum: [Vec<f32>; 2],
     spectrum_peaks: [Vec<f32>; 2],
+    /// Decaying volume-register meters of 3HS card channels.
+    volume_meters: HashMap<(usize, usize), Meter>,
 }
 
 impl Monitor {
@@ -334,6 +337,7 @@ impl Monitor {
             animation: 0,
             spectrum: [vec![-96.0; BANDS], vec![-96.0; BANDS]],
             spectrum_peaks: [vec![-96.0; BANDS], vec![-96.0; BANDS]],
+            volume_meters: HashMap::new(),
         }
     }
 
@@ -363,6 +367,7 @@ impl Monitor {
                 self.engine = Some(engine);
                 self.view = View::Sgu;
                 self.selected = 0;
+                self.volume_meters.clear();
                 self.file_name = path
                     .file_name()
                     .map(|name| name.to_string_lossy().into_owned())
@@ -1180,7 +1185,7 @@ fn draw_si22_track(draw: &DrawListMut, [x, y]: [f32; 2], ch: usize, engine: Opti
         level_meter(level),
         24,
     );
-    draw_pan(
+    draw_pan_volume(
         draw,
         [mx, y],
         x + 696.0,
@@ -1189,6 +1194,11 @@ fn draw_si22_track(draw: &DrawListMut, [x, y]: [f32; 2], ch: usize, engine: Opti
             if p.r_disable { 0 } else { 15 },
         ),
         running,
+        level_meter(if running {
+            f32::from(p.volume) / 255.0
+        } else {
+            0.0
+        }),
     );
 }
 
@@ -1449,31 +1459,19 @@ fn draw_track(
     let mx = bx + bw + 8.0;
     draw.add_text([mx, y + 1.0], LABEL, "LV");
     draw_meter(draw, [mx + 18.0, y + 4.0], [x + 696.0, y + 12.0], meter, 24);
-    let pan_l = f32::from(view.panpot >> 4) / 15.0;
-    let pan_r = f32::from(view.panpot & 15) / 15.0;
-    let pw = x + 696.0 - (mx + 18.0);
-    for (row, (label, value)) in [("L", pan_l), ("R", pan_r)].into_iter().enumerate() {
-        let py = y + 20.0 + row as f32 * 13.0;
-        draw.add_text([mx, py - 3.0], LABEL, label);
-        draw.add_rect(
-            [mx + 18.0, py + 1.0],
-            [mx + 18.0 + pw, py + 7.0],
-            [0.13, 0.14, 0.15, 1.0],
-        )
-        .filled(true)
-        .build();
-        draw.add_rect(
-            [mx + 18.0, py + 1.0],
-            [mx + 18.0 + pw * value, py + 7.0],
-            if audible {
-                [0.5, 0.52, 0.55, 1.0]
-            } else {
-                [0.2, 0.21, 0.22, 1.0]
-            },
-        )
-        .filled(true)
-        .build();
-    }
+    let volume = if audible {
+        f32::from(view.volume) / 255.0
+    } else {
+        0.0
+    };
+    draw_pan_volume(
+        draw,
+        [mx, y],
+        x + 696.0,
+        (view.panpot >> 4, view.panpot & 15),
+        audible,
+        level_meter(volume),
+    );
 }
 
 /// C0..B7 piano keyboard; `key` is a fractional MIDI note to highlight.
@@ -1931,31 +1929,51 @@ fn level_meter(level: f32) -> Meter {
     meter
 }
 
-/// L/R pan bars in the right column of a track row.
-fn draw_pan(draw: &DrawListMut, [mx, y]: [f32; 2], right: f32, (l, r): (u8, u8), active: bool) {
-    let pw = right - (mx + 18.0);
-    for (row, (label, value)) in [("L", l), ("R", r)].into_iter().enumerate() {
-        let py = y + 20.0 + row as f32 * 13.0;
-        draw.add_text([mx, py - 3.0], LABEL, label);
-        draw.add_rect(
-            [mx + 18.0, py + 1.0],
-            [mx + 18.0 + pw, py + 7.0],
-            [0.13, 0.14, 0.15, 1.0],
-        )
-        .filled(true)
-        .build();
-        draw.add_rect(
-            [mx + 18.0, py + 1.0],
-            [mx + 18.0 + pw * f32::from(value) / 15.0, py + 7.0],
-            if active {
-                [0.5, 0.52, 0.55, 1.0]
-            } else {
-                [0.2, 0.21, 0.22, 1.0]
-            },
-        )
-        .filled(true)
-        .build();
+/// Lower part of a track row's right column: two small vertical L/R pan bars
+/// (0..15, filled from the bottom) and a horizontal volume-register meter.
+fn draw_pan_volume(
+    draw: &DrawListMut,
+    [mx, y]: [f32; 2],
+    right: f32,
+    (l, r): (u8, u8),
+    active: bool,
+    volume: Meter,
+) {
+    let (top, bottom) = ((y + 19.0).floor(), (y + 43.0).floor());
+    let fill = if active {
+        [0.5, 0.52, 0.55, 1.0]
+    } else {
+        [0.2, 0.21, 0.22, 1.0]
+    };
+    for (column, value) in [l, r].into_iter().enumerate() {
+        let bx = mx.floor() + 1.0 + column as f32 * 7.0;
+        draw.add_rect([bx, top], [bx + 5.0, bottom], [0.13, 0.14, 0.15, 1.0])
+            .filled(true)
+            .build();
+        let height = ((bottom - top - 2.0) * f32::from(value.min(15)) / 15.0).round();
+        if height > 0.0 {
+            draw.add_rect(
+                [bx + 1.0, bottom - 1.0 - height],
+                [bx + 4.0, bottom - 1.0],
+                fill,
+            )
+            .filled(true)
+            .build();
+        }
     }
+    draw_meter(draw, [mx + 18.0, y + 25.0], [right, y + 37.0], volume, 24);
+}
+
+/// Volume-register meter that jumps up at once and falls back gradually
+/// (3HS cards only; `key` is (card index, channel)).
+fn decayed_volume(
+    meters: &mut HashMap<(usize, usize), Meter>,
+    key: (usize, usize),
+    value: f32,
+) -> Meter {
+    let meter = meters.entry(key).or_default();
+    meter.update(value);
+    *meter
 }
 
 fn draw_row_label(draw: &DrawListMut, [x, y]: [f32; 2], top: &str, number: usize, dim: bool) {
@@ -1988,6 +2006,7 @@ fn draw_hs_track(
     hs: &HsView,
     card_muted: bool,
     selected: bool,
+    volume: Meter,
 ) {
     let loudest = hs.volumes.iter().copied().max().unwrap_or(0);
     let active = hs.gate && !hs.muted && !card_muted && loudest > 0;
@@ -2071,7 +2090,7 @@ fn draw_hs_track(
         level_meter(shown),
         24,
     );
-    draw_pan(draw, [mx, y], x + 696.0, (l, r), active);
+    draw_pan_volume(draw, [mx, y], x + 696.0, (l, r), active, volume);
 }
 
 /// One 3HS88PWN4 PCM/WT channel.
@@ -2083,6 +2102,7 @@ fn draw_wt_track(
     card_muted: bool,
     selected: bool,
     animation: u32,
+    volume: Meter,
 ) {
     let active = wt.volume > 0 && wt.frequency > 0 && wt.mode <= 5 && !wt.muted && !card_muted;
     draw.add_rect(
@@ -2186,7 +2206,7 @@ fn draw_wt_track(
         level_meter(if active { level } else { 0.0 }),
         24,
     );
-    draw_pan(draw, [mx, y], x + 696.0, (l, r), active);
+    draw_pan_volume(draw, [mx, y], x + 696.0, (l, r), active, volume);
 }
 
 impl Monitor {
@@ -2370,13 +2390,26 @@ impl Monitor {
             CardKind::Hs816 | CardKind::Hs88pwn4 => {
                 for ch in 0..card.kind.hs_channels() {
                     let y = y0 + ch as f32 * ROW_H;
+                    let hs = card.hs(ch);
+                    let loudest = hs.volumes.iter().copied().max().unwrap_or(0);
+                    let sounding = hs.gate && !hs.muted && !card.muted;
+                    let volume = decayed_volume(
+                        &mut self.volume_meters,
+                        (index, ch),
+                        if sounding {
+                            f32::from(loudest) / 255.0
+                        } else {
+                            0.0
+                        },
+                    );
                     draw_hs_track(
                         draw,
                         [x0, y],
                         ch,
-                        &card.hs(ch),
+                        &hs,
                         card.muted,
                         self.selected == ch,
+                        volume,
                     );
                     if hit(ui, [x0, y], [x0 + 700.0, y + 48.0]) {
                         clicked = Some(ch);
@@ -2385,14 +2418,26 @@ impl Monitor {
                 if card.kind == CardKind::Hs88pwn4 {
                     for w in 0..4 {
                         let y = y0 + (8 + w) as f32 * ROW_H;
+                        let wt = card.wt(w);
+                        let sounding = wt.frequency > 0 && wt.mode <= 5 && !wt.muted && !card.muted;
+                        let volume = decayed_volume(
+                            &mut self.volume_meters,
+                            (index, 16 + w),
+                            if sounding {
+                                f32::from(wt.volume) / 255.0
+                            } else {
+                                0.0
+                            },
+                        );
                         draw_wt_track(
                             draw,
                             [x0, y],
                             w,
-                            &card.wt(w),
+                            &wt,
                             card.muted,
                             self.selected == 16 + w,
                             self.animation,
+                            volume,
                         );
                         if hit(ui, [x0, y], [x0 + 700.0, y + 48.0]) {
                             clicked = Some(16 + w);
