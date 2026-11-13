@@ -216,6 +216,7 @@ struct SpinState {
     mem_wb: MemWb,
     ex_cycles_left: u32,
     ex_armed: bool,
+    cache_stall: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -225,6 +226,10 @@ struct SpinProbe {
     instructions: u128,
     stalls: u128,
     flushes: u128,
+    /// Correctly predicted taken backward branches (loop heads that cause no flush).
+    predicted_loops: u128,
+    /// L1 (I hits, I misses, D hits, D misses) at the probe.
+    cache_stats: (u32, u32, u32, u32),
     effectful_accesses: u64,
     quiet_until: Option<u128>,
 }
@@ -241,6 +246,8 @@ struct SpinDetector {
     last_flushes: u128,
     /// Whether the latest taken redirect jumped to or before its branch.
     backward_redirect: bool,
+    /// Taken backward branches that the fetch stage had predicted: no flush, but a loop head too.
+    predicted_loops: u128,
     probes: [Option<SpinProbe>; SPIN_PROBES],
     next_probe: usize,
     skipped_cycles: u128,
@@ -2150,6 +2157,10 @@ impl PipelineCpu {
             if let Some((target, _)) = redir {
                 // Loop heads for the spin detector are backward redirects.
                 self.spin.backward_redirect = target <= self.id_ex.pc;
+                if self.id_ex.predicted_taken && self.spin.backward_redirect {
+                    // Predicted correctly: no flush, but the same loop head.
+                    self.spin.predicted_loops += 1;
+                }
             }
             next_ex_mem = em;
             redirect = if self.id_ex.predicted_taken {
@@ -2378,6 +2389,7 @@ impl PipelineCpu {
             mem_wb: self.mem_wb,
             ex_cycles_left: self.ex_cycles_left,
             ex_armed: self.ex_armed,
+            cache_stall: self.cache_stall,
         }
     }
 
@@ -2388,6 +2400,8 @@ impl PipelineCpu {
             instructions: self.instructions_executed,
             stalls: self.stall_cycles,
             flushes: self.flush_events,
+            predicted_loops: self.spin.predicted_loops,
+            cache_stats: self.cache_stats(),
             effectful_accesses: self.bus.effectful_accesses(),
             quiet_until,
         }
@@ -2395,10 +2409,11 @@ impl PipelineCpu {
 
     /// Skip whole iterations of a proven spin loop. Called between ticks.
     fn skip_spin(&mut self, end_cycles: u128) -> bool {
-        if self.flush_events == self.spin.last_flushes {
+        let loop_events = self.flush_events + self.spin.predicted_loops;
+        if loop_events == self.spin.last_flushes {
             return false;
         }
-        self.spin.last_flushes = self.flush_events;
+        self.spin.last_flushes = loop_events;
         if !self.spin.backward_redirect {
             return false;
         }
@@ -2410,6 +2425,9 @@ impl PipelineCpu {
         let repeated = self.cycles > probe.cycles
             && probe.effectful_accesses == self.bus.effectful_accesses()
             && probe.state == self.spin_state()
+            // A steady iteration only hits in the L1 caches, so the tags are unchanged.
+            && probe.cache_stats.1 == self.cache_stats().1
+            && probe.cache_stats.3 == self.cache_stats().3
             && !(self.sys.ie && self.irq_pending);
         if !repeated {
             self.spin.probes[slot] = Some(self.spin_probe(None));
@@ -2441,7 +2459,15 @@ impl PipelineCpu {
             iterations * (self.instructions_executed - probe.instructions);
         self.stall_cycles += iterations * (self.stall_cycles - probe.stalls);
         self.flush_events += iterations * (self.flush_events - probe.flushes);
-        self.spin.last_flushes = self.flush_events;
+        self.spin.predicted_loops +=
+            iterations * (self.spin.predicted_loops - probe.predicted_loops);
+        let now = self.cache_stats();
+        let iterations32 = iterations as u32;
+        self.cache.borrow_mut().add_hits(
+            iterations32.wrapping_mul(now.0.wrapping_sub(probe.cache_stats.0)),
+            iterations32.wrapping_mul(now.2.wrapping_sub(probe.cache_stats.2)),
+        );
+        self.spin.last_flushes = self.flush_events + self.spin.predicted_loops;
         self.sync_register_block();
         self.spin.probes[slot] = Some(self.spin_probe(None));
         true

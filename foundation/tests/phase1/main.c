@@ -59,6 +59,7 @@ static uint32_t on_tick(uint32_t ticks) {
         check(probe[PROBE_CPU_BAD_POINTER] == (uint32_t)FND_E_ACCESS);
         check(probe[PROBE_CPU_ALIGNMENT] == (uint32_t)FND_E_BAD_ARG);
         check(probe[PROBE_CPU_BAD_SELECTOR] == (uint32_t)FND_E_BAD_ARG);
+        check(probe[PROBE_CPU_PERF] == (uint32_t)FND_E_UNSUPPORTED);
         check(probe[PROBE_CPU_PREFIX] == 1u);
         check(probe[PROBE_CPU_CLOCK] == 48000000u);
         check(fault && fault->cpu_cycles > 0u); /* retained after exit */
