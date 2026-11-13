@@ -1319,7 +1319,8 @@ fn draw_si22_track(draw: &DrawListMut, [x, y]: [f32; 2], ch: usize, engine: Opti
         ),
         running,
         level_meter(if running {
-            f32::from(p.volume) / 255.0
+            // PLAY_VOL is 4 bits per channel (0..15).
+            f32::from(p.volume.min(15)) / 15.0
         } else {
             0.0
         }),
