@@ -424,7 +424,7 @@ struct Monitor {
     volume_meters: HashMap<(usize, usize), Meter>,
     /// Mixer fader being dragged with the left button.
     fader_drag: Option<Strip>,
-    /// The status-line master volume bar is being dragged.
+    /// The transport block's master volume bar is being dragged.
     master_drag: bool,
 }
 
@@ -750,12 +750,13 @@ impl Monitor {
                 self.draw_left(ui, &draw, [8.0, 8.0]);
                 self.draw_header(ui, &draw, [724.0, 8.0]);
                 self.draw_transport(ui, &draw, [724.0, 64.0]);
+                // Right of the FRAME counter, above the master meters.
+                self.draw_master_volume(ui, &draw, [1160.0, 136.0]);
                 self.draw_spectrum(&draw, [724.0, 192.0]);
                 self.draw_scope(&draw, [724.0, 398.0]);
                 self.draw_registers(&draw, [724.0, 486.0]);
-                let status: String = self.status.chars().take(60).collect();
+                let status: String = self.status.chars().take(84).collect();
                 draw.add_text([724.0, 800.0], LABEL, status);
-                self.draw_master_volume(ui, &draw, [1160.0, 800.0]);
                 draw.add_text(
                     [724.0, 816.0],
                     DIM,
@@ -2508,7 +2509,7 @@ impl Monitor {
         );
     }
 
-    /// Master volume at the right end of the status line: drag or wheel to
+    /// Master volume in the transport block: drag or wheel to
     /// change (5 %, Shift 1 %), right click for 100 %. Same value as the
     /// mixer's MASTER fader.
     fn draw_master_volume(&mut self, ui: &Ui, draw: &DrawListMut, [x, y]: [f32; 2]) {
