@@ -15,8 +15,8 @@ use std::rc::Rc;
 use super::stream::{CardRequirement, MusicError, SGUB_TARGET_SI22, StreamPlayer};
 use crate::devices::expansion::HostedCard;
 use crate::devices::sgu::s3w2::{
-    ModulationType, NUM_CHANNELS, PCM_RAM_SIZE, PHASE_FRAC_BITS, S3w2Sound, SAMPLE_RATE,
-    SguVersion, WaveformType, saturate_output,
+    ModulationType, NUM_CHANNELS, PCM_FREQ_MAX, PCM_RAM_SIZE, PHASE_FRAC_BITS, S3w2Sound,
+    SAMPLE_RATE, SQV4_FREQ_MAX, SguVersion, WaveformType, saturate_output,
 };
 use crate::devices::sgu::sgu::Si22Unit;
 use crate::devices::sgu::si22::Si22;
@@ -143,12 +143,21 @@ impl ChannelView {
         }
     }
 
-    /// Pitch as a fractional MIDI note. Only Wavetable has a musical pitch:
-    /// one FREQUENCY step is 1 Hz for a 256-sample table (freq/750 samples
-    /// per 192 kHz tick); a shorter 3WS8PNB table cycles 256/length times faster.
+    /// Pitch as a fractional MIDI note. Wavetable: one FREQUENCY step is 1 Hz
+    /// for a 256-sample table (freq/750 samples per 192 kHz tick); a shorter
+    /// 3WS8PNB table cycles 256/length times faster. Noise, PCM and SQV4 read
+    /// FREQUENCY as Hz, the scale the music editor writes them in (PCM/SQV4
+    /// relative to a sample whose native rate is FREQUENCY x 32 Hz), with the
+    /// playback limit applied. FIFO DAC and DMA PCM have no pitch.
     pub fn midi_note(&self) -> Option<f32> {
-        (self.waveform == WaveformType::Wavetable && self.frequency != 0)
-            .then(|| midi_from_hz(f32::from(self.frequency) * 256.0 / self.wave_length as f32))
+        let hz = match self.waveform {
+            WaveformType::Wavetable => f32::from(self.frequency) * 256.0 / self.wave_length as f32,
+            WaveformType::Noise => f32::from(self.frequency),
+            WaveformType::Pcm => f32::from(self.frequency.min(PCM_FREQ_MAX)),
+            WaveformType::Sqv4 => f32::from(self.frequency.min(SQV4_FREQ_MAX)),
+            WaveformType::FifoDac | WaveformType::DmaPcm => return None,
+        };
+        (hz > 0.0).then(|| midi_from_hz(hz))
     }
 }
 
@@ -1208,6 +1217,37 @@ mod tests {
         assert_eq!(note_name(midi_from_hz(261.63)), "C-4");
         assert_eq!(note_name(midi_from_hz(131.0)), "C-3");
         assert_eq!(note_name(midi_from_hz(466.16)), "A#4");
+    }
+
+    #[test]
+    fn noise_and_pcm_show_frequency_as_pitch() {
+        let core = S3w2Sound::new();
+        let mut view = ChannelView::capture(&core, 0);
+        let name = |view: &ChannelView| view.midi_note().map(note_name);
+        for waveform in [WaveformType::Noise, WaveformType::Pcm, WaveformType::Sqv4] {
+            view.waveform = waveform;
+            view.frequency = 440;
+            assert_eq!(name(&view).as_deref(), Some("A-4"), "{waveform:?}");
+            view.frequency = 0;
+            assert_eq!(name(&view), None, "{waveform:?}");
+        }
+        // Values above the playback limit play (and show) as the limit.
+        view.waveform = WaveformType::Sqv4;
+        view.frequency = u16::MAX;
+        assert_eq!(
+            view.midi_note(),
+            Some(midi_from_hz(f32::from(SQV4_FREQ_MAX)))
+        );
+        view.waveform = WaveformType::Pcm;
+        assert_eq!(
+            view.midi_note(),
+            Some(midi_from_hz(f32::from(PCM_FREQ_MAX)))
+        );
+        for waveform in [WaveformType::FifoDac, WaveformType::DmaPcm] {
+            view.waveform = waveform;
+            view.frequency = 440;
+            assert_eq!(view.midi_note(), None, "{waveform:?}");
+        }
     }
 
     #[test]

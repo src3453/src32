@@ -249,7 +249,7 @@ cargo run --release --bin sgub_player -- --card 0=path/to/3hs816.cpt32card song.
 - **v4 のフレーム周期**: `frame_period` が 0 なら 800 sample（VSync）ごと、0 以外なら `frame_period / 1000` sample ごとに 1 フレームを進めます（端数は繰り越すので周期はずれません）。時間表示と seek もこの周期で換算します。
 - **拡張カード**: v4 のカード要件表（v3 は slot 0 の 3WS88PWN4）にある slot ごとに `--card SLOT=PACKAGE` のパッケージを読み込みます。指定がなければ既知のカード（3HS816 → `3hs816.cpt32card`、3HS88PWN4 → `3ws88pwn4.cpt32card`）を、`.sgub` と同じフォルダ、実行ファイルのフォルダ、カレントディレクトリ、それぞれの `cards/` と `examples/wasm-*/target/` から探します。読み込んだら要件表の ID を MMIO で照合し、見つからない・ID が違う・カードが fault したときは、その slot への書き込みだけを捨てて再生を続けます。
 - 左（`Tab`／タブのクリックで切り替え）:
-  - **SGU+SI22 18CH**: SGU0／SGU1 × 8ch の 16 トラックと、その下に 34SI22 の PLAY A／B（トラック 17／18）。SGU は波形種別、ノート名（Wavetable のみ。FREQUENCY 1 = 1 Hz）、FREQUENCY、VOLUME、PAN、変調、鍵盤、波形テーブル／PCM 再生位置／FIFO 残量、レベルと左右パン。34SI22 は状態、形式、標本化レート、音量、出力 L/R、START〜STOP の再生位置。
+  - **SGU+SI22 18CH**: SGU0／SGU1 × 8ch の 16 トラックと、その下に 34SI22 の PLAY A／B（トラック 17／18）。SGU は波形種別、ノート名と鍵盤（Wavetable は FREQUENCY 1 = 1 Hz の 256 標本周期。Noise／PCM／SQV4 は FREQUENCY を Hz とみなし、PCM／SQV4 は再生上限 48000／12000 で頭打ち。FIFO DAC は表示なし）、FREQUENCY、VOLUME、PAN、変調、波形テーブル／PCM 再生位置／FIFO 残量、レベルと左右パン。34SI22 は状態、形式、標本化レート、音量、出力 L/R、START〜STOP の再生位置。
   - **SLOTn 3HS816**: HS 16ch。Gate（キーオンで点灯）、OP1 周波数とノート名、アルゴリズム、フィードバック、パン、OP1〜8 の音量。
   - **SLOTn 3HS88PWN4**: HS 8ch、PCM/WT 4ch（モード、フィルタ、32 点の表、PCM 範囲）とマスター（音量、コンプ、EQ）。
   - **MIXER**（`X` でも開閉）: SGU0、SGU1、34SI22、各カード slot、MASTER（全デバイスを混ぜた後の出力）のゲインフェーダー（0〜200%、100% = 記録どおり）、MUTE ボタン、フェーダー後の L/R メーター。ドラッグ（100% 付近に吸着、Shift で吸着なし）、ホイール 5%（Shift で 1%）、右クリック／ダブルクリックで 100%、`RESET ALL 100%` で全部を戻します。ゲインはファイルを開き直しても残ります（カードは slot 番号で引き継ぎ）。SGU の MUTE はそのコアの 8 チャンネルをまとめてミュートします。
