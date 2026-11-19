@@ -79,8 +79,8 @@ const BUILD_TITLE: &str = concat!(
     ")"
 );
 
-const WIDTH: u32 = render::PRESENT_WIDTH;
-const HEIGHT: u32 = render::PRESENT_HEIGHT;
+const WIDTH: u32 = render::DISPLAY_WIDTH;
+const HEIGHT: u32 = render::DISPLAY_HEIGHT;
 const FRAME_INTERVAL: Duration = Duration::from_nanos(16_666_667);
 const CPU_RUN_BATCH_CYCLES: usize = 256;
 const DEFAULT_CPU_TIME_SLICE_MS: i32 = 8;
@@ -569,6 +569,51 @@ fn guest_key_input(
     keyboard_hid_usage(*code).map(|usage| (usage, state == ElementState::Pressed))
 }
 
+/// "Display" menu of the debug GUI: live CRT filter controls.
+fn draw_crt_menu(ui: &Ui, crt: &mut render::CrtSettings) {
+    ui.menu_item_config("CRT filter")
+        .build_with_ref(&mut crt.enabled);
+    ui.separator();
+    let _disabled = ui.begin_disabled(!crt.enabled);
+    ui.menu("Phosphor mask", || {
+        for mask in render::CrtMask::ALL {
+            if ui
+                .menu_item_config(mask.label())
+                .selected(crt.mask == mask)
+                .build()
+            {
+                crt.mask = mask;
+            }
+        }
+    });
+    ui.set_next_item_width(160.0);
+    ui.slider("Scanlines", 0.0, 1.0, &mut crt.scanline_strength);
+    ui.set_next_item_width(160.0);
+    if ui.slider("Beam min", 0.05, 1.0, &mut crt.beam_min) {
+        crt.beam_max = crt.beam_max.max(crt.beam_min);
+    }
+    ui.set_next_item_width(160.0);
+    if ui.slider("Beam max", 0.05, 1.0, &mut crt.beam_max) {
+        crt.beam_min = crt.beam_min.min(crt.beam_max);
+    }
+    ui.set_next_item_width(160.0);
+    ui.slider("Mask strength", 0.0, 1.0, &mut crt.mask_strength);
+    ui.set_next_item_width(160.0);
+    ui.slider("Curvature", 0.0, 0.2, &mut crt.curvature);
+    ui.set_next_item_width(160.0);
+    ui.slider("Bloom", 0.0, 2.0, &mut crt.bloom);
+    ui.set_next_item_width(160.0);
+    ui.slider("Brightness", 0.25, 4.0, &mut crt.brightness);
+    ui.set_next_item_width(160.0);
+    ui.slider("Vignette", 0.0, 1.0, &mut crt.vignette);
+    if ui.menu_item("Reset to defaults") {
+        *crt = render::CrtSettings {
+            enabled: crt.enabled,
+            ..render::CrtSettings::default()
+        };
+    }
+}
+
 fn debug_menu_reserve_px(gui: Option<&DebugGui>) -> f64 {
     gui.map(|gui| {
         let scale = f64::from(gui.imgui.io().display_framebuffer_scale[1]);
@@ -577,19 +622,32 @@ fn debug_menu_reserve_px(gui: Option<&DebugGui>) -> f64 {
     .unwrap_or(0.0)
 }
 
+/// Maps a window position to guest 640×480 coordinates. The viewport shows
+/// the active video plus the overscan margin; `crt_curvature` applies the
+/// same barrel warp as the CRT filter (0 when it is off).
 fn mouse_position_to_guest(
     position: PhysicalPosition<f64>,
     size: PhysicalSize<u32>,
     top_reserve_px: f64,
+    crt_curvature: f64,
 ) -> (u16, u16) {
     let (scale, viewport_x, viewport_y) = render::game_viewport(size, top_reserve_px);
     if scale == 0.0 {
         return (0, 0);
     }
-    let x = ((position.x - viewport_x) / scale - f64::from(render::BORDER_SIZE))
+    let mut raster_x = (position.x - viewport_x) / scale;
+    let mut raster_y = (position.y - viewport_y) / scale;
+    if crt_curvature != 0.0 {
+        let width = f64::from(render::DISPLAY_WIDTH);
+        let height = f64::from(render::DISPLAY_HEIGHT);
+        let (u, v) = render::crt_warp(raster_x / width, raster_y / height, crt_curvature);
+        raster_x = u * width;
+        raster_y = v * height;
+    }
+    let x = (raster_x - f64::from(render::OVERSCAN))
         .floor()
         .clamp(0.0, f64::from(render::FRAME_WIDTH - 1)) as u16;
-    let y = ((position.y - viewport_y) / scale - f64::from(render::BORDER_SIZE))
+    let y = (raster_y - f64::from(render::OVERSCAN))
         .floor()
         .clamp(0.0, f64::from(render::FRAME_HEIGHT - 1)) as u16;
     (x, y)
@@ -787,6 +845,7 @@ struct GuiApp {
     music_stream: Option<PathBuf>,
     title: String,
     next_frame_deadline: Instant,
+    crt_settings: render::CrtSettings,
 }
 
 impl GuiApp {
@@ -860,6 +919,7 @@ impl GuiApp {
             music_stream: music_stream.map(Path::to_path_buf),
             title: machine.title.unwrap_or_else(|| BUILD_TITLE.to_owned()),
             next_frame_deadline: Instant::now(),
+            crt_settings: render::CrtSettings::default(),
         })
     }
     fn release_mouse_buttons(&mut self) {
@@ -1423,9 +1483,11 @@ impl DebugUiState {
         cpu: &mut AnyCpu,
         vdp: &Rc<RefCell<Vdp>>,
         cpu_execution: &mut CpuExecutionSettings,
+        crt: &mut render::CrtSettings,
     ) {
         self.expansion.update(cpu.expansion_card_debug_info());
         ui.main_menu_bar(|| {
+            ui.menu("Display", || draw_crt_menu(ui, crt));
             ui.menu("Windows", || {
                 for window in DebugWindow::ALL {
                     let index = window as usize;
@@ -2513,7 +2575,10 @@ impl DebugGui {
 
             let ui = self.imgui.frame();
             self.menu_bar_height = ui.frame_height();
-            self.state.draw_windows(ui, cpu, vdp, cpu_execution);
+            let mut crt = presenter.crt_settings();
+            self.state
+                .draw_windows(ui, cpu, vdp, cpu_execution, &mut crt);
+            presenter.set_crt_settings(crt);
             self.platform.prepare_render(ui, window);
             let framebuffer_scale = f64::from(self.imgui.io().display_framebuffer_scale[1]);
             let top_reserve_px = (f64::from(self.menu_bar_height) * framebuffer_scale).max(0.0);
@@ -2581,7 +2646,8 @@ impl ApplicationHandler for GuiApp {
             .display_handle
             .take()
             .expect("Missing display handle for rendering");
-        let presenter = render::WgpuPresenter::new(&window, Box::new(display_handle));
+        let mut presenter = render::WgpuPresenter::new(&window, Box::new(display_handle));
+        presenter.set_crt_settings(self.crt_settings);
         let debug_gui = if self.enable_debug_gui {
             Some(DebugGui::new(
                 &window,
@@ -2737,8 +2803,15 @@ impl ApplicationHandler for GuiApp {
                 if self.focused && !self.mouse_captured && !imgui_captures {
                     if let Some(window) = self.window.as_ref() {
                         let top_reserve_px = debug_menu_reserve_px(self.debug_gui.as_ref());
-                        let (x, y) =
-                            mouse_position_to_guest(position, window.inner_size(), top_reserve_px);
+                        let curvature = self.presenter.as_ref().map_or(0.0, |presenter| {
+                            presenter.crt_settings().effective_curvature()
+                        });
+                        let (x, y) = mouse_position_to_guest(
+                            position,
+                            window.inner_size(),
+                            top_reserve_px,
+                            curvature,
+                        );
                         let _ = self
                             .input_sender
                             .send(HostInputEvent::MousePosition { x, y });
@@ -2970,6 +3043,20 @@ struct GuiLaunchOptions {
     music_stream: Option<PathBuf>,
     cpu: Option<CpuKind>,
     cpu_execution: CpuExecutionSettings,
+    crt: Option<bool>,
+}
+
+fn crt_settings_from_config(path: &Path) -> Result<render::CrtSettings, String> {
+    let contents = match std::fs::read_to_string(path) {
+        Ok(contents) => contents,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Ok(render::CrtSettings::default());
+        }
+        Err(error) => return Err(format!("cannot read {}: {error}", path.display())),
+    };
+    let root: yaml_serde::Value = yaml_serde::from_str(&contents)
+        .map_err(|error| format!("invalid YAML in {}: {error}", path.display()))?;
+    render::crt_settings_from_yaml(&root)
 }
 
 fn pcg_font_path_from_config(key: &str) -> Result<Option<PathBuf>, String> {
@@ -3026,6 +3113,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
     let mut enable_debug_gui = false;
     let mut profile_cpu = false;
     let mut start_paused = false;
+    let mut crt = None;
 
     let mut music_stream = None;
     let mut cpu: Option<CpuKind> = None;
@@ -3041,6 +3129,12 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
                 enable_debug_gui = true;
             }
             "--start-paused" | "--pause-on-start" => start_paused = true,
+            "--crt" | "--no-crt" => {
+                if crt.is_some() {
+                    return Err("Duplicate --crt/--no-crt".into());
+                }
+                crt = Some(arg == "--crt");
+            }
             "--music-stream" => {
                 if music_stream.is_some() {
                     return Err("Duplicate --music-stream".into());
@@ -3117,6 +3211,7 @@ fn parse_gui_args(args: &[String]) -> Result<GuiLaunchOptions, String> {
         music_stream,
         cpu,
         cpu_execution,
+        crt,
     })
 }
 
@@ -3149,13 +3244,13 @@ fn main() {
             Err(message) => {
                 tracing::error!(%message, "Invalid command line");
                 eprintln!(
-                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                    "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--crt|--no-crt] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
                 );
             }
         },
         None => {
             eprintln!(
-                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
+                "Usage: cargo run -- <program.bin> [--debug-gui] [--profile-cpu] [--start-paused] [--crt|--no-crt] [--cpu-execution strict|best-effort|cycle-independent] [--cpu-time-slice-ms 1..16] [--music-stream song.sgub] [--cpu scalar|cached|cached-relaxed|jit|pipeline] | cargo run -- [-m|--monitor] [program.bin] [--cpu scalar|cached|cached-relaxed|jit|pipeline]; editor: cargo run --bin music_editor -- [project.yaml]"
             );
         }
     }
@@ -3177,6 +3272,11 @@ fn run_gui_with_options(options: &GuiLaunchOptions) -> Result<(), String> {
         cpu_kind,
         options.cpu_execution,
     )?;
+    let mut crt = crt_settings_from_config(Path::new("config.yaml"))?;
+    if let Some(enabled) = options.crt {
+        crt.enabled = enabled;
+    }
+    app.crt_settings = crt;
     event_loop
         .run_app(&mut app)
         .map_err(|error| format!("Failed to run application: {error}"))
@@ -3304,27 +3404,45 @@ mod input_tests {
 
     #[test]
     fn maps_mouse_coordinates_through_centered_viewport_and_clamps() {
-        let size = PhysicalSize::new(render::PRESENT_WIDTH * 2, render::PRESENT_HEIGHT * 2);
+        let size = PhysicalSize::new(render::DISPLAY_WIDTH * 2, render::DISPLAY_HEIGHT * 2);
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(16.0, 16.0), size, 0.0),
+            mouse_position_to_guest(PhysicalPosition::new(16.0, 16.0), size, 0.0, 0.0),
             (0, 0)
         );
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(1294.0, 974.0), size, 0.0),
+            mouse_position_to_guest(PhysicalPosition::new(1294.0, 974.0), size, 0.0, 0.0),
             (639, 479)
         );
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(-100.0, 4000.0), size, 0.0),
+            mouse_position_to_guest(PhysicalPosition::new(-100.0, 4000.0), size, 0.0, 0.0),
             (0, 479)
         );
 
         let wide = PhysicalSize::new(2000, 600);
         let (scale, _, viewport_y) = render::game_viewport(wide, 0.0);
-        let content_top = viewport_y + f64::from(render::BORDER_SIZE) * scale;
+        let content_top = viewport_y + f64::from(render::OVERSCAN) * scale;
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(1000.0, content_top), wide, 0.0).1,
+            mouse_position_to_guest(PhysicalPosition::new(1000.0, content_top), wide, 0.0, 0.0).1,
             0
         );
+    }
+
+    #[test]
+    fn crt_curvature_keeps_mouse_on_the_warped_picture() {
+        let size = PhysicalSize::new(render::DISPLAY_WIDTH * 2, render::DISPLAY_HEIGHT * 2);
+        let centre = PhysicalPosition::new(
+            f64::from(render::DISPLAY_WIDTH),
+            f64::from(render::DISPLAY_HEIGHT),
+        );
+        assert_eq!(
+            mouse_position_to_guest(centre, size, 0.0, 0.05),
+            mouse_position_to_guest(centre, size, 0.0, 0.0)
+        );
+        // Near a corner the warp pushes the sampled point outwards.
+        let near_corner = PhysicalPosition::new(200.0, 160.0);
+        let flat = mouse_position_to_guest(near_corner, size, 0.0, 0.0);
+        let curved = mouse_position_to_guest(near_corner, size, 0.0, 0.05);
+        assert!(curved.0 < flat.0 && curved.1 < flat.1);
     }
 
     #[test]
@@ -3334,18 +3452,19 @@ mod input_tests {
         let (scale, viewport_x, viewport_y) = render::game_viewport(size, reserve);
         assert!(scale > 0.0);
         assert!(viewport_y >= reserve);
-        let content_top = viewport_y + f64::from(render::BORDER_SIZE) * scale;
+        let content_top = viewport_y + f64::from(render::OVERSCAN) * scale;
         assert_eq!(
             mouse_position_to_guest(
                 PhysicalPosition::new(viewport_x, content_top),
                 size,
-                reserve
+                reserve,
+                0.0
             )
             .1,
             0
         );
         assert_eq!(
-            mouse_position_to_guest(PhysicalPosition::new(viewport_x, 0.0), size, reserve).1,
+            mouse_position_to_guest(PhysicalPosition::new(viewport_x, 0.0), size, reserve, 0.0).1,
             0
         );
     }
@@ -3770,6 +3889,7 @@ mod input_tests {
             music_stream: None,
             title: BUILD_TITLE.to_owned(),
             next_frame_deadline: Instant::now(),
+            crt_settings: render::CrtSettings::default(),
         };
 
         app.handle_dropped_file(&package_path);

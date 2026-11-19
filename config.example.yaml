@@ -32,6 +32,26 @@ pcg:
   # Loads dedicated VRAM 0x21000..0x21FFF; does not select the screen mode.
   # font_8x16: "path/to/font.f16"
 
+# GUI display. The emulator scans out a 640x480 framebuffer like the FPGA VDP
+# (every mode is scaled by pixel/line repetition) and shows the border colour
+# only in the overscan margin around it.
+# `crt: true` enables the CRT filter with defaults; a mapping enables it too
+# unless `enabled: false`. One beam is drawn per guest line, so 240-line modes
+# get thick scanlines and the 480-line mode thin ones (faded out when the
+# window is too small to draw them). `--crt` / `--no-crt` override `enabled`.
+#display:
+#  crt:
+#    enabled: true
+#    scanlines: 1.0        # 0..1 beam strength
+#    beam_min: 0.18        # beam sigma for dark pixels (in guest lines)
+#    beam_max: 0.33        # beam sigma for bright pixels
+#    mask: aperture_grille # none, aperture_grille, slot_mask, shadow_mask
+#    mask_strength: 0.3    # 0..1
+#    curvature: 0.02       # 0..0.2 (the guest mouse follows the warp)
+#    bloom: 0.15           # 0..2 halation
+#    brightness: 1.15      # 0.25..4
+#    vignette: 0.3         # 0..1
+
 # Connect up to four raw disk images. Relative paths are resolved from the
 # directory containing config.yaml. Each configured image must already exist.
 # disk:
