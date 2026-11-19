@@ -412,6 +412,8 @@ class LaunchPipelineTests(unittest.TestCase):
             drives=[],
             cards=[],
             log_level=Variable("info"),
+            crt_enabled=Variable(False),
+            crt_mask=Variable("aperture_grille"),
         )
         saved = launcher.Launcher._effective_document(ui)
         restored = launcher.parse_yaml(launcher.dump_yaml(saved))
@@ -426,6 +428,38 @@ class LaunchPipelineTests(unittest.TestCase):
         ui.vram_mib.set("129")
         with self.assertRaises(launcher.ConfigError):
             launcher.Launcher._effective_document(ui)
+    def test_crt_toggle_round_trips_through_display_crt(self):
+        def saved(document, enabled, mask):
+            document = launcher.parse_yaml(launcher.dump_yaml(document))
+            launcher.apply_crt_setting(document, enabled, mask)
+            return launcher.parse_yaml(launcher.dump_yaml(document))
+
+        # Off with no hand-written tuning leaves no key behind.
+        self.assertNotIn("display", saved({}, False, "aperture_grille"))
+        self.assertEqual(saved({}, True, "aperture_grille")["display"], {"crt": True})
+        self.assertEqual(saved({}, True, "slot_mask")["display"], {"crt": {"mask": "slot_mask"}})
+        for enabled, mask in ((True, "shadow_mask"), (True, "aperture_grille"), (False, "aperture_grille")):
+            restored = saved({}, enabled, mask)
+            self.assertEqual(launcher.crt_from_document(restored), (enabled, mask))
+
+        # Tuning keys written by hand survive toggling, and the toggle is
+        # read back the way cpt32 reads it (a mapping means enabled).
+        tuned = {"display": {"crt": {"curvature": 0.05, "mask": "slot_mask"}}}
+        self.assertEqual(launcher.crt_from_document(tuned), (True, "slot_mask"))
+        off = saved(tuned, False, "slot_mask")
+        self.assertEqual(off["display"]["crt"], {"curvature": 0.05, "mask": "slot_mask", "enabled": False})
+        self.assertEqual(launcher.crt_from_document(off), (False, "slot_mask"))
+        on = saved(off, True, "aperture_grille")
+        self.assertEqual(on["display"]["crt"], {"curvature": 0.05})
+        self.assertEqual(launcher.crt_from_document(on), (True, "aperture_grille"))
+
+        # Other display keys are kept; malformed entries are rejected.
+        self.assertEqual(saved({"display": {"other": 1}}, False, "none")["display"], {"other": 1})
+        with self.assertRaises(launcher.ConfigError):
+            launcher.apply_crt_setting({"display": 3}, True, "none")
+        with self.assertRaises(launcher.ConfigError):
+            launcher.apply_crt_setting({}, True, "trinitron")
+
     def test_execution_settings_round_trip_through_saved_profile(self):
         class Variable:
             def __init__(self, value):

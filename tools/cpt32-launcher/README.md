@@ -16,6 +16,8 @@ ROM欄には `.sol` ソースも指定できます。「この設定で起動」
 
 「ROM・ディスク・拡張」の `PCG font 8x8` は `pcg.font`（2/4 KiB）、`PCG font 8x16` は `pcg.font_8x16`（4096 byte、256 glyph×16行、bit 7が左端）です。両方を独立して保存・復元でき、空欄ならそのキーを省略します。8×16は専用VRAMへの初期ロードだけで、表示モードはゲストが選択します。Foundation の `mode 8x16` も設定済みフォントを保持します。monitorではこれらのフォント設定を読み込みません。
 
+起動設定タブの「画面」で、GUIのCRTフィルターのオン／オフとマスク（`aperture_grille`、`slot_mask`、`shadow_mask`、`none`）を選べます。値は設定YAMLの `display.crt` に保存し、起動時の一時設定にもそのまま渡すので、エミュレーターを `--crt` なしで起動しても反映されます。オフで調整値がなければキーを省略し、既定のマスクでオンなら `crt: true`、別のマスクなら `crt: {mask: ...}` と書きます。YAMLに手で書いた `curvature` や `scanlines` などの調整値は保持し、オフにするとその mapping に `enabled: false` を加えます。調整値の一覧は `config.example.yaml` にあり、デバッグGUIの「Display」メニューでも実行中に試せます。monitor起動では使いません。
+
 「設定を保存」は画面に選択したYAMLへ変更を保存する明示操作です。「プロファイル保存」は設定内容とROM／CLI設定を、Windowsでは `%LOCALAPPDATA%\CPT32\Launcher\profiles.json`、その他の環境では `~/.config/CPT32/Launcher/profiles.json` に保存します。プロファイル名を入力して「読込」を押すと戻せます。
 
 「CPT32PKG保存…」は保存先を選び、ROM欄のrawゲストバイナリ、有効なディスク4スロットとWASM拡張カード8スロットを、`manifest.yaml`付きのZIPへコピーします。未保存の画面設定を反映し、ディスクの種類と読み取り専用属性、カードのスロットを維持します。保存中とエミュレーター起動中はこのボタンを無効にします。保存失敗時は既存の出力を置き換えません。ROM選択や設定YAML、元のディスク／カードは書き換えません。

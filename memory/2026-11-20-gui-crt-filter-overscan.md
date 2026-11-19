@@ -8,3 +8,4 @@
 - 曲面を使うとマウス座標がずれるので、`mouse_position_to_guest` に `render::crt_warp`（シェーダーの `warp` と同じ式）を通す。式を変えるときは両方そろえる。曲率 0 のときは warp を通らず従来の式のまま（境界値テストの丸めを変えない）。
 - 設定: `config.yaml` の `display.crt`（bool か mapping。未知キーと範囲外はエラー）、`--crt`/`--no-crt`、`--debug-gui` の「Display」メニュー。GUI 専用で testbench には影響しない。
 - 検証: `cargo test --release --bin cpt32`（render の CRT 設定・ピッチ・拡大・warp のテストとマウスの曲面テスト）。`config.yaml` に `bios` があるとき、`package_*` の 2 件は変更前から失敗する。見た目は、ヘッドレスの wgpu で raster と CRT のパスを PPM に描く一時テストで 3 モードとも確認した（コミットしていない）。実ウィンドウのスクリーンショットでは確認していない。
+- launcher（`tools/cpt32-launcher`）は起動設定タブ「画面」のチェックとマスク選択を `display.crt` に読み書きする（`crt_from_document`／`apply_crt_setting`）。cpt32 と同じく mapping はオン扱いなので、オフにするときは手書きの調整値を消さずに `enabled: false` を加える。調整値がなければオフでキーを省略し、オンは `true` か `{mask: ...}` にする。CLI の `--crt` は渡さず、一時設定 YAML 経由で反映する。検証は `python -m unittest discover -s tools/cpt32-launcher -p 'test_*.py' -v`。

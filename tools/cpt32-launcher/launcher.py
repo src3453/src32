@@ -53,6 +53,8 @@ class ProcessEventQueue(queue.Queue):
 
 CPU_EXECUTION_MODES = ("strict", "best-effort", "cycle-independent")
 DEFAULT_CPU_EXECUTION_MODE = "best-effort"
+CRT_MASKS = ("aperture_grille", "slot_mask", "shadow_mask", "none")
+DEFAULT_CRT_MASK = "aperture_grille"
 DEFAULT_CPU_TIME_SLICE_MS = 8
 CPU_TIME_SLICE_RANGE_MS = range(1, 17)
 REPO = Path(__file__).resolve().parents[2]
@@ -292,6 +294,59 @@ def dump_yaml(value) -> str:
     return "\n".join(emit(value)) + "\n"
 
 
+def crt_from_document(document) -> tuple[bool, str]:
+    """Return (enabled, mask) for `display.crt` the way cpt32 reads it.
+
+    `crt` is a bool or a mapping; a mapping enables the filter unless it says
+    `enabled: false`. A missing or malformed entry means off with defaults.
+    """
+    display = document.get("display") if isinstance(document, dict) else None
+    crt = display.get("crt") if isinstance(display, dict) else None
+    if isinstance(crt, bool):
+        return crt, DEFAULT_CRT_MASK
+    if isinstance(crt, dict):
+        enabled = crt.get("enabled", True)
+        mask = crt.get("mask", DEFAULT_CRT_MASK)
+        return enabled is not False, mask if mask in CRT_MASKS else DEFAULT_CRT_MASK
+    return False, DEFAULT_CRT_MASK
+
+
+def apply_crt_setting(document: dict, enabled: bool, mask: str) -> None:
+    """Write the launcher's CRT toggle and mask into `display.crt`.
+
+    Other `display.crt` tuning keys written by hand are kept. Without them the
+    shortest form is used: no key when off, `true` for the defaults.
+    """
+    if mask not in CRT_MASKS:
+        raise ConfigError(f"CRTマスクは {', '.join(CRT_MASKS)} のいずれかを選んでください")
+    display = document.get("display") or {}
+    if not isinstance(display, dict):
+        raise ConfigError("`display` はmappingで指定してください")
+    crt = display.get("crt")
+    tuning = {key: value for key, value in crt.items() if key not in ("enabled", "mask")} if isinstance(crt, dict) else {}
+    if tuning:
+        crt = dict(crt)
+        if enabled:
+            crt.pop("enabled", None)
+        else:
+            crt["enabled"] = False
+        if mask == DEFAULT_CRT_MASK:
+            crt.pop("mask", None)
+        else:
+            crt["mask"] = mask
+        display["crt"] = crt
+    elif not enabled:
+        display.pop("crt", None)
+    elif mask == DEFAULT_CRT_MASK:
+        display["crt"] = True
+    else:
+        display["crt"] = {"mask": mask}
+    if display:
+        document["display"] = display
+    else:
+        document.pop("display", None)
+
+
 def resolve_config_path(value: str, base: Path) -> str:
     path = Path(value).expanduser()
     if not path.is_absolute():
@@ -459,6 +514,8 @@ class Launcher(tk.Tk):
         self.debug_gui = tk.BooleanVar(value=False)
         self.profile_cpu = tk.BooleanVar(value=False)
         self.start_paused = tk.BooleanVar(value=False)
+        self.crt_enabled = tk.BooleanVar(value=False)
+        self.crt_mask = tk.StringVar(value=DEFAULT_CRT_MASK)
         self.music_stream = tk.StringVar()
         self.bios = tk.StringVar()
         self.font = tk.StringVar()
@@ -532,12 +589,20 @@ class Launcher(tk.Tk):
         ttk.Checkbutton(checks, text="デバッグGUI", variable=self.debug_gui).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(checks, text="CPUプロファイル", variable=self.profile_cpu, command=self._profile_changed).pack(side="left", padx=(0, 12))
         ttk.Checkbutton(checks, text="一時停止で開始", variable=self.start_paused).pack(side="left")
-        ttk.Label(general, text="ログレベル").grid(row=6, column=0, sticky="w", pady=(14, 5))
-        ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=6, column=1, sticky="w", pady=(14, 5))
-        ttk.Label(general, text="solコンパイラ引数").grid(row=7, column=0, sticky="w", pady=6)
-        ttk.Entry(general, textvariable=self.sol_compiler_args).grid(row=7, column=1, sticky="ew", pady=6)
-        ttk.Label(general, text='例: -O speed --debug（空白区切り。必要なら引用符で囲む）', foreground="#555").grid(row=8, column=1, sticky="w")
-        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=9, column=0, columnspan=2, sticky="w", pady=(12, 4))
+        ttk.Label(general, text="画面").grid(row=6, column=0, sticky="w", pady=(14, 5))
+        display_row = ttk.Frame(general)
+        display_row.grid(row=6, column=1, sticky="w", pady=(14, 5))
+        ttk.Checkbutton(display_row, text="CRTフィルター", variable=self.crt_enabled, command=self._crt_changed).pack(side="left")
+        ttk.Label(display_row, text="マスク").pack(side="left", padx=(12, 5))
+        self.crt_mask_box = ttk.Combobox(display_row, textvariable=self.crt_mask, values=CRT_MASKS, state="disabled", width=16)
+        self.crt_mask_box.pack(side="left")
+        ttk.Label(general, text="ログレベル").grid(row=7, column=0, sticky="w", pady=(14, 5))
+        ttk.Combobox(general, textvariable=self.log_level, values=("trace", "debug", "info", "warn", "error", "off"), state="readonly", width=12).grid(row=7, column=1, sticky="w", pady=(14, 5))
+        ttk.Label(general, text="solコンパイラ引数").grid(row=8, column=0, sticky="w", pady=6)
+        ttk.Entry(general, textvariable=self.sol_compiler_args).grid(row=8, column=1, sticky="ew", pady=6)
+        ttk.Label(general, text='例: -O speed --debug（空白区切り。必要なら引用符で囲む）', foreground="#555").grid(row=9, column=1, sticky="w")
+        ttk.Label(general, text="CRTフィルターは設定YAMLの display.crt に保存します。細かい調整値は YAML で指定するか、デバッグGUIの Display メニューで試せます。", foreground="#555").grid(row=10, column=0, columnspan=2, sticky="w", pady=(12, 0))
+        ttk.Label(general, text="ROMは .bin / .wax / .cpt32pkg / .sol（自動コンパイル）。monitor起動ではROMを省略できます。", foreground="#555").grid(row=11, column=0, columnspan=2, sticky="w", pady=(4, 4))
         hardware = ttk.Frame(self.tabs, padding=12)
         hardware.columnconfigure(1, weight=1)
         self.tabs.add(hardware, text="ROM・ディスク・拡張")
@@ -669,6 +734,15 @@ class Launcher(tk.Tk):
         if package.get().strip():
             enabled.set(True)
 
+    def _crt_changed(self):
+        self.crt_mask_box.configure(state="readonly" if self.crt_enabled.get() else "disabled")
+
+    def _load_crt(self):
+        enabled, mask = crt_from_document(self.document)
+        self.crt_enabled.set(enabled)
+        self.crt_mask.set(mask)
+        self._crt_changed()
+
     def _profile_changed(self):
         if self.profile_cpu.get():
             self.debug_gui.set(True)
@@ -718,6 +792,7 @@ class Launcher(tk.Tk):
             self.sound_volume.set(str(sound.get("volume", 1.0)) if isinstance(sound, dict) else "1.0")
             self.fdd_profile.set(sound.get("default_fdd_profile", "") if isinstance(sound, dict) else "")
             self.hdd_profile.set(sound.get("default_hdd_profile", "") if isinstance(sound, dict) else "")
+            self._load_crt()
             drives = self.document.get("disk", []) or []
             by_slot = {item.get("slot"): item for item in drives if isinstance(item, dict) and isinstance(item.get("slot"), int)} if isinstance(drives, list) else {}
             for row in self.drives:
@@ -856,6 +931,7 @@ class Launcher(tk.Tk):
             document["logging"] = logging
         else:
             document.pop("logging", None)
+        apply_crt_setting(document, bool(self.crt_enabled.get()), self.crt_mask.get())
         return document
 
     def save_config(self):
@@ -949,6 +1025,7 @@ class Launcher(tk.Tk):
         self.hdd_profile.set(sound.get("default_hdd_profile", "") if isinstance(sound, dict) else "")
         logging = self.document.get("logging", {}) or {}
         self.log_level.set(logging.get("level", "info") if isinstance(logging, dict) else "info")
+        self._load_crt()
         disks = self.document.get("disk", []) or []
         by_slot = {item.get("slot"): item for item in disks if isinstance(item, dict)} if isinstance(disks, list) else {}
         for row in self.drives:
