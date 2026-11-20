@@ -24,7 +24,7 @@
 #  ram_mib: 16
 #  vram_mib: 4
 
-pcg:
+#pcg:
   # Raw PCG font bank image: exactly 2 KiB (one bank) or 4 KiB (both banks).
   # Relative paths are resolved from the directory containing config.yaml.
   # font: "assets/UNSCII.F08"
