@@ -131,7 +131,7 @@ SGUの音源コア、MMIOインターフェース、レジスタマップは [`s
   - スプライトのpriority/index順制御、flip、整数拡大縮小
   - 選択したGPへの画素出力
 
-詳細は [`spec_SGC.md`](spec_SGC.md) を参照。回転とBitBltは初版SGC仕様に含めない。
+詳細は [`spec_SGC.md`](spec_SGC.md) を参照。回転は初版SGC仕様に含めない。BitBlt（矩形転送・ラスタ演算・カラーキー）はDMACが行う（[`spec_BMC_DMAC.md` §2.4](spec_BMC_DMAC.md)）。
 
 ---
 

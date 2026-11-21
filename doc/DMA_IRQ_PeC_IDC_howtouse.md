@@ -167,6 +167,25 @@ Pop-Location
 
 エラー時は IDC `STATUS.ERROR` と `ERROR_CODE`、DMAC `CH0_STATUS.ERROR` と `ERROR_CODE` を確認します。IDC の代表的なコードは 1=設定不正、2=media なし、3=LBA 範囲外、4=write protect、5=DMA mismatch/abort、6=media I/O failure です。DMAC の ERROR_CODE=1 は設定不正、2 は禁止 address / bus error、3 は abort です。DMA abort は beat 境界、IDC ABORT は sector 境界で停止するため、すでに完了した書き込み sector は保持されます。
 
+## 8. BitBlt（矩形のコピー）
+
+DMAC は RAM・VRAM 上の矩形をコピー（BitBlt）できます。`CAPS`（`0x80050018`）の bit 0 が 1 のときに使えます。channel `n` の拡張レジスタは `0x80050200 + n × 0x20` から始まり、`ROWS`（+0）、`SRC_STRIDE`（+4）、`DST_STRIDE`（+8）、`KEY`（+0xC）、`ROWS_REMAIN`（+0x10、読み出し専用）が並びます。`CHn_COUNT` は 1 行の byte 数です。stride は行の先頭から次の行の先頭までの byte 数で、負の値も使えます。
+
+例として、幅 320 byte/行の 8-bit CLUT GP に、32×16 画素のスプライトを色 0 を透過させて `(x, y)` へ描く手順を channel 0 で示します。
+
+| 書き込み先 | 値 | 意味 |
+|---|---|---|
+| `0x80050200` | 16 | 行数 |
+| `0x80050204` | 32 | スプライトの行間隔 |
+| `0x80050208` | 320 | GP の行間隔 |
+| `0x8005020C` | 0 | 透過色 |
+| `0x80050100` | スプライト先頭 | source |
+| `0x80050104` | `GP 先頭 + y × 320 + x` | destination |
+| `0x80050108` | 32 | 1 行の byte 数 |
+| `0x8005010C` | `0x1C0` | 8-bit、`MODE_2D`（bit 6）、`KEY_EN`（bit 7）、START |
+
+`SRC_MODE=fixed` と `SRC_STRIDE=0` を組み合わせると矩形の塗りつぶしになります。`CHn_CONTROL` の bit 11:10（ROP）を使うと、転送先の値と AND／OR／XOR を取れます（XOR カーソルなど）。下方向へ重なるスクロールは、最下行から負の stride で進めます。BitBlt の転送はメモリ専用で、IDC `DATA` や VPU FIFO には使えません。詳しくは [BMC / DMAC 仕様 §2.4](spec_BMC_DMAC.md) を参照してください。
+
 ## 関連資料
 
 - [BMC / DMAC 仕様](spec_BMC_DMAC.md)

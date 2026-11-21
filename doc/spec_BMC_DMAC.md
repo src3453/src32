@@ -68,7 +68,7 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 
 - 1チャネルの転送長は1～`0xFFFFFFFF` byte。0 byteは開始エラー。
 - 転送幅は8/16/32-bitから選び、byte countは転送幅の倍数とする。source/destinationは転送幅に整列させる。
-- sourceとdestinationはそれぞれ固定または転送幅分のincrementを選択できる。初版ではdecrement、2D/stride、scatter-gather、chainingはサポートしない。
+- sourceとdestinationはそれぞれ固定または転送幅分のincrementを選択できる。矩形（2D/stride）転送、ラスタ演算、カラーキーは§2.4のBitBlt機能で行う。decrement、scatter-gather、chainingはサポートしない。
 - メモリ転送対象はMain RAM、VRAM、PCMRAM。MMIOは通常の転送先として不許可だが、既存の32-bit固定destination例外としてVPUの`FIFO_DATA` (`0x8003002C`)を許可する。加えてIDC仕様で定める場合に限り、唯一の追加MMIO endpoint `0x80041024` (PeC IDC `DATA`) を8-bit転送で使用できる。WASMカードendpointは次項に限り許可し、その他のMMIO、ROM、未定義領域は不許可とする。違反は当該チャネルのADDR_ERRORで停止する。
 - IDC endpoint例外の向きはIDC operationで固定する。READはsource=`0x80041024` fixed、destination=許可されたRAM increment、WRITEはsource=許可されたRAM increment、destination=`0x80041024` fixed。幅は8-bitのみ、byte countはactiveなIDC READ/WRITEの`SECTOR_COUNT × 512`と完全一致させる。VPU例外は既存どおり32-bit fixed destinationに限り、通常メモリDMA制約は変わらない。IDC endpointをこの形式以外で使う設定は開始時の設定エラー（`ERROR_CODE=1`）とする。
 - WASM拡張カードは装着slotのapertureをDMA endpointとして使用できる。beatの先頭byteから最終byteまでが同じ装着slot内に収まる場合に限り許可し、空slot、slot境界越え、fault状態cardへのアクセスはADDR_ERRORとする。転送はBMC仲裁と既存DMAC経路を通り、各byteはCPUと同じカードMMIO read/write exportへ届く。既存のVPU/IDC endpoint例外条件は変わらない。
@@ -88,6 +88,7 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 | `0x00C` | IRQ_ENABLE | RW | bit 0–5: channelごとのIRQ許可 |
 | `0x010` | IRQ_STATUS | RW1C | bit 0–5: 完了またはエラーIRQ pending。1書き込みで該当bitをクリア |
 | `0x014` | ABORT | WO | bit 0–5に1を書き込むと該当チャネルを中止 |
+| `0x018` | CAPS | RO | 機能ビット。bit 0: BitBlt（§2.4）対応。他ビットは0 |
 | `0x100 + n*0x20` | CHn_SRC | RW | source address |
 | `0x104 + n*0x20` | CHn_DST | RW | destination address |
 | `0x108 + n*0x20` | CHn_COUNT | RW | 転送byte数 |
@@ -95,6 +96,13 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 | `0x110 + n*0x20` | CHn_STATUS | RW1C | 状態bit。DONE/ERRORは1書き込みでクリアし、ERROR_CODEも0に戻る |
 | `0x114 + n*0x20` | CHn_REMAIN | RO | 未転送byte数。開始前はCHn_COUNT |
 | `0x118 + n*0x20` | CHn_PRIORITY | RW | bit 2:0=BMC優先度P0～P7。reset値P2 |
+| `0x200 + n*0x20` | CHn_ROWS | RW | 2D転送の行数（§2.4）。reset値0 |
+| `0x204 + n*0x20` | CHn_SRC_STRIDE | RW | sourceの行間隔。符号付き32-bitのbyte数。reset値0 |
+| `0x208 + n*0x20` | CHn_DST_STRIDE | RW | destinationの行間隔。符号付き32-bitのbyte数。reset値0 |
+| `0x20C + n*0x20` | CHn_KEY | RW | カラーキー値。下位WIDTH分を比較に使う。reset値0 |
+| `0x210 + n*0x20` | CHn_ROWS_REMAIN | RO | 未完了の行数（転送中の行を含む）。開始前はCHn_ROWS |
+
+`0x200`からの拡張レジスタはCHn_ROWS_REMAINを除きBUSY中の書き込みを無視する（CHn_SRCなどと同じ）。CAPSを持たない旧版のDMACでは未定義オフセットの規則によりCAPS=0が読めるので、ソフトウェアはCAPS bit 0を確かめてからBitBlt機能を使う。IDレジスタの値は変えない。
 
 チャネルnは0～5。CHn_CONTROLのbit定義:
 
@@ -103,9 +111,12 @@ DMACは6チャネルの独立したDMA要求を管理する。各チャネルは
 | 1:0 | WIDTH: `00`=8-bit、`01`=16-bit、`10`=32-bit、`11`=予約（開始エラー） |
 | 3:2 | SRC_MODE: `00`=increment、`01`=fixed、他=予約 |
 | 5:4 | DST_MODE: `00`=increment、`01`=fixed、他=予約 |
+| 6 | MODE_2D: 1で矩形転送（§2.4）。0では従来の1次元転送 |
+| 7 | KEY_EN: 1でカラーキー（§2.4）。sourceの値がCHn_KEYと等しいbeatは書き込まない |
 | 8 | START: 1を書き込むと開始。自己クリア |
 | 9 | ABORT: 1を書き込むと中止。自己クリア |
-| 31:10, 7:6 | 予約、読み出し0 |
+| 11:10 | ROP: `00`=COPY（d=s）、`01`=AND（d=s&d）、`10`=OR（d=s\|d）、`11`=XOR（d=s^d） |
+| 31:12 | 予約、読み出し0 |
 
 CHn_STATUSのbit定義:
 
@@ -128,6 +139,28 @@ DMA有効化、チャネル有効化、CHn_CONTROL.STARTの順に設定する。
 
 ABORTまたはCHn_CONTROL.ABORTは次のbeat境界で停止し、完了済みの書き込みを保持したままBUSYを下げる。中止はERROR_CODE=3としてERRORを立てる。GLOBAL_CONTROLを0にすると新しいチャネル開始を禁止し、進行中チャネルも次のbeat境界で中止してERROR_CODE=3を記録する。
 
+### 2.4 BitBlt（矩形転送・ラスタ演算・カラーキー）
+
+CHn_CONTROLのMODE_2D、KEY_EN、ROPのいずれかを使う転送をBitBlt転送と呼ぶ。MODE_2D=0、KEY_EN=0、ROP=COPYなら従来どおりの転送で、拡張レジスタは参照しない。
+
+**メモリ専用。** BitBlt転送のsourceとdestinationはMain RAM、VRAM、PCMRAMに限る。開始時にCHn_SRCまたはCHn_DSTがIDC endpointを指す場合は設定エラー（ERROR_CODE=1）とする。転送中のbeatがメモリ窓の外（VPU `FIFO_DATA`、拡張カードaperture、その他MMIO、未定義領域を含む）に出た場合は、その時点でADDR_ERROR（ERROR_CODE=2）として停止する。§2.1のMMIO endpoint例外はBitBlt転送には適用しない。
+
+**矩形転送（MODE_2D=1）。** 1行のbyte数をCHn_COUNT、行数をCHn_ROWSで指定する。行`r`（0始まり）の先頭アドレスは`CHn_SRC + r × CHn_SRC_STRIDE`、`CHn_DST + r × CHn_DST_STRIDE`（32-bitで折り返す）で、行の中ではSRC_MODE/DST_MODEのincrement/fixedに従って進む。行の最後のbeatを終えると次の行の先頭へ移る。
+
+- 開始条件は従来の条件（COUNTは1以上で転送幅の倍数、SRC/DSTは転送幅に整列など）に加え、CHn_ROWS≥1、CHn_SRC_STRIDEとCHn_DST_STRIDEが転送幅の倍数であること。違反は設定エラー（ERROR_CODE=1）。
+- strideは符号付きである。負のstrideで最下行から上へ進めると、上下反転コピーや、destinationがsourceより下にある重なり（下方向スクロール）を安全にコピーできる。重なりの扱いは§2.1と同じく、beat単位の逐次コピーである。
+- SRC_MODE=fixedかつCHn_SRC_STRIDE=0で、1つの値による矩形塗りつぶしになる。
+- 転送中、CHn_REMAINは現在の行の未転送byte数で、行が変わるとCHn_COUNTに戻る。CHn_ROWS_REMAINは転送中の行を含む未完了の行数である。正常完了時はどちらも0。エラーや中止では停止した位置の値を保持する。
+- MODE_2D=0の転送ではCHn_ROWSとstrideを無視し、1行の転送として扱う（開始時のCHn_ROWS_REMAINは1）。
+
+**ラスタ演算（ROP）。** beatごとに、sourceの値`s`と、同じbeatのdestinationの現在値`d`から書き込む値を作る。ROP≠COPYでは、source読み出しbeatの後にdestination読み出しbeatを発行し、その後に書き込みbeatを発行する（1 beatあたり3回のバスアクセス。いずれも通常どおりBMCが調停する）。演算はbeatの値全体（WIDTH分のbit）に対するbit演算である。
+
+**カラーキー（KEY_EN=1）。** source読み出しbeatの値をWIDTHのbit数でマスクし、同じくマスクしたCHn_KEYと等しければ、そのbeatではdestinationの読み出しも書き込みもしない。アドレスとCHn_REMAINは書き込んだ場合と同じく進む。比較はROPを適用する前のsourceの値で行う。値はメモリ上のbig-endianの並びを1つの整数として読んだもので、8-bit CLUTの画素ごとにキーを効かせるならWIDTH=8-bit、RGB555なら16-bitを使う。32-bit幅では4 byteがすべて一致したときだけ省く。
+
+**中止とエラー。** ABORTは従来どおりbeat境界（バスアクセスの境界）で止まる。destination読み出しの後、書き込み前に中止した場合、そのbeatは書き込まない。
+
+例（GP 8-bit CLUT、幅320 byte/行、32×16画素のスプライトを色0透過で`(x, y)`へ描く）: CHn_SRC=スプライト先頭、CHn_SRC_STRIDE=32、CHn_DST=`GP先頭 + y×320 + x`、CHn_DST_STRIDE=320、CHn_COUNT=32、CHn_ROWS=16、CHn_KEY=0、CHn_CONTROL=WIDTH 8-bit | MODE_2D | KEY_EN | START（`0x1C0`）。
+
 ## 3. リセット値と予約事項
 
-リセット直後、DMACの全チャネルは無効かつidle、IRQ_ENABLE/IRQ_STATUSは0である。BMCは有効で、CPU=P0、VPU=P1、各DMA=P2、MAX_BURST=16とする。IDC DATA endpointのsector-ready handshakeは本書2.3節と[`spec_IDC.md`](spec_IDC.md)で定める。その他のデバイス待ち時間やPeC FIFO handshakeは個別のデバイス仕様に従う。
+リセット直後、DMACの全チャネルは無効かつidle、IRQ_ENABLE/IRQ_STATUSは0である。CHn_ROWS、CHn_SRC_STRIDE、CHn_DST_STRIDE、CHn_KEY、CHn_ROWS_REMAINは0。BMCは有効で、CPU=P0、VPU=P1、各DMA=P2、MAX_BURST=16とする。IDC DATA endpointのsector-ready handshakeは本書2.3節と[`spec_IDC.md`](spec_IDC.md)で定める。その他のデバイス待ち時間やPeC FIFO handshakeは個別のデバイス仕様に従う。

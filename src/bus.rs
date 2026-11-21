@@ -641,11 +641,14 @@ impl Bus {
 
         let end = op.address.checked_add(u32::from(op.width))?;
         let expansion_slot = Self::expansion_slot_for_beat(op.address, end);
-        let allowed = (op.address < 0x0100_0000 && end <= 0x0100_0000)
+        let memory = (op.address < 0x0100_0000 && end <= 0x0100_0000)
             || (op.address >= 0x1000_0000 && end <= 0x1040_0000)
-            || (op.address >= 0x1800_0000 && end <= 0x1810_0000)
-            || (op.write && op.width == 4 && op.address == 0x8003_002C)
-            || expansion_slot.is_some();
+            || (op.address >= 0x1800_0000 && end <= 0x1810_0000);
+        // BitBlt beats get no MMIO endpoint exceptions (spec_BMC_DMAC §2.4).
+        let allowed = memory
+            || (!op.memory_only
+                && ((op.write && op.width == 4 && op.address == 0x8003_002C)
+                    || expansion_slot.is_some()));
         if !allowed || op.address % u32::from(op.width) != 0 {
             return None;
         }

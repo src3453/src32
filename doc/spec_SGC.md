@@ -14,7 +14,7 @@ SGCのFIFOコマンドは線分、塗りつぶし矩形、塗りつぶし三角�
 - プリミティブの座標を画面領域でクリップし、指定GPへ画素を供給する。
 - スプライト内priority/index順と、プリミティブFIFO順を維持する。
 
-初版では任意角度回転、半透明個別指定、衝突判定、スキャンラインsprite上限、BitBltを実装しない。BitBltは別仕様とする。
+初版では任意角度回転、半透明個別指定、衝突判定、スキャンラインsprite上限、BitBltを実装しない。BitBltはDMACの機能として定める（[`spec_BMC_DMAC.md` §2.4](spec_BMC_DMAC.md)）。
 
 ## 3. 制約と画素形式
 
@@ -128,4 +128,4 @@ SGCはVDPと同一4 MiB VRAMを共有する。SAT/pattern readはVDP VRAMの相�
 
 ## 9. 初版に含めない機能
 
-任意角度回転、fractional scale、sprite collision、line limit/flicker、per-sprite alpha/blending mode、複数GPへの同時出力、BitBltは予約または別仕様とする。将来拡張でも既存entryの予約byte/bitを再利用する場合は、feature/version識別を追加してから有効化する。
+任意角度回転、fractional scale、sprite collision、line limit/flicker、per-sprite alpha/blending mode、複数GPへの同時出力は予約または別仕様とする（BitBltはDMACが行う）。将来拡張でも既存entryの予約byte/bitを再利用する場合は、feature/version識別を追加してから有効化する。

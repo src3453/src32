@@ -10,6 +10,16 @@ pub const DMAC_SIZE: u32 = 0x1_0000;
 const CHANNEL_COUNT: usize = 6;
 const CHANNEL_BASE: u32 = 0x100;
 const CHANNEL_STRIDE: u32 = 0x20;
+/// Per-channel BitBlt registers (ROWS, strides, KEY, ROWS_REMAIN), spec §2.4.
+const BLIT_BASE: u32 = 0x200;
+/// CAPS bit 0: BitBlt (2D, ROP, colour key) is implemented.
+const CAPS_BLIT: u32 = 1;
+
+const CONTROL_MODE_2D: u32 = 1 << 6;
+const CONTROL_KEY_EN: u32 = 1 << 7;
+const CONTROL_ROP_SHIFT: u32 = 10;
+const CONTROL_ROP_MASK: u32 = 3 << CONTROL_ROP_SHIFT;
+const CONTROL_WRITABLE: u32 = 0x0FFF;
 
 fn is_idc_address(address: u32) -> bool {
     address >= IDC_BASE && address < IDC_BASE + IDC_SIZE
@@ -22,6 +32,8 @@ const STATUS_ERROR: u32 = 1 << 2;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Phase {
     Read,
+    /// ROP != COPY: read the destination beat before writing it.
+    ReadDst,
     Write,
 }
 
@@ -31,6 +43,8 @@ pub(crate) struct DmaOp {
     pub width: u8,
     pub write: bool,
     pub value: u32,
+    /// BitBlt beats may only touch Main RAM, VRAM and PCMRAM (spec §2.4).
+    pub memory_only: bool,
 }
 
 pub(crate) struct Channel {
@@ -45,6 +59,13 @@ pub(crate) struct Channel {
     phase: Phase,
     buffer: u32,
     pending_command: u8,
+    rows: u32,
+    src_stride: u32,
+    dst_stride: u32,
+    key: u32,
+    rows_remain: u32,
+    src_row: u32,
+    dst_row: u32,
 }
 
 impl Channel {
@@ -61,6 +82,29 @@ impl Channel {
             phase: Phase::Read,
             buffer: 0,
             pending_command: 0,
+            rows: 0,
+            src_stride: 0,
+            dst_stride: 0,
+            key: 0,
+            rows_remain: 0,
+            src_row: 0,
+            dst_row: 0,
+        }
+    }
+
+    fn is_blit(&self) -> bool {
+        self.control & (CONTROL_MODE_2D | CONTROL_KEY_EN | CONTROL_ROP_MASK) != 0
+    }
+
+    fn rop(&self) -> u32 {
+        (self.control & CONTROL_ROP_MASK) >> CONTROL_ROP_SHIFT
+    }
+
+    fn width_mask(width: u8) -> u32 {
+        match width {
+            1 => 0xFF,
+            2 => 0xFFFF,
+            _ => 0xFFFF_FFFF,
         }
     }
 
@@ -133,30 +177,52 @@ impl Dmac {
             return None;
         }
         let width = channel.width()?;
-        match channel.phase {
-            Phase::Read => Some(DmaOp {
-                address: channel.src_current,
-                width,
-                write: false,
-                value: 0,
-            }),
-            Phase::Write => Some(DmaOp {
-                address: channel.dst_current,
-                width,
-                write: true,
-                value: channel.buffer,
-            }),
-        }
+        let (address, write, value) = match channel.phase {
+            Phase::Read => (channel.src_current, false, 0),
+            Phase::ReadDst => (channel.dst_current, false, 0),
+            Phase::Write => (channel.dst_current, true, channel.buffer),
+        };
+        Some(DmaOp {
+            address,
+            width,
+            write,
+            value,
+            memory_only: channel.is_blit(),
+        })
     }
 
     pub(crate) fn complete_op(&mut self, index: usize, value: u32) {
+        let channel = &mut self.channels[index];
+        match channel.phase {
+            Phase::Read => {
+                channel.buffer = value;
+                let mask = Channel::width_mask(channel.width().unwrap_or(1));
+                if channel.control & CONTROL_KEY_EN != 0 && value & mask == channel.key & mask {
+                    // Transparent beat: no destination read or write (spec §2.4).
+                    self.advance_beat(index);
+                } else if channel.rop() != 0 {
+                    channel.phase = Phase::ReadDst;
+                } else {
+                    channel.phase = Phase::Write;
+                }
+            }
+            Phase::ReadDst => {
+                channel.buffer = match channel.rop() {
+                    1 => channel.buffer & value,
+                    2 => channel.buffer | value,
+                    _ => channel.buffer ^ value,
+                };
+                channel.phase = Phase::Write;
+            }
+            Phase::Write => self.advance_beat(index),
+        }
+    }
+
+    /// Step past one completed (or key-skipped) beat: advance the addresses,
+    /// move to the next row in 2D mode, and finish the channel after the last.
+    fn advance_beat(&mut self, index: usize) {
         let (idc_endpoint, done) = {
             let channel = &mut self.channels[index];
-            if channel.phase == Phase::Read {
-                channel.buffer = value;
-                channel.phase = Phase::Write;
-                return;
-            }
             let width = channel.width().unwrap_or(1) as u32;
             if channel.control & (1 << 2) == 0 {
                 channel.src_current = channel.src_current.wrapping_add(width);
@@ -165,6 +231,16 @@ impl Dmac {
                 channel.dst_current = channel.dst_current.wrapping_add(width);
             }
             channel.remain = channel.remain.saturating_sub(width);
+            if channel.remain == 0 {
+                channel.rows_remain = channel.rows_remain.saturating_sub(1);
+                if channel.rows_remain != 0 {
+                    channel.src_row = channel.src_row.wrapping_add(channel.src_stride);
+                    channel.dst_row = channel.dst_row.wrapping_add(channel.dst_stride);
+                    channel.src_current = channel.src_row;
+                    channel.dst_current = channel.dst_row;
+                    channel.remain = channel.count;
+                }
+            }
             (
                 channel.src == IDC_DATA_ADDRESS || channel.dst == IDC_DATA_ADDRESS,
                 channel.remain == 0,
@@ -294,6 +370,17 @@ impl Dmac {
             self.reject_start(index, 1, endpoint_configured);
             return;
         }
+        if channel.is_blit() {
+            let width = u32::from(width);
+            let bad_2d = control & CONTROL_MODE_2D != 0
+                && (channel.rows == 0
+                    || channel.src_stride % width != 0
+                    || channel.dst_stride % width != 0);
+            if endpoint_configured || bad_2d {
+                self.reject_start(index, 1, endpoint_configured);
+                return;
+            }
+        }
 
         if endpoint_configured {
             let active = self
@@ -341,7 +428,14 @@ impl Dmac {
         let channel = &mut self.channels[index];
         channel.src_current = channel.src;
         channel.dst_current = channel.dst;
+        channel.src_row = channel.src;
+        channel.dst_row = channel.dst;
         channel.remain = channel.count;
+        channel.rows_remain = if channel.control & CONTROL_MODE_2D != 0 {
+            channel.rows
+        } else {
+            1
+        };
         channel.phase = Phase::Read;
         channel.status = STATUS_BUSY;
     }
@@ -360,6 +454,23 @@ impl Dmac {
             0x00C => u32::from(self.irq_enable),
             0x010 => u32::from(self.irq_status),
             0x014 => 0,
+            0x018 => CAPS_BLIT,
+            offset if offset >= BLIT_BASE => {
+                let relative = offset - BLIT_BASE;
+                let index = (relative / CHANNEL_STRIDE) as usize;
+                if index >= CHANNEL_COUNT {
+                    return 0;
+                }
+                let channel = &self.channels[index];
+                match relative % CHANNEL_STRIDE {
+                    0x00 => channel.rows,
+                    0x04 => channel.src_stride,
+                    0x08 => channel.dst_stride,
+                    0x0C => channel.key,
+                    0x10 => channel.rows_remain,
+                    _ => 0,
+                }
+            }
             offset if offset >= CHANNEL_BASE => {
                 let relative = offset - CHANNEL_BASE;
                 let index = (relative / CHANNEL_STRIDE) as usize;
@@ -413,6 +524,26 @@ impl Dmac {
                     }
                 }
             }
+            offset if offset >= BLIT_BASE => {
+                let relative = offset - BLIT_BASE;
+                let index = (relative / CHANNEL_STRIDE) as usize;
+                if index >= CHANNEL_COUNT || self.channels[index].status & STATUS_BUSY != 0 {
+                    return;
+                }
+                let channel = &mut self.channels[index];
+                let field = relative % CHANNEL_STRIDE;
+                let target = match field {
+                    0x00 => &mut channel.rows,
+                    0x04 => &mut channel.src_stride,
+                    0x08 => &mut channel.dst_stride,
+                    0x0C => &mut channel.key,
+                    _ => return,
+                };
+                *target = (*target & !(0xFF << shift)) | byte_value;
+                if field == 0x00 {
+                    channel.rows_remain = channel.rows;
+                }
+            }
             offset if offset >= CHANNEL_BASE => {
                 let relative = offset - CHANNEL_BASE;
                 let index = (relative / CHANNEL_STRIDE) as usize;
@@ -437,7 +568,8 @@ impl Dmac {
                 }
                 if field == 0x0C {
                     let channel = &mut self.channels[index];
-                    channel.control = (channel.control & !(0xFF << shift)) | byte_value;
+                    channel.control =
+                        ((channel.control & !(0xFF << shift)) | byte_value) & CONTROL_WRITABLE;
                     if lane == 2 {
                         channel.pending_command = value & 3;
                     }
@@ -717,6 +849,226 @@ mod tests {
         assert_eq!(channel_status(&mut bus, 2), 0);
         bus.write_u8(ctl + 3, 2);
         assert_eq!(channel_status(&mut bus, 2), STATUS_BUSY);
+    }
+
+    const BLIT0: u32 = DMAC_BASE + BLIT_BASE;
+    const MODE_2D: u32 = CONTROL_MODE_2D;
+    const KEY_EN: u32 = CONTROL_KEY_EN;
+
+    fn set_blit0(bus: &mut Bus, rows: u32, src_stride: i32, dst_stride: i32, key: u32) {
+        bus.write_u32_be(BLIT0, rows);
+        bus.write_u32_be(BLIT0 + 4, src_stride as u32);
+        bus.write_u32_be(BLIT0 + 8, dst_stride as u32);
+        bus.write_u32_be(BLIT0 + 0x0C, key);
+    }
+
+    fn run_until_idle(bus: &mut Bus) -> u32 {
+        for _ in 0..10_000 {
+            bus.tick_devices();
+            let status = bus.read_u32_be(CH0 + 0x10);
+            if status & STATUS_BUSY == 0 {
+                return status;
+            }
+        }
+        panic!("DMA channel 0 did not finish");
+    }
+
+    #[test]
+    fn caps_reports_blit_and_id_is_unchanged() {
+        let mut bus = setup_bus(false);
+        // Foundation's kmem_copy and the BIOS compare the ID word exactly.
+        assert_eq!(bus.read_u32_be(DMAC_BASE), 0x444D_4101);
+        assert_eq!(bus.read_u32_be(DMAC_BASE + 0x18), CAPS_BLIT);
+        bus.write_u32_be(DMAC_BASE + 0x18, 0);
+        assert_eq!(bus.read_u32_be(DMAC_BASE + 0x18), CAPS_BLIT);
+        // Reserved CONTROL bits read 0; the BitBlt bits are kept.
+        bus.write_u32_be(CH0 + 0x0C, 0xFFFF_F0C0);
+        assert_eq!(bus.read_u32_be(CH0 + 0x0C), 0xC0);
+        bus.write_u32_be(BLIT0, 7);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 7);
+    }
+
+    #[test]
+    fn blit_copies_a_rectangle_between_strides() {
+        let mut bus = setup_bus(false);
+        // 3 rows of 4 bytes at stride 8 -> stride 16, leaving gaps untouched.
+        for row in 0..3u32 {
+            for col in 0..8u32 {
+                bus.write_u8(0x1000 + row * 8 + col, (row * 0x10 + col) as u8);
+            }
+        }
+        for a in 0x2000..0x2040 {
+            bus.write_u8(a, 0xEE);
+        }
+        set_blit0(&mut bus, 3, 8, 16, 0);
+        configure_channel0(&mut bus, 0x1001, 0x2002, 4, MODE_2D);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+        for row in 0..4u32 {
+            for col in 0..16u32 {
+                let expected = if row < 3 && (2..6).contains(&col) {
+                    (row * 0x10 + col - 1) as u8
+                } else {
+                    0xEE
+                };
+                assert_eq!(
+                    bus.read_u8(0x2000 + row * 16 + col),
+                    expected,
+                    "{row},{col}"
+                );
+            }
+        }
+        assert_eq!(bus.read_u32_be(CH0 + 0x14), 0);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 0);
+    }
+
+    #[test]
+    fn blit_progress_registers_track_the_current_row() {
+        let mut bus = setup_bus(false);
+        set_blit0(&mut bus, 2, 4, 4, 0);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 2, MODE_2D);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 2);
+        // Two bus beats (read + write) per byte; after the first row REMAIN reloads.
+        run_dma(&mut bus, 4);
+        assert_eq!(bus.read_u32_be(CH0 + 0x14), 2);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 1);
+        // BUSY: BitBlt registers ignore writes like the other configuration registers.
+        bus.write_u32_be(BLIT0, 9);
+        bus.write_u32_be(BLIT0 + 4, 0x40);
+        assert_eq!(bus.read_u32_be(BLIT0), 2);
+        assert_eq!(bus.read_u32_be(BLIT0 + 4), 4);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+    }
+
+    #[test]
+    fn blit_fills_with_a_fixed_source_and_zero_stride() {
+        let mut bus = setup_bus(false);
+        bus.write_u32_be(0x1000, 0xCAFE_F00D);
+        set_blit0(&mut bus, 4, 0, 32, 0);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 8, 2 | (1 << 2) | MODE_2D);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+        for row in 0..4 {
+            assert_eq!(bus.read_u32_be(0x2000 + row * 32), 0xCAFE_F00D);
+            assert_eq!(bus.read_u32_be(0x2004 + row * 32), 0xCAFE_F00D);
+            assert_eq!(bus.read_u32_be(0x2008 + row * 32), 0);
+        }
+    }
+
+    #[test]
+    fn blit_negative_stride_scrolls_overlapping_rows_down() {
+        let mut bus = setup_bus(false);
+        // Rows 0..3 of 4 bytes; move rows 0..2 down by one row in place.
+        for row in 0..4u32 {
+            bus.write_u32_be(0x3000 + row * 4, 0x1111_1111 * (row + 1));
+        }
+        set_blit0(&mut bus, 3, -4, -4, 0);
+        configure_channel0(&mut bus, 0x3008, 0x300C, 4, 2 | MODE_2D);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+        let rows: Vec<u32> = (0..4).map(|r| bus.read_u32_be(0x3000 + r * 4)).collect();
+        assert_eq!(rows, [0x1111_1111, 0x1111_1111, 0x2222_2222, 0x3333_3333]);
+    }
+
+    #[test]
+    fn blit_colour_key_skips_matching_source_pixels() {
+        let mut bus = setup_bus(false);
+        for (i, b) in [0u8, 5, 0, 7, 9, 0].into_iter().enumerate() {
+            bus.write_u8(0x1000 + i as u32, b);
+        }
+        for a in 0x2000..0x2010 {
+            bus.write_u8(a, 0xAA);
+        }
+        // 2 rows x 3 pixels, key 0 (upper key bits beyond WIDTH are ignored).
+        set_blit0(&mut bus, 2, 3, 8, 0xFFFF_FF00);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 3, MODE_2D | KEY_EN);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+        let row0: Vec<u8> = (0x2000..0x2004).map(|a| bus.read_u8(a)).collect();
+        let row1: Vec<u8> = (0x2008..0x200C).map(|a| bus.read_u8(a)).collect();
+        assert_eq!(row0, [0xAA, 5, 0xAA, 0xAA]);
+        assert_eq!(row1, [7, 9, 0xAA, 0xAA]);
+    }
+
+    #[test]
+    fn blit_colour_key_works_in_1d_mode() {
+        let mut bus = setup_bus(false);
+        bus.write_u32_be(0x1000, 0x7C00_0000); // RGB555 red, then key 0x0000
+        bus.write_u32_be(0x2000, 0x1234_5678);
+        set_blit0(&mut bus, 0, 0, 0, 0);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 4, 1 | KEY_EN);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+        assert_eq!(bus.read_u32_be(0x2000), 0x7C00_5678);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 0);
+    }
+
+    #[test]
+    fn blit_raster_operations_combine_with_the_destination() {
+        for (rop, expected) in [(0u32, 0xF0F0), (1, 0xC0C0), (2, 0xFCFC), (3, 0x3C3C)] {
+            let mut bus = setup_bus(false);
+            bus.write_u32_be(0x1000, 0xF0F0_1111);
+            bus.write_u32_be(0x2000, 0xCCCC_2222);
+            configure_channel0(&mut bus, 0x1000, 0x2000, 2, 1 | (rop << CONTROL_ROP_SHIFT));
+            assert_eq!(run_until_idle(&mut bus), STATUS_DONE, "rop {rop}");
+            assert_eq!(
+                bus.read_u32_be(0x2000),
+                (expected << 16) | 0x2222,
+                "rop {rop}"
+            );
+        }
+    }
+
+    #[test]
+    fn blit_abort_between_destination_read_and_write_keeps_destination() {
+        let mut bus = setup_bus(false);
+        bus.write_u8(0x1000, 0x0F);
+        bus.write_u8(0x2000, 0xF0);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 1, 3 << CONTROL_ROP_SHIFT);
+        bus.tick_devices(); // source read
+        bus.tick_devices(); // destination read
+        bus.write_u32_be(DMAC_BASE + 0x14, 1);
+        assert_eq!(bus.read_u32_be(CH0 + 0x10), 0x34);
+        assert_eq!(bus.read_u8(0x2000), 0xF0);
+    }
+
+    #[test]
+    fn blit_rejects_bad_2d_settings_and_mmio_endpoints() {
+        let mut bus = setup_bus(false);
+        // (rows, src_stride, dst_stride, src, dst, control): configuration error, code 1.
+        let bad = [
+            (0, 4, 4, 0x1000, 0x2000, 2 | MODE_2D),
+            (2, 2, 4, 0x1000, 0x2000, 2 | MODE_2D),
+            (2, 4, 6, 0x1000, 0x2000, 2 | MODE_2D),
+            (1, 0, 0, 0x8004_1024, 0x2000, (1 << 2) | KEY_EN),
+            (1, 0, 0, 0x1000, 0x8004_1024, (1 << 4) | MODE_2D),
+        ];
+        for (rows, ss, ds, src, dst, control) in bad {
+            set_blit0(&mut bus, rows, ss, ds, 0);
+            configure_channel0(&mut bus, src, dst, 4, control);
+            assert_eq!(
+                bus.read_u32_be(CH0 + 0x10),
+                0x14,
+                "{rows} {ss} {ds} {src:#x}"
+            );
+            bus.write_u32_be(CH0 + 0x10, 4);
+        }
+        // In 1D mode ROWS and strides are ignored, so the bad values above do not matter.
+        set_blit0(&mut bus, 0, 3, 3, 0x55);
+        configure_channel0(&mut bus, 0x1000, 0x2000, 4, 2 | KEY_EN);
+        assert_eq!(run_until_idle(&mut bus), STATUS_DONE);
+    }
+
+    #[test]
+    fn blit_beats_get_no_mmio_endpoint_exceptions() {
+        let mut bus = setup_bus(false);
+        // The VPU FIFO is a valid plain 32-bit fixed destination, but not for BitBlt.
+        set_blit0(&mut bus, 1, 0, 0, 0);
+        configure_channel0(&mut bus, 0x1000, 0x8003_002C, 4, 2 | (1 << 4) | KEY_EN);
+        bus.write_u32_be(0x1000, 1);
+        assert_eq!(run_until_idle(&mut bus), 0x24);
+        bus.write_u32_be(CH0 + 0x10, 4);
+        // A 2D walk that leaves Main RAM stops with code 2 and keeps its progress.
+        set_blit0(&mut bus, 3, 0, 0x0080_0000, 0);
+        configure_channel0(&mut bus, 0x1000, 0x00FF_F000, 4, 2 | MODE_2D);
+        assert_eq!(run_until_idle(&mut bus), 0x24);
+        assert_eq!(bus.read_u32_be(BLIT0 + 0x10), 2);
+        assert_eq!(bus.read_u32_be(CH0 + 0x14), 4);
     }
 
     #[test]
