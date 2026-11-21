@@ -69,7 +69,7 @@ CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様�
 外部 DOOMGeneric と手元の WAD から `doom` をビルド・起動する手順は [DOOMGeneric 移植](../doc/spec_Foundation_doom.md) を参照してください。
 `/dev/sgc` は SGC の2Dコマンド FIFO を公開します（[API §9.3](../doc/spec_Foundation_API.md#93-sgc-2d-コマンド-fifo-devsgc)）。
 
-`/dev/cnet` は CNET ネットワークカード（拡張スロット）のデータグラムソケットを公開し、WAL `libcnet`（`/lib/cnet.1.wal`）とシェルコマンド `cnet`（`cnet ping 1:20` など）から使えます（[API §9.6](../doc/spec_Foundation_API.md#96-cnet-ネットワーク-devcnet)、[CNET 仕様](../doc/spec_NET.md)）。検証は `python -m unittest discover -s foundation/tests/cnet -v`（testbench・Clang・Cargo と wasm32 ターゲット・localhost UDP が必要）。
+`/dev/cnet` は CNET ネットワークカード（拡張スロット）のデータグラムソケットを公開し、WAL `libcnet`（`/lib/cnet.1.wal`）とシェルコマンド `cnet`（`cnet ping 1:20` など）から使えます（[API §9.6](../doc/spec_Foundation_API.md#96-cnet-ネットワーク-devcnet)、[CNET 仕様](../doc/spec_NET.md)）。2 台のエミュレータでのチャットのデモは [`examples/cnet-chat`](../examples/cnet-chat/README.md)（`python examples/cnet-chat/run_demo.py`）。検証は `python -m unittest discover -s foundation/tests/cnet -v`（testbench・Clang・Cargo と wasm32 ターゲット・localhost UDP が必要）。
 
 `/dev/sgu` は SGU 2基・16チャンネルと共有 PCMRAM を1ストリームで公開します（[API §9.2](../doc/spec_Foundation_API.md#92-sgu-2基と共有-pcmram-devsgu)）。
 

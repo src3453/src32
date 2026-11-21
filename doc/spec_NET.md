@@ -292,7 +292,7 @@ expansion_card:
 
 ## 9. Foundation から使う
 
-Foundation OS はカーネルドライバ `/dev/cnet` と WAL `libcnet`（`/lib/cnet.1.wal`）でこのカードを使います。1 本のストリームが 1 個のソケットです。契約は [Foundation API §9.6](spec_Foundation_API.md#96-cnet-ネットワーク-devcnet) を参照してください。
+Foundation OS はカーネルドライバ `/dev/cnet` と WAL `libcnet`（`/lib/cnet.1.wal`）でこのカードを使います。1 本のストリームが 1 個のソケットです。契約は [Foundation API §9.6](spec_Foundation_API.md#96-cnet-ネットワーク-devcnet) を参照してください。2 台のエミュレータでチャットするデモは [`examples/cnet-chat`](../examples/cnet-chat/README.md) にあります。
 
 ## 10. 将来の拡張
 
