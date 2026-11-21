@@ -89,7 +89,10 @@ int32_t cnet_parse_addr(const char *text, uint32_t *addr) {
     const char *colon = text;
     while (*colon && *colon != ':') ++colon;
     uint32_t n = 0, node;
-    if (*colon) {
+    if (*colon == ':' && colon == text) {
+        /* ":NODE" is this network, the same as "NODE". */
+        if (hex_value(colon + 1, &node) != FND_OK) return FND_E_BAD_ARG;
+    } else if (*colon) {
         if (colon - text > 4) return FND_E_BAD_ARG;
         for (i = 0; text + i < colon; ++i) net[i] = text[i];
         net[i] = 0;

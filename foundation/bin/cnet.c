@@ -1,6 +1,6 @@
 /* cnet [info] | cnet ping ADDR [count] | cnet send ADDR SOCKET TEXT... | cnet recv SOCKET [count]
  * CNET datagrams over libcnet (doc/spec_Foundation_API.md §9.6). ADDR is
- * NET:NODE or NODE in hex; SOCKET is decimal. */
+ * NET:NODE in hex, or :NODE / NODE for the local network; SOCKET is decimal. */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 

@@ -227,6 +227,15 @@ class CnetTests(unittest.TestCase):
         self.assertIn('0/1 replies', text)
         self.assertNotIn('status=0', text)
 
+    def test_short_forms_address_the_local_network(self):
+        # ":NODE" and "NODE" mean NET 0, this network (doc/spec_NET.md §2).
+        text = self.run_shell('cnet ping :20\\n', 'cnet ping 20\\n', 'echo status=$?\\n', step=120)
+        self.assertEqual(text.count('reply from 0001:0020 seq=1'), 2, text)
+        self.assertEqual(text.count('1/1 replies'), 2, text)
+        self.assertIn('status=0', text)
+        text = self.run_shell('cnet ping 1:\\n', 'echo status=$?\\n')
+        self.assertIn('usage: cnet ping ADDR', text)
+
     def test_without_a_card_open_reports_no_media(self):
         text = self.run_shell('cnet\\n', card=False)
         self.assertIn('/dev/cnet', text)
