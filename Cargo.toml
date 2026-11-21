@@ -36,7 +36,7 @@ imgui = { version = "0.12.0", features = ["tables-api"] }
 imgui-winit-support = "0.13.0"
 imgui-wgpu = "0.28.0"
 wasmtime = { version = "30.0.2", default-features = false, features = ["cranelift", "runtime", "std", "wat"] }
-zip = { version = "2.4.2", default-features = false, features = ["deflate-miniz"] }
+zip = { version = "9.0.5", default-features = false, features = ["deflate-miniz"] }
 directories = "6.0.0"
 sha2 = "0.10.9"
 crc32c = "0.6.8"
