@@ -8,3 +8,5 @@
 - ROP≠COPY は 1 beat に src read → dst read（`Phase::ReadDst`）→ write の 3 回のバスアクセス。カラーキーは src の値（ROP 前、WIDTH でマスク）で判定し、一致したら dst read も write もせず `advance_beat` だけ進める。
 - FPGA の RTL（`src32-sv/soc/src32_dmac.sv`）にはまだ BitBlt がない。RTL へ移すときは CAPS を 0 のままにするか、同じ挙動を実装してから 1 にする。
 - 検証: `cargo test --lib -- devices::dmac devices::bmc`（`blit_*` と `caps_reports_blit_and_id_is_unchanged`）。`cargo test --lib` の `cow::tests::rejects_crc_sequence_range_and_base_mismatch` はこの変更の前から失敗している。
+- C SDK: `sdk/cpt32/include/cpt32/dmac.h` と `src/dmac.c`（CMake グループ `cpt32_dma`）。`dmac_blit_start` は DMAC と channel を有効にするが、`CHANNEL_ENABLE` は OR で書き、他 channel の enable を落とさない（Foundation の ch0/ch1 予約と同じ理由）。IRQ_ENABLE には触らない。開始拒否は STATUS に BUSY なしの ERROR が即座に立つので、START 直後の読み出しで code 1 を返せる。`dmac_fill` の source は channel ごとの static word で、big-endian なので値を word の上位に寄せて置く。
+- C の検証: `cd tools/llvm-src32 && python -m unittest test_toolchain.ToolchainTests.test_cpt32_dmac_blit_helpers`（-O0/-O2 × Scalar/Pipeline）。`sdk/cpt32/smoke/run.py` の `display` は R1=108（`pcg_cls` 後の属性面検査）でこの変更の前から失敗している（BitBlt 前の `1fc6246` でビルドした testbench でも同じ）。

@@ -870,6 +870,63 @@ int main(void) {
         self.execute(image, 42)
         self.execute(image, 42, 'pipeline')
 
+    def test_cpt32_dmac_blit_helpers(self):
+        # sdk/cpt32 dmac.h: keyed 2D copy, XOR ROP, VRAM fill, and the
+        # config-error / unavailable results (doc/spec_BMC_DMAC.md §2.4).
+        source = self.work / 'blit.c'
+        source.write_text('''
+#include <cpt32/dmac.h>
+#include <stdint.h>
+
+static uint8_t src[2][4] = {{0, 5, 0, 6}, {7, 0, 8, 9}};
+static uint8_t dst[3][8];
+static uint32_t xor_src = 0x0F0F0F0Fu, xor_dst = 0xFF00FF00u;
+
+int main(void) {
+    uint32_t r, c;
+    dmac_blit_t b;
+    if (!dmac_has_blit()) return 1;
+    for (r = 0; r < 3; ++r)
+        for (c = 0; c < 8; ++c) dst[r][c] = 0xAA;
+    b.src = (uint32_t)(uintptr_t)&src[0][0];
+    b.dst = (uint32_t)(uintptr_t)&dst[1][2];
+    b.row_bytes = 4; b.rows = 2; b.src_stride = 4; b.dst_stride = -8;
+    b.flags = DMAC_WIDTH_8 | DMAC_KEY_EN; b.key = 0;
+    if (dmac_blit(2, &b) != DMAC_OK) return 2;
+    /* Row 0 lands on dst[1], row 1 on dst[0] (negative stride); 0 is clear. */
+    if (dst[1][2] != 0xAA || dst[1][3] != 5 || dst[1][4] != 0xAA || dst[1][5] != 6)
+        return 3;
+    if (dst[0][2] != 7 || dst[0][3] != 0xAA || dst[0][4] != 8 || dst[0][5] != 9)
+        return 4;
+    if (dst[0][1] != 0xAA || dst[0][6] != 0xAA || dst[2][2] != 0xAA) return 5;
+
+    b.src = (uint32_t)(uintptr_t)&xor_src;
+    b.dst = (uint32_t)(uintptr_t)&xor_dst;
+    b.row_bytes = 4; b.rows = 1; b.src_stride = 0; b.dst_stride = 0;
+    b.flags = DMAC_WIDTH_32 | DMAC_ROP_XOR; b.key = 0;
+    if (dmac_blit(3, &b) != DMAC_OK || xor_dst != 0xF00FF00Fu) return 6;
+
+    if (dmac_fill(4, 0x10000100u, 64, 8, 3, DMAC_WIDTH_16, 0x7C00u) != DMAC_OK)
+        return 7;
+    for (r = 0; r < 3; ++r) {
+        volatile uint16_t *row = (volatile uint16_t *)(uintptr_t)(0x10000100u + r * 64u);
+        if (row[0] != 0x7C00u || row[3] != 0x7C00u || row[4] != 0u) return 8;
+    }
+
+    b.rows = 0;
+    if (dmac_blit(5, &b) != DMAC_E_CONFIG) return 9;
+    if (dmac_blit(6, &b) != DMAC_E_UNAVAILABLE) return 10;
+    return 42;
+}
+''', encoding='utf-8')
+        for opt in ('-O0', '-O2'):
+            with self.subTest(optimization=opt):
+                image = self.work / (opt[1:] + '.wax')
+                self.driver(source, ROOT / 'sdk/cpt32/src/dmac.c',
+                            '-I', ROOT / 'sdk/cpt32/include', opt, '-o', image)
+                self.execute(image, 42)
+                self.execute(image, 42, 'pipeline')
+
     def test_user_mode_syscall_example(self):
         # Extension P: kernel.c runs user.c in user mode; user.c checks the
         # caller mode, a SYSCALL result, the context byte path and a refused

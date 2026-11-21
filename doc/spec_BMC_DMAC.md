@@ -161,6 +161,8 @@ CHn_CONTROLのMODE_2D、KEY_EN、ROPのいずれかを使う転送をBitBlt転�
 
 例（GP 8-bit CLUT、幅320 byte/行、32×16画素のスプライトを色0透過で`(x, y)`へ描く）: CHn_SRC=スプライト先頭、CHn_SRC_STRIDE=32、CHn_DST=`GP先頭 + y×320 + x`、CHn_DST_STRIDE=320、CHn_COUNT=32、CHn_ROWS=16、CHn_KEY=0、CHn_CONTROL=WIDTH 8-bit | MODE_2D | KEY_EN | START（`0x1C0`）。
 
+C SDKでは[`<cpt32/dmac.h>`](../sdk/cpt32/include/cpt32/dmac.h)の`dmac_blit()`（同期）、`dmac_blit_start()`／`dmac_wait()`（非同期）、`dmac_fill()`（矩形塗りつぶし）で使える。
+
 ## 3. リセット値と予約事項
 
 リセット直後、DMACの全チャネルは無効かつidle、IRQ_ENABLE/IRQ_STATUSは0である。CHn_ROWS、CHn_SRC_STRIDE、CHn_DST_STRIDE、CHn_KEY、CHn_ROWS_REMAINは0。BMCは有効で、CPU=P0、VPU=P1、各DMA=P2、MAX_BURST=16とする。IDC DATA endpointのsector-ready handshakeは本書2.3節と[`spec_IDC.md`](spec_IDC.md)で定める。その他のデバイス待ち時間やPeC FIFO handshakeは個別のデバイス仕様に従う。

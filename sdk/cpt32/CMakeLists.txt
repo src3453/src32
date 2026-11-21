@@ -10,4 +10,5 @@ src32_add_library(cpt32_storage
     INCLUDE_DIRECTORIES include
     LIBRARIES cpt32_irqc)
 src32_add_library(cpt32_music SOURCES src/sgub.c INCLUDE_DIRECTORIES include)
-src32_add_library(cpt32 LIBRARIES cpt32_display cpt32_irqc cpt32_storage cpt32_music)
+src32_add_library(cpt32_dma SOURCES src/dmac.c INCLUDE_DIRECTORIES include)
+src32_add_library(cpt32 LIBRARIES cpt32_display cpt32_irqc cpt32_storage cpt32_music cpt32_dma)

@@ -17,6 +17,7 @@
 | `irqc.h` | `irqc_*` | 割り込み登録、マスク、ack、IRQ番号、VSyncカウンタ・待機 |
 | `cpu.h` | `cpt32_halt`、`cpt32_syscall`、`cpt32_mfsr`/`cpt32_mtsr`、`cpt32_cpu_features`、`cpt32_run_user`、`cpt32_return_to_kernel`、`cpt32_jump`、`syscall_dispatch` | `HALT`と拡張P（SYSCALL、システムレジスタ、ユーザーモード実行）のLLVM/SRC32専用intrinsic。詳細は[ツールチェーンREADME](../../tools/llvm-src32/README.md)の「Extension P」 |
 | `bmc.h` | `bmc_main_ram_bytes`、`bmc_vram_bytes`、`bmc_pcmram_bytes` | BMCが報告するMain RAM・VRAM・PCMRAMの実装容量（byte）。0は未報告 |
+| `dmac.h` | `dmac_has_blit`、`dmac_blit_start`、`dmac_wait`、`dmac_blit`、`dmac_fill` | DMAC BitBlt（矩形転送・ROP・カラーキー）と矩形塗りつぶし。戻り値0=成功、1〜3=DMAC `ERROR_CODE`、4=非対応・BUSY。channel 0/1はIDCとFoundationが使うので2〜5を推奨 |
 | `idc.h` | `idc_*` | IDC/DMAC ch0の同期sector I/O。戻り値0=成功、1=DMA失敗、2=IDC失敗 |
 | `dsfs.h` | `dsfs_*` | 単一mount状態、ディレクトリ・bitmap、ファイル読書き・削除、timestamp |
 | `wax.h` | `wax_*` | WAX v2検証、予約RAMへのstaging、コード・stackを置換できるロード |
@@ -38,7 +39,7 @@ src32_add_executable(my_guest
     OPTIMIZATION 0)
 ```
 
-`cpt32`は全モジュール、`cpt32_display`、`cpt32_irqc`、`cpt32_storage`、`cpt32_music`は個別グループです。`cpt32_storage`は安全なWAXロードのためIRQライブラリにも依存します。各ターゲットは既存の`src32_add_library`によるソースライブラリです。
+`cpt32`は全モジュール、`cpt32_display`、`cpt32_irqc`、`cpt32_storage`、`cpt32_music`、`cpt32_dma`は個別グループです。`cpt32_storage`は安全なWAXロードのためIRQライブラリにも依存します。各ターゲットは既存の`src32_add_library`によるソースライブラリです。
 
 `OPTIMIZATION 0` / `1` / `2`を使用できます。最適化時の内部関数の`fastcc`も、SRC32のスタック渡しへ変換します。標準のホストコンパイラでMMIOプログラムを実行しないでください。
 
