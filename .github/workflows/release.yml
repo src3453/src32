@@ -63,7 +63,7 @@ jobs:
       - name: Archive (tar.gz)
         if: runner.os != 'Windows'
         run: tar -C dist -czf "dist/$PKG_NAME.tar.gz" "$PKG_NAME"
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: binaries-${{ matrix.name }}
           path: |
@@ -90,7 +90,7 @@ jobs:
       - name: Package vscode-src32-asm-syntax
         working-directory: tools/vscode-src32-asm-syntax
         run: npx --yes @vscode/vsce@3 package --no-dependencies
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: vscode-extensions
           path: tools/*/*.vsix
