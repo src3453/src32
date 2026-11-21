@@ -18,6 +18,7 @@ const vfs_devnode vfs_devnodes[] = {
     {"trng", VFS_DEV_SERVICE, "dev.trng", FND_TYPE_DEVICE, 0, 0x0024u},
     {"prng", VFS_DEV_SERVICE, "dev.prng", FND_TYPE_DEVICE, 0, 0x0024u},
     {"uart0", VFS_DEV_SERVICE, "dev.uart0", FND_TYPE_DEVICE, 0, 0x0036u},
+    {"cnet", VFS_DEV_SERVICE, "dev.cnet", FND_TYPE_DEVICE, 0, 0x0036u},
 };
 const uint32_t vfs_devnode_count = sizeof vfs_devnodes / sizeof vfs_devnodes[0];
 

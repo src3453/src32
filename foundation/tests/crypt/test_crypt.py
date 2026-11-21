@@ -137,7 +137,7 @@ class GuestTests(unittest.TestCase):
                           f"static const uint32_t img_{name}[] = {{{values}}};"]
             (out / "images.h").write_text("\n".join(lines), encoding="utf-8")
             sources = [ROOT / "foundation/kernel" / name for name in
-                       ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "sgc.c", "pec.c", "blk.c", "wax.c")]
+                       ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "sgc.c", "pec.c", "cnet.c", "blk.c", "wax.c")]
             run([*driver, HERE / "kernel.c", *sources, "-I", ROOT / "foundation/include",
                  "-I", ROOT / "sdk/cpt32/include", "-I", out, "-O1", "--origin", "0x10000",
                  "--stack-top", "0x100000", "-o", out / "kernel.wax"])

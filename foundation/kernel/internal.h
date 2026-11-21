@@ -76,7 +76,13 @@ int32_t sys_irq_ack(struct fnd_proc *proc, uint32_t irq);
 int ipc_irq_notify(uint32_t irq); /* masks bound IRQ, leaves PENDING latched */
 void ipc_irq_proc_exited(struct fnd_proc *proc);
 /* Kernel channel kinds for PeC streams; the factory kind is stream - 1. */
-enum { KDEV_TRNG = 8u, KDEV_PRNG = 10u, KDEV_UART0 = 12u };
+enum { KDEV_TRNG = 8u, KDEV_PRNG = 10u, KDEV_UART0 = 12u, KDEV_CNET = 14u };
+/* /dev/cnet (cnet.c). CNET_PARK: an empty blocking receive, retried each tick. */
+#define CNET_PARK 1
+int32_t cnet_open(uint32_t flags);
+void cnet_close(uint32_t badge);
+int32_t cnet_call(struct fnd_proc *proc, uint32_t *badge, const fnd_msg *req, fnd_msg *rep,
+                  uint32_t cap);
 void ipc_pec_poll(void);
 int32_t pec_open(uint32_t kind, uint32_t flags);
 int32_t pec_call(struct fnd_proc *proc, uint32_t kind, uint32_t rights,

@@ -50,6 +50,11 @@ int32_t fb_call(struct fnd_proc *p, const fnd_msg *m, fnd_msg *r, uint32_t c) {
 }
 int32_t sgu_call(struct fnd_proc *p, const fnd_msg *m, fnd_msg *r, uint32_t c) { return fb_call(p,m,r,c); }
 int32_t sgc_call(struct fnd_proc *p, const fnd_msg *m, fnd_msg *r, uint32_t c) { return fb_call(p,m,r,c); }
+int32_t cnet_open(uint32_t f) { return fb_open(f); }
+void cnet_close(uint32_t b) { (void)b; }
+int32_t cnet_call(struct fnd_proc *p, uint32_t *b, const fnd_msg *m, fnd_msg *r, uint32_t c) {
+    (void)b; return fb_call(p,m,r,c);
+}
 void proc_release(struct fnd_proc *p) { (void)p; }
 int mm_vm = 1;
 void kmem_copy(uint32_t d, uint32_t s, uint32_t n) { (void)d; (void)s; (void)n; assert(0); }

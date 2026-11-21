@@ -29,7 +29,7 @@ struct fnd_chan {
     uint32_t badge;
     struct fnd_chan *gone_next; /* on its port's pending list when refs = 0 */
     uint32_t kernel; /* 0: user, 1/2: fb factory/stream, 3/4: sgu, 5/6: sgc,
-                      * 7/8: trng, 9/10: prng, 11/12: uart0 factory/stream */
+                      * 7/8: trng, 9/10: prng, 11/12: uart0, 13/14: cnet factory/stream */
 };
 
 static struct fnd_port ports[MAX_PORTS];
@@ -128,6 +128,7 @@ static void chan_last_closed(struct fnd_chan *chan) {
         if (chan->kernel == 2u) fb_close();
         if (chan->kernel == 4u) sgu_close();
         if (chan->kernel == 6u) sgc_close();
+        if (chan->kernel == KDEV_CNET) cnet_close(chan->badge);
         chan->used = 0;
         return;
     }
@@ -497,7 +498,7 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
             uint32_t kind = chan->kernel + 1u;
             status = FND_E_UNSUPPORTED;
             if (msg.op == FND_DEV_OPEN)
-                status = kind >= KDEV_TRNG ? pec_open(kind, msg.a0) : kind == 4u ? sgu_open(msg.a0) : kind == 6u ? sgc_open(msg.a0) : fb_open(msg.a0);
+                status = kind == KDEV_CNET ? cnet_open(msg.a0) : kind >= KDEV_TRNG ? pec_open(kind, msg.a0) : kind == 4u ? sgu_open(msg.a0) : kind == 6u ? sgc_open(msg.a0) : fb_open(msg.a0);
             if (status == FND_OK) {
                 int32_t h = kernel_channel(proc, kind);
                 if (h < 0) {
@@ -509,12 +510,24 @@ int32_t sys_ipc_call(struct fnd_thread *thread, uint32_t ch, uint32_t req, uint3
                     r.a3 = (uint32_t)h;
                 }
             }
+        } else if (chan->kernel == KDEV_CNET) {
+            status = cnet_call(proc, &chan->badge, &msg, &r, cap);
+            if (status == CNET_PARK) {
+                thread->req = msg;
+                thread->req.a3 = chan->badge; /* saved stream rights and socket */
+                thread->badge = chan->kernel;
+                thread->rep = rep;
+                thread->rep_buf = r.buf;
+                thread->rep_cap = cap;
+                sched_block(thread, B_PEC_READ, FND_FOREVER);
+                return FND_OK;
+            }
         } else {
             status = chan->kernel >= KDEV_TRNG ? pec_call(proc, chan->kernel, chan->badge, &msg, &r, cap) :
                 chan->kernel == 4u ? sgu_call(proc, &msg, &r, cap) :
                 chan->kernel == 6u ? sgc_call(proc, &msg, &r, cap) : fb_call(proc, &msg, &r, cap);
         }
-        if (status == FND_E_WOULD_BLOCK && chan->kernel >= KDEV_TRNG) {
+        if (status == FND_E_WOULD_BLOCK && chan->kernel >= KDEV_TRNG && chan->kernel <= KDEV_UART0) {
             thread->req = msg;
             thread->req.a3 = chan->badge; /* saved stream rights */
             thread->badge = chan->kernel;
@@ -666,6 +679,7 @@ int32_t sys_svc_register(struct fnd_proc *proc, uint32_t name_addr, uint32_t h) 
     if (name_equal(name, "dev.prng")) return FND_E_EXISTS;
     if (name_equal(name, "dev.uart0")) return FND_E_EXISTS;
     if (name_equal(name, "dev.sgc")) return FND_E_EXISTS;
+    if (name_equal(name, "dev.cnet")) return FND_E_EXISTS;
     struct fnd_handle_entry *e = entry(proc, h);
     if (!e || e->kind != FND_OBJ_PORT)
         return FND_E_BAD_HANDLE;
@@ -697,12 +711,14 @@ int32_t sys_svc_lookup(struct fnd_proc *proc, uint32_t name_addr) {
     if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
     if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
     if (name_equal(name, "dev.sgc") ||
-        name_equal(name, "dev.trng") || name_equal(name, "dev.prng")) return FND_E_UNSUPPORTED;
+        name_equal(name, "dev.trng") || name_equal(name, "dev.prng") ||
+        name_equal(name, "dev.cnet")) return FND_E_UNSUPPORTED;
 #else
     if (name_equal(name, "dev.fb0")) return kernel_channel(proc, 1u);
     if (name_equal(name, "dev.sgu")) return kernel_channel(proc, 3u);
     if (name_equal(name, "dev.trng")) return kernel_channel(proc, KDEV_TRNG - 1u);
     if (name_equal(name, "dev.prng")) return kernel_channel(proc, KDEV_PRNG - 1u);
+    if (name_equal(name, "dev.cnet")) return kernel_channel(proc, KDEV_CNET - 1u);
 #endif
     if (name_equal(name, "dev.uart0")) return kernel_channel(proc, KDEV_UART0 - 1u);
     if (name_equal(name, "dev.sgc")) return kernel_channel(proc, 5u);
@@ -836,8 +852,15 @@ void ipc_pec_poll(void) {
         struct fnd_thread *t = &fnd_threads[i];
         if (t->state != T_BLOCKED || t->reason != B_PEC_READ) continue;
         fnd_msg r = {0, 0, 0, 0, 0, 0, t->rep_buf, 0};
-        int32_t status = pec_call(t->proc, t->badge, t->req.a3, &t->req, &r, t->rep_cap);
-        if (status == FND_E_WOULD_BLOCK) continue;
+        int32_t status;
+        if (t->badge == KDEV_CNET) {
+            uint32_t badge = t->req.a3;
+            status = cnet_call(t->proc, &badge, &t->req, &r, t->rep_cap);
+            if (status == CNET_PARK) continue;
+        } else {
+            status = pec_call(t->proc, t->badge, t->req.a3, &t->req, &r, t->rep_cap);
+            if (status == FND_E_WOULD_BLOCK) continue;
+        }
         r.op = (uint32_t)status;
         mm_copy_to_user(t->proc, t->rep, &r, sizeof r);
         sched_wake(t, FND_OK);

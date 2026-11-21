@@ -29,7 +29,7 @@ is what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal, /lib/crypt.1.wal and /lib/sgc.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal, /lib/crypt.1.wal, /lib/sgc.1.wal and /lib/cnet.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -79,7 +79,7 @@ DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["cat", "clear", "cp", "echo", "free", "hex", "ls", "mkdir", "mode", "mv", "ps", "pwd", "rm", "rmdir", "top",
-            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay"]
+            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay", "cnet"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
@@ -89,14 +89,17 @@ LIBFND = [FOUNDATION / "lib/fnd" / name for name in ("start.c", "mem.c", "strerr
 LIBFND_PROC = FOUNDATION / "lib/fnd/proc.c"
 # Only the WAL exports it; static users (fs, whose slot is nearly full) leave it out.
 LIBFND_RENAME = FOUNDATION / "lib/fnd/rename.c"
-KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "sgc.c", "pec.c", "blk.c", "wax.c",
+KERNEL = [FOUNDATION / "kernel" / name for name in ("sched.c", "proc.c", "mm.c", "trap.c", "ipc.c", "fb.c", "sgu.c", "sgc.c", "pec.c", "cnet.c", "blk.c", "wax.c",
                                                      "fndboot.c")]
 LZMA_DIR = FOUNDATION / "lib/lzma"
 SGC_DIR = FOUNDATION / "lib/sgc"
 # Commands that import /lib/sgc.1.wal (libsgc) as well as fnd.
 SGC_COMMANDS = {"chip8"}
+CNET_DIR = FOUNDATION / "lib/cnet"
+# Commands that import /lib/cnet.1.wal (libcnet) as well as fnd.
+CNET_COMMANDS = {"cnet"}
 # Optional WALs under /lib (fnd is always built). Selected with --libs.
-LIBS = ["lzma", "rle", "code", "crypt", "sgc"]
+LIBS = ["lzma", "rle", "code", "crypt", "sgc", "cnet"]
 RLE_DIR = FOUNDATION / "lib/rle"
 CODE_DIR = FOUNDATION / "lib/code"
 CRYPT_DIR = FOUNDATION / "lib/crypt"
@@ -252,6 +255,8 @@ def main(argv=None):
     for name in commands:
         if name in SGC_COMMANDS and "sgc" not in libs:
             parser.error(f"--commands {name} imports /lib/sgc.1.wal; add sgc to --libs")
+        if name in CNET_COMMANDS and "cnet" not in libs:
+            parser.error(f"--commands {name} imports /lib/cnet.1.wal; add cnet to --libs")
     uart_only = fpga and args.console == "uart"
     ramdisk_bytes = 0x01000000 if args.ramdisk == "sdram0-split" else 0x02000000
     if fpga and args.disk_blocks > ramdisk_bytes // 512:
@@ -363,18 +368,24 @@ def main(argv=None):
     sgc_build = importlib.util.module_from_spec(sgc_spec)
     sgc_spec.loader.exec_module(sgc_build)
     sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization, run=cached_run) if "sgc" in libs else None
+    # /lib/cnet.1.wal: libcnet (lib/cnet, WAL "cnet" 1.0), datagram sockets over /dev/cnet.
+    cnet_spec = importlib.util.spec_from_file_location("cnet_build", CNET_DIR / "build.py")
+    cnet_build = importlib.util.module_from_spec(cnet_spec)
+    cnet_spec.loader.exec_module(cnet_build)
+    cnet_job = pool.submit(cnet_build.build, out / "cnet", fnd, args.clang, args.optimization, run=cached_run) if "cnet" in libs else None
     program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args,
                                 "foundation.shell", fnd)]
     # The commands that import libsgc go last, so the others start while it builds.
-    for name in sorted(commands, key=lambda name: name in SGC_COMMANDS):
-        libs = [sgc_job.result()] if name in SGC_COMMANDS else []
+    for name in sorted(commands, key=lambda name: name in SGC_COMMANDS or name in CNET_COMMANDS):
+        libs = ([sgc_job.result()] if name in SGC_COMMANDS else []) + \
+               ([cnet_job.result()] if name in CNET_COMMANDS else [])
         sources = [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"]
         if name == "sgubplay":
             sources.append(ROOT / "sdk/cpt32/src/sgub.c")
         program_jobs.append(pool.submit(program, sources,
                                         root / "bin" / f"{name}.wax", args, f"foundation.{name}", fnd, *libs))
     for name, job in (("lzma", lzma_job), ("sgc", sgc_job), ("rle", rle_job), ("code", code_job),
-                      ("crypt", crypt_job)):
+                      ("crypt", crypt_job), ("cnet", cnet_job)):
         if job is not None:
             shutil.copyfile(job.result(), root / f"lib/{name}.1.wal")
     for job in program_jobs:

@@ -170,6 +170,8 @@ jobs:
         run: |
           python -m unittest discover -s foundation/tests/shell -v
           python -m unittest discover -s foundation/tests/rust -v
+          rustup target add wasm32-unknown-unknown
+          python -m unittest discover -s foundation/tests/cnet -v
       - name: Foundation disk boot (testbench, BIOS -> stage1 -> FNDBOOT)
         if: matrix.suite == 'disk'
         run: python -m unittest discover -s foundation/tests/disk -v

@@ -56,6 +56,8 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 | `0x1000–0x10FF` | コンソール操作（§8） |
 | `0x1100–0x11FF` | VDPビットマップ／CLUT操作（§9.1） |
 | `0x1200–0x12FF` | SGC 状態・出力GP・リセット操作（§9.3） |
+| `0x1300–0x13FF` | SGU FIFO DAC 操作（§9.2） |
+| `0x1400–0x14FF` | CNET ソケット操作（§9.6） |
 | `0x8000–0xFFFEFFFF` | 各サービスの独自操作 |
 | `0xFFFF0000–` | カーネルの通知（[Foundation §8.5](spec_Foundation.md)） |
 
@@ -483,6 +485,40 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `ST_WRITE`（4096 bytes まで）は、全体が入る空きができるまで待ち、まとめて書きます（原子的）。読み端がすべて閉じていれば `FND_E_PEER_GONE` です。待っている要求は端が閉じたときに答えます。
 - 容量は 1 つの pipe につき 4096 bytes、同時に待てる要求は 32 件、pipe は 32 本です。超えると `FND_E_LIMIT` です。
 - サービスはどのバックエンドでも起動します。ただし `fork` で端を共有できるのは VM だけです（`proc_fork` が VM 専用のため）。
+
+### 9.6 CNET ネットワーク `/dev/cnet`
+
+`foundation/kernel/cnet.c` のカーネルドライバです。UID 0、mode `0x0036`。fs は予約サービス `dev.cnet` に `DEV_OPEN` を送り、ストリーム CHANNEL を転送します。`svc_register("dev.cnet")` は EXISTS です。新しい syscall は追加しません。ネットワークのプロトコル（ノード番号の取得、データグラム、CRC、エコー応答）は CNET 拡張カードの中で動き（[CNET 仕様](spec_NET.md)）、ドライバはデータグラムを運ぶだけです。Tang Console 向けのビルドでは `dev.cnet` は UNSUPPORTED です。
+
+- カードは最初の `DEV_OPEN` で拡張スロット 0〜7 を順に調べて見つけます（ID `"CNET"`、VERSION 1）。見つからなければ NO_MEDIA です。拡張カードの MMIO はユーザープロセスに付与できない（[Foundation §10.3](spec_Foundation.md#103-mmio-の付与)）ので、ドライバをカーネルに置いています。
+- 最初の `DEV_OPEN` でリンクを有効にし（CONTROL.ENABLE）、カードがノード番号の取得を始めます（約 100 ms）。以後リンクは有効のままです。
+- 1 本のストリームが 1 個のソケットです。開いた直後は未 bind で、`CNET_BIND` でカードの 16 個のソケットハンドルの 1 つを確保します。ストリームの最後のハンドルが閉じる（終了・kill を含む）と、ソケットを閉じます。dup・転送したハンドルは同じソケットを共有します。
+- `DEV_OPEN` の flags は READ／WRITE の少なくとも一方です（他の bit は BAD_ARG）。`CNET_SENDTO` は WRITE、`CNET_RECVFROM` は READ が必要で、ないと ACCESS です。
+- アドレスは `NET << 16 | NODE` の u32 です。
+
+| op | 名前 | 要求 | 応答 |
+|---|---|---|---|
+| `0x1400` | `CNET_BIND` | `a0` = ソケット（0 なら 128〜254 から動的割当） | `a0` = 確保したソケット |
+| `0x1401` | `CNET_SENDTO` | `a0` = 宛先アドレス、`a1` = 宛先ソケット \| PROTO << 8、データ = ペイロード（1024 bytes まで） | — |
+| `0x1402` | `CNET_RECVFROM` | `a0` = 0 か `NONBLOCK`（1） | `a0` = 送信元アドレス、`a1` = 送信元ソケット \| PROTO << 8 \| flags << 16（bit16 = ブロードキャストで受信）、データ = ペイロード |
+| `0x1403` | `CNET_INFO` | — | `a0` = 状態（bit0 LINK、bit1 PROBING、bit2 READY、bit3 CONFLICT）、`a1` = 自アドレス（READY でなければ 0）、`a2` = bind したソケット（未 bind は 0） |
+
+- `CNET_BIND`: bind 済みは BUSY、255 超は BAD_ARG、使用中・予約のソケット（4 と 255）は EXISTS、空きがなければ LIMIT。
+- `CNET_SENDTO`: 未 bind は BAD_ARG、1024 bytes 超は LIMIT、ノード 0 などの不正な宛先は BAD_ARG、ノード番号の取得中は BUSY、衝突で取得に失敗していれば ADDRESS_CONFLICT、セグメント未接続は NO_MEDIA、別のネットワーク宛て（ルータは未対応）は NOT_FOUND。届いたかどうかは分かりません（データグラムは失われることがあります）。
+- `CNET_RECVFROM`: キューの先頭 1 個を返して取り除きます。空なら、呼び出しスレッドだけを `PEC_READ` と同じく待たせ、カーネルが 100 Hz のタイマーで再確認します（NONBLOCK なら WOULD_BLOCK）。応答バッファがペイロードより小さければ LIMIT で、データグラムはキューに残ります。カードの受信キューはソケットごとに 8 個で、あふれた分は捨てられます。
+- `ST_STAT` は DEVICE、mode `0x0036`。`ST_SYNC` は成功する no-op。`ST_READ`／`ST_WRITE`／seek などは UNSUPPORTED です。ユーザーバッファは IPC の検証後に `mm_copy_*` でコピーします。
+- 定数は `<foundation/cnet.h>` にあります。
+
+#### libcnet（WAL `cnet` 1.0、`/lib/cnet.1.wal`）
+
+`/dev/cnet` の上のライブラリです。ヘッダーは `<foundation/libcnet.h>`、実装は `foundation/lib/cnet`。`fnd` WAL を import する WAL で、既定のディスクに入ります（利用側は `--import-wal` で `fnd` と `cnet` の両方を指定します）。
+
+- `cnet_open(socket, &h)` は `/dev/cnet` を READ|WRITE で開いて bind します。`cnet_close(h)` は `fnd_close` と同じです。
+- `cnet_wait_ready(h, ticks)` は 1 tick ずつ眠ってノード番号の取得を待ちます（OK、NO_MEDIA、ADDRESS_CONFLICT、TIMEOUT）。`cnet_info_get(h, &info)` は `CNET_INFO` の結果を返します。
+- `cnet_sendto(h, addr, socket, proto, data, len)` と `cnet_recvfrom(h, buf, cap, flags, &from)`。`cnet_recvfrom` は受信した長さ（0 以上）を返し、`from`（0 でもよい）に送信元アドレス・ソケット・PROTO・flags を入れます。
+- `cnet_parse_addr("1:20", &addr)` は 16 進の `NET:NODE` か `NODE`（NET 0）を読み、`cnet_format_addr(addr, out)` は `"0001:0020"` を書きます。
+- シェルコマンド `cnet`（`foundation/bin/cnet.c`）が利用例です。`cnet` で状態とアドレスを表示し、`cnet ping ADDR [count]` はエコーで応答を確かめ、`cnet send ADDR SOCKET TEXT...` は PROTO 0x80 のテキストを送り、`cnet recv SOCKET [count]` は受信して表示します。
+- テストは `foundation/tests/cnet`。testbench の拡張スロット 0 に CNET カードを置き、UDP セグメントの向こう側を Python で書いた独立した CNET ノードにして、ping・送信・受信・タイムアウト・カードなしを確かめます。
 
 ## 10. 構造体
 
