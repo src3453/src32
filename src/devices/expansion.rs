@@ -1,3 +1,4 @@
+mod network;
 mod package;
 use std::cell::Cell;
 use std::io::Cursor;
@@ -10,6 +11,7 @@ use wasmtime::{
 };
 
 use crate::bus::Device;
+use network::{MAX_FRAME, NetPort, Segments};
 
 pub const EXPANSION_SLOT_COUNT: u8 = 8;
 pub const EXPANSION_SLOT_SIZE: u32 = 0x0200_0000;
@@ -30,10 +32,11 @@ pub enum ExpansionCallKind {
     Tick,
     DebugRead,
     AudioRender,
+    NetRx,
 }
 
 impl ExpansionCallKind {
-    pub const COUNT: usize = 7;
+    pub const COUNT: usize = 8;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Start,
         Self::Reset,
@@ -42,6 +45,7 @@ impl ExpansionCallKind {
         Self::Tick,
         Self::DebugRead,
         Self::AudioRender,
+        Self::NetRx,
     ];
 
     pub fn label(self) -> &'static str {
@@ -53,6 +57,7 @@ impl ExpansionCallKind {
             Self::Tick => "cpt32_tick",
             Self::DebugRead => "cpt32_debug_read",
             Self::AudioRender => "cpt32_audio_render",
+            Self::NetRx => "cpt32_net_rx",
         }
     }
 }
@@ -96,6 +101,10 @@ pub struct ExpansionCardDebugInfo {
     pub memory_bytes: Option<usize>,
     pub memory_limit: usize,
     pub asset_count: i32,
+    /// Whether the manifest declares the `network` capability.
+    pub network_capable: bool,
+    /// CNET segment the card is attached to, if any.
+    pub network_segment: Option<String>,
 }
 
 impl ExpansionCardDebugInfo {
@@ -136,6 +145,9 @@ impl ExpansionCardDebugInfo {
         if self.has_debug_read {
             features.push("debug read");
         }
+        if self.network_capable {
+            features.push("network");
+        }
         features
     }
 }
@@ -158,6 +170,7 @@ impl ExpansionRuntime {
         slot: u8,
         path: &Path,
         cycles: Rc<Cell<u64>>,
+        net: Option<NetPort>,
     ) -> Result<ExpansionCard, String> {
         let label = path.display().to_string();
         if slot >= EXPANSION_SLOT_COUNT {
@@ -168,7 +181,7 @@ impl ExpansionRuntime {
         }
         let context = |message: String| format!("slot {slot} package {label}: {message}");
         let (module_bytes, assets) = package::PackageAssets::load(path).map_err(context)?;
-        self.load_card_components(slot, &label, &module_bytes, cycles, assets)
+        self.load_card_components(slot, &label, &module_bytes, cycles, assets, net)
     }
     pub(crate) fn load_card_package_bytes(
         &self,
@@ -183,7 +196,7 @@ impl ExpansionRuntime {
         ))
             as Box<dyn package::ReadSeek>)
         .map_err(context)?;
-        self.load_card_components(slot, label, &module_bytes, cycles, assets)
+        self.load_card_components(slot, label, &module_bytes, cycles, assets, None)
     }
 
     fn load_card_components(
@@ -193,6 +206,7 @@ impl ExpansionRuntime {
         bytes: &[u8],
         cycles: Rc<Cell<u64>>,
         assets: package::PackageAssets<Box<dyn package::ReadSeek>>,
+        net: Option<NetPort>,
     ) -> Result<ExpansionCard, String> {
         if slot >= EXPANSION_SLOT_COUNT {
             return Err(format!(
@@ -203,10 +217,19 @@ impl ExpansionRuntime {
         let context = |message: String| format!("slot {slot} module {label}: {message}");
         let module =
             Module::new(&self.engine, bytes).map_err(|error| context(error.to_string()))?;
-        validate_module(&module).map_err(context)?;
+        let network_capable = assets.network_capability();
+        validate_module(&module, network_capable).map_err(context)?;
+        if net.is_some() && !network_capable {
+            return Err(context(
+                "config attaches a network segment but the manifest does not declare \"network\""
+                    .into(),
+            ));
+        }
 
         let state = HostState {
             cycles,
+            net,
+            net_seed: rand::random(),
             deadline: None,
             irq_asserted: false,
             faulted: false,
@@ -289,6 +312,75 @@ impl ExpansionRuntime {
                 },
             )
             .map_err(|error| context(error.to_string()))?;
+        linker
+            .func_wrap(
+                "cpt32_host",
+                "net_info",
+                |caller: Caller<'_, HostState>, key: i32| -> wasmtime::Result<i32> {
+                    let state = caller.data();
+                    Ok(match key {
+                        0 => i32::from(state.net.is_some()),
+                        1 => state.net.as_ref().map_or(0, |net| i32::from(net.network())),
+                        2 => state
+                            .net
+                            .as_ref()
+                            .and_then(|net| net.static_node)
+                            .map_or(-1, i32::from),
+                        3 => state.net_seed as i32,
+                        _ => return Err(wasmtime::Error::msg("net_info received an unknown key")),
+                    })
+                },
+            )
+            .map_err(|error| context(error.to_string()))?;
+        linker
+            .func_wrap(
+                "cpt32_host",
+                "net_send",
+                |mut caller: Caller<'_, HostState>, ptr: i32, len: i32| -> wasmtime::Result<i32> {
+                    let len = usize::try_from(len)
+                        .ok()
+                        .filter(|len| (network::FRAME_HEADER..=MAX_FRAME).contains(len))
+                        .ok_or_else(|| wasmtime::Error::msg("net_send length out of range"))?;
+                    let memory = guest_memory(&mut caller)?;
+                    let mut frame = vec![0u8; len];
+                    memory
+                        .read(&caller, ptr as u32 as usize, &mut frame)
+                        .map_err(|_| wasmtime::Error::msg("net_send pointer out of range"))?;
+                    let Some(net) = &caller.data().net else {
+                        return Ok(1);
+                    };
+                    if network::frame_shape_ok(&frame) {
+                        net.send(&frame);
+                    }
+                    Ok(0)
+                },
+            )
+            .map_err(|error| context(error.to_string()))?;
+        linker
+            .func_wrap(
+                "cpt32_host",
+                "net_recv",
+                |mut caller: Caller<'_, HostState>, ptr: i32, cap: i32| -> wasmtime::Result<i32> {
+                    if usize::try_from(cap).map_or(true, |cap| cap < MAX_FRAME) {
+                        return Err(wasmtime::Error::msg("net_recv capacity is below 1048"));
+                    }
+                    let memory = guest_memory(&mut caller)?;
+                    if (ptr as u32 as usize)
+                        .checked_add(MAX_FRAME)
+                        .is_none_or(|end| end > memory.data_size(&caller))
+                    {
+                        return Err(wasmtime::Error::msg("net_recv pointer out of range"));
+                    }
+                    let Some(frame) = caller.data().net.as_ref().and_then(NetPort::recv) else {
+                        return Ok(-1);
+                    };
+                    memory
+                        .write(&mut caller, ptr as u32 as usize, &frame)
+                        .map_err(|_| wasmtime::Error::msg("net_recv pointer out of range"))?;
+                    Ok(frame.len() as i32)
+                },
+            )
+            .map_err(|error| context(error.to_string()))?;
         // Fuel is present before instantiation because a module start function is guest code.
         let instance = linker
             .instantiate(&mut store, &module)
@@ -352,6 +444,19 @@ impl ExpansionRuntime {
             None
         };
 
+        let net_rx = if module
+            .exports()
+            .any(|export| export.name() == "cpt32_net_rx")
+        {
+            Some(
+                instance
+                    .get_typed_func::<(), ()>(&mut store, "cpt32_net_rx")
+                    .map_err(|error| context(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         let memory = instance.get_memory(&mut store, "memory");
         let imports = module
             .imports()
@@ -375,8 +480,16 @@ impl ExpansionRuntime {
             mmio_write,
             tick,
             audio,
+            net_rx,
         })
     }
+}
+
+fn guest_memory(caller: &mut Caller<'_, HostState>) -> wasmtime::Result<Memory> {
+    caller
+        .get_export("memory")
+        .and_then(wasmtime::Extern::into_memory)
+        .ok_or_else(|| wasmtime::Error::msg("network imports require exported memory"))
 }
 
 #[derive(Debug)]
@@ -499,15 +612,25 @@ pub fn load_expansion_cards(config_path: &Path, bus: &mut crate::bus::Bus) -> Re
         } else {
             base.join(package_path)
         };
-        modules.push((slot, package.to_owned(), resolved));
+        let network = table
+            .get("network")
+            .map(network::parse_card_network)
+            .transpose()
+            .map_err(|error| format!("expansion_card slot {slot}, package {package}: {error}"))?;
+        modules.push((slot, package.to_owned(), resolved, network));
     }
 
+    let mut segments = Segments::parse(&root, config_path)?;
     let runtime = ExpansionRuntime::new()?;
     let cycle_clock = bus.cycle_clock();
     let mut cards = Vec::with_capacity(modules.len());
-    for (slot, label, path) in modules {
+    for (slot, label, path, network) in modules {
+        let net = network
+            .map(|(segment, node)| segments.attach(&segment, node))
+            .transpose()
+            .map_err(|error| format!("slot {slot} package {label}: {error}"))?;
         let card = runtime
-            .load_card_package(slot, &path, Rc::clone(&cycle_clock))
+            .load_card_package(slot, &path, Rc::clone(&cycle_clock), net)
             .map_err(|error| format!("slot {slot} package {label}: {error}"))?;
         cards.push((slot, card));
         tracing::info!(slot, package = %label, path = %path.display(), "Loaded expansion card");
@@ -526,7 +649,8 @@ impl HostedCard {
     /// Load a `.cpt32card` / `.cpt32pkg` package for `slot` (0..7).
     pub fn load(slot: u8, path: &Path) -> Result<Self, String> {
         let cycles = Rc::new(Cell::new(0));
-        let card = ExpansionRuntime::new()?.load_card_package(slot, path, Rc::clone(&cycles))?;
+        let card =
+            ExpansionRuntime::new()?.load_card_package(slot, path, Rc::clone(&cycles), None)?;
         Ok(Self { card, cycles })
     }
 
@@ -577,6 +701,9 @@ impl HostedCard {
 
 struct HostState {
     cycles: Rc<Cell<u64>>,
+    net: Option<NetPort>,
+    /// Per-load random value for node selection and probe nonces (`net_info(3)`).
+    net_seed: u32,
     deadline: Option<u64>,
     irq_asserted: bool,
     faulted: bool,
@@ -600,6 +727,7 @@ pub(crate) struct ExpansionCard {
     mmio_write: TypedFunc<(i32, i32), ()>,
     tick: TypedFunc<(), ()>,
     audio: Option<(TypedFunc<(i32, i32), i32>, Memory)>,
+    net_rx: Option<TypedFunc<(), ()>>,
 }
 
 impl ExpansionCard {
@@ -628,6 +756,8 @@ impl ExpansionCard {
             memory_bytes: self.memory.map(|memory| memory.data_size(&self.store)),
             memory_limit: MEMORY_LIMIT,
             asset_count: state.assets.count(),
+            network_capable: state.assets.network_capability(),
+            network_segment: state.net.as_ref().map(|net| net.segment_name().to_owned()),
         }
     }
 
@@ -641,9 +771,15 @@ impl ExpansionCard {
 
     pub fn next_event_cycle(&self) -> Option<u64> {
         if self.is_faulted() {
-            None
-        } else {
-            self.store.data().deadline
+            return None;
+        }
+        let state = self.store.data();
+        // Received frames are delivered at the next event point (now).
+        let receive = (self.net_rx.is_some() && state.net.as_ref().is_some_and(NetPort::pending))
+            .then(|| state.cycles.get());
+        match (state.deadline, receive) {
+            (Some(deadline), Some(now)) => Some(deadline.min(now)),
+            (deadline, receive) => deadline.or(receive),
         }
     }
 
@@ -652,6 +788,9 @@ impl ExpansionCard {
             let state = self.store.data_mut();
             state.deadline = None;
             state.irq_asserted = false;
+            if let Some(net) = &state.net {
+                net.clear();
+            }
         }
         if self.is_faulted() {
             return;
@@ -664,12 +803,30 @@ impl ExpansionCard {
     }
 
     pub fn run_scheduled_event(&mut self, cycle: u64) {
-        if self.is_faulted()
-            || !self
+        if self.is_faulted() {
+            return;
+        }
+        if let Some(net_rx) = self.net_rx.clone() {
+            if self
                 .store
                 .data()
-                .deadline
-                .is_some_and(|deadline| deadline <= cycle)
+                .net
+                .as_ref()
+                .is_some_and(NetPort::take_pending)
+            {
+                if let Err(error) =
+                    self.call_guest(ExpansionCallKind::NetRx, |store| net_rx.call(store, ()))
+                {
+                    self.fault(format!("cpt32_net_rx trapped: {error}"));
+                    return;
+                }
+            }
+        }
+        if !self
+            .store
+            .data()
+            .deadline
+            .is_some_and(|deadline| deadline <= cycle)
         {
             return;
         }
@@ -850,8 +1007,19 @@ fn function_type_matches(
     actual.matches(&expected)
 }
 
-fn validate_module(module: &Module) -> Result<(), String> {
+fn validate_module(module: &Module, network_capable: bool) -> Result<(), String> {
     let engine = module.engine();
+    if let Some(export) = module
+        .exports()
+        .find(|export| export.name() == "cpt32_net_rx")
+    {
+        if !function_type_matches(engine, &export.ty(), &[], &[]) {
+            return Err("wrong type for export cpt32_net_rx".into());
+        }
+    }
+    let exports_memory = module
+        .exports()
+        .any(|export| export.name() == "memory" && matches!(export.ty(), ExternType::Memory(_)));
     if let Some(export) = module
         .exports()
         .find(|export| export.name() == "cpt32_debug_read")
@@ -897,6 +1065,26 @@ fn validate_module(module: &Module) -> Result<(), String> {
                 &[ValType::I32, ValType::I32],
                 &[ValType::I32],
             ),
+            "net_info" | "net_send" | "net_recv" if !network_capable => {
+                return Err(format!(
+                    "import cpt32_host::{} requires the \"network\" capability in manifest.yaml",
+                    import.name()
+                ));
+            }
+            "net_info" => {
+                function_type_matches(engine, &import.ty(), &[ValType::I32], &[ValType::I32])
+            }
+            "net_send" | "net_recv" => {
+                if !exports_memory {
+                    return Err("network imports require exported memory".into());
+                }
+                function_type_matches(
+                    engine,
+                    &import.ty(),
+                    &[ValType::I32, ValType::I32],
+                    &[ValType::I32],
+                )
+            }
             name => return Err(format!("unsupported import cpt32_host::{name}")),
         };
         if !valid {

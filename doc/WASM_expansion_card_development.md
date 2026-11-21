@@ -94,6 +94,8 @@ SDK の public function は ABI v1 の `cpt32_host` import に対応します。
 - `irq_set(asserted: bool)`: IRQ level を assert/deassert。
 - `asset_count() -> u32`, `asset_size(id) -> u32`, `asset_read_byte(id, offset) -> u8`: manifest 宣言済み asset への読み取り。asset ID/offset が範囲外なら host trap になります。asset 内容は初回 read 時に展開されます。
 
+- ネットワーク（`doc/spec_NET.md` §7）: `net_link()`, `net_network()`, `net_static_node()`, `net_seed()`, `net_send(frame)`, `net_recv(&mut buffer)` と `Card::net_rx`。manifest に `capabilities: [network]` が必要で、`package.py --capability network` で書き込めます。宣言だけでは通信できず、利用者が `config.yaml` でスロットをセグメントにつないだときだけフレームが流れます。実例は [`examples/wasm-cnet`](../examples/wasm-cnet/)。
+
 各 slot の IRQ は IRQC source `5 + slot` につながります。IRQ level の deassert は IRQC pending bit を消去しません。guest が pending を処理する場合、IRQC の仕様に従って別途 acknowledge してください。
 
 ### Timer example の MMIO

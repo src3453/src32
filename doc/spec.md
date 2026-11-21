@@ -414,7 +414,7 @@ CPUレジスタを `0xFFFF0200` から配置する。CPUレジスタは次の通
 # 10. Future Extensions
 
 - カートリッジ領域
-- ネットワーク（草案: [spec_NET.md](spec_NET.md)）
+- ネットワーク（第 1 版: [spec_NET.md](spec_NET.md)）
 - ストレージ
 - デバッグ機構
 

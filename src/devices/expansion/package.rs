@@ -19,6 +19,9 @@ struct Manifest {
     module: String,
     #[serde(default)]
     asset: Vec<ManifestAsset>,
+    /// Host services the card asks for (`network`). A request is not a grant.
+    #[serde(default)]
+    capabilities: Vec<String>,
 }
 
 #[derive(Deserialize)]
@@ -33,6 +36,7 @@ pub(super) struct PackageAssets<R: Read + Seek> {
     paths: Vec<String>,
     sizes: Vec<u64>,
     cache: Vec<Option<Vec<u8>>>,
+    network: bool,
 }
 
 impl PackageAssets<Box<dyn ReadSeek>> {
@@ -89,6 +93,14 @@ impl<R: Read + Seek> PackageAssets<R> {
                 "manifest ABI version {} is unsupported; expected 1",
                 manifest.abi_version
             ));
+        }
+        let mut network = false;
+        for capability in &manifest.capabilities {
+            match capability.as_str() {
+                "network" if !network => network = true,
+                "network" => return Err("duplicate capability \"network\"".to_owned()),
+                other => return Err(format!("unknown capability {other:?}")),
+            }
         }
         validate_manifest_path(&manifest.module)?;
         if manifest.module == MANIFEST_PATH {
@@ -147,8 +159,14 @@ impl<R: Read + Seek> PackageAssets<R> {
                 paths,
                 sizes,
                 cache: std::iter::repeat_with(|| None).take(count).collect(),
+                network,
             },
         ))
+    }
+
+    /// Whether the manifest declares the `network` capability.
+    pub(super) fn network_capability(&self) -> bool {
+        self.network
     }
 
     pub(super) fn count(&self) -> i32 {

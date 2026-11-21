@@ -62,6 +62,20 @@ class PackageBuilderTests(unittest.TestCase):
             self.assertEqual(package.read("assets/first.bin"), b"first")
             self.assertEqual(package.read("assets/second.bin"), b"second")
 
+    def test_network_capability_is_written_to_manifest(self):
+        output = self.root / "cnet.cpt32card"
+        result = self.run_builder("--capability", "network", self.module, output)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(output) as package:
+            self.assertEqual(
+                package.read("manifest.yaml").decode(),
+                'abi_version: 1\nmodule: "wasm/card.wasm"\ncapabilities: [network]\n',
+            )
+        duplicate = self.run_builder(
+            "--capability", "network", "--capability", "network", self.module, output
+        )
+        self.assertNotEqual(duplicate.returncode, 0)
+
     def test_unsafe_asset_path_is_rejected_before_creating_package(self):
         asset = self.root / "asset.bin"
         asset.write_bytes(b"data")

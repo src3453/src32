@@ -40,7 +40,7 @@ moduleは次の5つのfunction exportをすべて持たなければならない�
 
 任意export `cpt32_debug_read: (i32) -> i32` はデバッガの受動snapshot用である。引数はslot内byte offset、戻り値`0..255`は読み出し値、`-1`は安全なsnapshotを提供しないことを示す。この関数はカード状態・host状態を変更してはならず、`cpt32_mmio_read`を呼び出す代用にはしない。exportがない旧moduleは従来どおりロードでき、そのカードのDebug Readは利用不可として扱う。SDKは`Card::debug_read(&self, offset) -> Option<u8>`からこのexportを生成する。
 
-moduleは次節に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
+moduleは次節と§3.3に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
 
 ### 3.1 許可host imports
 
@@ -69,6 +69,10 @@ hostは `frames=1..256`、正の `sample_rate` (Hz) で呼び出す。現在のh
 hostはguest呼び出し後、範囲検証してからbufferを読み取り、次のguest呼び出しより前に消費する。範囲外pointer、trap、fuel枯渇は通常のcard faultにし、そのblockを加算しない。先に完了したblockの音声は残る。fault後のカードは無音。各blockに通常と同じ10,000,000 fuelの上限を適用する。
 
 GUIの既存音声フレーム処理から、SGU/IDCの後にslot昇順で加算する。各加算をi16で飽和する。音声・MMIO・tickを直列に呼び、オーディオデバイスのcallback threadでWASMを実行しない。現在はフレーム末のレジスタ状態を使う方式で、フレーム内MMIO時刻をサンプル単位に再生する契約ではない。音声renderでBus cycleを進めず、仮想cycle tickを音声sampleから生成しない。host音声が無効なGUIやmonitor/testbenchは自動ではrenderしない。headless利用者は `Bus::mix_expansion_audio` を明示的に呼べる。
+
+### 3.3 ネットワーク拡張
+
+manifestに`capabilities: [network]`を宣言したカードは、`cpt32_host`の`net_info: (i32) -> i32`、`net_send: (i32, i32) -> i32`、`net_recv: (i32, i32) -> i32`をimportでき、任意export `cpt32_net_rx: () -> ()` をhostから呼ばれる。宣言のないカードがこれらをimportすると起動エラー。`net_send`/`net_recv`をimportするカードは`memory`をexportしなければならない。`capabilities`を知らない旧hostはmanifestの未知fieldとしてロードを拒否する。契約の詳細、設定（`network_segment`、`expansion_card[].network`）、MMIOは[CNET仕様](spec_NET.md)を参照。
 
 ## 4. Reset、IRQ、DMA
 

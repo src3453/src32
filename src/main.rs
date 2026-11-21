@@ -1709,6 +1709,12 @@ impl DebugUiState {
                     }
                 ));
                 ui.text(format!("Package assets: {}", card.asset_count));
+                if card.network_capable {
+                    ui.text(format!(
+                        "Network segment: {}",
+                        card.network_segment.as_deref().unwrap_or("(not attached)")
+                    ));
+                }
                 match card.memory_bytes {
                     Some(bytes) => {
                         ui.text(format!(

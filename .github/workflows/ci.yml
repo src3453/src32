@@ -64,6 +64,10 @@ jobs:
           build dos.sol dos
           build tinybasic.sol tinybasic
           build tools/dsfs/dsfs_smoke.sol dsfs_guest
+      - name: Build the CNET card used by tests/cnet.rs
+        run: |
+          rustup target add wasm32-unknown-unknown
+          cargo build --manifest-path examples/wasm-cnet/Cargo.toml --release --target wasm32-unknown-unknown
       # lib の単体テストは外部リポジトリ (s3w2_core) の golden ファイルを include するため
       # CI ではビルドできない。tests/ の統合テストだけを実行する。
       # strek_* と tb_load_live は既知の失敗/外部ファイル依存なので known-failures ジョブへ回す。

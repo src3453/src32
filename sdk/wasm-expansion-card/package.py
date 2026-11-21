@@ -43,6 +43,13 @@ def main() -> int:
         metavar="PACKAGE_PATH=SOURCE_FILE",
         help="include an asset; IDs are assigned in command-line order",
     )
+    parser.add_argument(
+        "--capability",
+        action="append",
+        choices=["network"],
+        default=[],
+        help="declare a host capability in manifest.yaml (repeatable)",
+    )
     args = parser.parse_args()
 
     try:
@@ -70,7 +77,11 @@ def main() -> int:
                 raise ValueError("assets exceed the 64 MiB uncompressed package limit")
             assets.append((destination, source))
 
+        if len(set(args.capability)) != len(args.capability):
+            raise ValueError("duplicate --capability")
         manifest = ["abi_version: 1", f"module: {json.dumps(args.module_path)}"]
+        if args.capability:
+            manifest.append(f"capabilities: [{', '.join(args.capability)}]")
         if assets:
             manifest.append("asset:")
             for asset_id, (destination, _) in enumerate(assets):

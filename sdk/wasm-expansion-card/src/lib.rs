@@ -32,6 +32,10 @@ pub trait Card: Default {
     fn render_audio(&mut self, _sample_rate: u32, output: &mut [[i16; 2]]) {
         output.fill([0, 0]);
     }
+
+    /// Called after the host queued received CNET link frames (`network`
+    /// capability). Drain them with [`net_recv`] until it returns `None`.
+    fn net_rx(&mut self) {}
 }
 
 #[link(wasm_import_module = "cpt32_host")]
@@ -48,6 +52,70 @@ unsafe extern "C" {
     fn host_asset_size(id: i32) -> i32;
     #[link_name = "asset_read_byte"]
     fn host_asset_read_byte(id: i32, offset: i32) -> i32;
+    #[link_name = "net_info"]
+    fn host_net_info(key: i32) -> i32;
+    #[link_name = "net_send"]
+    fn host_net_send(ptr: i32, len: i32) -> i32;
+    #[link_name = "net_recv"]
+    fn host_net_recv(ptr: i32, cap: i32) -> i32;
+}
+
+/// Largest CNET link frame: 8-byte link header, 16-byte datagram header and
+/// 1024-byte payload (`doc/spec_NET.md`).
+pub const NET_MAX_FRAME: usize = 1048;
+
+/// Whether the host attached this card to a network segment. The network
+/// functions require `capabilities: [network]` in `manifest.yaml`.
+pub fn net_link() -> bool {
+    // SAFETY: key 0 is defined by the network extension.
+    unsafe { host_net_info(0) == 1 }
+}
+
+/// Network number configured for the attached segment (0 when unattached).
+pub fn net_network() -> u16 {
+    // SAFETY: key 1 is defined by the network extension.
+    unsafe { host_net_info(1) as u16 }
+}
+
+/// Node number fixed by the host configuration, if any.
+pub fn net_static_node() -> Option<u16> {
+    // SAFETY: key 2 is defined by the network extension.
+    let node = unsafe { host_net_info(2) };
+    (node >= 0).then_some(node as u16)
+}
+
+/// Random value chosen by the host each time the card is loaded.
+pub fn net_seed() -> u32 {
+    // SAFETY: key 3 is defined by the network extension.
+    unsafe { host_net_info(3) as u32 }
+}
+
+/// Result of [`net_send`].
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum NetSend {
+    Accepted,
+    NoLink,
+    QueueFull,
+}
+
+/// Hand one link frame (8..=1048 bytes) to the host. Longer or shorter frames
+/// panic before calling the host, which would otherwise trap.
+pub fn net_send(frame: &[u8]) -> NetSend {
+    assert!((8..=NET_MAX_FRAME).contains(&frame.len()));
+    // SAFETY: the slice lies in linear memory and its length is in range.
+    match unsafe { host_net_send(frame.as_ptr() as usize as i32, frame.len() as i32) } {
+        0 => NetSend::Accepted,
+        1 => NetSend::NoLink,
+        _ => NetSend::QueueFull,
+    }
+}
+
+/// Take the next received link frame into `buffer`; returns its length.
+pub fn net_recv(buffer: &mut [u8; NET_MAX_FRAME]) -> Option<usize> {
+    // SAFETY: the buffer lies in linear memory and holds a maximum frame.
+    let length =
+        unsafe { host_net_recv(buffer.as_mut_ptr() as usize as i32, NET_MAX_FRAME as i32) };
+    usize::try_from(length).ok()
 }
 
 /// Return the host's monotonic virtual-cycle counter as an unsigned bit pattern.
@@ -175,6 +243,11 @@ macro_rules! export_card {
         #[unsafe(no_mangle)]
         pub extern "C" fn cpt32_tick() {
             <$card as $crate::Card>::tick(__cpt32_card_mut());
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn cpt32_net_rx() {
+            <$card as $crate::Card>::net_rx(__cpt32_card_mut());
         }
 
         #[unsafe(no_mangle)]

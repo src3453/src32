@@ -243,10 +243,8 @@ impl Bus {
                 if let Some(until_irq) = self.cycles_until_pec_irq() {
                     next_cycle = next_cycle.min(now.saturating_add(until_irq.max(1)));
                 }
-                if let Some(deadline) = self
-                    .next_expansion_event_cycle()
-                    .filter(|&cycle| cycle > now)
-                {
+                // A card due now (queued network frames) must not hide a later deadline.
+                if let Some(deadline) = self.next_expansion_event_cycle_after(now) {
                     next_cycle = next_cycle.min(deadline);
                 }
             }
@@ -289,22 +287,43 @@ impl Bus {
             .min()
     }
 
+    fn next_expansion_event_cycle_after(&self, now: u64) -> Option<u64> {
+        if !self.has_expansion_cards {
+            return None;
+        }
+        self.expansion_devices
+            .iter()
+            .flatten()
+            .filter_map(|&index| self.devices[index].device.next_event_cycle())
+            .filter(|&cycle| cycle > now)
+            .min()
+    }
+
     fn run_due_expansion_events(&mut self) -> bool {
         let cycle = self.system_cycles;
         if !self.has_expansion_cards {
             return false;
         }
         let mut event_ran = false;
-        for slot in 0..usize::from(EXPANSION_SLOT_COUNT) {
-            if let Some(index) = self.expansion_devices[slot] {
-                let device = &mut self.devices[index].device;
-                if device
-                    .next_event_cycle()
-                    .is_some_and(|deadline| deadline <= cycle)
-                {
-                    device.run_scheduled_event(cycle);
-                    event_ran = true;
+        // A card event can queue network frames for a card in an earlier slot,
+        // which is then due at this same cycle. Bound the extra passes.
+        for _ in 0..8 {
+            let mut pass_ran = false;
+            for slot in 0..usize::from(EXPANSION_SLOT_COUNT) {
+                if let Some(index) = self.expansion_devices[slot] {
+                    let device = &mut self.devices[index].device;
+                    if device
+                        .next_event_cycle()
+                        .is_some_and(|deadline| deadline <= cycle)
+                    {
+                        device.run_scheduled_event(cycle);
+                        pass_ran = true;
+                    }
                 }
+            }
+            event_ran |= pass_ran;
+            if !pass_ran {
+                break;
             }
         }
         event_ran
