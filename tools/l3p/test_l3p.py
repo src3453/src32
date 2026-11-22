@@ -16,7 +16,12 @@ import l3p  # noqa: E402
 
 
 class Lossy:
-    """A Segment.mangle that drops, duplicates and reorders packets."""
+    """A Segment.mangle that drops, duplicates and reorders packets.
+
+    seed=None draws from OS entropy. A fixed seed is reproducible but was
+    seen to drop every retransmission of one request in a long pipelined
+    run (the retransmission rounds fall into a fixed rhythm), so long bulk
+    tests use seed=None."""
 
     def __init__(self, seed, drop=0.0, dup=0.0, reorder=0.0, corrupt=0.0):
         self.rng = random.Random(seed)
