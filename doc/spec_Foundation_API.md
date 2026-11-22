@@ -509,7 +509,7 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `ST_STAT` は DEVICE、mode `0x0036`。`ST_SYNC` は成功する no-op。`ST_READ`／`ST_WRITE`／seek などは UNSUPPORTED です。ユーザーバッファは IPC の検証後に `mm_copy_*` でコピーします。
 - 定数は `<foundation/cnet.h>` にあります。
 
-#### libcnet（WAL `cnet` 1.0、`/lib/cnet.1.wal`）
+#### libcnet（WAL `cnet` 1.1、`/lib/cnet.1.wal`）
 
 `/dev/cnet` の上のライブラリです。ヘッダーは `<foundation/libcnet.h>`、実装は `foundation/lib/cnet`。`fnd` WAL を import する WAL で、既定のディスクに入ります（利用側は `--import-wal` で `fnd` と `cnet` の両方を指定します）。
 
@@ -517,7 +517,8 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `cnet_wait_ready(h, ticks)` は 1 tick ずつ眠ってノード番号の取得を待ちます（OK、NO_MEDIA、ADDRESS_CONFLICT、TIMEOUT）。`cnet_info_get(h, &info)` は `CNET_INFO` の結果を返します。
 - `cnet_sendto(h, addr, socket, proto, data, len)` と `cnet_recvfrom(h, buf, cap, flags, &from)`。`cnet_recvfrom` は受信した長さ（0 以上）を返し、`from`（0 でもよい）に送信元アドレス・ソケット・PROTO・flags を入れます。
 - `cnet_parse_addr("1.20", &addr)` は 16 進の `NET.NODE` を読みます。ローカルネットワークのノードは短縮表記 `.NODE` または `NODE`（例: `.20`、`20`）でも指定でき、どちらも NET 0（自ネットワーク）になります。`cnet_format_addr(addr, out)` は `"0001.0020"` を書きます。
-- シェルコマンド `cnet`（`foundation/bin/cnet.c`）が利用例です。`cnet` で状態とアドレスを表示し、`cnet ping ADDR [count]` はエコーで応答を確かめ、`cnet send ADDR SOCKET TEXT...` は PROTO 0x80 のテキストを送り、`cnet recv SOCKET [count]` は受信して表示します。
+- `cnet_parse_endpoint("1.20:40", &addr, &socket)` はソケット付きのエンドポイント `ADDR:SOCK` を読みます（1.1 で追加）。ADDR は `cnet_parse_addr` と同じで、SOCK も 16 進の `1`〜`FE` です。`:SOCK` がなければ `*socket` は呼び出し側の値（既定値）のまま変わりません。ソケットを必須にするときは 0 を入れて呼び、0 のままなら誤りとします。`cnet_format_endpoint(addr, socket, out)` は `"0001.0020:40"` を書きます（`out` は 13 byte、ソケットは 2 桁）。
+- シェルコマンド `cnet`（`foundation/bin/cnet.c`）が利用例です。`cnet` で状態とアドレスを表示し、`cnet ping ADDR [count]` はエコーで応答を確かめ、`cnet send ADDR:SOCK TEXT...` は PROTO 0x80 のテキストを送り、`cnet recv SOCK [count]` は受信して表示します。
 - テストは `foundation/tests/cnet`。testbench の拡張スロット 0 に CNET カードを置き、UDP セグメントの向こう側を Python で書いた独立した CNET ノードにして、ping・送信・受信・タイムアウト・カードなしを確かめます。
 
 ## 10. 構造体

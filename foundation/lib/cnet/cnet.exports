@@ -1,4 +1,4 @@
-# WAL ABI 1.0 of libcnet (foundation/include/foundation/libcnet.h).
+# WAL ABI 1.1 of libcnet (1.1 adds cnet_parse_endpoint and cnet_format_endpoint); see foundation/include/foundation/libcnet.h.
 cnet_open fn(u32,ptr)->i32
 cnet_close fn(u32)->i32
 cnet_info_get fn(u32,ptr)->i32
@@ -7,3 +7,5 @@ cnet_sendto fn(u32,u32,u32,u32,ptr,u32)->i32
 cnet_recvfrom fn(u32,ptr,u32,u32,ptr)->i32
 cnet_parse_addr fn(ptr,ptr)->i32
 cnet_format_addr fn(u32,ptr)->void
+cnet_parse_endpoint fn(ptr,ptr,ptr)->i32
+cnet_format_endpoint fn(u32,u32,ptr)->void

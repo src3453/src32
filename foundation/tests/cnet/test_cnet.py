@@ -206,9 +206,9 @@ class CnetTests(unittest.TestCase):
         self.assertIn('status=0', text)
 
     def test_send_reaches_the_peer_with_a_valid_datagram(self):
-        text = self.run_shell('cnet send 1.20 64 hello world\\n', 'echo status=$?\\n')
+        text = self.run_shell('cnet send 1.20:64 hello world\\n', 'echo status=$?\\n')
         self.assertIn('status=0', text)
-        texts = [r for r in self.peer.received if r[3] == 64]
+        texts = [r for r in self.peer.received if r[3] == 0x64]
         self.assertEqual(len(texts), 1, self.peer.received)
         net, node, src_socket, _, proto, body = texts[0]
         self.assertEqual((net, node, proto, body), (NET, FOUNDATION_NODE, 0x80, b'hello world'))
@@ -216,9 +216,9 @@ class CnetTests(unittest.TestCase):
 
     def test_recv_prints_a_datagram_from_the_peer(self):
         self.peer.push = link_frame(FOUNDATION_NODE, PEER_NODE, 0x01,
-                                    datagram(FOUNDATION_NODE, 64, 99, 0x80, b'hi foundation'))
+                                    datagram(FOUNDATION_NODE, 0x64, 0x99, 0x80, b'hi foundation'))
         text = self.run_shell('cnet recv 64\\n', 'echo status=$?\\n', step=120)
-        self.assertIn('from 0001.0020 socket 99: hi foundation', text)
+        self.assertIn('from 0001.0020:99: hi foundation', text)
         self.assertIn('status=0', text)
 
     def test_ping_without_an_answer_times_out(self):
@@ -235,6 +235,17 @@ class CnetTests(unittest.TestCase):
         self.assertIn('status=0', text)
         text = self.run_shell('cnet ping 1.\\n', 'cnet ping 1:20\\n', 'echo status=$?\\n')
         self.assertEqual(text.count('usage: cnet ping ADDR'), 2, text)  # ":" is no longer a separator
+
+    def test_endpoint_notation_names_the_socket(self):
+        # NET.NODE:SOCK (doc/spec_NET.md §2): the socket follows the address
+        # after a colon, in hex like NET and NODE; the short forms of the
+        # address apply too. 0 and FF are not sockets.
+        text = self.run_shell('cnet send 20:65 one\\n', 'cnet send .20:66 two\\n',
+                              'cnet send 1.20 64 three\\n', 'cnet send 1.20:FF x\\n',
+                              'cnet send 1.20:0 x\\n', 'echo status=$?\\n')
+        got = sorted((r[3], r[5]) for r in self.peer.received if r[4] == 0x80)
+        self.assertEqual(got, [(0x65, b'one'), (0x66, b'two')])
+        self.assertEqual(text.count('usage: cnet send ADDR:SOCK'), 3, text)
 
     def test_without_a_card_open_reports_no_media(self):
         text = self.run_shell('cnet\\n', card=False)

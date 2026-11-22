@@ -7,7 +7,7 @@ emulators on one UDP segment on this machine:
     B  node 0001.0020   type:  chat 10
 
 Each window then sends every typed line to the other. The shell's own
-`cnet ping 20` / `cnet send 20 77 hello` work as well.
+`cnet ping 20` / `cnet send 20:77 hello` work as well.
 
     python examples/cnet-chat/run_demo.py [--clang PATH]
     python examples/cnet-chat/run_demo.py --headless   # scripted, two testbenches

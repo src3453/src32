@@ -1,13 +1,13 @@
-/* chat ADDR [socket] -- a two-window CNET chat for Foundation (libcnet).
+/* chat ADDR[:SOCK] -- a two-window CNET chat for Foundation (libcnet).
  *
- * Every line typed is sent as one datagram (PROTO 0x80) to ADDR's socket
- * (default 77); datagrams arriving on our socket are printed above the input
- * line with the sender's address. Esc quits. Run it in two emulators, each
+ * Every line typed is sent as one datagram (PROTO 0x80) to socket SOCK
+ * (default 77, hex like the address) at ADDR, and we listen on the same socket number; datagrams
+ * arriving there are printed above the input line with the sender's address. Esc quits. Run it in two emulators, each
  * pointing at the other's node (examples/cnet-chat/run_demo.py). */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 
-#define DEFAULT_SOCKET 77u
+#define DEFAULT_SOCKET 0x77u
 #define TEXT_PROTO 0x80u
 #define LINE_MAX 200u
 
@@ -28,17 +28,10 @@ static int32_t fail(const char *what, int32_t st) {
     return st;
 }
 
-static int32_t parse_socket(const char *text, uint32_t *out_socket) {
-    uint32_t value = 0;
-    if (!*text) return FND_E_BAD_ARG;
-    for (; *text; ++text) {
-        if (*text < '0' || *text > '9') return FND_E_BAD_ARG;
-        value = value * 10u + (uint32_t)(*text - '0');
-        if (value > 254u) return FND_E_BAD_ARG;
-    }
-    if (!value || value == FND_CNET_ECHO_SOCKET) return FND_E_BAD_ARG;
-    *out_socket = value;
-    return FND_OK;
+static void out_endpoint(uint32_t addr, uint32_t socket) {
+    char text[14];
+    cnet_format_endpoint(addr, socket, text);
+    out(text);
 }
 
 /* Redraw the prompt and the line being typed. */
@@ -65,9 +58,10 @@ static void show_message(const char *line, uint32_t len, const cnet_peer *from, 
 static int32_t chat(void) {
     uint32_t peer, socket = DEFAULT_SOCKET;
     uint32_t argc = fnd_argc();
-    if (argc < 2u || argc > 3u || cnet_parse_addr(fnd_argv(1), &peer) != FND_OK ||
-        (argc == 3u && parse_socket(fnd_argv(2), &socket) != FND_OK)) {
-        out("usage: chat ADDR [socket]   (ADDR = NET.NODE, or .NODE / NODE on this network, in hex)\n");
+    if (argc != 2u || cnet_parse_endpoint(fnd_argv(1), &peer, &socket) != FND_OK ||
+        socket == FND_CNET_ECHO_SOCKET) {
+        out("usage: chat ADDR[:SOCK]   (ADDR = NET.NODE, or .NODE / NODE on this network, in hex;\n"
+            "                           SOCK in hex, default 77)\n");
         return FND_E_BAD_ARG;
     }
     fnd_handle h;
@@ -82,9 +76,9 @@ static int32_t chat(void) {
     cnet_info_get(h, &info);
     if (!FND_CNET_NET(peer)) peer = FND_CNET_ADDR(FND_CNET_NET(info.addr), FND_CNET_NODE(peer));
     out("CNET chat: ");
-    out_addr(info.addr);
+    out_endpoint(info.addr, socket);
     out(" -> ");
-    out_addr(peer);
+    out_endpoint(peer, socket);
     out(". Enter sends, Esc quits.\n");
 
     char line[LINE_MAX];

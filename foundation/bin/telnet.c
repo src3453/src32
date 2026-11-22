@@ -1,8 +1,8 @@
-/* telnet [-b ADDR] [-t TERM] HOST [PORT]
- * ssh [-b ADDR] [-t TERM] [-p PORT] [USER@]HOST   (ssh.c includes this file)
+/* telnet [-b ADDR[:SOCK]] [-t TERM] HOST [PORT]
+ * ssh [-b ADDR[:SOCK]] [-t TERM] [-p PORT] [USER@]HOST   (ssh.c includes this file)
  *
  * A telnet client over the CNET TCP bridge (doc/spec_NET_bridge.md). The
- * bridge, a host program at CNET address ADDR (-b, default .FF01), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us; this side
+ * bridge, a host program at CNET address ADDR:SOCK (-b, default .FF01:17, i.e. socket 23), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us; this side
  * always speaks telnet over a reliable stream (PROTO 0x40) of libcnet
  * datagrams. Ctrl+C belongs to the shell (it ends this program), so the
  * escape key Ctrl+] followed by c sends Ctrl+C and q closes the connection. */
@@ -16,10 +16,10 @@
 #endif
 #if TELNET_SSH
 #define NAME "ssh"
-#define USAGE "ssh [-b ADDR] [-t TERM] [-p PORT] [USER@]HOST"
+#define USAGE "ssh [-b ADDR[:SOCK]] [-t TERM] [-p PORT] [USER@]HOST"
 #else
 #define NAME "telnet"
-#define USAGE "telnet [-b ADDR] [-t TERM] HOST [PORT]"
+#define USAGE "telnet [-b ADDR[:SOCK]] [-t TERM] HOST [PORT]"
 #endif
 
 #define DEFAULT_BRIDGE ".FF01"
@@ -58,7 +58,7 @@
 enum { OPENING, OPEN, CLOSED, RESET, FAILED };
 
 static fnd_handle net;
-static uint32_t bridge, conn, state;
+static uint32_t bridge, bridge_socket = BRIDGE_SOCKET, conn, state;
 static uint32_t rcv_nxt, snd_una, snd_nxt, peer_window = MAX_DATA;
 static uint8_t sbuf[SND_CAP]; /* unacknowledged and unsent bytes from snd_una */
 static uint32_t slen;
@@ -99,7 +99,7 @@ static void send_packet(uint32_t type, uint32_t flags, uint32_t seq, const uint8
     packet[13] = (uint8_t)RCV_WINDOW;
     packet[14] = packet[15] = 0;
     for (uint32_t i = 0; i < len; ++i) packet[HDR + i] = data[i];
-    cnet_sendto(net, bridge, BRIDGE_SOCKET, PROTO_STREAM, packet, HDR + len);
+    cnet_sendto(net, bridge, bridge_socket, PROTO_STREAM, packet, HDR + len);
     if (type == T_DATA) need_ack = 0; /* the ACK field went with it */
 }
 
@@ -283,7 +283,7 @@ static void telnet_input(const uint8_t *data, uint32_t len) {
 
 static int from_bridge(const cnet_peer *from) {
     uint32_t want = FND_CNET_NET(bridge), got = FND_CNET_NET(from->addr);
-    return FND_CNET_NODE(from->addr) == FND_CNET_NODE(bridge) && from->socket == BRIDGE_SOCKET &&
+    return FND_CNET_NODE(from->addr) == FND_CNET_NODE(bridge) && from->socket == bridge_socket &&
            from->proto == PROTO_STREAM && (!want || !got || want == got);
 }
 
@@ -494,7 +494,7 @@ static int32_t telnet(uint32_t argc) {
     char target[256];
     const char *bridge_text;
     if (parse_args(argc, target, sizeof target, &bridge_text) != FND_OK) return cmd_usage(USAGE);
-    if (cnet_parse_addr(bridge_text, &bridge) != FND_OK) return fail(bridge_text, FND_E_BAD_ARG);
+    if (cnet_parse_endpoint(bridge_text, &bridge, &bridge_socket) != FND_OK) return fail(bridge_text, FND_E_BAD_ARG);
     int32_t st = cnet_open(0, &net);
     if (st != FND_OK) return fail("/dev/cnet", st);
     st = cnet_wait_ready(net, READY_TICKS);
@@ -506,8 +506,8 @@ static int32_t telnet(uint32_t argc) {
     cnet_info_get(net, &info);
     conn = ((now() * 2654435761u) ^ (info.socket << 8) ^ info.addr) & 0xFFFFu;
     if (!conn) conn = 1;
-    char addr_text[10];
-    cnet_format_addr(bridge, addr_text);
+    char addr_text[14];
+    cnet_format_endpoint(bridge, bridge_socket, addr_text);
     cmd_out("Trying ");
     cmd_out(target);
     cmd_out(" via ");

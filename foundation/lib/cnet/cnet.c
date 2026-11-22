@@ -1,4 +1,4 @@
-/* libcnet, the WAL "cnet" 1.0 (foundation/include/foundation/libcnet.h). */
+/* libcnet, the WAL "cnet" 1.1 (foundation/include/foundation/libcnet.h). */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 
@@ -104,6 +104,26 @@ int32_t cnet_parse_addr(const char *text, uint32_t *addr) {
     return FND_OK;
 }
 
+int32_t cnet_parse_endpoint(const char *text, uint32_t *addr, uint32_t *socket) {
+    if (!text || !addr || !socket) return FND_E_BAD_ARG;
+    char head[10];
+    uint32_t i = 0;
+    for (; text[i] && text[i] != ':'; ++i) {
+        if (i + 1u >= sizeof head) return FND_E_BAD_ARG;
+        head[i] = text[i];
+    }
+    head[i] = 0;
+    uint32_t a, s = *socket;
+    if (cnet_parse_addr(head, &a) != FND_OK) return FND_E_BAD_ARG;
+    if (text[i] == ':') {
+        /* Hex like NET and NODE, at most 2 digits: 1..FE (0 and FF are not sockets). */
+        if (hex_value(text + i + 1, &s) != FND_OK || !s || s > 0xFEu) return FND_E_BAD_ARG;
+    }
+    *addr = a;
+    *socket = s;
+    return FND_OK;
+}
+
 void cnet_format_addr(uint32_t addr, char *out) {
     static const char digits[] = "0123456789ABCDEF";
     for (uint32_t i = 0; i < 8u; ++i) {
@@ -112,4 +132,13 @@ void cnet_format_addr(uint32_t addr, char *out) {
     }
     out[4] = '.';
     out[9] = 0;
+}
+
+void cnet_format_endpoint(uint32_t addr, uint32_t socket, char *out) {
+    static const char digits[] = "0123456789ABCDEF";
+    cnet_format_addr(addr, out);
+    out[9] = ':';
+    out[10] = digits[(socket >> 4) & 0xFu];
+    out[11] = digits[socket & 0xFu];
+    out[12] = 0;
 }

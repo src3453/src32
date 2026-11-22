@@ -368,7 +368,7 @@ def main(argv=None):
     sgc_build = importlib.util.module_from_spec(sgc_spec)
     sgc_spec.loader.exec_module(sgc_build)
     sgc_job = pool.submit(sgc_build.build, out / "sgc", fnd, args.clang, args.optimization, run=cached_run) if "sgc" in libs else None
-    # /lib/cnet.1.wal: libcnet (lib/cnet, WAL "cnet" 1.0), datagram sockets over /dev/cnet.
+    # /lib/cnet.1.wal: libcnet (lib/cnet, WAL "cnet" 1.1), datagram sockets over /dev/cnet.
     cnet_spec = importlib.util.spec_from_file_location("cnet_build", CNET_DIR / "build.py")
     cnet_build = importlib.util.module_from_spec(cnet_spec)
     cnet_spec.loader.exec_module(cnet_build)

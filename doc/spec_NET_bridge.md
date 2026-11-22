@@ -100,7 +100,7 @@ HOST は名前、IPv4、または `[...]` で囲んだ IPv6 です。
 
 `/bin/telnet.wax` と `/bin/ssh.wax`（同じソース `foundation/bin/telnet.c`）です。使い方は [シェル仕様](spec_Foundation_shell.md) のコマンド表を参照してください。
 
-- ブリッジの CNET アドレスは `-b ADDR` で指定し、既定は `.FF01` です（シェルの変数は子プロセスに渡らないため、環境変数では指定しません）。
+- ブリッジの CNET アドレスは `-b ADDR[:SOCK]`（spec_NET §2 の `NET.NODE:SOCK`）で指定し、既定は `.FF01:17` です。SOCK は 16 進で、省くとソケット 23（`17`）です（シェルの変数は子プロセスに渡らないため、環境変数では指定しません）。
 - コンソールを RAW にし、キーを VT100 系の byte 列へ変換して送ります（矢印は `ESC [ A` など、Backspace は DEL、Enter は CR NUL、Ctrl+文字は C0）。受信は IAC を処理して画面へ書きます。UTF-8 の文字が DATA の境目で分かれたら、残りが届くまで書くのを待ちます。
 - 対応するオプションは ECHO・SGA・BINARY（相手が WILL なら DO）と NAWS・TTYPE・BINARY（相手が DO なら WILL）です。他は断ります。相手が ECHO を WILL しない間は、入力を自分で表示します。端末名は既定 `ansi`（`-t TERM` で変更）。Foundation のコンソールはスクロール領域や行挿入を持たないので（API §8.1.1）、全画面のアプリは崩れることがあります。
 - シェルは実行中のコマンドの Ctrl+C を中断に使うため（シェル仕様 §9.3）、Ctrl+C は相手に届かずクライアントが終了します。エスケープキー Ctrl+] の後に `c` で Ctrl+C を送り、`q` で接続を閉じて終わり、`]` で Ctrl+] 自体を送ります。

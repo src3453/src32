@@ -1,6 +1,7 @@
-/* cnet [info] | cnet ping ADDR [count] | cnet send ADDR SOCKET TEXT... | cnet recv SOCKET [count]
+/* cnet [info] | cnet ping ADDR [count] | cnet send ADDR:SOCK TEXT... | cnet recv SOCK [count]
  * CNET datagrams over libcnet (doc/spec_Foundation_API.md §9.6). ADDR is
- * NET.NODE in hex, or .NODE / NODE for the local network; SOCKET is decimal. */
+ * NET.NODE in hex, or .NODE / NODE for the local network; SOCK is a hex
+ * socket, written after the address as NET.NODE:SOCK (doc/spec_NET.md §2). */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 
@@ -22,6 +23,24 @@ static int32_t parse_dec(const char *text, uint32_t max, uint32_t *out) {
     return FND_OK;
 }
 
+static int32_t parse_socket(const char *text, uint32_t *out) {
+    uint32_t value = 0, digits = 0;
+    if (*text == ':') ++text; /* ":SOCK" is the same socket on this node */
+    for (; *text; ++text, ++digits) {
+        char c = *text;
+        uint32_t d;
+        if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
+        else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+        else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+        else return FND_E_BAD_ARG;
+        if (digits == 2u) return FND_E_BAD_ARG;
+        value = value << 4 | d;
+    }
+    if (!digits || !value || value > 0xFEu) return FND_E_BAD_ARG;
+    *out = value;
+    return FND_OK;
+}
+
 static int same(const char *a, const char *b) {
     while (*a && *a == *b) ++a, ++b;
     return *a == *b;
@@ -30,6 +49,12 @@ static int same(const char *a, const char *b) {
 static void out_addr(uint32_t addr) {
     char text[10];
     cnet_format_addr(addr, text);
+    cmd_out(text);
+}
+
+static void out_endpoint(uint32_t addr, uint32_t socket) {
+    char text[14];
+    cnet_format_endpoint(addr, socket, text);
     cmd_out(text);
 }
 
@@ -117,17 +142,16 @@ static int32_t ping(uint32_t argc) {
 }
 
 static int32_t send(uint32_t argc) {
-    uint32_t addr, socket;
-    if (argc < 5u || cnet_parse_addr(fnd_argv(2), &addr) != FND_OK ||
-        parse_dec(fnd_argv(3), 255u, &socket) != FND_OK)
-        return cmd_usage("cnet send ADDR SOCKET TEXT...");
+    uint32_t addr, socket = 0;
+    if (argc < 4u || cnet_parse_endpoint(fnd_argv(2), &addr, &socket) != FND_OK || !socket)
+        return cmd_usage("cnet send ADDR:SOCK TEXT...");
     char text[FND_CNET_MTU];
     uint32_t len = 0;
-    for (uint32_t i = 4; i < argc; ++i) {
+    for (uint32_t i = 3; i < argc; ++i) {
         const char *word = fnd_argv(i);
         uint32_t n = cmd_len(word);
-        if (len + n + (i > 4u) > sizeof text) return cmd_report("cnet", "text", FND_E_LIMIT);
-        if (i > 4u) text[len++] = ' ';
+        if (len + n + (i > 3u) > sizeof text) return cmd_report("cnet", "text", FND_E_LIMIT);
+        if (i > 3u) text[len++] = ' ';
         for (uint32_t j = 0; j < n; ++j) text[len++] = word[j];
     }
     fnd_handle h;
@@ -139,10 +163,10 @@ static int32_t send(uint32_t argc) {
 }
 
 static int32_t recv(uint32_t argc) {
-    uint32_t socket, count = 1;
-    if (argc < 3u || argc > 4u || parse_dec(fnd_argv(2), 255u, &socket) != FND_OK || !socket ||
+    uint32_t socket = 0, count = 1;
+    if (argc < 3u || argc > 4u || parse_socket(fnd_argv(2), &socket) != FND_OK ||
         (argc == 4u && parse_dec(fnd_argv(3), 1000u, &count) != FND_OK))
-        return cmd_usage("cnet recv SOCKET [count]");
+        return cmd_usage("cnet recv SOCK [count]");
     fnd_handle h;
     int32_t st = open_ready(socket, &h);
     if (st != FND_OK) return st;
@@ -158,9 +182,7 @@ static int32_t recv(uint32_t argc) {
         for (int32_t j = 0; j < n; ++j)
             if ((uint8_t)data[j] < 0x20u || (uint8_t)data[j] > 0x7Eu) data[j] = '.';
         cmd_out("from ");
-        out_addr(from.addr);
-        cmd_out(" socket ");
-        cmd_out_dec((int32_t)from.socket, 0);
+        out_endpoint(from.addr, from.socket);
         cmd_out(": ");
         cmd_out(data);
         cmd_out("\n");
@@ -176,7 +198,7 @@ static int32_t cnet(uint32_t argc) {
     if (same("ping", verb)) return ping(argc);
     if (same("send", verb)) return send(argc);
     if (same("recv", verb)) return recv(argc);
-    return cmd_usage("cnet [info] | ping ADDR [count] | send ADDR SOCKET TEXT... | recv SOCKET [count]");
+    return cmd_usage("cnet [info] | ping ADDR [count] | send ADDR:SOCK TEXT... | recv SOCK [count]");
 }
 
 CMD_MAIN(cnet)

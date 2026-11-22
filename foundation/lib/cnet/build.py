@@ -1,4 +1,4 @@
-"""Build libcnet as the Foundation WAL "cnet" 1.0 (/lib/cnet.1.wal)."""
+"""Build libcnet as the Foundation WAL "cnet" 1.1 (/lib/cnet.1.wal)."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -14,7 +14,7 @@ def build(out, fnd, clang=None, optimization="-O2", *, run=None):
     out.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, str(ROOT / "tools/llvm-src32/driver.py"), str(HERE / "cnet.c"),
                "-I", str(ROOT / "foundation/include"), "-I", str(ROOT / "sdk/cpt32/include"),
-               optimization, "--wal", "--page-align", "--image-id", "cnet", "--abi-version", "1.0",
+               optimization, "--wal", "--page-align", "--image-id", "cnet", "--abi-version", "1.1",
                "--exports", str(HERE / "cnet.exports"), "--import-wal", str(fnd),
                "-o", str(out / "libcnet.wal")]
     if clang:
