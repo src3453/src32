@@ -9,7 +9,7 @@ Windows／Linuxで起動設定を操作できるPython GUIランチャーを用�
 - **CPT32 エミュレータ** — Rust で実装した CPU、メモリ／バス、描画・音声・周辺機器。
 - **SRC32** — 32-bit RISC CPU。命令セット仕様は [`doc/spec_CPU.md`](doc/spec_CPU.md)。
 - **sol** — スタック指向言語。Python 製 VM と SRC32 アセンブリへのコンパイラを含みます。標準ライブラリ（`sol/solstd`、`sol/cpt32`）は名前空間を宣言しており、`pcg.prnscr` や `softfloat.sf32_add` のように `名前空間.名前` で参照します（[`doc/spec_sol.md`](doc/spec_sol.md)）。
-- **CPT32 Cライブラリ** — sol版の描画・IRQ・ストレージ・音楽APIを、LLVM/SRC32向けfreestanding Cへ移植。SDKは [`sdk/cpt32`](sdk/cpt32/README.md)、サンプルは [`3D Cube`](examples/3d-cube-c/README.md)、[`Terrain Flight`](examples/vpu-terrain-flight-c/README.md)、[`DOS`](examples/dos-c/README.md)、[`TinyBASIC`](examples/tinybasic-c/README.md)。
+- **CPT32 Cライブラリ** — sol版の描画・IRQ・ストレージ・音楽APIを、LLVM/SRC32向けfreestanding Cへ移植。SDKは [`sdk/cpt32`](sdk/cpt32/README.md)、サンプルは [`3D Cube`](examples/3d-cube-c/README.md)、[`Terrain Flight`](examples/vpu-terrain-flight-c/README.md)、[`Flappy`](examples/flappy-c/README.md)、[`DOS`](examples/dos-c/README.md)、[`TinyBASIC`](examples/tinybasic-c/README.md)。
 - **C++17 + LLVM サンプル** — クラスを使う複数ファイルと C SDK をリンクし、文字画面に結果を表示。CMake／CLI の手順は [`Hello C++`](examples/hello-cpp/README.md)。
 - **C 外部ライブラリデモ** — [`Berkeley SoftFloat Release 3e`](examples/softfloat-c/README.md) を組み込み、浮動小数点の四則演算・丸め・例外フラグをゲストで検証して表示。
 - **Foundation（OS）** — [Foundation 仕様](doc/spec_Foundation.md)に沿った CPT32 用 OS。フェーズ1の最小カーネル（U モードのプロセス、1 ms tick と 10 tick のタイムスライスによる優先度付きラウンドロビン、保護違反でのプロセス終了）が [`foundation`](foundation/README.md) にあります。
