@@ -179,15 +179,33 @@ the following:
 - made no effectful bus access: no write except a store of the bytes plain
   memory (RAM/BIOS ROM) already holds (such as a compiler's stack spill of an
   unchanged value), no bus error, and only reads of plain memory or of
-  registers whose read has no side effect (DMAC registers, IDC registers
-  except DATA);
+  registers whose read has no side effect (DMAC registers except REMAIN and
+  ROWS_REMAIN of a busy channel, IDC registers except DATA);
 - caused no decode-cache fill;
-- ran entirely inside a *quiet window*: no DMA channel can request the bus, the
-  IDC cannot reach a sector deadline or abort, no timer/RTC IRQ or expansion
-  event is due, and no expansion card is installed.
+- ran entirely inside a *quiet window*: no DMA channel can request the bus
+  (except one transfer handled as below), the IDC cannot reach a sector
+  deadline or abort, no timer/RTC IRQ or expansion event is due, and no
+  expansion card is installed.
 
 Iterations are then skipped up to the end of the quiet window or of the `run`
-budget, advancing devices by the same number of cycles. Loop heads are backward
+budget, advancing devices by the same number of cycles.
+
+A loop may also be skipped while exactly one DMA channel is busy with a
+transfer that has no IDC endpoint (memory copies and BitBlt, including colour
+key and ROP), such as `dmac_wait` polling STATUS. A busy memory channel requests
+the bus on every cycle, so the number of bus operations it is granted per
+iteration depends only on the BMC state, not on the data. The iteration must
+additionally leave the BMC state (grant, wait history, round-robin position) and
+the DMAC enable, BUSY and IRQ status as they were; when only the DMA state
+differs, the comparison may span up to 4 iterations (an odd-cycle loop against
+2-operation beats). The skipped iterations' DMA operations then run back to back
+in the same order. They are limited to beats whose source and destination stay
+in mapped Main RAM/VRAM/PCMRAM, and they stop before the transfer's final
+operation (STATUS change and IRQ) and before any beat that would fail. Nothing
+is skipped when the loop accessed (read, write or instruction fetch) a 4 KiB
+page that those DMA writes may reach since the transfer started, or, on the
+Pipeline, when they may reach Main RAM (its L1 snoops DMA writes by index).
+Loop heads are backward
 control transfers (on the Pipeline, backward taken-branch redirects); the
 pending IRQ, host register/PC writes, host IRQ input changes and reset discard
 the observation. Host input is asynchronous and is not part of the window.

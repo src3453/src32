@@ -11,7 +11,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use crate::devices::bmc::{Bmc, MEMORY_WINDOW_BASES, connect_bmc};
-use crate::devices::dmac::dmac::{Dmac, connect_dmac};
+use crate::devices::dmac::dmac::{Dmac, DmacSpinState, connect_dmac};
 use crate::devices::expansion::{
     EXPANSION_BASE, EXPANSION_SLOT_COUNT, EXPANSION_SLOT_SIZE, ExpansionCard,
     ExpansionCardDebugInfo,
@@ -50,6 +50,24 @@ pub trait Device {
         None
     }
     fn write(&mut self, addr: u32, value: u8);
+    /// Big-endian `width`-byte read (1, 2 or 4) at `addr`, equal to reading the
+    /// bytes in ascending order. Memory devices override it to skip the
+    /// per-byte dispatch; the Bus only uses it inside one device.
+    fn read_be(&mut self, addr: u32, width: u8) -> u32 {
+        (0..u32::from(width)).fold(0, |value, beat| {
+            (value << 8) | u32::from(self.read(addr + beat))
+        })
+    }
+    /// Big-endian `width`-byte write, equal to writing the bytes in ascending
+    /// order (see `read_be`).
+    fn write_be(&mut self, addr: u32, width: u8, value: u32) {
+        for beat in 0..u32::from(width) {
+            self.write(
+                addr + beat,
+                (value >> ((u32::from(width) - 1 - beat) * 8)) as u8,
+            );
+        }
+    }
     fn size(&self) -> u32;
     /// Return the generation token for the cache-coherence unit containing `addr`.
     /// It must change whenever any byte in that unit changes. `None` disables
@@ -119,6 +137,37 @@ pub enum BusAccessSource {
     Debugger,
 }
 
+/// DMA state at a spin-loop head (`Bus::dma_mark`).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum DmaMark {
+    /// No channel is busy.
+    Idle,
+    Active {
+        bmc: Bmc,
+        dmac: DmacSpinState,
+        /// Bus operations completed by all channels (`Dmac::total_steps`);
+        /// only one channel is busy whenever the loop may be skipped.
+        steps: u64,
+    },
+}
+
+/// 4 KiB pages of the DMA-reachable memory windows (16 MiB Main RAM, 4 MiB
+/// VRAM, 1 MiB PCMRAM) for recording CPU accesses during a transfer.
+const HAZARD_PAGE_SHIFT: u32 = 12;
+const HAZARD_PAGES: usize = (0x0100_0000 + 0x0040_0000 + 0x0010_0000) >> HAZARD_PAGE_SHIFT;
+const HAZARD_WORDS: usize = HAZARD_PAGES / 64;
+
+/// Window (0..3) and page index of a DMA-reachable memory address.
+fn hazard_page(addr: u32) -> Option<(u8, usize)> {
+    let page = |base: u32, first: usize| first + ((addr - base) >> HAZARD_PAGE_SHIFT) as usize;
+    match addr {
+        0x0000_0000..=0x00FF_FFFF => Some((0, page(0, 0))),
+        0x1000_0000..=0x103F_FFFF => Some((1, page(0x1000_0000, 0x1000))),
+        0x1800_0000..=0x180F_FFFF => Some((2, page(0x1800_0000, 0x1400))),
+        _ => None,
+    }
+}
+
 /// Maximum idle device cycles a relaxed CPU run may defer between syncs.
 /// Bounds host-input IRQ observation latency (256 cycles = 5.3 us at 48 MHz).
 pub(crate) const RELAXED_DEVICE_WINDOW: u64 = 256;
@@ -144,6 +193,9 @@ pub struct Bus {
     generation_device: Cell<usize>,
     /// Device index that last served a bus access.
     access_device: Cell<usize>,
+    /// The device `access_device` held before it last changed: a DMA beat
+    /// and the CPU's polling read alternate between two devices.
+    previous_access_device: Cell<usize>,
     /// Bus accesses with possible effects: every write except one that stores
     /// the bytes plain memory already holds, every bus error, and any read
     /// that is not plain memory or a `peek_u32_be` register. A spinning CPU
@@ -156,7 +208,24 @@ pub struct Bus {
     /// Bytes mapped at each `MEMORY_WINDOW_BASES` window (0 = unmapped),
     /// shared with the BMC's MAIN_RAM_SIZE/VRAM_SIZE/PCMRAM_SIZE registers.
     memory_sizes: Rc<Cell<[u32; 3]>>,
+    /// BUSY mask of DMAC channels without an IDC endpoint (shared with the
+    /// DMAC; 0 without one).
+    dma_busy: Rc<Cell<u8>>,
+    /// DMAC START counter (shared with the DMAC).
+    dma_epoch: Rc<Cell<u32>>,
+    /// Memory pages the CPU accessed (data or instruction fetch/generation
+    /// query) while a transfer started at `hazard_epoch` was busy. The spin
+    /// fast-forward never runs DMA writes in bulk over such a page, because the
+    /// loop could then observe or overwrite them in a different order.
+    hazard_epoch: Cell<u32>,
+    hazard_pages: Box<[Cell<u64>; HAZARD_WORDS]>,
+    /// Device index + 1 for every 64 KiB page that one device covers
+    /// entirely, 0 where a page is unmapped or shared by smaller devices
+    /// (those fall back to the scan). Rebuilt by `add_device`.
+    page_devices: Box<[u16]>,
 }
+
+const DEVICE_PAGE_SHIFT: u32 = 16;
 
 impl Bus {
     pub fn new() -> Self {
@@ -179,9 +248,15 @@ impl Bus {
             relaxed_limit: 0,
             generation_device: Cell::new(0),
             access_device: Cell::new(0),
+            previous_access_device: Cell::new(0),
             effectful_accesses: 0,
             honor_timing_insensitive: true,
             memory_sizes: Rc::new(Cell::new([0; 3])),
+            dma_busy: Rc::new(Cell::new(0)),
+            dma_epoch: Rc::new(Cell::new(0)),
+            hazard_epoch: Cell::new(0),
+            hazard_pages: Box::new(std::array::from_fn(|_| Cell::new(0))),
+            page_devices: vec![0; 1 << (32 - DEVICE_PAGE_SHIFT)].into_boxed_slice(),
         }
     }
 
@@ -202,7 +277,225 @@ impl Bus {
     }
 
     pub(crate) fn attach_dmac(&mut self, dmac: Rc<RefCell<Dmac>>) {
+        self.dma_busy = dmac.borrow().busy_cell();
+        self.dma_epoch = dmac.borrow().epoch_cell();
         self.dmac = Some(dmac);
+    }
+
+    /// Record a CPU access for the spin fast-forward's DMA hazard check.
+    #[inline]
+    fn note_cpu_access(&self, addr: u32, width: u32) {
+        if self.dma_busy.get() != 0 {
+            self.note_dma_hazard(addr);
+            if width > 1 {
+                self.note_dma_hazard(addr.wrapping_add(width - 1));
+            }
+        }
+    }
+
+    fn note_dma_hazard(&self, addr: u32) {
+        let epoch = self.dma_epoch.get();
+        if self.hazard_epoch.get() != epoch {
+            for word in self.hazard_pages.iter() {
+                word.set(0);
+            }
+            self.hazard_epoch.set(epoch);
+        }
+        if let Some((_, page)) = hazard_page(addr) {
+            let word = &self.hazard_pages[page / 64];
+            word.set(word.get() | 1 << (page % 64));
+        }
+    }
+
+    /// Whether the CPU accessed any page of `lo..=hi` during this transfer.
+    /// A range that leaves one memory window counts as accessed.
+    fn dma_hazard(&self, lo: u32, hi: u32) -> bool {
+        let (Some((lo_window, lo_page)), Some((hi_window, hi_page))) =
+            (hazard_page(lo), hazard_page(hi))
+        else {
+            return true;
+        };
+        if lo_window != hi_window {
+            return true;
+        }
+        if self.hazard_epoch.get() != self.dma_epoch.get() {
+            return false;
+        }
+        (lo_page..=hi_page).any(|page| self.hazard_pages[page / 64].get() & (1 << (page % 64)) != 0)
+    }
+
+    /// `addr..addr+len` lies in one DMA memory window and one mapped
+    /// timing-insensitive (never faulting) device.
+    fn dma_memory_span(&self, addr: u32, len: u32) -> bool {
+        let Some(end) = addr.checked_add(len) else {
+            return false;
+        };
+        let window = (end <= 0x0100_0000)
+            || (addr >= 0x1000_0000 && end <= 0x1040_0000)
+            || (addr >= 0x1800_0000 && end <= 0x1810_0000);
+        window
+            && self.find_device_index(addr).is_some_and(|index| {
+                let mapped = &self.devices[index];
+                mapped.timing_insensitive
+                    && mapped.region.size - (addr - mapped.region.start) >= len
+            })
+    }
+
+    /// DMA state compared at spin-loop heads. Transfers with an IDC endpoint
+    /// alone count as `Idle`: they keep the quiet-window rule (`quiet_cycles`
+    /// is 0 while they request the bus).
+    #[inline]
+    pub(crate) fn dma_mark(&self) -> DmaMark {
+        if self.dma_busy.get() == 0 {
+            return DmaMark::Idle;
+        }
+        self.active_dma_mark()
+    }
+
+    fn active_dma_mark(&self) -> DmaMark {
+        let (Some(bmc), Some(dmac)) = (&self.bmc, &self.dmac) else {
+            return DmaMark::Idle;
+        };
+        let (dmac, steps) = dmac.borrow().spin_state();
+        DmaMark::Active {
+            bmc: *bmc.borrow(),
+            dmac,
+            steps,
+        }
+    }
+
+    /// Whether DMA allows a spin loop observed from `before` to `now` to repeat:
+    /// no transfer, a stalled one, or one whose beats the fast-forward can run
+    /// in bulk with arbitration and channel phase back where they were.
+    #[inline]
+    pub(crate) fn dma_repeats(&self, before: &DmaMark, now: &DmaMark) -> bool {
+        if matches!((before, now), (DmaMark::Idle, DmaMark::Idle)) {
+            return true;
+        }
+        self.active_dma_repeats(before, now)
+    }
+
+    fn active_dma_repeats(&self, before: &DmaMark, now: &DmaMark) -> bool {
+        match (before, now) {
+            (DmaMark::Idle, DmaMark::Idle) => true,
+            (
+                DmaMark::Active {
+                    bmc: bmc0,
+                    dmac: dmac0,
+                    steps: steps0,
+                },
+                DmaMark::Active {
+                    bmc: bmc1,
+                    dmac: dmac1,
+                    steps: steps1,
+                },
+            ) => {
+                bmc0 == bmc1
+                    && dmac0 == dmac1
+                    && (steps0 == steps1 || self.dma_spin_channel().is_some())
+            }
+            _ => false,
+        }
+    }
+
+    /// Whether a loop whose CPU state repeated but whose DMA state did not may
+    /// keep its older head: a bulk transfer's beat phase realigns after a few
+    /// iterations.
+    pub(crate) fn dma_may_realign(&self, before: &DmaMark, now: &DmaMark) -> bool {
+        matches!(
+            (before, now),
+            (DmaMark::Active { .. }, DmaMark::Active { .. })
+        ) && self.dma_spin_channel().is_some()
+    }
+
+    fn dma_spin_channel(&self) -> Option<usize> {
+        self.dmac.as_ref()?.borrow().spin_channel()
+    }
+
+    /// Whole further iterations (at most `max`) of a spin loop that repeated
+    /// from `before` to `now` (`dma_repeats`) that keep every DMA beat inside
+    /// memory the loop does not touch and stop before the transfer ends.
+    #[inline]
+    pub(crate) fn dma_spin_iterations(&self, before: &DmaMark, now: &DmaMark, max: u128) -> u128 {
+        if matches!(now, DmaMark::Idle) {
+            return max;
+        }
+        self.active_dma_spin_iterations(before, now, max)
+    }
+
+    fn active_dma_spin_iterations(&self, before: &DmaMark, now: &DmaMark, max: u128) -> u128 {
+        let (DmaMark::Active { steps: steps0, .. }, DmaMark::Active { steps: steps1, .. }) =
+            (before, now)
+        else {
+            return max;
+        };
+        let Some(channel) = self.dma_spin_channel() else {
+            // `dma_repeats` allowed this only for a transfer that made no progress.
+            return max;
+        };
+        let delta = steps1 - steps0;
+        if delta == 0 {
+            return max;
+        }
+        let want = (max.min(1 << 32) as u64).saturating_mul(delta);
+        let reach = self
+            .dmac
+            .as_ref()
+            .expect("spin channel implies a DMAC")
+            .borrow()
+            .spin_reach(channel, want, |addr, len| self.dma_memory_span(addr, len));
+        let iterations = u128::from(reach.steps / delta).min(max);
+        if iterations == 0 {
+            return 0;
+        }
+        let Some((lo, hi)) = reach.dst else {
+            return 0;
+        };
+        // Pipeline L1: a DMA write invalidates the line index the loop may be
+        // fetching from, which changes hit/miss counts mid-iteration.
+        if self.dma_hazard(lo, hi) || (self.l1_cache.is_some() && lo < 0x0100_0000) {
+            return 0;
+        }
+        iterations
+    }
+
+    /// Advance devices through `cycles` skipped spin-loop cycles, running the
+    /// DMA beats those `iterations` would have performed.
+    pub(crate) fn advance_spin(
+        &mut self,
+        cycles: u64,
+        before: &DmaMark,
+        now: &DmaMark,
+        iterations: u128,
+    ) {
+        self.advance_quiet_cycles(cycles);
+        let (DmaMark::Active { steps: steps0, .. }, DmaMark::Active { steps: steps1, .. }) =
+            (before, now)
+        else {
+            return;
+        };
+        let Some(channel) = self.dma_spin_channel() else {
+            return;
+        };
+        let steps = u128::from(steps1 - steps0) * iterations;
+        self.run_dma_steps(channel, steps.min(u128::from(u64::MAX)) as u64);
+    }
+
+    /// Run `steps` bus operations of `channel` back to back, as the per-cycle
+    /// ticks would, without arbitration (the loop's BMC state repeats) or
+    /// IRQ changes (`spin_reach` stops before the final operation).
+    fn run_dma_steps(&mut self, channel: usize, steps: u64) {
+        let dmac = Rc::clone(self.dmac.as_ref().expect("spin channel implies a DMAC"));
+        // Memory beats never reach the DMAC register block, so the borrow can
+        // span the loop.
+        let mut dmac = dmac.borrow_mut();
+        for _ in 0..steps {
+            let op = dmac.next_op(channel).expect("channel stays busy");
+            let value = self
+                .execute_dma_op(op, channel)
+                .expect("spin_reach covers only mapped memory");
+            dmac.complete_op(channel, if op.write { op.value } else { value });
+        }
     }
 
     pub(crate) fn attach_l1_cache(&mut self, cache: Rc<RefCell<crate::cpu_cache::L1Cache>>) {
@@ -417,7 +710,9 @@ impl Bus {
     /// Advance one 48 MHz system cycle and one bus arbitration opportunity.
     pub fn tick_devices(&mut self) {
         self.advance_system_cycles(1);
-        if self.tick_idle_dma_devices() {
+        if self.tick_idle_dma_devices()
+            || (self.dma_busy.get() != 0 && self.tick_memory_dma_devices())
+        {
             return;
         }
         if let Some(dmac) = &self.dmac {
@@ -456,6 +751,28 @@ impl Bus {
             idc.borrow_mut().advance_idle_cycles(1);
         }
         bmc.borrow_mut().grant(0);
+        true
+    }
+
+    /// Rest of `tick_devices` while only memory transfers are busy and the
+    /// IDC tick cannot reach a deadline or abort: there is no IDC abort
+    /// boundary, IDC failure or IRQ change before the DMA beat, so only the
+    /// IDC clock moves and the beat is serviced.
+    fn tick_memory_dma_devices(&mut self) -> bool {
+        let Some(dmac) = &self.dmac else {
+            return false;
+        };
+        if !dmac.borrow().busy_without_idc_endpoint() {
+            return false;
+        }
+        if let Some(idc) = &self.idc {
+            let mut idc = idc.borrow_mut();
+            if idc.cycles_without_event() == 0 {
+                return false;
+            }
+            idc.advance_idle_cycles(1);
+        }
+        self.service_dma_request(false);
         true
     }
 
@@ -543,12 +860,14 @@ impl Bus {
     /// change nothing but clocks: no DMA request, IDC deadline, timer/RTC IRQ
     /// or expansion event. Pure reads observe constant values meanwhile.
     /// Host input arrives asynchronously and is not covered.
+    /// A transfer the spin fast-forward can run in bulk (`Dmac::spin_channel`)
+    /// does not end the window; its beats are accounted by `advance_spin`.
     pub(crate) fn quiet_cycles(&self) -> u64 {
         if self.has_expansion_cards
-            || self
-                .dmac
-                .as_ref()
-                .is_some_and(|dmac| dmac.borrow().request_mask() != 0)
+            || self.dmac.as_ref().is_some_and(|dmac| {
+                let dmac = dmac.borrow();
+                dmac.request_mask() != 0 && dmac.spin_channel().is_none()
+            })
         {
             return 0;
         }
@@ -565,9 +884,10 @@ impl Bus {
         quiet.saturating_sub(self.relaxed_cycles)
     }
 
-    /// Advance devices through cycles that `quiet_cycles` proved eventless,
-    /// equivalent to that many `tick_devices` calls with no bus access.
-    pub(crate) fn advance_quiet_cycles(&mut self, cycles: u64) {
+    /// Advance devices other than an active DMA transfer through cycles that
+    /// `quiet_cycles` proved eventless, equivalent to that many `tick_devices`
+    /// calls with no bus access. Spin loops use `advance_spin`.
+    fn advance_quiet_cycles(&mut self, cycles: u64) {
         debug_assert!(cycles <= self.quiet_cycles());
         self.flush_relaxed_devices();
         if let Some(idc) = &self.idc {
@@ -603,23 +923,46 @@ impl Bus {
             return Some(selected);
         }
         let channel = usize::from(selected - 2);
-        let op = dmac.borrow().next_op(channel);
+        let (op, irq_before, idc_channel) = {
+            let dmac = dmac.borrow();
+            (
+                dmac.next_op(channel),
+                dmac.irq_pending(),
+                dmac.uses_idc_endpoint(channel),
+            )
+        };
         let result = match op {
             Some(op) => self.execute_dma_op(op, channel),
             None => None,
         };
-        {
+        let completed = {
             let mut dmac = dmac.borrow_mut();
             match (op, result) {
                 (Some(op), Some(value)) => {
-                    dmac.complete_op(channel, if op.write { op.value } else { value })
+                    dmac.complete_op(channel, if op.write { op.value } else { value });
+                    true
                 }
-                (Some(_), None) => dmac.fail(channel, 2),
-                (None, _) => {}
+                (Some(_), None) => {
+                    dmac.fail(channel, 2);
+                    false
+                }
+                (None, _) => false,
             }
-        }
+        };
         bmc.borrow_mut().release();
-        self.refresh_device_irqs();
+        // A completed Main RAM/VRAM/PCMRAM beat of a channel without an IDC
+        // endpoint changes no IRQ source except the DMAC's own. (IDC data and
+        // expansion-card beats may, and so may the memory beat that finishes
+        // an IDC command.)
+        let memory_beat = op.is_some_and(|op| {
+            completed
+                && op.address != IDC_DATA_ADDRESS
+                && !Self::is_expansion_address(op.address)
+                && !idc_channel
+        });
+        if !memory_beat || dmac.borrow().irq_pending() != irq_before {
+            self.refresh_device_irqs();
+        }
         Some(selected)
     }
 
@@ -631,6 +974,11 @@ impl Bus {
         let slot = ((address - EXPANSION_BASE) / EXPANSION_SLOT_SIZE) as usize;
         let slot_end = EXPANSION_BASE + (slot as u32 + 1) * EXPANSION_SLOT_SIZE;
         (end <= slot_end).then_some(slot)
+    }
+
+    fn is_expansion_address(address: u32) -> bool {
+        let aperture_end = EXPANSION_BASE + u32::from(EXPANSION_SLOT_COUNT) * EXPANSION_SLOT_SIZE;
+        (EXPANSION_BASE..aperture_end).contains(&address)
     }
 
     fn is_unoccupied_expansion_address(&self, address: u32) -> bool {
@@ -681,6 +1029,28 @@ impl Bus {
             }
         }
 
+        if memory {
+            if let Some(index) = self.find_device_index(op.address) {
+                let mapped = &mut self.devices[index];
+                let offset = op.address - mapped.region.start;
+                // Timing-insensitive devices never fault, so the beat is one call.
+                if mapped.timing_insensitive && mapped.region.size - offset >= u32::from(op.width) {
+                    if !op.write {
+                        return Some(mapped.device.read_be(offset, op.width));
+                    }
+                    mapped.device.write_be(offset, op.width, op.value);
+                    // RTL snoops each accepted DMAC write to Main RAM.
+                    if op.address < 0x0100_0000 {
+                        if let Some(cache) = &self.l1_cache {
+                            cache
+                                .borrow_mut()
+                                .external_write(op.address, u32::from(op.width));
+                        }
+                    }
+                    return Some(op.value);
+                }
+            }
+        }
         if op.write {
             for byte_index in 0..op.width {
                 let shift = (u32::from(op.width - byte_index - 1)) * 8;
@@ -701,7 +1071,9 @@ impl Bus {
                 // even if a later byte of this DMA beat fails.
                 if op.address + u32::from(byte_index) < 0x0100_0000 {
                     if let Some(cache) = &self.l1_cache {
-                        cache.borrow_mut().external_write(op.address + u32::from(byte_index), 1);
+                        cache
+                            .borrow_mut()
+                            .external_write(op.address + u32::from(byte_index), 1);
                     }
                 }
             }
@@ -853,6 +1225,14 @@ impl Bus {
             timing_insensitive: device.is_timing_insensitive(),
             device,
         });
+        let index = self.devices.len();
+        if let Ok(entry) = u16::try_from(index) {
+            let first = addr.div_ceil(1 << DEVICE_PAGE_SHIFT) as usize;
+            let end = (u64::from(new_end) >> DEVICE_PAGE_SHIFT) as usize;
+            for page in first..end {
+                self.page_devices[page] = entry;
+            }
+        }
     }
 
     /// Iterate over mapped ranges in registration order without accessing devices.
@@ -872,7 +1252,18 @@ impl Bus {
         if self.devices.get(remembered).is_some_and(contains) {
             return Some(remembered);
         }
-        let index = self.devices.iter().position(contains)?;
+        let previous = self.previous_access_device.get();
+        let index = if self.devices.get(previous).is_some_and(contains) {
+            previous
+        } else {
+            let paged = self.page_devices[(addr >> DEVICE_PAGE_SHIFT) as usize];
+            if paged != 0 {
+                usize::from(paged) - 1
+            } else {
+                self.devices.iter().position(contains)?
+            }
+        };
+        self.previous_access_device.set(remembered);
         self.access_device.set(index);
         Some(index)
     }
@@ -973,6 +1364,7 @@ impl Bus {
 
     /// Return the executable-memory generation at an address without a bus read.
     pub(crate) fn instruction_cache_generation(&self, addr: u32) -> Option<u64> {
+        self.note_cpu_access(addr, 1);
         let (mapped, offset) = self.instruction_device(addr)?;
         mapped.device.instruction_cache_generation(offset)
     }
@@ -980,6 +1372,7 @@ impl Bus {
     /// Generation at `addr` plus the inclusive address range sharing it. A
     /// caller may reuse the token for that range until memory can change.
     pub(crate) fn instruction_cache_generation_span(&self, addr: u32) -> Option<(u64, u32, u32)> {
+        self.note_cpu_access(addr, 1);
         let (mapped, offset) = self.instruction_device(addr)?;
         let generation = mapped.device.instruction_cache_generation(offset)?;
         let unit = mapped.device.instruction_cache_unit().max(1);
@@ -1006,10 +1399,14 @@ impl Bus {
                 return Some((mapped, offset));
             }
         }
-        let index = self
-            .devices
-            .iter()
-            .position(|mapped| contains(mapped).is_some())?;
+        let paged = self.page_devices[(addr >> DEVICE_PAGE_SHIFT) as usize];
+        let index = if paged != 0 {
+            usize::from(paged) - 1
+        } else {
+            self.devices
+                .iter()
+                .position(|mapped| contains(mapped).is_some())?
+        };
         self.generation_device.set(index);
         let mapped = &self.devices[index];
         Some((mapped, addr - mapped.region.start))
@@ -1029,6 +1426,7 @@ impl Bus {
     }
 
     pub fn read_u8(&mut self, addr: u32) -> u8 {
+        self.note_cpu_access(addr, 1);
         let index = self.find_device_index(addr);
         let insensitive = self.is_timing_insensitive_index(index);
         if !insensitive {
@@ -1075,6 +1473,7 @@ impl Bus {
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
+        self.note_cpu_access(addr, 1);
         let index = self.find_device_index(addr);
         let insensitive = self.is_timing_insensitive_index(index);
         if !insensitive {
@@ -1105,11 +1504,7 @@ impl Bus {
     /// Whether plain memory at `offset` already holds `value` (big-endian),
     /// so storing it changes nothing. Plain reads have no side effects.
     fn holds_u32_be(device: &mut dyn Device, offset: u32, value: u32) -> bool {
-        value
-            .to_be_bytes()
-            .into_iter()
-            .enumerate()
-            .all(|(beat, byte)| device.read(offset + beat as u32) == byte)
+        device.read_be(offset, 4) == value
     }
 
     fn overlaps_idc_data(address: u32, width: u32) -> bool {
@@ -1124,6 +1519,7 @@ impl Bus {
     }
 
     pub fn read_u32_be(&mut self, addr: u32) -> u32 {
+        self.note_cpu_access(addr, 4);
         if Self::invalid_idc_u32_access(addr) {
             self.flush_relaxed_devices();
             self.latch_bus_error();
@@ -1133,9 +1529,7 @@ impl Bus {
             self.arbitrate_cpu_access();
             let mapped = &mut self.devices[index];
             let device = &mut mapped.device;
-            let value = u32::from_be_bytes(std::array::from_fn(|beat| {
-                device.read(offset + beat as u32)
-            }));
+            let value = device.read_be(offset, 4);
             debug_assert!(
                 !device.is_faulted(),
                 "timing-insensitive devices never fault"
@@ -1157,6 +1551,7 @@ impl Bus {
     }
 
     pub fn write_u32_be(&mut self, addr: u32, value: u32) {
+        self.note_cpu_access(addr, 4);
         if Self::invalid_idc_u32_access(addr) {
             self.flush_relaxed_devices();
             self.latch_bus_error();
@@ -1169,9 +1564,7 @@ impl Bus {
             if !(mapped.plain && Self::holds_u32_be(device.as_mut(), offset, value)) {
                 self.effectful_accesses += 1;
             }
-            for (beat, byte) in value.to_be_bytes().into_iter().enumerate() {
-                device.write(offset + beat as u32, byte);
-            }
+            device.write_be(offset, 4, value);
             debug_assert!(
                 !device.is_faulted(),
                 "timing-insensitive devices never fault"

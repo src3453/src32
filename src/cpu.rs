@@ -247,6 +247,10 @@ struct SpinProbe {
     cache_hits: u128,
     effectful_accesses: u64,
     fills: u64,
+    dma: crate::bus::DmaMark,
+    /// Loop iterations this probe was kept across because only the DMA state
+    /// differed: a 2-phase beat and an odd-cycle loop repeat every 2 iterations.
+    dma_retries: u8,
     /// Last CPU cycle of a quiet device window measured at the loop head,
     /// once a previous iteration already matched.
     quiet_until: Option<u128>,
@@ -259,6 +263,9 @@ struct SpinProbe {
 /// Loop heads tracked at once: an iteration may take several branches (a
 /// call, a return and the loop's back-jump), each recreating its own head.
 const SPIN_PROBES: usize = 8;
+/// Extra iterations a probe may span when only the DMA phase differs
+/// (beats of 2 or 3 bus operations against any loop length).
+pub(crate) const SPIN_DMA_RETRIES: u8 = 3;
 
 struct SpinDetector {
     enabled: bool,
@@ -1954,6 +1961,8 @@ impl Cpu {
             cache_hits: self.instruction_cache_hits,
             effectful_accesses: self.bus.effectful_accesses(),
             fills: self.instruction_cache_fills,
+            dma: self.bus.dma_mark(),
+            dma_retries: 0,
             quiet_until,
         }
     }
@@ -1972,11 +1981,28 @@ impl Cpu {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
         };
-        let repeated = self.cycles > probe.cycles
+        let cpu_repeated = self.cycles > probe.cycles
             && probe.effectful_accesses == self.bus.effectful_accesses()
             && probe.fills == self.instruction_cache_fills
             && probe.state == self.spin_state()
             && !(self.sys.ie && self.irq_pending);
+        // The DMA state is only needed once the CPU state repeated.
+        let dma = if cpu_repeated {
+            self.bus.dma_mark()
+        } else {
+            crate::bus::DmaMark::Idle
+        };
+        let repeated = cpu_repeated && self.bus.dma_repeats(&probe.dma, &dma);
+        if cpu_repeated
+            && !repeated
+            && probe.dma_retries < SPIN_DMA_RETRIES
+            && self.bus.dma_may_realign(&probe.dma, &dma)
+        {
+            if let Some(probe) = self.spin.probes[slot].as_mut() {
+                probe.dma_retries += 1;
+            }
+            return false;
+        }
         if !repeated {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
@@ -1993,15 +2019,21 @@ impl Cpu {
         }
         let period = self.cycles - probe.cycles;
         let room = u128::from(self.bus.quiet_cycles()).min(end_cycles - self.cycles);
-        let iterations = room / period;
+        let iterations = self
+            .bus
+            .dma_spin_iterations(&probe.dma, &dma, room / period);
         if iterations == 0 {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
         }
         let skipped = iterations * period;
         self.spin.skipped_cycles += skipped;
-        self.bus
-            .advance_quiet_cycles(skipped.min(u128::from(u64::MAX)) as u64);
+        self.bus.advance_spin(
+            skipped.min(u128::from(u64::MAX)) as u64,
+            &probe.dma,
+            &dma,
+            iterations,
+        );
         self.cycles += skipped;
         self.running_cycles += skipped;
         self.instructions_executed +=

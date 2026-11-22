@@ -231,6 +231,10 @@ struct SpinProbe {
     /// L1 (I hits, I misses, D hits, D misses) at the probe.
     cache_stats: (u32, u32, u32, u32),
     effectful_accesses: u64,
+    dma: crate::bus::DmaMark,
+    /// Loop iterations this probe was kept across because only the DMA state
+    /// differed: a 2-phase beat and an odd-cycle loop repeat every 2 iterations.
+    dma_retries: u8,
     quiet_until: Option<u128>,
 }
 
@@ -2403,6 +2407,8 @@ impl PipelineCpu {
             predicted_loops: self.spin.predicted_loops,
             cache_stats: self.cache_stats(),
             effectful_accesses: self.bus.effectful_accesses(),
+            dma: self.bus.dma_mark(),
+            dma_retries: 0,
             quiet_until,
         }
     }
@@ -2422,13 +2428,30 @@ impl PipelineCpu {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
         };
-        let repeated = self.cycles > probe.cycles
+        let cpu_repeated = self.cycles > probe.cycles
             && probe.effectful_accesses == self.bus.effectful_accesses()
             && probe.state == self.spin_state()
             // A steady iteration only hits in the L1 caches, so the tags are unchanged.
             && probe.cache_stats.1 == self.cache_stats().1
             && probe.cache_stats.3 == self.cache_stats().3
             && !(self.sys.ie && self.irq_pending);
+        // The DMA state is only needed once the CPU state repeated.
+        let dma = if cpu_repeated {
+            self.bus.dma_mark()
+        } else {
+            crate::bus::DmaMark::Idle
+        };
+        let repeated = cpu_repeated && self.bus.dma_repeats(&probe.dma, &dma);
+        if cpu_repeated
+            && !repeated
+            && probe.dma_retries < crate::cpu::SPIN_DMA_RETRIES
+            && self.bus.dma_may_realign(&probe.dma, &dma)
+        {
+            if let Some(probe) = self.spin.probes[slot].as_mut() {
+                probe.dma_retries += 1;
+            }
+            return false;
+        }
         if !repeated {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
@@ -2444,15 +2467,21 @@ impl PipelineCpu {
         }
         let period = self.cycles - probe.cycles;
         let room = u128::from(self.bus.quiet_cycles()).min(end_cycles - self.cycles);
-        let iterations = room / period;
+        let iterations = self
+            .bus
+            .dma_spin_iterations(&probe.dma, &dma, room / period);
         if iterations == 0 {
             self.spin.probes[slot] = Some(self.spin_probe(None));
             return false;
         }
         let skipped = iterations * period;
         self.spin.skipped_cycles += skipped;
-        self.bus
-            .advance_quiet_cycles(skipped.min(u128::from(u64::MAX)) as u64);
+        self.bus.advance_spin(
+            skipped.min(u128::from(u64::MAX)) as u64,
+            &probe.dma,
+            &dma,
+            iterations,
+        );
         self.cycles += skipped;
         self.running_cycles += skipped;
         self.instructions_executed +=

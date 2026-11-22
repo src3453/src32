@@ -39,6 +39,30 @@ impl Device for Ram {
         self.data[index] = value;
     }
 
+    fn read_be(&mut self, addr: u32, width: u8) -> u32 {
+        let start = addr as usize;
+        self.data[start..start + usize::from(width)]
+            .iter()
+            .fold(0, |value, &byte| (value << 8) | u32::from(byte))
+    }
+
+    fn write_be(&mut self, addr: u32, width: u8, value: u32) {
+        let start = addr as usize;
+        let end = start + usize::from(width);
+        let bytes = value.to_be_bytes();
+        let new = &bytes[4 - usize::from(width)..];
+        if self.data[start..end] == *new {
+            return;
+        }
+        if let Some(generations) = self.instruction_generations.as_mut() {
+            // A word may straddle two generation pages.
+            for page in start / INSTRUCTION_PAGE_SIZE..=(end - 1) / INSTRUCTION_PAGE_SIZE {
+                generations[page] = generations[page].wrapping_add(1);
+            }
+        }
+        self.data[start..end].copy_from_slice(new);
+    }
+
     fn instruction_cache_generation(&self, addr: u32) -> Option<u64> {
         self.instruction_generations
             .as_ref()

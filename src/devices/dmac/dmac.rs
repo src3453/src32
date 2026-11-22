@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 use crate::bus::{Bus, Device};
@@ -126,6 +126,38 @@ pub struct Dmac {
     pub(crate) channels: [Channel; CHANNEL_COUNT],
     bmc: Rc<RefCell<Bmc>>,
     idc: Option<Rc<RefCell<Idc>>>,
+    /// Completed bus operations (phases) per channel, including key skips.
+    /// The spin fast-forward measures DMA progress per loop iteration with it.
+    steps: [u64; CHANNEL_COUNT],
+    /// BUSY bit of every channel without an IDC endpoint (memory transfers),
+    /// shared with the Bus so it can tell cheaply whether a CPU access may
+    /// race one. IDC transfers keep the ordinary per-cycle handling.
+    busy: Rc<Cell<u8>>,
+    /// Some channel with an IDC endpoint is busy.
+    idc_busy: bool,
+    /// Bumped by every accepted START (shared with the Bus).
+    epoch: Rc<Cell<u32>>,
+}
+
+/// DMAC state at a spin-loop head that must repeat for the loop to repeat.
+/// Channel configuration cannot change while BUSY, so it is not included.
+/// Neither is the beat phase: a busy memory channel requests the bus on every
+/// cycle whatever its phase, so how many operations it is granted per loop
+/// iteration depends only on the BMC state, not on the data (a colour-keyed
+/// pixel only changes how many of those operations one beat takes).
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DmacSpinState {
+    enabled: bool,
+    busy: u8,
+    irq_status: u8,
+}
+
+/// How far a channel can run in bulk: `steps` bus operations that stay inside
+/// mapped memory and neither finish nor fail the transfer. `dst` is the
+/// inclusive address range those steps may write (`None` when nothing).
+pub(crate) struct DmaReach {
+    pub steps: u64,
+    pub dst: Option<(u32, u32)>,
 }
 
 impl Dmac {
@@ -138,6 +170,146 @@ impl Dmac {
             channels: std::array::from_fn(|_| Channel::new()),
             bmc,
             idc: None,
+            steps: [0; CHANNEL_COUNT],
+            busy: Rc::new(Cell::new(0)),
+            idc_busy: false,
+            epoch: Rc::new(Cell::new(0)),
+        }
+    }
+
+    pub(crate) fn busy_cell(&self) -> Rc<Cell<u8>> {
+        Rc::clone(&self.busy)
+    }
+
+    pub(crate) fn epoch_cell(&self) -> Rc<Cell<u32>> {
+        Rc::clone(&self.epoch)
+    }
+
+    fn update_busy(&mut self) {
+        let mut memory = 0u8;
+        let mut idc = false;
+        for (index, channel) in self.channels.iter().enumerate() {
+            if channel.status & STATUS_BUSY == 0 {
+                continue;
+            }
+            if is_idc_address(channel.src) || is_idc_address(channel.dst) {
+                idc = true;
+            } else {
+                memory |= 1 << index;
+            }
+        }
+        self.busy.set(memory);
+        self.idc_busy = idc;
+    }
+
+    pub(crate) fn uses_idc_endpoint(&self, index: usize) -> bool {
+        let channel = &self.channels[index];
+        is_idc_address(channel.src) || is_idc_address(channel.dst)
+    }
+
+    /// Some channel is busy and none of the busy ones has an IDC endpoint.
+    pub(crate) fn busy_without_idc_endpoint(&self) -> bool {
+        self.busy.get() != 0 && !self.idc_busy
+    }
+
+    pub(crate) fn spin_state(&self) -> (DmacSpinState, u64) {
+        (
+            DmacSpinState {
+                enabled: self.enabled,
+                busy: self.busy.get(),
+                irq_status: self.irq_status,
+            },
+            self.steps.iter().sum(),
+        )
+    }
+
+    /// The only busy channel when the spin fast-forward may run its beats in
+    /// bulk: a transfer without an IDC endpoint, whose bus requests depend on
+    /// sector timing and abort boundaries.
+    pub(crate) fn spin_channel(&self) -> Option<usize> {
+        let busy = self.busy.get();
+        if !self.enabled || self.idc_busy || busy.count_ones() != 1 {
+            return None;
+        }
+        let index = busy.trailing_zeros() as usize;
+        self.channels[index].width().is_some().then_some(index)
+    }
+
+    /// Bus operations channel `index` can perform from now without leaving
+    /// memory (`in_memory(address, len)`) or reaching its final operation,
+    /// which changes STATUS and may raise the IRQ. Stops counting once at least
+    /// `max_steps` are known.
+    pub(crate) fn spin_reach(
+        &self,
+        index: usize,
+        max_steps: u64,
+        in_memory: impl Fn(u32, u32) -> bool,
+    ) -> DmaReach {
+        let channel = &self.channels[index];
+        let Some(width) = channel.width() else {
+            return DmaReach {
+                steps: 0,
+                dst: None,
+            };
+        };
+        let width = u32::from(width);
+        // Fewest operations one beat can take; a keyed (transparent) source
+        // pixel takes only its read. Counting the fewest keeps `steps` a bound.
+        let (per_beat, done_in_beat): (u64, u64) = if channel.control & CONTROL_KEY_EN != 0 {
+            (1, 0)
+        } else {
+            let per_beat = if channel.rop() != 0 { 3 } else { 2 };
+            let done = match channel.phase {
+                Phase::Read => 0,
+                Phase::ReadDst => 1,
+                Phase::Write => per_beat - 1,
+            };
+            (per_beat, done)
+        };
+        let src_fixed = channel.control & (1 << 2) != 0;
+        let dst_fixed = channel.control & (1 << 4) != 0;
+        let mut beats = 0u64;
+        let mut dst: Option<(u32, u32)> = None;
+        let mut complete = true;
+        for row in 0..channel.rows_remain {
+            let (src, dst_start, bytes) = if row == 0 {
+                (channel.src_current, channel.dst_current, channel.remain)
+            } else {
+                (
+                    channel
+                        .src_row
+                        .wrapping_add(channel.src_stride.wrapping_mul(row)),
+                    channel
+                        .dst_row
+                        .wrapping_add(channel.dst_stride.wrapping_mul(row)),
+                    channel.count,
+                )
+            };
+            let src_len = if src_fixed { width } else { bytes };
+            let dst_len = if dst_fixed { width } else { bytes };
+            if bytes < width || !in_memory(src, src_len) || !in_memory(dst_start, dst_len) {
+                complete = false;
+                break;
+            }
+            beats += u64::from(bytes / width);
+            let last = dst_start + (dst_len - 1);
+            dst = Some(dst.map_or((dst_start, last), |(lo, hi)| {
+                (lo.min(dst_start), hi.max(last))
+            }));
+            if beats * per_beat >= max_steps.saturating_add(per_beat + done_in_beat) {
+                complete = false;
+                break;
+            }
+        }
+        let total = (beats * per_beat).saturating_sub(done_in_beat);
+        let steps = if complete {
+            total.saturating_sub(1)
+        } else {
+            total
+        };
+        DmaReach {
+            steps,
+            dst: if steps == 0 { None } else { dst },
         }
     }
 
@@ -192,6 +364,7 @@ impl Dmac {
     }
 
     pub(crate) fn complete_op(&mut self, index: usize, value: u32) {
+        self.steps[index] += 1;
         let channel = &mut self.channels[index];
         match channel.phase {
             Phase::Read => {
@@ -258,6 +431,7 @@ impl Dmac {
         if done {
             self.channels[index].status &= !STATUS_BUSY;
             self.channels[index].status |= STATUS_DONE;
+            self.update_busy();
             self.raise_irq(index);
         } else {
             self.channels[index].phase = Phase::Read;
@@ -281,6 +455,7 @@ impl Dmac {
         let channel = &mut self.channels[index];
         channel.status &= !(STATUS_BUSY | STATUS_DONE | STATUS_ERROR | 0xF0);
         channel.status |= STATUS_ERROR | ((code & 0xF) << 4);
+        self.update_busy();
         self.raise_irq(index);
     }
 
@@ -438,12 +613,30 @@ impl Dmac {
         };
         channel.phase = Phase::Read;
         channel.status = STATUS_BUSY;
+        self.update_busy();
+        self.epoch.set(self.epoch.get().wrapping_add(1));
     }
 
     fn abort(&mut self, index: usize) {
         if self.channels[index].status & STATUS_BUSY != 0 {
             self.fail(index, 3);
         }
+    }
+
+    /// REMAIN or ROWS_REMAIN of a busy memory (non-IDC) channel.
+    fn is_progress_register(&self, addr: u32) -> bool {
+        let (base, field) = if addr >= BLIT_BASE {
+            (BLIT_BASE, 0x10)
+        } else if addr >= CHANNEL_BASE {
+            (CHANNEL_BASE, 0x14)
+        } else {
+            return false;
+        };
+        let relative = (addr & !3) - base;
+        let index = relative / CHANNEL_STRIDE;
+        relative % CHANNEL_STRIDE == field
+            && index < CHANNEL_COUNT as u32
+            && self.busy.get() & (1 << index) != 0
     }
 
     fn read_register(&self, addr: u32) -> u32 {
@@ -608,7 +801,10 @@ impl Device for DmacRegisters {
     }
 
     fn peek_u32_be(&self, addr: u32) -> Option<u32> {
-        (addr & 3 == 0).then(|| self.0.borrow().read_register(addr))
+        let dmac = self.0.borrow();
+        // REMAIN and ROWS_REMAIN of a busy channel change with every beat, so
+        // a loop reading them is not polling a constant (spin fast-forward).
+        (addr & 3 == 0 && !dmac.is_progress_register(addr)).then(|| dmac.read_register(addr))
     }
 
     fn read(&mut self, addr: u32) -> u8 {

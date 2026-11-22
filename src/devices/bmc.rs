@@ -13,6 +13,8 @@ pub const MEMORY_WINDOW_BASES: [u32; 3] = [0x0000_0000, 0x1000_0000, 0x1800_0000
 const MEMORY_SIZE_REGISTERS: u32 = 0x080;
 
 /// Shared arbitration state used by the MMIO register block and system bus.
+/// `Copy`/`PartialEq` let the spin detector compare the state at loop heads.
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub struct Bmc {
     enabled: bool,
     priorities: [u8; 8],

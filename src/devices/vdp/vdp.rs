@@ -641,6 +641,37 @@ impl Device for VdpDevice {
         }
     }
 
+    fn read_be(&mut self, addr: u32, width: u8) -> u32 {
+        if !matches!(self.port, VdpPort::Vram) {
+            return (0..u32::from(width)).fold(0, |value, beat| {
+                (value << 8) | u32::from(self.read(addr + beat))
+            });
+        }
+        let vdp = self.vdp.borrow();
+        let vram = vdp.vram.borrow();
+        let start = addr as usize;
+        vram[start..start + usize::from(width)]
+            .iter()
+            .fold(0, |value, &byte| (value << 8) | u32::from(byte))
+    }
+
+    fn write_be(&mut self, addr: u32, width: u8, value: u32) {
+        if !matches!(self.port, VdpPort::Vram) {
+            for beat in 0..u32::from(width) {
+                self.write(
+                    addr + beat,
+                    (value >> ((u32::from(width) - 1 - beat) * 8)) as u8,
+                );
+            }
+            return;
+        }
+        let vdp = self.vdp.borrow_mut();
+        let mut vram = vdp.vram.borrow_mut();
+        let start = addr as usize;
+        let bytes = value.to_be_bytes();
+        vram[start..start + usize::from(width)].copy_from_slice(&bytes[4 - usize::from(width)..]);
+    }
+
     fn write(&mut self, addr: u32, value: u8) {
         match self.port {
             VdpPort::Vram => self.vdp.borrow_mut().vram.borrow_mut()[addr as usize] = value,

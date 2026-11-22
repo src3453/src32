@@ -262,3 +262,28 @@ relaxed区間がRAMアクセスで切れなくなった結果、JIT batchは区�
 | JIT | 61 ms | 16 ms |
 
 結果のchecksumと実行命令数は変更前と一致。Busの単体計測ではVRAM 32-bit書き込みが65.9→20.9 ns、RAM 32-bit読み書きが17.0→16.0 ns／19.8→16.8 ns。`test.wax`（cube、20 frames、7回の最良値）はcached-relaxed 318→295 ms、JIT 222→199 msで、JITのbatch tier compile数は80→202に増えた（区間端でのentryが増えるため）。CPU-boundな`cpu_bench --platform`はScalar／Pipelineで約2〜5%遅く見えるが、同一sourceの再build間でも最大5%程度揺れ、使っているBus primitiveは単体で同等以上に速いため、主にcode layoutの差と判断した（未解決の可能性として記録）。
+
+## DMA 転送中のスピン早送りと DMA 経路（2026-11-22）
+
+連続 BitBlt で約 6.8 MHz 相当まで落ちる問題（DMA 転送中は 1 サイクルごとに BMC 調停・バイト単位のデバイス探索・IRQ 再計算が走り、スピン早送りも無効）に対し、他のエミュレータの方式を参考に次を入れた。仕様は`doc/spec_CPU.md` §1.4。
+
+1. **DMA 中のスピン早送り（厳密、全 CPU 方式）**: DuckStation／mGBA のように DMA を必要な時点でまとめて実行する考え方を、既存のスピン早送りに組み込んだ。IDC エンドポイントのないメモリ転送が 1 チャネルだけ busy のとき、`dmac_wait` などのポーリングループの 1 周で BMC の状態と DMAC の enable／BUSY／IRQ が元に戻れば、残りの周を飛ばし、その間の DMA 操作を同じ順番で連続実行する。busy なメモリチャネルは毎サイクル要求を出すので、1 周に DMA へ渡る操作回数は BMC の状態だけで決まり、データ（カラーキー）に依存しない。転送の最後の操作と失敗するビートの手前で止め、ループが転送開始後に触った 4 KiB ページへの書き込みや、Pipeline の Main RAM 宛て（L1 の snoop）は飛ばさない。
+2. **DMA ビートと CPU 32-bit アクセスの 1 回化**: `Device::read_be`／`write_be` を足し、RAM と VRAM が実装する。DMA のメモリビートは 1 回のデバイス呼び出しになる。
+3. **per-cycle 経路**: メモリ転送だけが busy で IDC がイベントに届かないなら、IDC abort 境界・IDC tick・IRQ 再計算を省く。DMA のメモリビートは DMAC の IRQ が変わったときだけ IRQ を再計算する（IDC エンドポイントのあるチャネルは、最後のメモリ書き込みが IDC コマンドを完了させるので除外）。
+4. **デバイス探索**: 直前とその前のデバイスを覚え、外れたら 64 KiB ページ表、それも外れたら（小さいデバイスが共有するページ）線形探索。
+
+計測（Windows x64 release、`src32_testbench` のプロセス起動込み、2 回の最良値。micro は 60 フレーム、flappy-c は 600 フレーム。MHz は 48 MHz を実時間とする換算）:
+
+| ワークロード | CPU | 変更前 | 変更後 |
+|---|---|---:|---:|
+| 32-bit BitBlt 320×240 を連続（RAM→VRAM） | pipeline | 11.44 s（4.2 MHz） | 0.56 s（85.9 MHz） |
+| 同上 | cached-relaxed | 6.30 s（7.6 MHz） | 0.47 s（101.2 MHz） |
+| 8-bit カラーキー付き BitBlt を連続 | pipeline | 10.92 s（4.4 MHz） | 0.51 s（93.8 MHz） |
+| 同上 | cached-relaxed | 6.01 s（8.0 MHz） | 0.48 s（100.3 MHz） |
+| examples/flappy-c | pipeline | 15.15 s（31.7 MHz） | 2.44 s（196.7 MHz） |
+| 同上 | cached | 9.44 s（50.9 MHz） | 1.83 s（262.3 MHz） |
+| 同上 | cached-relaxed | 9.41 s（51.0 MHz） | 1.61 s（298.9 MHz） |
+
+flappy-c の `FLAPPY_PROFILE` 版が UART に出す描画サイクル数ログ（300 フレーム）は、pipeline／scalar／cached／cached-relaxed のすべてで変更前とバイト単位で一致した。
+
+対象外の経路: IDC 転送（`idc_bench` の HDD、7 samples 中央値を変更前と交互に計測）は飛ばせるサイクル数が変更前と同じで、時間は 3〜9% 長く出る（同じバイナリでも ±5% 程度揺れる）。最初の版ではループ先頭ごとに DMA 状態を作っていて 1 割以上遅かったので、CPU 状態が一致したときだけ取るようにした。システムクロック進行時に DMAC/IDC の IRQ を読まない案と、ページ表だけの探索（RAM と IDC が交互に外れる）は速くならなかったので採らなかった。`mmio_bench` は Pipeline／Scalar で 5〜12% 短く、Cached は同等、cached-relaxed は 2〜7% 長い。`cpu_bench --platform` は変更前から "pipeline workload did not observe the expected hazards" で動かない。GUI／GPU の実時間は未測定。
