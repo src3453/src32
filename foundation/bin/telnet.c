@@ -2,7 +2,7 @@
  * ssh [-b ADDR] [-t TERM] [-p PORT] [USER@]HOST   (ssh.c includes this file)
  *
  * A telnet client over the CNET TCP bridge (doc/spec_NET_bridge.md). The
- * bridge, a host program at CNET address ADDR (-b, default :FF01), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us; this side
+ * bridge, a host program at CNET address ADDR (-b, default .FF01), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us; this side
  * always speaks telnet over a reliable stream (PROTO 0x40) of libcnet
  * datagrams. Ctrl+C belongs to the shell (it ends this program), so the
  * escape key Ctrl+] followed by c sends Ctrl+C and q closes the connection. */
@@ -22,7 +22,7 @@
 #define USAGE "telnet [-b ADDR] [-t TERM] HOST [PORT]"
 #endif
 
-#define DEFAULT_BRIDGE ":FF01"
+#define DEFAULT_BRIDGE ".FF01"
 #define BRIDGE_SOCKET 23u
 #define PROTO_STREAM 0x40u
 #define T_OPEN 1u

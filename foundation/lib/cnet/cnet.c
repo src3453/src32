@@ -86,17 +86,17 @@ int32_t cnet_parse_addr(const char *text, uint32_t *addr) {
     if (!text || !addr) return FND_E_BAD_ARG;
     char net[5];
     uint32_t i = 0;
-    const char *colon = text;
-    while (*colon && *colon != ':') ++colon;
+    const char *dot = text;
+    while (*dot && *dot != '.') ++dot;
     uint32_t n = 0, node;
-    if (*colon == ':' && colon == text) {
-        /* ":NODE" is this network, the same as "NODE". */
-        if (hex_value(colon + 1, &node) != FND_OK) return FND_E_BAD_ARG;
-    } else if (*colon) {
-        if (colon - text > 4) return FND_E_BAD_ARG;
-        for (i = 0; text + i < colon; ++i) net[i] = text[i];
+    if (*dot == '.' && dot == text) {
+        /* ".NODE" is this network, the same as "NODE". */
+        if (hex_value(dot + 1, &node) != FND_OK) return FND_E_BAD_ARG;
+    } else if (*dot) {
+        if (dot - text > 4) return FND_E_BAD_ARG;
+        for (i = 0; text + i < dot; ++i) net[i] = text[i];
         net[i] = 0;
-        if (hex_value(net, &n) != FND_OK || hex_value(colon + 1, &node) != FND_OK) return FND_E_BAD_ARG;
+        if (hex_value(net, &n) != FND_OK || hex_value(dot + 1, &node) != FND_OK) return FND_E_BAD_ARG;
     } else if (hex_value(text, &node) != FND_OK) {
         return FND_E_BAD_ARG;
     }
@@ -110,6 +110,6 @@ void cnet_format_addr(uint32_t addr, char *out) {
         uint32_t nibble = (addr >> (28u - 4u * i)) & 0xFu;
         out[i < 4u ? i : i + 1u] = digits[nibble];
     }
-    out[4] = ':';
+    out[4] = '.';
     out[9] = 0;
 }

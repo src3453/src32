@@ -46,8 +46,8 @@ int32_t cnet_sendto(fnd_handle h, uint32_t addr, uint32_t socket, uint32_t proto
  * FND_E_LIMIT if cap is too small; the datagram then stays queued.
  * from may be 0. */
 int32_t cnet_recvfrom(fnd_handle h, void *buf, uint32_t cap, uint32_t flags, cnet_peer *from);
-/* Parses "NET:NODE" (hex) into *addr. A node on the local network may be
- * written ":NODE" or "NODE"; both give NET 0 (this network).
+/* Parses "NET.NODE" (hex) into *addr. A node on the local network may be
+ * written ".NODE" or "NODE"; both give NET 0 (this network).
  * FND_E_BAD_ARG otherwise. */
 int32_t cnet_parse_addr(const char *text, uint32_t *addr);
 /* Writes "NNNN:NNNN" and a NUL into out[10]. */

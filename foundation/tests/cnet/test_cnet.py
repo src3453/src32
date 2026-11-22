@@ -4,7 +4,7 @@ The CNET card (examples/wasm-cnet) sits in expansion slot 0 on a UDP segment.
 A Python peer on the other end of the segment speaks the wire format
 (doc/spec_NET.md §3, §4, §8.3) on its own, so the tests also check the
 card's frames against an independent implementation. The peer is node
-0001:0020; Foundation's card is the fixed node 0001:0010.
+0001.0020; Foundation's card is the fixed node 0001.0010.
 
     python -m unittest discover -s foundation/tests/cnet -v
 
@@ -196,17 +196,17 @@ class CnetTests(unittest.TestCase):
 
     def test_info_reports_the_acquired_address(self):
         text = self.run_shell('cnet\\n')
-        self.assertIn('link up, address 0001:0010', text)
+        self.assertIn('link up, address 0001.0010', text)
 
     def test_ping_gets_echo_replies_from_the_peer(self):
-        text = self.run_shell('cnet ping 1:20 2\\n', 'echo status=$?\\n', step=120)
-        self.assertIn('reply from 0001:0020 seq=1', text)
-        self.assertIn('reply from 0001:0020 seq=2', text)
+        text = self.run_shell('cnet ping 1.20 2\\n', 'echo status=$?\\n', step=120)
+        self.assertIn('reply from 0001.0020 seq=1', text)
+        self.assertIn('reply from 0001.0020 seq=2', text)
         self.assertIn('2/2 replies', text)
         self.assertIn('status=0', text)
 
     def test_send_reaches_the_peer_with_a_valid_datagram(self):
-        text = self.run_shell('cnet send 1:20 64 hello world\\n', 'echo status=$?\\n')
+        text = self.run_shell('cnet send 1.20 64 hello world\\n', 'echo status=$?\\n')
         self.assertIn('status=0', text)
         texts = [r for r in self.peer.received if r[3] == 64]
         self.assertEqual(len(texts), 1, self.peer.received)
@@ -218,7 +218,7 @@ class CnetTests(unittest.TestCase):
         self.peer.push = link_frame(FOUNDATION_NODE, PEER_NODE, 0x01,
                                     datagram(FOUNDATION_NODE, 64, 99, 0x80, b'hi foundation'))
         text = self.run_shell('cnet recv 64\\n', 'echo status=$?\\n', step=120)
-        self.assertIn('from 0001:0020 socket 99: hi foundation', text)
+        self.assertIn('from 0001.0020 socket 99: hi foundation', text)
         self.assertIn('status=0', text)
 
     def test_ping_without_an_answer_times_out(self):
@@ -228,13 +228,13 @@ class CnetTests(unittest.TestCase):
         self.assertNotIn('status=0', text)
 
     def test_short_forms_address_the_local_network(self):
-        # ":NODE" and "NODE" mean NET 0, this network (doc/spec_NET.md §2).
-        text = self.run_shell('cnet ping :20\\n', 'cnet ping 20\\n', 'echo status=$?\\n', step=120)
-        self.assertEqual(text.count('reply from 0001:0020 seq=1'), 2, text)
+        # ".NODE" and "NODE" mean NET 0, this network (doc/spec_NET.md §2).
+        text = self.run_shell('cnet ping .20\\n', 'cnet ping 20\\n', 'echo status=$?\\n', step=120)
+        self.assertEqual(text.count('reply from 0001.0020 seq=1'), 2, text)
         self.assertEqual(text.count('1/1 replies'), 2, text)
         self.assertIn('status=0', text)
-        text = self.run_shell('cnet ping 1:\\n', 'echo status=$?\\n')
-        self.assertIn('usage: cnet ping ADDR', text)
+        text = self.run_shell('cnet ping 1.\\n', 'cnet ping 1:20\\n', 'echo status=$?\\n')
+        self.assertEqual(text.count('usage: cnet ping ADDR'), 2, text)  # ":" is no longer a separator
 
     def test_without_a_card_open_reports_no_media(self):
         text = self.run_shell('cnet\\n', card=False)

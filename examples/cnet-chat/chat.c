@@ -67,7 +67,7 @@ static int32_t chat(void) {
     uint32_t argc = fnd_argc();
     if (argc < 2u || argc > 3u || cnet_parse_addr(fnd_argv(1), &peer) != FND_OK ||
         (argc == 3u && parse_socket(fnd_argv(2), &socket) != FND_OK)) {
-        out("usage: chat ADDR [socket]   (ADDR = NET:NODE, or :NODE / NODE on this network, in hex)\n");
+        out("usage: chat ADDR [socket]   (ADDR = NET.NODE, or .NODE / NODE on this network, in hex)\n");
         return FND_E_BAD_ARG;
     }
     fnd_handle h;

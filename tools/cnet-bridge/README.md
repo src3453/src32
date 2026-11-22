@@ -31,10 +31,10 @@ python tools/cnet-bridge/cnet_bridge.py --bind 127.0.0.1:32040 --peer 127.0.0.1:
 Foundation のシェルから:
 
 ```
-/> cnet ping :FF01
+/> cnet ping .FF01
 /> telnet towel.blinkenlights.nl
 /> ssh me@server.example.org
-/> ssh -p 2222 -b 1:FF01 server.example.org
+/> ssh -p 2222 -b 1.FF01 server.example.org
 ```
 
 接続中の Ctrl+C はシェルがコマンドの中断に使うため、相手には届きません。Ctrl+] の後に `c` で Ctrl+C を送り、`q` で接続を閉じます。

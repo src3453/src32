@@ -516,7 +516,7 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - `cnet_open(socket, &h)` は `/dev/cnet` を READ|WRITE で開いて bind します。`cnet_close(h)` は `fnd_close` と同じです。
 - `cnet_wait_ready(h, ticks)` は 1 tick ずつ眠ってノード番号の取得を待ちます（OK、NO_MEDIA、ADDRESS_CONFLICT、TIMEOUT）。`cnet_info_get(h, &info)` は `CNET_INFO` の結果を返します。
 - `cnet_sendto(h, addr, socket, proto, data, len)` と `cnet_recvfrom(h, buf, cap, flags, &from)`。`cnet_recvfrom` は受信した長さ（0 以上）を返し、`from`（0 でもよい）に送信元アドレス・ソケット・PROTO・flags を入れます。
-- `cnet_parse_addr("1:20", &addr)` は 16 進の `NET:NODE` を読みます。ローカルネットワークのノードは短縮表記 `:NODE` または `NODE`（例: `:20`、`20`）でも指定でき、どちらも NET 0（自ネットワーク）になります。`cnet_format_addr(addr, out)` は `"0001:0020"` を書きます。
+- `cnet_parse_addr("1.20", &addr)` は 16 進の `NET.NODE` を読みます。ローカルネットワークのノードは短縮表記 `.NODE` または `NODE`（例: `.20`、`20`）でも指定でき、どちらも NET 0（自ネットワーク）になります。`cnet_format_addr(addr, out)` は `"0001.0020"` を書きます。
 - シェルコマンド `cnet`（`foundation/bin/cnet.c`）が利用例です。`cnet` で状態とアドレスを表示し、`cnet ping ADDR [count]` はエコーで応答を確かめ、`cnet send ADDR SOCKET TEXT...` は PROTO 0x80 のテキストを送り、`cnet recv SOCKET [count]` は受信して表示します。
 - テストは `foundation/tests/cnet`。testbench の拡張スロット 0 に CNET カードを置き、UDP セグメントの向こう側を Python で書いた独立した CNET ノードにして、ping・送信・受信・タイムアウト・カードなしを確かめます。
 

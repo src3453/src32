@@ -3,8 +3,8 @@
 Builds Foundation, the CNET card and the chat program, then starts two
 emulators on one UDP segment on this machine:
 
-    A  node 0001:0010   type:  chat 20
-    B  node 0001:0020   type:  chat 10
+    A  node 0001.0010   type:  chat 20
+    B  node 0001.0020   type:  chat 10
 
 Each window then sends every typed line to the other. The shell's own
 `cnet ping 20` / `cnet send 20 77 hello` work as well.
@@ -141,10 +141,10 @@ def headless(image, directories):
         if process.returncode != 0:
             raise SystemExit(f"testbench {name} failed:\n{stdout}\n{stderr}")
         screens[name] = screen(stdout)
-        print(f"===== {name} (node {NET:04X}:{NODES[name]:04X}) =====")
+        print(f"===== {name} (node {NET:04X}.{NODES[name]:04X}) =====")
         print("\n".join(screens[name]))
-    expected = {"A": ["<0001:0020> hi A, this is B"],
-                "B": ["<0001:0010> hello from A", "<0001:0010> fine, bye"]}
+    expected = {"A": ["<0001.0020> hi A, this is B"],
+                "B": ["<0001.0010> hello from A", "<0001.0010> fine, bye"]}
     missing = [(name, line) for name, lines in expected.items() for line in lines
                if not any(line in row for row in screens[name])]
     if missing:

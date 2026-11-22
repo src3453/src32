@@ -557,7 +557,7 @@ class Session:
         self.stream = Stream(lambda payload: bridge.node.send_datagram(
             net, node, sock, BRIDGE_SOCKET, PROTO_STREAM, payload), conn)
         self.accepted = False
-        self.name = f'{net:04X}:{node:04X}/{sock} #{conn:04X}'
+        self.name = f'{net:04X}.{node:04X}/{sock} #{conn:04X}'
 
     def accept(self):
         self.accepted = True
@@ -923,7 +923,7 @@ class Bridge:
             return
         scheme, host, port, _ = target
         if not (self.allow_any or allowed(self.allow, host, port)):
-            log(f'{net:04X}:{node:04X}/{sock}', f'refused {scheme}://{host}:{port} (not allowed)')
+            log(f'{net:04X}.{node:04X}/{sock}', f'refused {scheme}://{host}:{port} (not allowed)')
             self.reset(net, node, sock, conn, f'{host}:{port}: not allowed by the bridge')
             return
         with self.lock:
@@ -970,7 +970,7 @@ def main(argv=None):
     bridge = Bridge(node, args.allow, args.allow_any, args.max_sessions, args.known_hosts, args.identity)
     segment.start()
     bridge.start()
-    log(f'CNET bridge {args.net:04X}:{args.node:04X} socket {BRIDGE_SOCKET} on UDP port {segment.port}')
+    log(f'CNET bridge {args.net:04X}.{args.node:04X} socket {BRIDGE_SOCKET} on UDP port {segment.port}')
     try:
         while True:
             time.sleep(3600)
