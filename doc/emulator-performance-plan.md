@@ -227,7 +227,7 @@ IDCを使うゲストはsol／Cの両ドライバとも転送完了をMMIOポー
 
 1. **待機中のIDC/DMAの高速tick（全方式、厳密）**: `Idc::cycles_without_event` が、次のtickがcycle counterの加算以外に何も起こさないことを判定する（sector deadline前、abort要求なし、DMA進行待ちはDMAC側で判定）。DMACの要求maskが0なら `tick_devices` はIDC clockとBMCの`grant(0)`だけを進める。
 2. **副作用のないレジスターの32-bit読み出し（全方式、厳密）**: `Device::peek_u32_be`（DMAC全レジスター、DATA以外のIDCレジスター）を持つレジスターは、DMA要求がなければ調停1回で読む。`find_device` は直前のdeviceを覚える。
-3. **スピンループの早送り（全方式、厳密）**: 仕様は`doc/spec_CPU.md` §1.4。Busは副作用のあるアクセス数（`effectful_accesses`）と静穏区間（`quiet_cycles`）を提供し、CPUは後方ジャンプ先ごとに最大8個のprobeでループ先頭の状態を比較する。1回一致したら静穏区間を測り、次の1反復がその区間内で同じ状態へ戻れば、区間かrun予算の終わりまで反復をまとめて飛ばす（`advance_quiet_cycles`）。
+3. **スピンループの早送り（全方式、厳密）**: 仕様は`doc/spec_CPU.md` §1.4。Busは副作用のあるアクセス数（`effectful_accesses`）と静穏区間（`quiet_cycles`）を提供し、CPUは後方ジャンプ先ごとに最大8個のprobeでループ先頭の状態を比較する。1回一致したら静穏区間を測り、次の1反復がその区間内で同じ状態へ戻れば、区間かrun予算の終わりまで反復をまとめて飛ばす（`advance_quiet_cycles`）。プレーンメモリ（RAM/BIOS ROM）へ既に入っている値を書くストアは副作用に数えない。llvm-src32 の C は値を毎回スタックへ spill するので、これがないと C の待ちループ（`irqc_wait_vsync` など）は一度も早送りされない（examples/flappy-c 600 フレーム: cached-relaxed 29.4 s → 9.7 s、pipeline 61.7 s → 15.8 s）。
 
 計測（Windows x64 release、`cargo run --release --features jit --bin idc_bench`、3 samples中央値。FDD 32 sectors／HDD 2048 sectorsのpolled DMA READ）:
 

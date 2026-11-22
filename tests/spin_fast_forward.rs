@@ -1,7 +1,9 @@
 //! Spin-loop fast-forward must be invisible: a polled IDC/DMA transfer with
 //! periodic timer IRQs runs in lockstep with and without it, for every CPU
 //! kind, and every observable counter, register, device status and RAM byte
-//! must match at uneven run-budget boundaries.
+//! must match at uneven run-budget boundaries. A RAM polling loop that
+//! re-stores the same values each iteration (as llvm-src32 stack spills do)
+//! is fast-forwarded too; one whose stores change memory is not.
 use cpt32::bus::{Bus, connect_devices_with_vdp};
 use cpt32::cpu_select::{AnyCpu, CpuKind};
 use cpt32::devices::pec::idc::idc::{Idc, connect_idc};
@@ -17,6 +19,9 @@ const IRQC: u32 = 0xFFFF_0000;
 const BUFFER: u32 = 0x0010_0000;
 const HANDLER: u32 = 0x800;
 const SECTORS: u32 = 3;
+const FLAG: u32 = 0x0000_2000;
+const COUNTER: u32 = 0x0000_2004;
+const STACK: u32 = 0x0000_8000;
 
 static SEQ: AtomicU32 = AtomicU32::new(0);
 
@@ -102,6 +107,59 @@ fn handler() -> Vec<u8> {
     ])
 }
 
+/// Timer IRQ handler for `store_poll_program`: also publishes the IRQ count
+/// (R20) to FLAG in RAM.
+fn flag_handler() -> Vec<u8> {
+    bytes(&[
+        i(0x04, 20, 20, 1),
+        i(0x02, 20, 10, 0), // ST [FLAG], R20
+        i(0x04, 23, 0, 1),
+        i(0x02, 23, 21, 0x18c), // timer ACK
+        i(0x04, 23, 0, 1 << 4),
+        i(0x16, 23, 22, 0x40), // IRQC pending W1C
+        0x8000_0000,           // IRET
+    ])
+}
+
+/// Polls FLAG in RAM like compiled C: the loaded value is spilled to the
+/// stack with word, halfword and byte stores and reloaded every iteration.
+/// After 20 timer IRQs a second loop keeps the registers identical but
+/// increments COUNTER in RAM, so it must never be skipped; HALT after 30.
+fn store_poll_program() -> Vec<u8> {
+    let mut words = Vec::new();
+    load_constant(&mut words, 10, FLAG);
+    load_constant(&mut words, 11, COUNTER);
+    load_constant(&mut words, 29, STACK);
+    load_constant(&mut words, 21, PEC);
+    load_constant(&mut words, 22, IRQC);
+    load_constant(&mut words, 30, HANDLER);
+    words.push(i(0x04, 24, 0, 1 << 4));
+    words.push(i(0x16, 24, 22, 0x44)); // IRQC enable source 4
+    store(&mut words, 4999, 21, 0x410);
+    store(&mut words, 4999, 21, 0x418);
+    store(&mut words, 1 | 4 | 8, 21, 0x400);
+    store(&mut words, 1, 21, 0x184);
+    let spill_loop = words.len() as i16;
+    words.push(i(0x01, 1, 10, 0)); // LD R1, [FLAG]
+    words.push(i(0x02, 1, 29, -4)); // ST [SP-4], R1
+    words.push(i(0x16, 1, 29, -8)); // STH [SP-8], R1
+    words.push(i(0x15, 1, 29, -12)); // STB [SP-12], R1
+    words.push(i(0x01, 3, 29, -4)); // LD R3, [SP-4]
+    words.push(i(0x04, 3, 3, -20));
+    words.push(i(0x08, 0, 3, (spill_loop - words.len() as i16 - 1) * 4));
+    let count_loop = words.len() as i16;
+    words.push(i(0x01, 1, 11, 0)); // LD R1, [COUNTER]
+    words.push(i(0x04, 1, 1, 1));
+    words.push(i(0x02, 1, 11, 0)); // ST [COUNTER], R1 (changes memory)
+    words.push(i(0x04, 1, 0, 0)); // R1 = 0: registers repeat
+    words.push(i(0x01, 3, 10, 0));
+    words.push(i(0x04, 3, 3, -30));
+    words.push(i(0x08, 0, 3, (count_loop - words.len() as i16 - 1) * 4));
+    store(&mut words, 0, 21, 0x400); // stop the timer
+    words.push(r(0x3f, 0, 0, 0)); // HALT
+    bytes(&words)
+}
+
 fn config(kind: &str) -> PathBuf {
     let dir = std::env::temp_dir().join(format!(
         "cpt32-spin-{}-{}",
@@ -125,6 +183,16 @@ fn config(kind: &str) -> PathBuf {
 }
 
 fn machine(kind: CpuKind, config: &Path, fast_forward: bool) -> AnyCpu {
+    machine_with(kind, config, fast_forward, &main_program(), &handler())
+}
+
+fn machine_with(
+    kind: CpuKind,
+    config: &Path,
+    fast_forward: bool,
+    program: &[u8],
+    irq_handler: &[u8],
+) -> AnyCpu {
     let mut bus = Bus::new();
     let _input = connect_pec_input(&mut bus);
     connect_rng(&mut bus);
@@ -132,8 +200,8 @@ fn machine(kind: CpuKind, config: &Path, fast_forward: bool) -> AnyCpu {
     connect_idc(&mut bus, Idc::load_drives(config).unwrap());
     let mut cpu = AnyCpu::new(kind, bus);
     cpu.set_spin_fast_forward(fast_forward);
-    cpu.load_program(0, &main_program());
-    cpu.load_program(HANDLER, &handler());
+    cpu.load_program(0, program);
+    cpu.load_program(HANDLER, irq_handler);
     for vector in 0..16 {
         cpu.write_mem_u32_be(0xFFFF_0100 + vector * 4, r(0x0b, 30, 0, 0));
     }
@@ -176,6 +244,11 @@ fn same(a: &mut AnyCpu, b: &mut AnyCpu, step: usize) {
         BUFFER,
         BUFFER + 508,
         BUFFER + SECTORS * 512 - 4,
+        FLAG,
+        COUNTER,
+        STACK - 12,
+        STACK - 8,
+        STACK - 4,
     ] {
         assert_eq!(
             a.read_debug_mem_u32_be(address),
@@ -268,6 +341,37 @@ fn host_register_and_pc_rewrites_between_runs_are_not_spin_iterations() {
             same(&mut reference, &mut fast, step);
         }
         assert_eq!(fast.spin_skipped_cycles(), 0, "{kind:?}");
+        std::fs::remove_dir_all(config.parent().unwrap()).ok();
+    }
+}
+
+#[test]
+fn ram_poll_with_same_value_stack_stores_matches_without_fast_forward() {
+    for kind in kinds() {
+        let config = config("hdd");
+        let program = store_poll_program();
+        let mut reference = machine_with(kind, &config, false, &program, &flag_handler());
+        let mut fast = machine_with(kind, &config, true, &program, &flag_handler());
+        let budgets = [1, 13, 977, 50_000, 3, 200_000, 4999, 5000, 5001];
+        let mut step = 0;
+        while reference.is_running() && step < 20_000 {
+            let budget = budgets[step % budgets.len()];
+            reference.run(budget);
+            fast.run(budget);
+            same(&mut reference, &mut fast, step);
+            step += 1;
+        }
+        assert!(!reference.is_running(), "{kind:?} did not finish");
+        assert_eq!(reference.read_debug_mem_u32_be(FLAG), Some(30));
+        let counter = reference.read_debug_mem_u32_be(COUNTER).unwrap();
+        assert!(counter > 1000, "{kind:?} counter {counter}");
+        assert_eq!(fast.read_debug_mem_u32_be(COUNTER), Some(counter));
+        // About 20 timer periods of 5000 cycles spin in the spill loop.
+        assert!(
+            fast.spin_skipped_cycles() > 50_000,
+            "{kind:?} skipped {}",
+            fast.spin_skipped_cycles()
+        );
         std::fs::remove_dir_all(config.parent().unwrap()).ok();
     }
 }

@@ -176,9 +176,11 @@ the following:
 
 - returned to an identical CPU state (registers, PC/mode, IRQ latches; on the
   Pipeline also every pipeline latch);
-- made no effectful bus access: no write, no bus error, and only reads of plain
-  memory (RAM/BIOS ROM) or of registers whose read has no side effect (DMAC
-  registers, IDC registers except DATA);
+- made no effectful bus access: no write except a store of the bytes plain
+  memory (RAM/BIOS ROM) already holds (such as a compiler's stack spill of an
+  unchanged value), no bus error, and only reads of plain memory or of
+  registers whose read has no side effect (DMAC registers, IDC registers
+  except DATA);
 - caused no decode-cache fill;
 - ran entirely inside a *quiet window*: no DMA channel can request the bus, the
   IDC cannot reach a sector deadline or abort, no timer/RTC IRQ or expansion

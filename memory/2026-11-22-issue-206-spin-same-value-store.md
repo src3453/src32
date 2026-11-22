@@ -1,0 +1,9 @@
+# スピン早送りと「同じ値のストア」（C の待ちループ）
+
+- llvm-src32 は -O2 でもループ内の値を毎回スタックへ `ST` して `LD` し直す（例: `while (vsyncs == before) {}` が `ST R1,[R29-4]`／`LD R1,[R29-4]` を含む）。以前の Bus は RAM への書き込みを値が同じでも `effectful_accesses` に数えていたため、C ゲストの待ちループでは `doc/spec_CPU.md` §1.4 の早送りが一度も成立しなかった（全 CPU 方式で `spin_skipped_cycles() == 0`）。sol や手書きアセンブリの IDC ポーリングはストアがないので効いており、問題が表に出なかった。
+- 今は「プレーンメモリ（`is_plain_memory`: RAM/BIOS ROM）が既に保持しているバイトを書くストア」を副作用に数えない（`Bus::write_u8`、`write_u32_be` の timing-insensitive 経路）。ストア自体は通常どおり実行し、BMC 調停も行う。数え方だけが変わる。
+- 厳密性の根拠: 反復の中で値が変わるストアは従来どおり数えるので、一致した反復はメモリを変えていない。RAM は同じ値の書き込みで命令キャッシュ世代を上げない（`Ram::write`）。Pipeline の L1 モデルはストアで I-line を無効化するが、同じ値のストアを繰り返しても最初の 1 回以降はタグが変わらず、ループがその行を fetch すればミスが増えて probe 一致（ミス数一致が条件）が崩れる。VRAM などプレーンでないデバイスへの書き込みは常に副作用。
+- 効果: examples/flappy-c 600 フレーム（release、Windows）で cached-relaxed 29.4 s → 9.7 s、cached 44.5 s → 10.0 s、pipeline 61.7 s → 15.8 s。`FLAPPY_PROFILE` の描画サイクル数ログは変更前とバイト単位で一致。
+- 残りのボトルネック（未対応）: DMA 転送中は 1 サイクルあたり `refresh_device_irqs` が 3 回、`RefCell` の borrow が十数回、1 byte ごとに `find_device`、L1 スヌープが走り、relaxed のまとめ処理も早送りも無効になる（連続 BitBlt で約 6.8 MHz）。memory 間の BitBlt は CPU のバスアクセス・完了 IRQ からしか見えないので、必要になった時点でまとめて実行する方式（DuckStation／mGBA／bsnes の考え方）が次の候補。MMIO は 32-bit アクセスがバイト 4 回の調停と IRQ 再計算に分かれる（約 19 MHz）。
+- 検証: `cargo test --test spin_fast_forward`（`ram_poll_with_same_value_stack_stores_matches_without_fast_forward` が word/halfword/byte の spill ループの早送りと、値が変わるストアのループを飛ばさないことを全方式でロックステップ比較。修正を外すと skipped 0 で失敗する）。`--features jit` でも同じ。flappy は `CLANG=... python -m unittest discover -s examples/flappy-c`。
+- 既存の失敗（この変更と無関係、変更前も失敗）: `cargo test --lib` の `cow::tests::rejects_crc_sequence_range_and_base_mismatch`、`cargo test --features jit --test cpu_jit` の `fallback_memory_arithmetic_short_mode_and_halt_preserve_cycles`（left 831 / right 319）。

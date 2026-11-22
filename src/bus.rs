@@ -144,9 +144,12 @@ pub struct Bus {
     generation_device: Cell<usize>,
     /// Device index that last served a bus access.
     access_device: Cell<usize>,
-    /// Bus accesses with possible effects: every write, bus error, and any
-    /// read that is not plain memory or a `peek_u32_be` register. A spinning
-    /// CPU with no such access between two loop heads cannot change devices.
+    /// Bus accesses with possible effects: every write except one that stores
+    /// the bytes plain memory already holds, every bus error, and any read
+    /// that is not plain memory or a `peek_u32_be` register. A spinning CPU
+    /// with no such access between two loop heads cannot change devices or
+    /// memory. Same-value stores matter: llvm-src32 code spills every value
+    /// to the stack, so a C polling loop stores on every iteration.
     effectful_accesses: u64,
     /// Test hook: when false, every device is treated as timing-sensitive.
     honor_timing_insensitive: bool,
@@ -1072,7 +1075,6 @@ impl Bus {
     }
 
     pub fn write_u8(&mut self, addr: u32, value: u8) {
-        self.effectful_accesses += 1;
         let index = self.find_device_index(addr);
         let insensitive = self.is_timing_insensitive_index(index);
         if !insensitive {
@@ -1081,8 +1083,12 @@ impl Bus {
         self.arbitrate_cpu_access();
         if let Some(index) = index {
             let mapped = &mut self.devices[index];
+            let offset = addr - mapped.region.start;
             let device = &mut mapped.device;
-            device.write(addr - mapped.region.start, value);
+            if !(mapped.plain && device.read(offset) == value) {
+                self.effectful_accesses += 1;
+            }
+            device.write(offset, value);
             if device.is_faulted() {
                 self.latch_bus_error();
             }
@@ -1094,6 +1100,16 @@ impl Bus {
         }
         self.latch_bus_error();
         self.release_cpu_access();
+    }
+
+    /// Whether plain memory at `offset` already holds `value` (big-endian),
+    /// so storing it changes nothing. Plain reads have no side effects.
+    fn holds_u32_be(device: &mut dyn Device, offset: u32, value: u32) -> bool {
+        value
+            .to_be_bytes()
+            .into_iter()
+            .enumerate()
+            .all(|(beat, byte)| device.read(offset + beat as u32) == byte)
     }
 
     fn overlaps_idc_data(address: u32, width: u32) -> bool {
@@ -1147,9 +1163,12 @@ impl Bus {
             return;
         }
         if let Some((index, offset)) = self.timing_insensitive_span(addr, 4) {
-            self.effectful_accesses += 1;
             self.arbitrate_cpu_access();
-            let device = &mut self.devices[index].device;
+            let mapped = &mut self.devices[index];
+            let device = &mut mapped.device;
+            if !(mapped.plain && Self::holds_u32_be(device.as_mut(), offset, value)) {
+                self.effectful_accesses += 1;
+            }
             for (beat, byte) in value.to_be_bytes().into_iter().enumerate() {
                 device.write(offset + beat as u32, byte);
             }
