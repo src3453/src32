@@ -1,4 +1,4 @@
-"""Build the ChaCha20 and Poly1305 library as a Foundation WAL."""
+"""Build libcrypt (ChaCha20, Poly1305, AEAD, SHA-256, HMAC/HKDF, X25519) as the Foundation WAL "crypt" 1.1."""
 import argparse
 from pathlib import Path
 import subprocess
@@ -13,7 +13,7 @@ def build(out, clang=None, optimization="-O2", *, run=None):
     out.mkdir(parents=True, exist_ok=True)
     command = [sys.executable, str(ROOT / "tools/llvm-src32/driver.py"),
                str(HERE / "crypt.c"), "-I", str(ROOT / "foundation/include"), optimization,
-               "--wal", "--image-id", "crypt", "--abi-version", "1.0",
+               "--wal", "--image-id", "crypt", "--abi-version", "1.1",
                "--exports", str(HERE / "crypt.exports"), "-o", str(out / "libcrypt.wal")]
     if clang:
         command += ["--clang", clang]

@@ -309,7 +309,7 @@ def main(argv=None):
     code_build = importlib.util.module_from_spec(code_spec)
     code_spec.loader.exec_module(code_build)
     code_job = None if "code" not in libs else pool.submit(code_build.build, out / "code", args.clang, args.optimization, run=cached_run)
-    # /lib/crypt.1.wal: ChaCha20 and Poly1305, self-contained and with no work area.
+    # /lib/crypt.1.wal: ChaCha20, Poly1305, AEAD, SHA-256, HMAC/HKDF and X25519 (ABI 1.1), self-contained.
     crypt_spec = importlib.util.spec_from_file_location("crypt_build", CRYPT_DIR / "build.py")
     crypt_build = importlib.util.module_from_spec(crypt_spec)
     crypt_spec.loader.exec_module(crypt_build)

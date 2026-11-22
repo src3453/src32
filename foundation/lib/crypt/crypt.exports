@@ -1,6 +1,16 @@
-# WAL ABI 1.0; helpers are not exported.
+# WAL ABI 1.1 (1.1 adds the AEAD, SHA-256, HMAC, HKDF and X25519); helpers are not exported.
 cpt_chacha20_encrypt fn(ptr,ptr,ptr,u32,ptr,ptr,u32)->i32
 cpt_chacha20_decrypt fn(ptr,ptr,ptr,u32,ptr,ptr,u32)->i32
 cpt_chacha20_encrypt_bound fn(u32)->u32
 cpt_poly1305_auth fn(ptr,ptr,ptr,u32,ptr)->i32
 cpt_poly1305_verify fn(ptr,ptr,u32,ptr)->i32
+cpt_chacha20poly1305_seal fn(ptr,ptr,ptr,u32,ptr,u32,ptr,ptr)->i32
+cpt_chacha20poly1305_open fn(ptr,ptr,ptr,u32,ptr,u32,ptr,ptr)->i32
+cpt_sha256_init fn(ptr)->i32
+cpt_sha256_update fn(ptr,ptr,u32)->i32
+cpt_sha256_final fn(ptr,ptr,ptr)->i32
+cpt_sha256 fn(ptr,ptr,ptr,u32)->i32
+cpt_hmac_sha256 fn(ptr,ptr,ptr,u32,ptr,u32)->i32
+cpt_hkdf_sha256 fn(ptr,ptr,ptr,u32,ptr,u32,ptr,u32)->i32
+cpt_x25519 fn(ptr,ptr,ptr)->i32
+cpt_x25519_base fn(ptr,ptr)->i32
