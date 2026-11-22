@@ -1652,6 +1652,91 @@ done:
         self.execute(image, 21)
         self.execute(image, 21, 'pipeline')
 
+    def test_register_allocated_values_survive_calls_spills_and_longjmp(self):
+        # SSA values in R13..R27 (backend.allocate_registers): callee-saved
+        # across calls and recursion, spilled when more than 15 are live, not
+        # kept in registers across setjmp/longjmp; also narrow signed values,
+        # negative constant GEP indices and indirect calls.
+        self.run_c(r"""
+#include <stdint.h>
+typedef int jmp_buf[3];
+int setjmp(jmp_buf);
+void longjmp(jmp_buf, int);
+static jmp_buf env;
+static volatile int sink;
+__attribute__((noinline)) static uint32_t mix(uint32_t depth, uint32_t a, uint32_t b) {
+    uint32_t x = a * 3u + b, y = a ^ (b << 2), z = depth * 7u;
+    if (depth) x += mix(depth - 1, y, z);
+    return x + y + z + a + b;
+}
+static uint32_t mix_ref(uint32_t depth, uint32_t a, uint32_t b) {
+    uint32_t total = 0, carry = 1;
+    uint32_t xs[16], ys[16], zs[16], as[16], bs[16];
+    for (uint32_t d = depth + 1; d-- > 0;) {
+        uint32_t i = depth - d;
+        as[i] = a; bs[i] = b; xs[i] = a * 3u + b; ys[i] = a ^ (b << 2); zs[i] = d * 7u;
+        a = ys[i]; b = zs[i];
+    }
+    for (uint32_t i = depth + 1; i-- > 0;) {
+        uint32_t x = xs[i] + (i == depth ? 0 : total);
+        total = x + ys[i] + zs[i] + as[i] + bs[i];
+    }
+    (void)carry;
+    return total;
+}
+__attribute__((noinline)) static uint32_t many(volatile uint32_t *in) {
+    uint32_t v[20];
+    for (int i = 0; i < 20; i++) v[i] = in[i];
+    uint32_t a0 = v[0], a1 = v[1], a2 = v[2], a3 = v[3], a4 = v[4], a5 = v[5], a6 = v[6], a7 = v[7],
+             a8 = v[8], a9 = v[9], a10 = v[10], a11 = v[11], a12 = v[12], a13 = v[13], a14 = v[14],
+             a15 = v[15], a16 = v[16], a17 = v[17], a18 = v[18], a19 = v[19];
+    for (int r = 0; r < 3; r++) {
+        sink = r;
+        a0 += a19; a1 += a0; a2 += a1; a3 += a2; a4 += a3; a5 += a4; a6 += a5; a7 += a6;
+        a8 += a7; a9 += a8; a10 += a9; a11 += a10; a12 += a11; a13 += a12; a14 += a13;
+        a15 += a14; a16 += a15; a17 += a16; a18 += a17; a19 += a18;
+    }
+    return a0 ^ a3 ^ a7 ^ a11 ^ a15 ^ a19 ^ (a5 + a9 + a13 + a17);
+}
+static uint32_t many_ref(void) {
+    uint32_t a[20];
+    for (int i = 0; i < 20; i++) a[i] = (uint32_t)(i * 2654435761u);
+    for (int r = 0; r < 3; r++) {
+        a[0] += a[19];
+        for (int i = 1; i < 20; i++) a[i] += a[i - 1];
+    }
+    return a[0] ^ a[3] ^ a[7] ^ a[11] ^ a[15] ^ a[19] ^ (a[5] + a[9] + a[13] + a[17]);
+}
+__attribute__((noinline)) static void deep(int n) { if (n) deep(n - 1); else longjmp(env, 7); sink = n; }
+static int narrow(volatile int8_t *p, volatile int16_t *q) {
+    int8_t a = p[0], b = p[1];
+    int16_t c = q[0], d = q[1];
+    return (a < b) + 2 * (c / d == -3) + 4 * ((int8_t)(a + b) == -126) + 8 * (c % d == -2);
+}
+static uint32_t twice(uint32_t v) { return v * 2u; }
+int main(void) {
+    static volatile uint32_t in[20];
+    for (int i = 0; i < 20; i++) in[i] = (uint32_t)(i * 2654435761u);
+    if (mix(9, 5, 11) != mix_ref(9, 5, 11)) return 1;
+    if (many(in) != many_ref()) return 2;
+    volatile uint32_t keep = 12345;
+    uint32_t live = keep * 3u;
+    int jumped = setjmp(env);
+    if (jumped == 0) { sink = (int)live; deep(4); return 3; }
+    if (jumped != 7 || live != 37035u) return 4;
+    static volatile int8_t bytes[2] = {-100, -26};
+    static volatile int16_t halves[2] = {-20, 6};
+    if (narrow(bytes, halves) != 1 + 2 + 4 + 8) return 5;
+    static uint32_t table[8] = {1, 2, 3, 4, 5, 6, 7, 8};
+    uint32_t *p = &table[6];
+    if (p[-3] + p[1] != 12) return 6;
+    uint32_t (*volatile fn)(uint32_t) = twice;
+    uint32_t before = keep;
+    if (fn(before) + before != 37035u) return 7;
+    return 42;
+}
+""", name='regalloc')
+
     def test_long_forward_jump_and_relocated_image(self):
         # Side effects keep the unreachable-by-branch block large. The taken
         # branch must jump beyond signed16 bytes without executing its stores.

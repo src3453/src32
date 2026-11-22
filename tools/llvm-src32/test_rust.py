@@ -112,7 +112,9 @@ class RustTests(unittest.TestCase):
                 with self.subTest(language=language, kernel=kernel):
                     self.assertEqual(measured['results'][language][kernel]['value'], expected)
                     self.assertGreater(measured['results'][language][kernel]['cycles'], 0)
-                    self.assertGreater(measured['results'][language][kernel]['stack'], 0)
+                    # Peak stack minus the empty kernel's: a leaf kernel whose values
+                    # all fit in caller-saved registers uses no more than it (0).
+                    self.assertGreaterEqual(measured['results'][language][kernel]['stack'], 0)
 
     def test_missing_foundation_wal_is_reported(self):
         result = subprocess.run([sys.executable, str(HERE / 'cargo_src32.py'), '--manifest-path', str(CONFORMANCE),

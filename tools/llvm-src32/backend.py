@@ -1,8 +1,12 @@
 """Correctness-first, freestanding LLVM integer lowering for the SRC32 ISA.
 
-SSA values live in frame slots.  Only the private stack ABI described here is
+SSA values live in frame slots, except that scalar values of at most 32 bits
+are assigned to R13..R27 by a linear scan when they fit (see
+`_Function.allocate_registers`).  Only the private stack ABI described here is
 used: caller arguments are successive big-endian words at SP, FP points at the
 saved FP/LR pair, and scalar results are returned in R1 (low), R2 (high).
+Between functions of one module R13..R27 are callee-saved: a function saves
+the ones it uses in its frame and restores them before returning.
 This is also the argument and result layout of WAX v3 call ABI 1
 (doc/spec_WAX_v3.md §6), whose module rules (R30 = module origin, PIC,
 import descriptors) the `pic` and `imports` options add.
@@ -42,6 +46,15 @@ _CTX_CURRENT, _CTX_DEPTH = "cpt32_ctx_current", "cpt32_trap_depth"
 _CTX_EPC, _CTX_STATUS = 128, 132
 _CTX_RESTORE = "__llvm_src32_ctx_restore"
 _STATUS_RESTORED = 0x1A  # PIE | PU | PSM; IE stays 0 until IRET
+# Registers holding SSA values. Between functions of a module R13..R20 are
+# caller-saved (for values that live across no call) and R21..R27
+# callee-saved (a function saves those it uses). The public call ABI 1 makes
+# R1..R27 caller-saved, so no value assigned here may be live across a call
+# that leaves the module or this function's frame (_CONTEXT_CALLS,
+# setjmp/longjmp, imported functions).
+_SCRATCH_VALUE_REGISTERS = tuple(range(13, 21))
+_SAVED_VALUE_REGISTERS = tuple(range(21, 28))
+_CONTEXT_CALLS = ("cpt32_run_user", "cpt32_return_to_kernel", "cpt32_ctx_resume", "cpt32_jump")
 # Position-independent code (WAX v3 call ABI 1): R30 holds the module origin.
 _ORIGIN = 30
 # PIC values are resolved at origin 0 and again at this origin; a value that
@@ -108,6 +121,10 @@ class _Code:
     def imm(self, reg, value):
         if isinstance(value, int):
             value &= 0xFFFFFFFF
+            signed = value - (1 << 32) if value & 0x80000000 else value
+            if -32768 <= signed <= 32767:
+                self.emit(f"ADDI R{reg}, R0, {signed}")
+                return
             self.emit(f"LDIH R{reg}, 0x{value >> 16:04X}")
             self.emit(f"LDIL R{reg}, 0x{value & 65535:04X}")
         else:
@@ -209,14 +226,24 @@ class _Function:
         self.fixed_bytes = 0
         for arg in function.arguments:
             self.check_type(arg.type)
-            self.slots[arg] = self.allocate(self.storage(arg.type))
+        for block in self.blocks:
+            for inst in block.instructions:
+                if str(inst.type) != "void":
+                    self.check_type(inst.type)
+        self.regs = self.allocate_registers()
+        # Callee-saved value registers this function uses, and their save slots.
+        self.saved_registers = {register: self.allocate(4)
+                                for register in sorted(set(self.regs.values()))
+                                if register in _SAVED_VALUE_REGISTERS}
+        for arg in function.arguments:
+            if arg not in self.regs:
+                self.slots[arg] = self.allocate(self.storage(arg.type))
             self.fixed_bytes += self.storage(arg.type)
         # The caller's R30 across calls to imported functions (call ABI 1).
         self.saved_origin = self.allocate(4) if owner.imports else None
         for block in self.blocks:
             for inst in block.instructions:
-                if str(inst.type) != "void":
-                    self.check_type(inst.type)
+                if str(inst.type) != "void" and inst not in self.regs:
                     self.slots[inst] = self.allocate(self.storage(inst.type))
                 if inst.opcode == "phi":
                     self.shadows[inst] = self.allocate(self.storage(inst.type))
@@ -240,6 +267,185 @@ class _Function:
 
     def fail(self, message):
         raise CompileError(f"{self.context}: {message}")
+
+    def leaves_frame(self, inst):
+        """A call after which R13..R27 need not hold what they held before:
+        an imported function (call ABI 1 makes them caller-saved), setjmp or
+        longjmp (a longjmp resumes without the callees' restores), or an
+        intrinsic that switches to another context."""
+        if inst.opcode != "call":
+            return False
+        target = list(inst.operands)[-1]
+        if target.value_kind != llvm.ValueKind.function:
+            return False
+        name = target.name
+        return (name in _SETJMP_NAMES or name in _CONTEXT_CALLS
+                or self.owner.imports.get(name) == "function")
+
+    def calls_out(self, inst):
+        """Whether the lowering of `inst` jumps to other code (JALR), which may
+        use the caller-saved value registers: a call that is not an inline
+        intrinsic, or floating point done by runtime routines."""
+        if inst.opcode in ("fadd", "fsub", "fmul", "fdiv", "frem", "fcmp", "fpext", "fptrunc",
+                           "fptosi", "fptoui", "sitofp", "uitofp"):
+            return True
+        if inst.opcode != "call":
+            return False
+        target = list(inst.operands)[-1]
+        name = target.name if target.value_kind == llvm.ValueKind.function else ""
+        if name in _INTRINSICS and name not in _CONTEXT_CALLS:
+            return False
+        if name in _SETJMP_NAMES and name not in self.owner.definitions:
+            return False
+        if name.startswith("llvm."):
+            types = [inst.type] + [value.type for value in list(inst.operands)[:-1]]
+            return any(fp.kind(ty) for ty in types if not ty.is_pointer)
+        return True
+
+    def allocate_registers(self):
+        """Assign R13..R27 to scalar SSA values by linear scan.
+
+        Each value gets the hull of its live range in block order: its
+        definition (a phi is written by the edge copies at the end of each
+        predecessor), its uses (a phi operand is read at the end of that
+        predecessor) and every block boundary where it is live. Hulls that
+        touch, even at one position, interfere. A value whose hull strictly
+        contains a call that leaves the frame (leaves_frame) stays in memory;
+        so does the value with the furthest end when the registers run out.
+        """
+        position, start, end = {}, {}, {}
+        p = 0
+        for block in self.blocks:
+            start[block] = p
+            for inst in block.instructions:
+                position[inst] = p
+                p += 2
+            end[block] = p - 2
+
+        def scalar(ty):
+            return 0 < _bits(ty) <= 32
+
+        arguments = {arg for arg in self.fn.arguments if scalar(arg.type)}
+        values = [arg for arg in self.fn.arguments if arg in arguments]
+        values += [inst for block in self.blocks for inst in block.instructions
+                   if str(inst.type) != "void" and scalar(inst.type)]
+        candidates = set(values)
+        if not candidates:
+            return {}
+
+        def block_of(value):
+            return self.blocks[self.blocks.index(value)]
+
+        successors, phi_defs, phi_uses = {}, {}, {}
+        upward, defined = {}, {}
+        lo, hi = {}, {}
+
+        def touch(value, at):
+            lo[value] = min(lo.get(value, at), at)
+            hi[value] = max(hi.get(value, at), at)
+
+        for arg in self.fn.arguments:
+            if arg in candidates:
+                touch(arg, -1)
+        clobbers, calls, inner_calls = [], [], set()
+        for block in self.blocks:
+            instructions = list(block.instructions)
+            successors[block] = [block_of(op) for op in instructions[-1].operands
+                                 if op.value_kind == llvm.ValueKind.basic_block]
+            phi_defs[block] = {i for i in instructions if i.opcode == "phi" and i in candidates}
+            defs, ups = set(phi_defs[block]), set()
+            if block == self.blocks[0]:
+                defs |= {arg for arg in self.fn.arguments if arg in candidates}
+            for inst in instructions:
+                if inst in candidates and inst.opcode != "phi":
+                    touch(inst, position[inst])
+                if self.leaves_frame(inst):
+                    clobbers.append(position[inst])
+                if self.calls_out(inst):
+                    calls.append(position[inst])
+                    # fcmp and float intrinsics may call two routines and keep
+                    # their partial result between them.
+                    if inst in candidates and (inst.opcode == "fcmp" or (
+                            inst.opcode == "call" and list(inst.operands)[-1].name.startswith("llvm."))):
+                        inner_calls.add(inst)
+                if inst.opcode == "phi":
+                    for value, pred in zip(inst.operands, inst.incoming_blocks):
+                        pred = block_of(pred)
+                        if inst in candidates:
+                            touch(inst, end[pred])
+                        if value in candidates:
+                            phi_uses.setdefault((pred, block), set()).add(value)
+                            touch(value, end[pred])
+                    if inst in candidates:
+                        touch(inst, start[block])
+                    continue
+                for value in inst.operands:
+                    if value in candidates:
+                        touch(value, position[inst])
+                        if value not in defs:
+                            ups.add(value)
+                if inst in candidates:
+                    defs.add(inst)
+            upward[block], defined[block] = ups, defs
+
+        live_in = {block: set() for block in self.blocks}
+        live_out = {block: set() for block in self.blocks}
+        changed = True
+        while changed:
+            changed = False
+            for block in reversed(self.blocks):
+                out = set()
+                for succ in successors[block]:
+                    out |= live_in[succ] - phi_defs[succ]
+                    out |= phi_uses.get((block, succ), set())
+                inn = phi_defs[block] | upward[block] | (out - defined[block])
+                if out != live_out[block] or inn != live_in[block]:
+                    live_out[block], live_in[block] = out, inn
+                    changed = True
+        for block in self.blocks:
+            for value in live_in[block]:
+                touch(value, start[block])
+            for value in live_out[block]:
+                touch(value, end[block])
+
+        intervals = []
+        for value in values:
+            if value not in lo or (value in arguments and hi[value] < 0):
+                continue  # an unused argument needs no register
+            if any(lo[value] < call < hi[value] for call in clobbers):
+                continue
+            intervals.append((lo[value], hi[value], value))
+        intervals.sort(key=lambda interval: (interval[0], interval[1]))
+        regs, active = {}, []
+        scratch = list(reversed(_SCRATCH_VALUE_REGISTERS))
+        saved = list(reversed(_SAVED_VALUE_REGISTERS))
+        for first, last, value in intervals:
+            still = []
+            for interval in active:
+                if interval[0] < first:
+                    register = regs[interval[1]]
+                    (scratch if register in _SCRATCH_VALUE_REGISTERS else saved).append(register)
+                else:
+                    still.append(interval)
+            active = still
+            # A value live across a call needs a callee-saved register.
+            crosses = value in inner_calls or any(first < call < last for call in calls)
+            pools = (saved,) if crosses else (scratch, saved)
+            pool = next((pool for pool in pools if pool), None)
+            if pool is not None:
+                regs[value] = pool.pop()
+                active.append((last, value))
+                continue
+            allowed = _SAVED_VALUE_REGISTERS if crosses else _SCRATCH_VALUE_REGISTERS + _SAVED_VALUE_REGISTERS
+            victims = [interval for interval in active if regs[interval[1]] in allowed]
+            if not victims:
+                continue
+            victim = max(victims, key=lambda interval: interval[0])
+            if victim[0] > last:
+                regs[value] = regs.pop(victim[1])
+                active.remove(victim)
+                active.append((last, value))
+        return regs
 
     def check_type(self, ty, allow_void=False):
         if allow_void and str(ty) == "void":
@@ -273,6 +479,9 @@ class _Function:
 
     def load(self, value, reg=1, word=0):
         bits = _bits(value.type)
+        if value in self.regs:
+            self.c.move(reg, self.regs[value])
+            return
         if value in self.slots:
             self.c.mem("LD", reg, 29, self.slots[value] + 4 * word)
             return
@@ -310,7 +519,41 @@ class _Function:
         return '"' + name.replace("\\", "\\5C").replace('"', "\\22") + '"'
 
     def store(self, value, reg=1, word=0):
+        if value in self.regs:
+            self.c.move(self.regs[value], reg)
+            return
         self.c.mem("ST", reg, 29, self.slots[value] + word * 4)
+
+    @staticmethod
+    def is_zero(value):
+        return (value.value_kind == llvm.ValueKind.constant_int and value.get_constant_value() == 0
+                or value.value_kind == llvm.ValueKind.constant_pointer_null)
+
+    def operand(self, value, scratch):
+        """Register holding the 32-bit `value`: R0 for zero, the value's own
+        register, or `scratch` after loading it. Only `scratch` may be
+        modified by the caller."""
+        if value in self.regs:
+            return self.regs[value]
+        if self.is_zero(value):
+            return 0
+        self.load(value, scratch)
+        return scratch
+
+    def destination(self, inst, scratch=1):
+        """Register to compute `inst` into; `finish` stores it if needed. It
+        never equals an operand register of `inst` (their ranges touch)."""
+        return self.regs.get(inst, scratch)
+
+    def finish(self, inst, reg):
+        if inst not in self.regs:
+            self.store(inst, reg)
+
+    def copy_into(self, src, dst):
+        """Copy the value `src` into the SSA value `dst` (register or slot)."""
+        for w in range(self.storage(dst.type) // 4):
+            self.load(src, 1, w)
+            self.store(dst, 1, w)
 
     def copy(self, src, dst_offset, ty=None):
         ty = src.type if ty is None else ty
@@ -338,6 +581,8 @@ class _Function:
         c.mem("ST", 31, 28, 4)
         c.move(29, 28)
         c.add_const(28, 28, -self.frame_size)
+        for register, slot in self.saved_registers.items():
+            c.mem("ST", register, 29, slot)
         offset = 8
         for arg in self.fn.arguments:
             for w in range(self.storage(arg.type) // 4):
@@ -350,6 +595,8 @@ class _Function:
                 self.context = f"function @{self.fn.name}, block %{block.name or self.blocks.index(block)}, {str(inst).strip()}"
                 self.instruction(inst, block)
         c.label(self.epilogue)
+        for register, slot in self.saved_registers.items():
+            c.mem("LD", register, 29, slot)
         c.move(28, 29)
         c.mem("LD", 31, 28, 4)
         c.mem("LD", 29, 28)
@@ -361,13 +608,29 @@ class _Function:
         target = self.blocks[self.blocks.index(target)]
         # All reads precede all writes, including cycles such as a<-b,b<-a.
         phis = [i for i in target.instructions if i.opcode == "phi"]
+        sources = []
         for phi in phis:
             incoming = list(phi.incoming_blocks)
             try:
                 index = incoming.index(source)
             except ValueError:
                 self.fail("phi lacks the predecessor edge")
-            self.copy(list(phi.operands)[index], self.shadows[phi])
+            sources.append(list(phi.operands)[index])
+        if sum(self.storage(phi.type) // 4 for phi in phis) <= 8:
+            # Small parallel copy through R1..R8 (load() and store() use at
+            # most R10/R11 as extra scratch).
+            loaded, register = [], 1
+            for phi, value in zip(phis, sources):
+                for w in range(self.storage(phi.type) // 4):
+                    self.load(value, register, w)
+                    loaded.append((phi, w, register))
+                    register += 1
+            for phi, w, register in loaded:
+                self.store(phi, register, w)
+            self.c.jump(self.labels[target])
+            return
+        for phi, value in zip(phis, sources):
+            self.copy(value, self.shadows[phi])
         for phi in phis:
             for w in range(self.storage(phi.type) // 4):
                 self.c.mem("LD", 1, 29, self.shadows[phi] + w * 4)
@@ -393,9 +656,9 @@ class _Function:
             if len(args) == 1:
                 self.edge(block, args[0])
             else:
-                self.load(args[0])
+                condition = self.operand(args[0], 1)
                 other = c.fresh("branch_false")
-                c.emit(f"BEQ R1, R0, {other}")
+                c.emit(f"BEQ R{condition}, R0, {other}")
                 # Edge copies may be large, so the short branch skips only an absolute jump.
                 yes = c.fresh("branch_true")
                 c.jump(yes)
@@ -432,21 +695,21 @@ class _Function:
             if re.search(r"\b(?:atomic|syncscope)\b", operation):
                 self.fail("atomic memory operations are unsupported")
             value, ptr = (inst, args[0]) if op == "load" else (args[0], args[1])
-            self.load(ptr, 3)
+            base = self.operand(ptr, 3)
             bits = _bits(value.type)
             size = self.layout.size(value.type)
             if bits and bits <= 32:
-                self.scalar_memory(op, value, 3, bits)
+                self.scalar_memory(op, value, base, bits)
             elif bits:
                 for w in range(2):
                     if op == "store":
                         self.load(value, 1, w)
-                        c.mem("ST", 1, 3, w * 4)
+                        c.mem("ST", 1, base, w * 4)
                     else:
-                        c.mem("LD", 1, 3, w * 4)
+                        c.mem("LD", 1, base, w * 4)
                         self.store(inst, 1, w)
             else:
-                self.aggregate_memory(op, value, 3, size)
+                self.aggregate_memory(op, value, base, size)
         elif op in ("add", "sub", "mul", "sdiv", "udiv", "srem", "urem", "and", "or", "xor", "shl", "lshr", "ashr"):
             self.binary(inst, op, args)
         elif op == "icmp":
@@ -479,7 +742,7 @@ class _Function:
                     "fpext", "fptrunc", "fptosi", "fptoui", "sitofp", "uitofp"):
             self.float_op(inst, op, args)
         elif op == "freeze":
-            self.copy(args[0], self.slots[inst])
+            self.copy_into(args[0], inst)
         else:
             self.fail(f"unsupported LLVM instruction {op}")
 
@@ -560,7 +823,7 @@ class _Function:
             else:
                 c.emit({"!=": "SLTU R1, R0, R1", "<": "SLT R1, R1, R0", ">": "SLT R1, R0, R1"}[test])
             if index:
-                c.mem("LD", 2, 29, self.slots[inst])
+                self.load(inst, 2)
                 c.emit(f"{'AND' if join == 'and' else 'OR'} R1, R1, R2")
             self.store(inst)
 
@@ -597,18 +860,23 @@ class _Function:
         size = (bits + 7) // 8
         mnemonic = {1: "B", 2: "H", 4: ""}.get(size)
         if op == "store":
-            self.load(value)
             if mnemonic is not None:
-                c.mem("ST" + mnemonic, 1, base)
-            else:
+                c.mem("ST" + mnemonic, self.operand(value, 1), base)
+                return
+            self.load(value)
+            if True:
                 for j in range(size):
                     c.imm(9, 8 * (size - j - 1))
                     c.emit("SRL R2, R1, R9")
                     c.mem("STB", 2, base, j)
         else:
             if mnemonic is not None:
-                c.mem("LD" + mnemonic, 1, base)
-            else:
+                target = self.destination(value)
+                c.mem("LD" + mnemonic, target, base)
+                self.narrow(target, bits)
+                self.finish(value, target)
+                return
+            if True:
                 c.move(1, 0)
                 for j in range(size):
                     c.mem("LDB", 2, base, j)
@@ -648,21 +916,35 @@ class _Function:
         if bits > 32:
             self.wide_binary(inst, op, args)
             return
-        self.load(args[0], 1)
-        self.load(args[1], 2)
-        if op in ("sdiv", "srem", "ashr"):
+        target = self.destination(inst)
+        a = self.operand(args[0], 1)
+        constant = args[1].value_kind == llvm.ValueKind.constant_int
+        if op in ("add", "sub") and constant:
+            amount = args[1].get_constant_value(signed_int=True)
+            amount = -amount if op == "sub" else amount
+            if -32768 <= amount <= 32767:
+                c.emit(f"ADDI R{target}, R{a}, {amount}")
+                self.narrow(target, bits)
+                self.finish(inst, target)
+                return
+        if op in ("sdiv", "srem", "ashr") and bits < 32:
+            c.move(1, a)
+            a = 1
             self.signed(1, bits)
-        if op in ("sdiv", "srem"):
+        b = self.operand(args[1], 2)
+        if op in ("sdiv", "srem") and bits < 32:
+            c.move(2, b)
+            b = 2
             self.signed(2, bits)
         mnemonics = {"add": "ADD", "sub": "SUB", "mul": "MUL", "sdiv": "DIV", "udiv": "DIVU", "srem": "MOD", "and": "AND", "or": "OR", "xor": "XOR", "shl": "SLL", "lshr": "SRL", "ashr": "SRA"}
         if op == "urem":
-            c.emit("DIVU R3, R1, R2")
-            c.emit("MUL R3, R3, R2")
-            c.emit("SUB R1, R1, R3")
+            c.emit(f"DIVU R3, R{a}, R{b}")
+            c.emit(f"MUL R3, R3, R{b}")
+            c.emit(f"SUB R{target}, R{a}, R3")
         else:
-            c.emit(f"{mnemonics[op]} R1, R1, R2")
-        self.narrow(1, bits)
-        self.store(inst)
+            c.emit(f"{mnemonics[op]} R{target}, R{a}, R{b}")
+        self.narrow(target, bits)
+        self.finish(inst, target)
 
     def wide_binary(self, inst, op, args):
         c = self.c
@@ -819,6 +1101,9 @@ class _Function:
             self.fail(f"unsupported comparison predicate {pred}")
         bits = _bits(args[0].type)
         wide = bits > 32
+        if not wide:
+            self.narrow_compare(inst, pred, args, bits)
+            return
         self.load(args[0], 1, 1 if wide else 0)
         self.load(args[1], 3, 1 if wide else 0)
         if wide:
@@ -858,6 +1143,32 @@ class _Function:
                 c.emit("XOR R1, R1, R9")
         self.store(inst)
 
+    def narrow_compare(self, inst, pred, args, bits):
+        c = self.c
+        signed = pred.startswith("s")
+        a = self.operand(args[0], 1)
+        b = self.operand(args[1], 3)
+        if signed and bits < 32:
+            c.move(1, a)
+            c.move(3, b)
+            a, b = 1, 3
+            self.signed(1, bits)
+            self.signed(3, bits)
+        target = self.destination(inst)
+        if pred in ("eq", "ne"):
+            c.emit(f"XOR R{target}, R{a}, R{b}")
+            c.emit(f"SLTU R{target}, R0, R{target}")
+            invert = pred == "eq"
+        else:
+            if pred[1:] in ("gt", "le"):
+                a, b = b, a
+            c.emit(f"{'SLT' if signed else 'SLTU'} R{target}, R{a}, R{b}")
+            invert = pred[1:] in ("ge", "le")
+        if invert:
+            c.imm(9, 1)
+            c.emit(f"XOR R{target}, R{target}, R9")
+        self.finish(inst, target)
+
     def cast(self, inst, source, op):
         c = self.c
         src, dst = _bits(source.type), _bits(inst.type)
@@ -887,25 +1198,55 @@ class _Function:
         text = _instruction_tail(inst)
         text = re.sub(r"^(?:(?:inbounds|nuw|nusw)\s+)+", "", text)
         ty, _ = parse_type(text, self.owner.module)
-        self.load(args[0], 3)
+        address = self.operand(args[0], 3)  # R3 once it has been modified
+        offset = 0
         for index, value in enumerate(args[1:]):
             if index > 0 and ty.is_struct:
                 if value.value_kind != llvm.ValueKind.constant_int:
                     self.fail("GEP struct index must be constant")
                 field = value.get_constant_value()
-                c.add_const(3, 3, self.layout.offset(ty, field))
+                offset += self.layout.offset(ty, field)
                 ty = list(ty.elements)[field]
                 continue
             if index > 0:
                 if not ty.is_array:
                     self.fail(f"GEP cannot index through {ty}")
                 ty = list(ty.elements)[0]
-            self.load(value, 1, 1 if _bits(value.type) > 32 else 0)
-            self.signed(1, min(_bits(value.type), 32))
-            c.imm(2, self.layout.size(ty))
-            c.emit("MUL R1, R1, R2")
-            c.emit("ADD R3, R3, R1")
-        self.store(inst, 3)
+            size = self.layout.size(ty)
+            bits = _bits(value.type)
+            if value.value_kind == llvm.ValueKind.constant_int:
+                # The address arithmetic wraps at 32 bits, like the MUL/ADD form.
+                offset += value.get_constant_value(signed_int=True) * size
+                continue
+            if size == 0:
+                continue
+            if bits > 32:
+                self.load(value, 1, 1)
+                scaled = 1
+            else:
+                scaled = self.operand(value, 1)
+                if bits < 32:
+                    c.move(1, scaled)
+                    scaled = 1
+                    self.signed(1, bits)
+            if size & (size - 1) == 0:
+                if size > 1:
+                    c.imm(2, size.bit_length() - 1)
+                    c.emit(f"SLL R1, R{scaled}, R2")
+                    scaled = 1
+            else:
+                c.imm(2, size)
+                c.emit(f"MUL R1, R{scaled}, R2")
+                scaled = 1
+            c.emit(f"ADD R3, R{address}, R{scaled}")
+            address = 3
+        offset = ((offset & 0xFFFFFFFF) ^ 0x80000000) - 0x80000000
+        target = self.destination(inst, 3)
+        if offset:
+            c.add_const(target, address, offset)
+        else:
+            c.move(target, address)
+        self.finish(inst, target)
 
     def switch(self, inst, block):
         c, args = self.c, list(inst.operands)
@@ -1332,10 +1673,10 @@ class _Function:
                 c.emit(f"{'SLT' if signed else 'SLTU'} R1, R1, R3")
             second, done = c.fresh("minmax_second"), c.fresh("minmax_done")
             c.emit(f"{'BEQ' if kind.endswith('min') else 'BNE'} R1, R0, {second}")
-            self.copy(values[0], self.slots[inst])
+            self.copy_into(values[0], inst)
             c.emit(f"JMP {done}")
             c.label(second)
-            self.copy(values[1], self.slots[inst])
+            self.copy_into(values[1], inst)
             c.label(done)
             return
         if kind in ("fshl", "fshr") and bits == 64:
@@ -1829,7 +2170,7 @@ class _Function:
         if name == "llvm.set.rounding":
             return
         if name.startswith("llvm.expect."):
-            self.copy(values[0], self.slots[inst])
+            self.copy_into(values[0], inst)
             return
         if name.startswith("llvm.is.constant."):
             # Left after optimisation means "not known to be constant" (as in LLVM's codegen).

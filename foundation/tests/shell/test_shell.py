@@ -25,7 +25,7 @@ HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[2]
 sys.path.insert(0, str(ROOT / 'tools/fs2'))
 import fs2  # noqa: E402
-STOP_TICKS = 800  # 8 seconds at 100 Hz, including long command batches
+STOP_TICKS = 1000  # 10 seconds at 100 Hz, including long command batches
 # FND_MM=nommu forces physical memory; otherwise CPUID decides the actual backend.
 FRAMES = 660
 # Keys typed before the shell is up (about frame 120: fs checks the boot
@@ -490,9 +490,14 @@ class ShellTests(unittest.TestCase):
 
     def test_line_editing_and_history(self):
         # §9.2: arrows, Home, End, Backspace, Delete, history and Ctrl+C.
+        # Lines typed ahead are edited in order, but the console takes Ctrl+C
+        # as soon as the key arrives (§8.4): it must come after the earlier
+        # commands have finished and "echo nope" is on the line, or it would
+        # kill a running command instead, depending on guest speed.
         self.assertEqual(self.screen(
             'echo wrld\\L\\L\\Lo\\n', 'xecho hi\\H\\X\\E!\\n', 'echo abcd\\b\\bef\\n', '\\n',
-            '\\U\\U\\n', '\\U\\U\\U\\D\\n', 'echo nope\\L\\L\\C', 'echo $?\\n'), BANNER + [
+            '\\U\\U\\n', '\\U\\U\\U\\D\\n', 'echo nope\\L\\L', '\\C', 'echo $?\\n',
+            at_frames=[30, 36, 42, 48, 54, 60, 66, 430, 436]), BANNER + [
             '/> echo world',
             'world',
             '/> echo hi!',
