@@ -10,6 +10,7 @@
 #define OBJ_FILE 2u
 #define OBJ_DIR 3u
 #define OBJ_NULL 4u /* /dev/null */
+#define OBJ_INTERNAL 5u /* the CHANNEL of the netfs worker (fs_server_internal) */
 
 #define KERNEL_BADGE 0x80000000u
 
@@ -310,8 +311,9 @@ static void stream_op(fs_obj *o, const fs_req *q, const uint8_t *data, uint32_t 
 
 /* ---- directory listing (§7, §10.2) ------------------------------------- */
 
-static const char *const root_reserved[4] = {"dev", "dd", "os", "tmp"};
-static const uint32_t root_reserved_mnt[4] = {VFS_DEV, VFS_DD, VFS_OS, VFS_TMP};
+#define ROOT_RESERVED 5u
+static const char *const root_reserved[ROOT_RESERVED] = {"dev", "dd", "os", "tmp", "net"};
+static const uint32_t root_reserved_mnt[ROOT_RESERVED] = {VFS_DEV, VFS_DD, VFS_OS, VFS_TMP, VFS_NET};
 
 typedef struct {
     vfs_node node;
@@ -369,6 +371,14 @@ static fnd_status dir_peek(const fs_obj *o, dir_item *it, uint32_t *phase, uint3
             ++*cursor;
             return FND_OK;
         }
+        if (m->kind == VFS_KIND_NET && *cursor < vfs_net_count) {
+            it->node.mnt = VFS_NET;
+            it->node.ino = 2 + *cursor;
+            it->name = (const uint8_t *)vfs_net_names[*cursor];
+            it->name_bytes = it->name_chars = (uint32_t)strlen(vfs_net_names[*cursor]);
+            ++*cursor;
+            return FND_OK;
+        }
         if (m->kind == VFS_KIND_DEV && *cursor < vfs_devnode_count) {
             const char *dn = vfs_devnodes[*cursor].name;
             it->node.mnt = VFS_DEV;
@@ -385,9 +395,9 @@ static fnd_status dir_peek(const fs_obj *o, dir_item *it, uint32_t *phase, uint3
         *cursor = 0;
     }
     if (root) {
-        while (*cursor < 4 && !vfs_mounts[root_reserved_mnt[*cursor]].present)
+        while (*cursor < ROOT_RESERVED && !vfs_mounts[root_reserved_mnt[*cursor]].present)
             ++*cursor;
-        if (*cursor < 4) {
+        if (*cursor < ROOT_RESERVED) {
             it->node.mnt = root_reserved_mnt[*cursor];
             it->node.ino = VFS_DIR_INO;
             it->name = (const uint8_t *)root_reserved[*cursor];
@@ -456,6 +466,255 @@ static void dir_op(fs_obj *o, const fs_req *q, uint32_t len, uint32_t cap, fs_re
     r->len = used;
 }
 
+/* ---- /net (doc/spec_NET_FP.md §11) --------------------------------------- */
+
+/* Paths that pass through /net are resolved by name, not by node: nothing
+ * below /net/<name> is known here (its server may change it at any time,
+ * §11.3), so "." and ".." are applied to the text of the absolute path
+ * first. A result below /net/<name> goes to netfs; any other result is
+ * walked as usual, as the canonical path. Paths that never pass below
+ * /net are left alone. */
+
+typedef struct {
+    uint32_t len;      /* of buf: canonical absolute path, "/" or no trailing '/' */
+    uint32_t depth;    /* components in buf */
+    uint32_t first;    /* bytes of the first component */
+    uint32_t via;      /* the path went below /net/<x> (or started there) */
+    uint32_t net;      /* the result is below /net/<x> */
+    int mount;         /* vfs_net_find of <x>, or -1 */
+    uint32_t dot_end;  /* the last component was "." or ".." */
+    uint32_t want_dir; /* the path ended in '/' */
+    char buf[VFS_PATH_MAX + 4]; /* last: net_canon clears the fields before it */
+} net_path;
+
+static net_path np_a, np_b;
+
+#define ROUTE_FULL 0u   /* the whole path names an existing node */
+#define ROUTE_OPEN 1u   /* FS_OPEN */
+#define ROUTE_MKDIR 2u  /* creates the last component */
+#define ROUTE_REMOVE 3u /* removes the last component */
+
+static int is_net_first(const net_path *np) {
+    return np->depth >= 1 && fnd_name_key_equal((const uint8_t *)"net", 3, (const uint8_t *)np->buf + 1, np->first);
+}
+
+/* Applies the components of [p, p + n) to np. */
+static fnd_status net_feed(net_path *np, const uint8_t *p, uint32_t n) {
+    uint32_t i = 0;
+    for (;;) {
+        while (i < n && p[i] == '/')
+            ++i;
+        if (i >= n)
+            return FND_OK;
+        uint32_t s = i;
+        while (i < n && p[i] != '/')
+            ++i;
+        uint32_t clen = i - s;
+        if (clen == 1 && p[s] == '.')
+            continue;
+        if (clen == 2 && p[s] == '.' && p[s + 1] == '.') {
+            if (np->depth) {
+                while (np->len > 0 && np->buf[np->len - 1] != '/')
+                    --np->len;
+                if (np->len > 0)
+                    --np->len; /* the '/' before it */
+                --np->depth;
+            }
+            continue;
+        }
+        if (np->len + 1 + clen > VFS_PATH_MAX)
+            return FND_E_NAME_TOO_LONG;
+        np->buf[np->len++] = '/';
+        memcpy(np->buf + np->len, p + s, clen);
+        np->len += clen;
+        if (++np->depth == 1)
+            np->first = clen;
+        if (np->depth >= 2 && is_net_first(np))
+            np->via = 1;
+    }
+}
+
+static fnd_status net_canon(const vfs_cred *c, const uint8_t *p, uint32_t n, net_path *np) {
+    memset(np, 0, sizeof *np - sizeof np->buf);
+    np->mount = -1;
+    if (n == 0)
+        return FND_E_BAD_PATH;
+    if (n > VFS_PATH_MAX)
+        return FND_E_NAME_TOO_LONG;
+    for (uint32_t i = 0; i < n; ++i)
+        if (p[i] == 0)
+            return FND_E_BAD_PATH;
+    fnd_status st;
+    if (p[0] != '/' && (st = net_feed(np, (const uint8_t *)c->cwd_path, c->cwd_len)) != FND_OK)
+        return st;
+    if ((st = net_feed(np, p, n)) != FND_OK)
+        return st;
+    np->want_dir = p[n - 1] == '/';
+    uint32_t end = n;
+    while (end > 0 && p[end - 1] == '/')
+        --end;
+    uint32_t s = end;
+    while (s > 0 && p[s - 1] != '/')
+        --s;
+    np->dot_end = (end - s == 1 && p[s] == '.') || (end - s == 2 && p[s] == '.' && p[s + 1] == '.');
+    if (np->len == 0)
+        np->buf[np->len++] = '/';
+    np->buf[np->len] = 0;
+    if (np->depth >= 2 && is_net_first(np)) {
+        np->net = 1;
+        const uint8_t *name = (const uint8_t *)np->buf + 1 + np->first + 1;
+        uint32_t nlen = 0;
+        while (name + nlen < (const uint8_t *)np->buf + np->len && name[nlen] != '/')
+            ++nlen;
+        np->mount = vfs_net_find(name, nlen);
+    }
+    return FND_OK;
+}
+
+/* The path below /net with the stored mount name ("name/a/b", plus '/'
+ * when it named a directory), appended at out + *at; 0 if it does not fit
+ * in cap. */
+static int net_rel(const net_path *np, uint8_t *out, uint32_t *at, uint32_t cap) {
+    const char *name = vfs_net_names[np->mount];
+    uint32_t nlen = (uint32_t)strlen(name);
+    uint32_t rest = 1 + np->first + 1; /* "/net/" */
+    while (rest < np->len && np->buf[rest] != '/')
+        ++rest;
+    uint32_t tail = np->len - rest, dir = np->want_dir || np->dot_end;
+    if (*at + nlen + tail + dir > cap)
+        return 0;
+    memcpy(out + *at, name, nlen);
+    memcpy(out + *at + nlen, np->buf + rest, tail);
+    *at += nlen + tail;
+    if (dir)
+        out[(*at)++] = '/';
+    return 1;
+}
+
+/* The canonical path as a local path: "/." or "/" keep what the caller's
+ * last component meant to a parent-mode walk. */
+static void net_local(net_path *np, const uint8_t **path, uint32_t *len) {
+    if (np->dot_end) {
+        if (np->len > 1)
+            np->buf[np->len++] = '/';
+        np->buf[np->len++] = '.';
+    } else if (np->want_dir && np->len > 1) {
+        np->buf[np->len++] = '/';
+    }
+    np->buf[np->len] = 0;
+    *path = (const uint8_t *)np->buf;
+    *len = np->len;
+}
+
+/* Starts the fs_net_job in reply_buf; the paths follow it. */
+static fs_net_job *net_job(fs_obj *s, const fs_req *q, uint32_t cap) {
+    fs_net_job *j = (fs_net_job *)reply_buf;
+    j->fs_op = q->op;
+    j->a0 = q->a0, j->a1 = q->a1, j->a2 = q->a2, j->a3 = q->a3;
+    j->session = s->badge;
+    j->reply_cap = cap;
+    j->len = 0;
+    return j;
+}
+
+static fnd_status net_send(fs_net_job *j, fs_rep *r) {
+    r->net = 1;
+    r->data = reply_buf;
+    r->len = (uint32_t)sizeof *j + j->len;
+    return FND_OK;
+}
+
+/* Routes a one-path operation. Returns 1 when it is done here: *st is the
+ * error, or FND_OK with r->net set. Returns 0 to go on locally with *path
+ * and *len (rewritten when the path went through /net). */
+static int net_route(fs_obj *s, const fs_req *q, uint32_t kind, uint32_t cap, const uint8_t **path,
+                     uint32_t *len, fs_rep *r, fnd_status *st) {
+    net_path *np = &np_a;
+    if ((*st = net_canon(&s->cred, *path, *len, np)) != FND_OK)
+        return 1;
+    if (!np->net) {
+        if (np->via || s->cred.cwd.mnt == VFS_NET)
+            net_local(np, path, len);
+        return 0;
+    }
+    if (np->mount < 0) {
+        /* Nothing is mounted there: creating in /net itself is a change
+         * to a virtual directory. */
+        int in_net = np->depth == 2;
+        *st = in_net && (kind == ROUTE_MKDIR || (kind == ROUTE_OPEN && (q->a0 & FND_OPEN_CREATE)))
+                  ? FND_E_READ_ONLY
+                  : FND_E_NOT_FOUND;
+        return 1;
+    }
+    if (np->dot_end && kind == ROUTE_MKDIR) {
+        *st = FND_E_EXISTS;
+        return 1;
+    }
+    if (np->dot_end && kind == ROUTE_REMOVE) {
+        *st = FND_E_BAD_PATH;
+        return 1;
+    }
+    fs_net_job *j = net_job(s, q, cap);
+    uint32_t at = (uint32_t)sizeof *j;
+    if (!net_rel(np, reply_buf, &at, FS_IPC_MAX)) {
+        *st = FND_E_NAME_TOO_LONG;
+        return 1;
+    }
+    j->len = at - (uint32_t)sizeof *j;
+    *st = net_send(j, r);
+    return 1;
+}
+
+/* FS_NET_SET (§2.3): the names netfs has mounted, each NUL-terminated. */
+static fnd_status op_net_set(const fs_req *q, const uint8_t *data, uint32_t len) {
+    if (q->a0 || q->a1 || q->a2 || q->a3)
+        return FND_E_BAD_ARG;
+    char names[VFS_NET_MAX][VFS_NET_NAME + 1];
+    uint32_t count = 0, i = 0;
+    while (i < len) {
+        uint32_t s = i;
+        while (i < len && data[i])
+            ++i;
+        uint32_t n = i - s;
+        if (i >= len || n == 0 || n > VFS_NET_NAME || count >= VFS_NET_MAX)
+            return FND_E_BAD_ARG;
+        for (uint32_t k = 0; k < n; ++k) {
+            uint8_t c = data[s + k];
+            if (!((c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
+                return FND_E_BAD_ARG;
+        }
+        memcpy(names[count], data + s, n);
+        names[count++][n] = 0;
+        ++i;
+    }
+    memcpy(vfs_net_names, names, sizeof names);
+    vfs_net_count = count;
+    return FND_OK;
+}
+
+uint32_t fs_server_internal(void) {
+    fs_obj *o = obj_new(OBJ_INTERNAL, 0);
+    return o ? o->badge : 0;
+}
+
+/* FS_NET_CWD from the worker: the session's cwd is now a path below
+ * /net/<name>, checked by netfs to be a directory. */
+static void internal_op(const fs_req *q, const uint8_t *data, uint32_t len, fs_rep *r) {
+    if (q->op != FS_NET_CWD || len < 6 || len - 4 > VFS_PATH_MAX) {
+        r->op = (uint32_t)FND_E_BAD_ARG;
+        return;
+    }
+    uint32_t badge;
+    memcpy(&badge, data, 4);
+    fs_obj *s = obj_find(badge);
+    if (!s || s->kind != OBJ_SESSION) {
+        r->op = (uint32_t)FND_E_PEER_GONE;
+        return;
+    }
+    vfs_node node = {VFS_NET, 2};
+    r->op = (uint32_t)cred_set_cwd(&s->cred, node, (const char *)data + 4, len - 4);
+}
+
 /* ---- session operations (§6) -------------------------------------------- */
 
 /* §6.4 for /dev nodes: TRUNC and APPEND mean nothing to a device and are
@@ -487,7 +746,7 @@ static fnd_status open_device(fs_obj *s, const vfs_info *info, uint32_t flags, f
     return FND_OK;
 }
 
-static fnd_status op_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, fs_rep *r) {
+static fnd_status op_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t cap, fs_rep *r) {
     uint32_t flags = q->a0, mode;
     fnd_status st;
     vfs_info info;
@@ -498,6 +757,8 @@ static fnd_status op_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint3
         ((flags & (FND_OPEN_TRUNC | FND_OPEN_APPEND)) && !(flags & FND_OPEN_WRITE)))
         return FND_E_BAD_ARG;
     if ((st = mode_arg(q->a1, FS2_MODE_FILE_DEFAULT, &mode)) != FND_OK)
+        return st;
+    if (net_route(s, q, ROUTE_OPEN, cap, &path, &len, r, &st))
         return st;
     vfs_walk *w = &walk_a;
     if ((st = vfs_walk_path(&s->cred, path, len, 1, w)) != FND_OK) {
@@ -560,11 +821,14 @@ static fnd_status op_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint3
     return FND_OK;
 }
 
-static fnd_status op_dir_open(fs_obj *s, const uint8_t *path, uint32_t len, fs_rep *r) {
+static fnd_status op_dir_open(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t cap,
+                              fs_rep *r) {
     vfs_walk *w = &walk_a;
     vfs_info info;
-    fnd_status st = vfs_walk_path(&s->cred, path, len, 0, w);
-    if (st != FND_OK)
+    fnd_status st;
+    if (net_route(s, q, ROUTE_FULL, cap, &path, &len, r, &st))
+        return st;
+    if ((st = vfs_walk_path(&s->cred, path, len, 0, w)) != FND_OK)
         return st;
     if ((st = vfs_get_info(w->node, &info)) != FND_OK)
         return st;
@@ -606,7 +870,7 @@ static fnd_status walk_change(fs_obj *s, const uint8_t *path, uint32_t len, vfs_
     return writable_dir(w->parent);
 }
 
-static fnd_status op_mkdir(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len) {
+static fnd_status op_mkdir(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t cap, fs_rep *r) {
     vfs_walk *w = &walk_a;
     vfs_info info;
     uint32_t mode, ino;
@@ -614,6 +878,8 @@ static fnd_status op_mkdir(fs_obj *s, const fs_req *q, const uint8_t *path, uint
     if (q->a0 || q->a2 || q->a3)
         return FND_E_BAD_ARG;
     if ((st = mode_arg(q->a1, FS2_MODE_DIR_DEFAULT, &mode)) != FND_OK)
+        return st;
+    if (net_route(s, q, ROUTE_MKDIR, cap, &path, &len, r, &st))
         return st;
     if ((st = vfs_walk_path(&s->cred, path, len, 1, w)) != FND_OK)
         return st == FND_E_BAD_PATH && vfs_walk_path(&s->cred, path, len, 0, w) == FND_OK ? FND_E_EXISTS : st;
@@ -627,12 +893,15 @@ static fnd_status op_mkdir(fs_obj *s, const fs_req *q, const uint8_t *path, uint
                       fs_now(), &ino);
 }
 
-static fnd_status op_remove(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t want_dir) {
+static fnd_status op_remove(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t want_dir,
+                            uint32_t cap, fs_rep *r) {
     vfs_walk *w = &walk_a;
     vfs_info info;
     fnd_status st;
     if (q->a0 || q->a1 || q->a2 || q->a3)
         return FND_E_BAD_ARG;
+    if (net_route(s, q, ROUTE_REMOVE, cap, &path, &len, r, &st))
+        return st;
     if ((st = walk_change(s, path, len, w)) != FND_OK)
         return not_a_name(s, path, len, st);
     if ((st = vfs_get_info(w->node, &info)) != FND_OK)
@@ -648,15 +917,48 @@ static fnd_status op_remove(fs_obj *s, const fs_req *q, const uint8_t *path, uin
     return fs2_remove(fs2_of(w->parent), w->parent.ino, w->last, w->last_len, want_dir, fs_now());
 }
 
-static fnd_status op_rename(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t len) {
+/* FS_RENAME below /net: both paths on one mount go to netfs (§11.2). */
+static fnd_status rename_net(fs_obj *s, const fs_req *q, uint32_t cap, fs_rep *r) {
+    net_path *x = &np_a, *y = &np_b;
+    if (x->net && x->mount < 0)
+        return FND_E_NOT_FOUND;
+    if (!x->net || !y->net || x->mount != y->mount)
+        return FND_E_CROSS_DEVICE;
+    if (x->dot_end || y->dot_end)
+        return FND_E_BAD_PATH;
+    fs_net_job *j = net_job(s, q, cap);
+    uint32_t at = (uint32_t)sizeof *j;
+    if (!net_rel(x, reply_buf, &at, FS_IPC_MAX))
+        return FND_E_NAME_TOO_LONG;
+    j->a0 = at - (uint32_t)sizeof *j;
+    if (!net_rel(y, reply_buf, &at, FS_IPC_MAX))
+        return FND_E_NAME_TOO_LONG;
+    j->len = at - (uint32_t)sizeof *j;
+    return net_send(j, r);
+}
+
+static fnd_status op_rename(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t len, uint32_t cap,
+                            fs_rep *r) {
     vfs_walk *a = &walk_a, *b = &walk_b;
     vfs_info info;
     fnd_status st;
     if (q->a1 || q->a2 || q->a3 || q->a0 == 0 || q->a0 >= len)
         return q->a0 == 0 || q->a0 == len ? FND_E_BAD_PATH : FND_E_BAD_ARG;
-    if ((st = walk_change(s, data, q->a0, a)) != FND_OK)
-        return not_a_name(s, data, q->a0, st);
-    if ((st = vfs_walk_path(&s->cred, data + q->a0, len - q->a0, 1, b)) != FND_OK)
+    const uint8_t *old = data, *new = data + q->a0;
+    uint32_t old_len = q->a0, new_len = len - q->a0;
+    if ((st = net_canon(&s->cred, old, old_len, &np_a)) != FND_OK ||
+        (st = net_canon(&s->cred, new, new_len, &np_b)) != FND_OK)
+        return st;
+    if (np_a.net || np_b.net)
+        return rename_net(s, q, cap, r);
+    uint32_t net_cwd = s->cred.cwd.mnt == VFS_NET;
+    if (np_a.via || net_cwd)
+        net_local(&np_a, &old, &old_len);
+    if (np_b.via || net_cwd)
+        net_local(&np_b, &new, &new_len);
+    if ((st = walk_change(s, old, old_len, a)) != FND_OK)
+        return not_a_name(s, old, old_len, st);
+    if ((st = vfs_walk_path(&s->cred, new, new_len, 1, b)) != FND_OK)
         return st;
     if (!vfs_same_volume(a->parent, b->parent) || a->parent.mnt != b->parent.mnt)
         return vfs_mounts[b->parent.mnt].kind == VFS_KIND_FS2 ? FND_E_CROSS_DEVICE : FND_E_READ_ONLY;
@@ -674,12 +976,18 @@ static fnd_status op_rename(fs_obj *s, const fs_req *q, const uint8_t *data, uin
                       fs_now());
 }
 
-static fnd_status op_attr(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len) {
+static fnd_status op_attr(fs_obj *s, const fs_req *q, const uint8_t *path, uint32_t len, uint32_t cap, fs_rep *r) {
     vfs_walk *w = &walk_a;
     vfs_info info;
     fnd_status st;
     if (q->a1 || q->a2 || q->a3)
         return FND_E_BAD_ARG;
+    if (q->op == FND_FS_CHMOD ? (q->a0 & ~FS2_MODE_MASK) != 0 : q->a0 == 0xFFFFFFFFu)
+        return FND_E_BAD_ARG;
+    if (q->op == FND_FS_CHOWN && s->cred.uid != 0)
+        return FND_E_ACCESS;
+    if (net_route(s, q, ROUTE_FULL, cap, &path, &len, r, &st))
+        return st;
     if ((st = vfs_walk_path(&s->cred, path, len, 0, w)) != FND_OK)
         return st;
     if ((st = vfs_get_info(w->node, &info)) != FND_OK)
@@ -709,6 +1017,10 @@ static fnd_status op_volume(fs_obj *s, const fs_req *q, const uint8_t *path, uin
     fnd_status st;
     if (q->a0 || q->a1 || q->a2 || q->a3)
         return FND_E_BAD_ARG;
+    if (q->op == FND_FS_VOLUME_INFO && cap < FND_VOLINFO_BYTES)
+        return FND_E_LIMIT;
+    if (net_route(s, q, ROUTE_FULL, cap, &path, &len, r, &st))
+        return st;
     if ((st = vfs_walk_path(&s->cred, path, len, 0, w)) != FND_OK)
         return st;
     const vfs_mount *m = &vfs_mounts[w->node.mnt];
@@ -767,6 +1079,8 @@ static fnd_status op_cwd(fs_obj *s, const fs_req *q, const uint8_t *path, uint32
         return FND_OK;
     }
     /* FS_CWD_SET: a directory with search permission (§6.3). */
+    if (net_route(s, q, ROUTE_FULL, cap, &path, &len, r, &st))
+        return st;
     if ((st = vfs_walk_path(&s->cred, path, len, 0, w)) != FND_OK)
         return st;
     if ((st = permit_node(&s->cred, w->node, VFS_X, &info)) != FND_OK)
@@ -788,7 +1102,7 @@ static void session_op(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t
     }
     switch (q->op) {
     case FND_FS_OPEN:
-        st = op_open(s, q, data, len, r);
+        st = op_open(s, q, data, len, cap, r);
         break;
     case FND_FS_STAT:
         if (q->a0 || q->a1 || q->a2 || q->a3) {
@@ -799,7 +1113,13 @@ static void session_op(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t
             st = FND_E_LIMIT;
             break;
         }
-        st = vfs_walk_path(&s->cred, data, len, 0, &walk_a);
+        {
+            const uint8_t *path = data;
+            uint32_t plen = len;
+            if (net_route(s, q, ROUTE_FULL, cap, &path, &plen, r, &st))
+                break;
+            st = vfs_walk_path(&s->cred, path, plen, 0, &walk_a);
+        }
         if (st == FND_OK)
             st = vfs_get_info(walk_a.node, &info);
         if (st == FND_OK) {
@@ -809,21 +1129,21 @@ static void session_op(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t
         }
         break;
     case FND_FS_DIR_OPEN:
-        st = q->a0 || q->a1 || q->a2 || q->a3 ? FND_E_BAD_ARG : op_dir_open(s, data, len, r);
+        st = q->a0 || q->a1 || q->a2 || q->a3 ? FND_E_BAD_ARG : op_dir_open(s, q, data, len, cap, r);
         break;
     case FND_FS_MKDIR:
-        st = op_mkdir(s, q, data, len);
+        st = op_mkdir(s, q, data, len, cap, r);
         break;
     case FND_FS_UNLINK:
     case FND_FS_RMDIR:
-        st = op_remove(s, q, data, len, q->op == FND_FS_RMDIR);
+        st = op_remove(s, q, data, len, q->op == FND_FS_RMDIR, cap, r);
         break;
     case FND_FS_RENAME:
-        st = op_rename(s, q, data, len);
+        st = op_rename(s, q, data, len, cap, r);
         break;
     case FND_FS_CHMOD:
     case FND_FS_CHOWN:
-        st = op_attr(s, q, data, len);
+        st = op_attr(s, q, data, len, cap, r);
         break;
     case FND_FS_SYNC:
     case FND_FS_VOLUME_INFO:
@@ -834,10 +1154,14 @@ static void session_op(fs_obj *s, const fs_req *q, const uint8_t *data, uint32_t
     case FND_FS_SESSION_NEW:
         st = op_cwd(s, q, data, len, cap, r);
         break;
+    case FND_NET_SET:
+        st = op_net_set(q, data, len);
+        break;
     default:
         st = FND_E_UNSUPPORTED;
     }
     if (st != FND_OK) {
+        r->net = 0;
         r->new_badge = r->fwd_handle = 0;
         r->a0 = r->a1 = r->a2 = r->a3 = 0;
         r->data = 0;
@@ -861,8 +1185,10 @@ void fs_server_request(uint32_t badge, const fs_req *q, const uint8_t *data, uin
         return;
     }
     uint32_t op = q->op;
-    if (o->kind == OBJ_SESSION) {
-        if (op >= 0x0100u && op <= 0x01FFu)
+    if (o->kind == OBJ_INTERNAL) {
+        internal_op(q, data, len, r);
+    } else if (o->kind == OBJ_SESSION) {
+        if ((op >= 0x0100u && op <= 0x01FFu) || op == FND_NET_SET)
             session_op(o, q, data, len, total, reply_cap, r);
         else
             r->op = (uint32_t)FND_E_UNSUPPORTED;

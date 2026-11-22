@@ -79,7 +79,7 @@ DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["cat", "clear", "cp", "echo", "free", "hex", "ls", "mkdir", "mode", "mv", "ps", "pwd", "rm", "rmdir", "top",
-            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay", "cnet", "telnet", "ssh"]
+            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay", "cnet", "telnet", "ssh", "netfs"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
@@ -101,7 +101,7 @@ CNET_COMMANDS = {"cnet"}
 L3P_DIR = FOUNDATION / "lib/l3p"
 # Commands that import /lib/l3p.1.wal (libl3p) as well as fnd. They link lib/cnet/cnet.c in for the
 # address helpers instead of importing cnet: fnd + cnet + l3p would exceed the 8 regions of a process.
-L3P_COMMANDS = {"telnet", "ssh"}
+L3P_COMMANDS = {"telnet", "ssh", "netfs"}
 # Optional WALs under /lib (fnd is always built). Selected with --libs.
 LIBS = ["lzma", "rle", "code", "crypt", "sgc", "cnet", "l3p"]
 RLE_DIR = FOUNDATION / "lib/rle"
@@ -364,6 +364,10 @@ def main(argv=None):
                                "-I", str(FOUNDATION / "fs"), stack=FS_STACK)),
         dict(name="pipe", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
              image=pool.submit(static, [services / "pipe/main.c"], out / "pipe.wax", args)),
+        # netfs (doc/spec_NET_FP.md §11): /net over CFP. It links libl3p and libcnet in.
+        dict(name="netfs", priority=FND_PRIO_SERVICE, caps=FND_CAP_SVC,
+             image=pool.submit(static, [services / "netfs/main.c", L3P_DIR / "l3p.c", CNET_DIR / "cnet.c"],
+                               out / "netfs.wax", args)),
         dict(name="init", priority=FND_PRIO_SERVICE, caps=0,
              image=pool.submit(static, [services / "init/main.c", LIBFND_PROC], out / "init.wax", args)),
     ]

@@ -532,8 +532,9 @@ class ShellTests(unittest.TestCase):
         # MEM depends on the build. After spawn, fnd__exec frees its images
         # before the shell calls wait. A time-slice expiry in that cleanup
         # lets ps snapshot the ready shell (RUN) before it blocks in wait.
-        # The pipe service is pid 4, which shifts the later pids by one.
-        pipe = [r'    4      0 BLOCK    1 +[1-9][0-9]*K pipe']
+        # The pipe and netfs services are pids 4 and 5, which shift the
+        # later pids by two.
+        pipe = [r'    4      0 BLOCK    1 +[1-9][0-9]*K pipe', r'    5      0 BLOCK    1 +[1-9][0-9]*K netfs']
         shift = len(pipe)
         patterns = [r'    1      0 BLOCK    1 +[1-9][0-9]*K console',
                     r'    2      0 BLOCK    1 +[1-9][0-9]*K disk',
@@ -554,9 +555,9 @@ class ShellTests(unittest.TestCase):
         self.assertEqual(rows[5:7], [self.mem_line(4096),
                                     '  CPU%   PID PARENT STATE PRIO     MEM NAME'])
         # /bin/top runs beside the services, init and the shell, busiest first.
-        shift = 1 # the pipe service
+        shift = 2 # the pipe and netfs services
         names = sorted(row.split()[-1] for row in rows[7:13 + shift])
-        self.assertEqual(names, sorted(['console', 'disk', 'fs', 'init', 'pipe', 'shell', 'top']))
+        self.assertEqual(names, sorted(['console', 'disk', 'fs', 'init', 'pipe', 'netfs', 'shell', 'top']))
         for row in rows[7:13 + shift]:
             self.assertRegex(row, r'^ +\d+\.\d% +\d+ +\d+ (RUN  |BLOCK) +[12] +[1-9][0-9]*K \w+$')
         self.assertEqual(rows[13 + shift:], ['/> echo done', 'done', '/>'])

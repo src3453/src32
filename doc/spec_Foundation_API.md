@@ -53,6 +53,7 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 | `0x0200–0x02FF` | ディレクトリ操作（§7） |
 | `0x0300–0x03FF` | デバイスサービスの操作（§9） |
 | `0x0400–0x04FF` | pipe サービスの操作（§9.5） |
+| `0x0500–0x05FF` | fs と netfs の間、netfs の操作（§9.7） |
 | `0x1000–0x10FF` | コンソール操作（§8） |
 | `0x1100–0x11FF` | VDPビットマップ／CLUT操作（§9.1） |
 | `0x1200–0x12FF` | SGC 状態・出力GP・リセット操作（§9.3） |
@@ -532,6 +533,30 @@ CNET の上のトランスポート層 [L3P](spec_NET_L3P.md) のうち、開始
 - ストリーム: `l3p_write`（入るだけ受け取る）、`l3p_read`（OK、WOULD_BLOCK、相手の FIN の後は END）、`l3p_shutdown`。イベントループは 1 tick ごとに `l3p_poll` を呼び、再送とタイムアウトを進めます。
 - `l3p_close`（未応答の要求や両方向の FIN を待って CLOSE）、`l3p_abort`（RESET ABORT）、`l3p_info`（状態、RESET の理由と文）、`l3p_ucall`（結合なしの問い合わせ。ブロードキャスト可）。
 - エラー: 相手が応答しなくなると TIMEOUT（以後の操作は STALE）、相手の RESET は IO（理由と文は `l3p_info`）、相手が閉じた後は PEER_GONE。
+- OPEN の NONCE と UREQ の SEQ には、プロセスごとに一度 `/dev/trng` から取った種（TRNG がなければ RTC の秒）を混ぜます。起動からの tick だけでは再起動したノードが同じ NONCE を送り、サーバーが古い結合を返すためです（spec_NET_L3P §4.1）。
+
+### 9.7 netfs サービス `netfs` と `/net`
+
+[CFP](spec_NET_FP.md) のクライアントです（spec_NET_FP §11）。`foundation/services/netfs` の同梱モジュールで、fs や pipe と同じく `FND_CAP_SVC` を持って `svc_register("netfs")` します（シェルから起動したプログラムは CAP_SVC を持てないので、サービスを登録できません）。libl3p と libcnet のコードを静的に含みます。何も mount していない間はメッセージを待つだけで、L3P の状態（mount ごとに約 9 KiB）は mount している間だけ確保します。
+
+- `/net` はルートの予約名で、仮想ディレクトリです（FS2 §11.1）。その下の名前は netfs が mount したもので、fs は `NET_SET` で受け取った一覧を `/net` の列挙と検索に使います。
+- `/net` を通るパスでは、fs は `.` と `..` を絶対パスの文字列の上で先に処理します（`/net/<名前>` の下の実体は fs が知らず、サーバー側で変わりうるため。spec_NET_FP §11.3）。結果が `/net/<名前>` の下なら netfs へ転送し、それ以外なら結果のパスで通常どおり探索します。`/net` を通らないパスは変わりません。cwd が `/net/<名前>` の下にあるセッションでは、cwd はパスとしてだけ持ちます。
+- fs は転送する要求を 2 本のワーカースレッドに渡し、ワーカーが netfs を呼んでクライアントのトークンに応答します。そのため、ネットワークの応答待ち（最大 15 秒）の間もローカルのパスの操作は止まりません。3 つ目の転送要求は、ワーカーが空くまで fs のメインスレッドを待たせます。
+- mount されていない名前の下は NOT_FOUND（`/net` 自体への作成は READ_ONLY）、mount をまたぐ改名と `/net` の外との改名は CROSS_DEVICE です。mount 点自体の削除・改名は netfs が BUSY、作成は EXISTS にします。
+
+| op | 名前 | 送り先 | 要求 | 応答 |
+|---|---|---|---|---|
+| `0x0500` | `NET_SET` | fs のセッション | データ = mount 名（各 1〜31 byte の英小文字・数字・`_`・`-`、NUL 終端）を並べたもの。最大 8 個 | — |
+| `0x0510` + n | `NET_FS` | netfs | fs の操作 `0x0100` + n（OPEN〜VOLUME_INFO）を、`a0`〜`a3` はそのまま、データ = `/net` より下のパス（`名前/a/b`。ディレクトリを指す末尾の `/` は残す）で。RENAME は 2 つのパスを続け、`a0` = 1 つ目の長さ | fs の操作と同じ。OPEN・DIR_OPEN は netfs のストリーム／ディレクトリ CHANNEL を `XFER_HANDLE` で返し、fs はそれをクライアントへ転送する |
+| `0x0580` | `NET_MOUNT` | netfs | `a0` = サーバーのアドレス、`a1` = bit0 `RO`、bit1 `ENC`、`a2` = 輸出名の長さ、データ = 輸出名と mount 名 | — |
+| `0x0581` | `NET_UMOUNT` | netfs | データ = mount 名 | — |
+| `0x0582` | `NET_LIST` | netfs | — | `a0` = 数、データ = mount ごとに 76 byte（アドレス、flags、up の u32 をホストの byte 順、名前 32 byte、輸出名 32 byte） |
+
+- NET_FS の FS_CWD_SET はワーカーが FS_STAT として送り、ディレクトリなら fs の内部の CHANNEL で cwd を設定します（fs の内部操作で、他からは使えません）。
+- netfs が開いたファイル・ディレクトリへの `ST_*`・`DIR_*` は、fs を通らず netfs に届きます。`ST_READ`／`ST_WRITE` は IOUNIT ごとの READ／WRITE に分けて L3P の窓の範囲で続けて送り、位置は netfs が持ちます。L3P の結合が壊れると、そのセッションの CHANNEL は STALE を返し、次のパスの操作で新しい結合を作ります。
+- mount の同時数は 4、netfs の開いたオブジェクトは 32 個です。1 本のスレッドで順に処理するので、応答の遅いサーバーは他の mount の操作も待たせます。
+- `NET_MOUNT` の `ENC` は libl3p が暗号化に対応するまで UNSUPPORTED です。
+- テスト: fs の転送の規則は `foundation/tests/fs`（NetTests）、シェルからの操作は `foundation/tests/cfp`（testbench と同じプロセスの `cfp_server.py`）。
 
 ## 10. 構造体
 
@@ -570,7 +595,7 @@ CNET の上のトランスポート層 [L3P](spec_NET_L3P.md) のうち、開始
 
 | Off | 名前 | 意味 |
 |---:|---|---|
-| 0 | `fs_type` | 1 FS2、2 DSFS、3 RAM、4 仮想（dev、os） |
+| 0 | `fs_type` | 1 FS2、2 DSFS、3 RAM、4 仮想（dev、os）、5 ネットワーク（`/net/<名前>`、§9.7。`slot` は `0xFFFFFFFF`） |
 | 4 | `flags` | bit 0 `READ_ONLY` |
 | 8 | `total_hi`／12 `total_lo` | データ領域の容量（byte） |
 | 16 | `free_hi`／20 `free_lo` | 空き容量（byte） |

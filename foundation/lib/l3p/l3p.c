@@ -391,6 +391,27 @@ int32_t l3p_poll(l3p_assoc *a) {
 
 /* ---- public calls ---- */
 
+/* §4.1: NONCEs (and UREQ sequence numbers) that a restarted node does not
+ * repeat. The tick count after boot repeats (exactly so on the emulator,
+ * whose RTC also starts from 0 unless set to real time), and a responder
+ * answers a known (address, socket, NONCE) with the old association's
+ * ACCEPT, whose XIDs are already used. So each process takes a seed from
+ * /dev/trng once, or the RTC seconds where there is no TRNG. */
+static uint32_t entropy(void) {
+    static uint32_t seed, seeded;
+    if (!seeded) {
+        fnd_handle h;
+        uint32_t got = 0;
+        seeded = 1;
+        if (fnd_file_open("/dev/trng", FND_OPEN_READ, 0, &h) == FND_OK) {
+            if (fnd_read(h, &seed, sizeof seed, &got) != FND_OK || got != sizeof seed) seed = 0;
+            fnd_close(h);
+        }
+        seed ^= (uint32_t)fnd_sys_time_get(FND_TIME_RTC_LO) * 0x85EBCA6Bu;
+    }
+    return seed;
+}
+
 int32_t l3p_open(uint32_t addr, uint32_t socket, uint32_t kind, uint32_t opts, l3p_assoc *a) {
     static uint32_t counter;
     if (!a || (kind != L3P_KIND_TXN && kind != L3P_KIND_STREAM) || !socket || socket > 254u ||
@@ -418,7 +439,8 @@ int32_t l3p_open(uint32_t addr, uint32_t socket, uint32_t kind, uint32_t opts, l
     a->rto = RTO_FIRST;
     a->peer_window = INFLIGHT * L3P_MAX_PLAIN;
     a->idle = 12000u;
-    a->nonce = (now() * 2654435761u) ^ (info.addr * 40503u) ^ (info.socket << 24) ^ (++counter * 0x9E3779B9u);
+    a->nonce = (now() * 2654435761u) ^ (info.addr * 40503u) ^ (info.socket << 24) ^ (++counter * 0x9E3779B9u) ^
+               entropy();
     if (!a->nonce) a->nonce = 1;
     a->ctrl_window = kind == L3P_KIND_TXN ? L3P_TXN_WINDOW : L3P_STREAM_BUF;
     uint32_t t = now();
@@ -629,7 +651,7 @@ int32_t l3p_ucall(uint32_t addr, uint32_t socket, const void *req, uint32_t len,
     }
     cnet_info info;
     cnet_info_get(h, &info);
-    uint32_t seq = (now() * 2654435761u) ^ (info.addr * 40503u) ^ (++counter * 0x9E3779B9u);
+    uint32_t seq = (now() * 2654435761u) ^ (info.addr * 40503u) ^ (++counter * 0x9E3779B9u) ^ entropy();
     if (!seq) seq = 1;
     uint8_t *p = (uint8_t *)buf;
     int broadcast = FND_CNET_NODE(addr) == 0xFFFFu;

@@ -33,7 +33,7 @@ except ImportError:  # the host tool lands with the disk boot work
 ROOT_MNT, DEV, DD, OS, TMP, DD0 = 0, 1, 2, 3, 4, 5
 
 # Errors (spec_Foundation.md §4, spec_Foundation_API.md §3).
-E = dict(BAD_ARG=-2, BAD_HANDLE=-3, ACCESS=-4, NO_MEMORY=-5, LIMIT=-6, NOT_FOUND=-10, EXISTS=-11,
+E = dict(BAD_ARG=-2, BAD_HANDLE=-3, ACCESS=-4, NO_MEMORY=-5, LIMIT=-6, NOT_FOUND=-10, EXISTS=-11, PEER_GONE=-7,
          FORMAT=-12, UNSUPPORTED=-13, IO=-16, READ_ONLY=-18, BUSY=-19, NOT_DIR=-64, IS_DIR=-65,
          NOT_EMPTY=-66, BAD_PATH=-67, NAME_TOO_LONG=-68, NO_SPACE=-69, CROSS_DEVICE=-70, NEEDS_FSCK=-72)
 
@@ -41,6 +41,7 @@ ST_READ, ST_WRITE, ST_SEEK, ST_STAT, ST_TRUNCATE, ST_SYNC = range(1, 7)
 (FS_OPEN, FS_STAT, FS_DIR_OPEN, FS_MKDIR, FS_UNLINK, FS_RMDIR, FS_RENAME, FS_CHMOD, FS_CHOWN, FS_SYNC,
  FS_CWD_SET, FS_CWD_GET, FS_SESSION_NEW, FS_VOLUME_INFO) = range(0x100, 0x10E)
 DIR_NEXT, DIR_REWIND = 0x200, 0x201
+NET_SET, NET_CWD = 0x500, 0x5F0
 READ, WRITE, CREATE, EXCL, TRUNC, APPEND, EXEC = (1 << i for i in range(7))
 DEFAULT = 0xFFFFFFFF
 SESSION = 0x80000001
@@ -60,6 +61,14 @@ class Reply:
         self.a = list(out[1:5])
         self.new_badge, self.fwd = out[5], out[6]
         self.data = bytes(reply[:out[7]])
+        self.net = out[8]
+
+    def job(self):
+        """A request forwarded to netfs (fs/server.h fs_net_job)."""
+        assert self.net and self.status == 0
+        words = [int.from_bytes(self.data[i:i + 4], "little") for i in range(0, 32, 4)]
+        assert words[7] == len(self.data) - 32
+        return dict(op=words[0], a=words[1:5], session=words[5], cap=words[6], path=self.data[32:])
 
 
 def stat_of(data):
@@ -106,7 +115,7 @@ class Host:
         return image
 
     def call(self, badge, op, a0=0, a1=0, a2=0, a3=0, data=b"", cap=4096, flags=0, total=None):
-        out = (ctypes.c_uint32 * 8)()
+        out = (ctypes.c_uint32 * 9)()
         reply = (ctypes.c_uint8 * 4096)()
         if isinstance(data, str):
             data = data.encode()
@@ -422,10 +431,10 @@ class DirectoryTests(FsTestBase):
         fs.ok(SESSION, FS_MKDIR, 0, DEFAULT, data="/dd/0/DEV")
         fs.ok(SESSION, FS_MKDIR, 0, DEFAULT, data="/home")
         names = sorted(n for n, _, _ in fs.list("/"))
-        self.assertEqual(names, ["dd", "dev", "home", "os"])  # no RAM volume: no /tmp
+        self.assertEqual(names, ["dd", "dev", "home", "net", "os"])  # no RAM volume: no /tmp
         self.assertEqual(sorted(n for n, _, _ in fs.list("/dd/0")), ["DEV", "home"])
         self.assertEqual([n for n, _, _ in fs.list("/dd")], ["0"])
-        self.assertEqual(sorted(n for n, _, _ in fs.list("/dev")), ["con", "fb0", "null", "prng", "sgc", "sgu", "trng", "uart0"])
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/dev")), ["cnet", "con", "fb0", "null", "prng", "sgc", "sgu", "trng", "uart0"])
         self.assertEqual(fs.list("/os"), [])
         st = stat_of(fs.ok(SESSION, FS_STAT, data="/DD").data)
         self.assertEqual((st["type"], st["mode"], st["flags"]), (2, 0x2D, 1))
@@ -458,7 +467,7 @@ class DirectoryTests(FsTestBase):
         for cap in (4096, 1096, 330):
             got = [n for n, _, _ in fs.list("/", cap=cap)]
             self.assertEqual(len(got), len(set(got)))
-            self.assertEqual(set(got), expected | {"dev", "dd", "os", "tmp"})
+            self.assertEqual(set(got), expected | {"dev", "dd", "os", "tmp", "net"})
         d = fs.ok(SESSION, FS_DIR_OPEN, data="/").new_badge
         self.assertError("LIMIT", fs.call(d, DIR_NEXT, cap=40))
         first = entries_of(fs.ok(d, DIR_NEXT, cap=330).data)
@@ -528,6 +537,90 @@ class DirectoryTests(FsTestBase):
         self.assertEqual(be(vi, 8, 8), 508 * (2880 - 67))
         vi = fs.ok(SESSION, FS_VOLUME_INFO, data="/dev").data
         self.assertEqual((be(vi, 0), be(vi, 4)), (4, 1))
+
+
+class NetTests(FsTestBase):
+    """/net (doc/spec_NET_FP.md §11): what fs forwards to netfs, and what it
+    answers itself."""
+
+    def setUp(self):
+        super().setUp()
+        self.fs.boot_disk()
+        self.fs.ok(SESSION, NET_SET, data=b"share\0s2\0")
+
+    def test_net_set_and_listing(self):
+        fs = self.fs
+        self.assertEqual(sorted(n for n, _, _ in fs.list("/net")), ["s2", "share"])
+        st = stat_of(fs.ok(SESSION, FS_STAT, data="/net").data)
+        self.assertEqual(st["type"], 2)
+        self.assertError("BAD_ARG", fs.call(SESSION, NET_SET, data=b"Upper\0"))
+        self.assertError("BAD_ARG", fs.call(SESSION, NET_SET, data=b"noterm"))
+        self.assertError("BAD_ARG", fs.call(SESSION, NET_SET, data=b"x" * 32 + b"\0"))
+        fs.ok(SESSION, NET_SET)
+        self.assertEqual(fs.list("/net"), [])
+        self.assertError("EXISTS", fs.call(SESSION, FS_MKDIR, 0, DEFAULT, data="/NET"))
+
+    def test_paths_below_a_mount_are_forwarded(self):
+        fs = self.fs
+        j = fs.ok(SESSION, FS_OPEN, READ, 0, data="/net/SHARE/a/./b/../c.txt", cap=100).job()
+        self.assertEqual((j["op"], j["a"], j["path"], j["cap"]), (FS_OPEN, [READ, 0, 0, 0], b"share/a/c.txt", 100))
+        self.assertEqual(j["session"], SESSION)
+        j = fs.ok(SESSION, FS_STAT, data="/tmp/../net/s2/").job()
+        self.assertEqual((j["op"], j["path"]), (FS_STAT, b"s2/"))
+        j = fs.ok(SESSION, FS_DIR_OPEN, data="/net/share").job()
+        self.assertEqual(j["path"], b"share")
+        j = fs.ok(SESSION, FS_MKDIR, 0, DEFAULT, data="/net/share/d").job()
+        self.assertEqual((j["op"], j["a"][1], j["path"]), (FS_MKDIR, DEFAULT, b"share/d"))
+        j = fs.ok(SESSION, FS_OPEN, READ, 0, data="/net/share/x/..").job()
+        self.assertEqual(j["path"], b"share/")  # names a directory: IS_DIR from netfs
+        j = fs.ok(SESSION, FS_RENAME, 12, data="/net/share/a/net/share/b").job()
+        self.assertEqual((j["op"], j["a"][0], j["path"]), (FS_RENAME, 7, b"share/ashare/b"))
+        for op in (FS_CHMOD, FS_SYNC, FS_VOLUME_INFO, FS_CWD_SET, FS_UNLINK, FS_RMDIR):
+            self.assertEqual(fs.ok(SESSION, op, data="/net/s2/f").job()["op"], op)
+
+    def test_answered_without_netfs(self):
+        fs = self.fs
+        self.assertError("NOT_FOUND", fs.call(SESSION, FS_STAT, data="/net/none/x"))
+        self.assertError("NOT_FOUND", fs.call(SESSION, FS_STAT, data="/net/none"))
+        self.assertError("READ_ONLY", fs.call(SESSION, FS_MKDIR, 0, DEFAULT, data="/net/none"))
+        self.assertError("READ_ONLY", fs.call(SESSION, FS_OPEN, WRITE | CREATE, DEFAULT, data="/net/new"))
+        self.assertError("EXISTS", fs.call(SESSION, FS_MKDIR, 0, DEFAULT, data="/net/share/d/.."))
+        self.assertError("BAD_PATH", fs.call(SESSION, FS_UNLINK, data="/net/share/d/."))
+        self.assertError("CROSS_DEVICE", fs.call(SESSION, FS_RENAME, 12, data="/net/share/a/tmp/a"))
+        self.assertError("CROSS_DEVICE", fs.call(SESSION, FS_RENAME, 6, data="/tmp/a/net/share/a"))
+        self.assertError("CROSS_DEVICE", fs.call(SESSION, FS_RENAME, 12, data="/net/share/a/net/s2/a"))
+        self.assertError("LIMIT", fs.call(SESSION, FS_STAT, data="/net/share/f", cap=10))
+        r = fs.call(SESSION, FS_RMDIR, 1, data="/net/share/f")  # checked before routing
+        self.assertError("BAD_ARG", r)
+        self.assertFalse(r.net)
+
+    def test_paths_through_net_are_local_again(self):
+        fs = self.fs
+        fs.put("/tmp/x", b"hi")
+        self.assertEqual(fs.get("/net/share/../../tmp/x"), b"hi")
+        self.assertEqual(fs.get("/net/none/../../tmp/x"), b"hi")
+        fs.ok(SESSION, FS_RENAME, 19, data="/net/s2/../../tmp/x/tmp/y")
+        self.assertEqual(fs.get("/tmp/y"), b"hi")
+
+    def test_cwd_below_net(self):
+        fs = self.fs
+        internal = fs.lib.host_internal()
+        self.assertTrue(internal)
+        # The worker sets the cwd after netfs said it is a directory.
+        fs.ok(internal, NET_CWD, data=SESSION.to_bytes(4, "little") + b"/net/share/d")
+        self.assertEqual(fs.ok(SESSION, FS_CWD_GET).data, b"/net/share/d")
+        j = fs.ok(SESSION, FS_OPEN, READ, 0, data="f.txt").job()
+        self.assertEqual(j["path"], b"share/d/f.txt")
+        self.assertEqual(fs.ok(SESSION, FS_STAT, data="..").job()["path"], b"share/")
+        fs.put("/tmp/z", b"z")
+        self.assertEqual(fs.get("../../../tmp/z"), b"z")
+        new = fs.ok(SESSION, FS_SESSION_NEW).new_badge
+        self.assertEqual(fs.ok(new, FS_CWD_GET).data, b"/net/share/d")
+        self.assertEqual(fs.ok(new, FS_DIR_OPEN, data=".").job()["path"], b"share/d/")
+        fs.ok(SESSION, FS_CWD_SET, data="/tmp")
+        self.assertEqual(fs.ok(SESSION, FS_CWD_GET).data, b"/tmp")
+        self.assertError("PEER_GONE", fs.call(internal, NET_CWD, data=(0x80000077).to_bytes(4, "little") + b"/net/s"))
+        self.assertError("BAD_HANDLE", fs.call(0x1234, NET_CWD, data=b"\0\0\0\0/net/s"))
 
 
 class DeviceTests(FsTestBase):

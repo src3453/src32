@@ -44,7 +44,7 @@ void vfs_init(void) {
         const char *name;
     } fixed[] = {
         {VFS_ROOT, VFS_KIND_VIRTUAL, ""}, {VFS_DEV, VFS_KIND_DEV, "dev"}, {VFS_DD, VFS_KIND_VIRTUAL, "dd"},
-        {VFS_OS, VFS_KIND_VIRTUAL, "os"}, {VFS_TMP, VFS_KIND_VIRTUAL, "tmp"},
+        {VFS_OS, VFS_KIND_VIRTUAL, "os"}, {VFS_TMP, VFS_KIND_VIRTUAL, "tmp"}, {VFS_NET, VFS_KIND_NET, "net"},
     };
     for (uint32_t i = 0; i < sizeof fixed / sizeof fixed[0]; ++i) {
         vfs_mount *m = &vfs_mounts[fixed[i].mnt];
@@ -62,6 +62,28 @@ void vfs_init(void) {
         m->name = dd_names[n];
         m->slot = n;
     }
+    vfs_net_count = 0;
+}
+
+char vfs_net_names[VFS_NET_MAX][VFS_NET_NAME + 1];
+uint32_t vfs_net_count;
+
+int vfs_net_find(const uint8_t *name, uint32_t len) {
+    for (uint32_t i = 0; i < vfs_net_count; ++i) {
+        const char *n = vfs_net_names[i];
+        uint32_t k = 0;
+        while (k < len && n[k]) {
+            uint8_t c = name[k];
+            if (c >= 'A' && c <= 'Z')
+                c = (uint8_t)(c + 32u);
+            if (c != (uint8_t)n[k])
+                break;
+            ++k;
+        }
+        if (k == len && !n[k])
+            return (int)i;
+    }
+    return -1;
 }
 
 void vfs_mount_fs2(uint32_t mnt, fs2_vol *vol, uint32_t fs_type, uint32_t slot) {
@@ -92,11 +114,11 @@ fnd_status vfs_read(vfs_node n, uint64_t off, void *buf, uint32_t len, uint32_t 
     return FND_OK;
 }
 
-static const char *const reserved_names[4] = {"dev", "dd", "os", "tmp"};
-static const uint32_t reserved_mounts[4] = {VFS_DEV, VFS_DD, VFS_OS, VFS_TMP};
+static const char *const reserved_names[5] = {"dev", "dd", "os", "tmp", "net"};
+static const uint32_t reserved_mounts[5] = {VFS_DEV, VFS_DD, VFS_OS, VFS_TMP, VFS_NET};
 
 static int reserved_index(const uint8_t *name, uint32_t len) {
-    for (uint32_t i = 0; i < 4; ++i) {
+    for (uint32_t i = 0; i < 5; ++i) {
         const char *r = reserved_names[i];
         if (fnd_name_key_equal((const uint8_t *)r, cstr_len(r), name, len))
             return (int)i;
@@ -151,6 +173,14 @@ fnd_status vfs_get_info(vfs_node n, vfs_info *out) {
         out->inode.size = e.size;
         out->inode.created.sec = e.created;
         out->inode.modified.sec = out->inode.changed.sec = e.modified;
+        return FND_OK;
+    }
+    if (m->kind == VFS_KIND_NET) {
+        /* A mount point; its real attributes come from netfs (server.c
+         * forwards every path below /net/<name>). */
+        out->type = FND_TYPE_DIR;
+        out->mode = VIRTUAL_DIR_MODE;
+        out->read_only = 1;
         return FND_OK;
     }
     if (m->kind == VFS_KIND_DEV && n.ino >= 2 && n.ino - 2 < vfs_devnode_count) {

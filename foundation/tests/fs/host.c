@@ -127,7 +127,7 @@ EXPORT int32_t host_unmount(uint32_t mnt) { return fs2_unmount(vols[mnt]); }
 EXPORT void host_fail_writes_after(uint32_t mnt, uint32_t n) { mems[mnt].fail_after = n; }
 EXPORT uint32_t host_writes(uint32_t mnt) { return mems[mnt].writes; }
 
-/* out: op, a0, a1, a2, a3, new_badge, fwd_handle, len. */
+/* out: op, a0, a1, a2, a3, new_badge, fwd_handle, len, net. */
 EXPORT void host_request(uint32_t badge, uint32_t op, uint32_t flags, uint32_t a0, uint32_t a1, uint32_t a2,
                          uint32_t a3, const uint8_t *data, uint32_t len, uint32_t total, uint32_t reply_cap,
                          uint32_t *out, uint8_t *reply) {
@@ -135,9 +135,11 @@ EXPORT void host_request(uint32_t badge, uint32_t op, uint32_t flags, uint32_t a
     fs_rep r;
     fs_server_request(badge, &q, data, len, total, reply_cap, &r);
     out[0] = r.op, out[1] = r.a0, out[2] = r.a1, out[3] = r.a2, out[4] = r.a3;
-    out[5] = r.new_badge, out[6] = r.fwd_handle, out[7] = r.len;
+    out[5] = r.new_badge, out[6] = r.fwd_handle, out[7] = r.len, out[8] = r.net;
     if (r.len)
         memcpy(reply, r.data, r.len);
 }
 
 EXPORT void host_gone(uint32_t badge) { fs_server_gone(badge); }
+
+EXPORT uint32_t host_internal(void) { return fs_server_internal(); }

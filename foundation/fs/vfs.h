@@ -10,7 +10,7 @@
  * every node. The operations on top of it are in server.c. */
 
 /* Mounts. Every mount is attached to the root directory of its parent:
- * dev, dd, os and tmp to "/", and the IDC slots to "/dd". */
+ * dev, dd, os, tmp and net to "/", and the IDC slots to "/dd". */
 enum {
     VFS_ROOT,
     VFS_DEV,
@@ -18,14 +18,19 @@ enum {
     VFS_OS,
     VFS_TMP,
     VFS_DD0, /* VFS_DD0 + n is /dd/<n> */
-    VFS_MOUNTS = VFS_DD0 + 4
+    VFS_NET = VFS_DD0 + 4,
+    VFS_MOUNTS
 };
 
 #define VFS_KIND_FS2 1u     /* an FS2 volume */
 #define VFS_KIND_VIRTUAL 2u /* a fixed directory: "/" without a disk, /dd, /os */
 #define VFS_KIND_DEV 3u     /* /dev and its nodes */
 #define VFS_KIND_DSFS 4u    /* a DSFS volume, read-only; node 2 + n is entry n */
+#define VFS_KIND_NET 5u     /* /net: node 2 + n is the mount point of netfs mount n */
 
+/* /net (doc/spec_NET_FP.md §11): the names netfs mounted (FND_NET_SET).
+ * Everything below /net/<name> is served by netfs; server.c forwards it. */
+#define VFS_NET_MAX 8u
 #define VFS_PATH_MAX 4096u
 #define VFS_DIR_INO 1u /* the root of every mount */
 
@@ -119,8 +124,16 @@ fnd_status vfs_walk_path(const vfs_cred *c, const uint8_t *path, uint32_t len, u
 fnd_status vfs_lookup(vfs_node dir, const uint8_t *name, uint32_t len, vfs_node *out, const uint8_t **stored,
                       uint32_t *stored_len);
 
-/* Reserved names of "/" (dev, dd, os, tmp), compared by folded key. */
+/* Reserved names of "/" (dev, dd, os, tmp, net), compared by folded key. */
 int vfs_reserved(vfs_node dir, const uint8_t *name, uint32_t len);
+
+/* The /net table. vfs_net_set takes `count` names of 1..VFS_NET_NAME bytes
+ * (FND_NET_SET checks them); vfs_net_find gives the index of a name
+ * (ASCII case folded) or -1. */
+#define VFS_NET_NAME 31u
+extern char vfs_net_names[VFS_NET_MAX][VFS_NET_NAME + 1];
+extern uint32_t vfs_net_count;
+int vfs_net_find(const uint8_t *name, uint32_t len);
 
 /* Fills a 64-byte fnd_stat (§10.1). */
 void vfs_stat_encode(const vfs_info *i, uint8_t *out);

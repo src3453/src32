@@ -3,7 +3,7 @@
 > **状態: 実装中。** 2026-11-22 に起草しました。§13 の「確認が必要な決定」が決まるまでは、バイト配置・番号・時間の具体値を変更できます。
 >
 > - サーバー（§9）: `tools/cfp-server/cfp_server.py`（ホストのディレクトリと FS2 イメージ）。テストは `python -m unittest discover -s tools/cfp-server -v`。
-> - Foundation のクライアント `netfs`（§11）は未実装。
+> - Foundation のクライアント（§11）: 同梱モジュール `foundation/services/netfs`、コマンド `foundation/bin/netfs.c`、fs の `/net` 転送（`foundation/fs`）。操作コードは [API §9.7](spec_Foundation_API.md)。テストは `python -m unittest discover -s foundation/tests/cfp -v` と `foundation/tests/fs` の NetTests。`-e`（暗号化）は libl3p が未対応のため UNSUPPORTED。
 
 ## 1. 目的と方針
 
@@ -436,10 +436,10 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
    └──────(開いたファイル・ディレクトリの CHANNEL)──────────────┘
 ```
 
-- `netfs` はユーザーサービスで、`svc_register("netfs")` し、L3P（WAL `l3p`）の上で CFP を話します。
+- `netfs` はユーザーモードのサービスで、`svc_register("netfs")` し、L3P の上で CFP を話します。サービスの登録には `FND_CAP_SVC` が要り、シェルから起動したプログラムは持てないので、fs・pipe と同じく同梱モジュールとして起動します（libl3p のコードを静的に含む）。コマンド `netfs` はサービスに mount を頼むだけです。
 - mount 点は `/net/<名前>` です。`net` をルートの予約名（FS2 §11.1 の `dev/dd/os/tmp`）に加え、`/net` は仮想ディレクトリになります。
 - fs は `/net/<名前>` の下のパス操作を netfs へ転送します。netfs は開いたファイル・ディレクトリの CHANNEL を自分の PORT で作り（デバイスサービスと同じ）、fs はそれをクライアントへ転送します。以後の読み書き・列挙は、fs を通らずクライアントから netfs へ直接届きます。
-- fs は、ネットワークの応答待ち（最大 15 秒）の間もローカルのパス操作を止めてはなりません。転送の仕組み（fs の転送用スレッド、または netfs が fs から要求を引き取る方式）は実装計画で決めます（§13）。
+- fs は、ネットワークの応答待ち（最大 15 秒）の間もローカルのパス操作を止めてはなりません。fs は転送する要求を 2 本のワーカースレッドに渡し、ワーカーが netfs を呼んでクライアントのトークンに応答します（3 つ目の転送要求だけが、ワーカーが空くまで fs を待たせます）。mount 名の一覧は netfs が fs に知らせ（`NET_SET`）、`/net` の列挙と mount されていない名前の NOT_FOUND は fs が答えます。
 - netfs は mount ごとに 1 つの L3P の結合（CFP のセッション）と、輸出のルートの fid を持ちます。L3P は WAL `l3p` を使います。
 
 ### 11.2 操作の対応
@@ -469,6 +469,7 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 ### 11.3 FS2 の VFS 規則との違い
 
 - cwd を `/net/<名前>` の下に置いても、サーバー側の生存参照にはなりません（cwd のディレクトリを他のクライアントが削除・改名できる）。cwd はパスとして保持し、次の操作で解決し直します。
+- `/net` を通るパスの `.` と `..` は、fs が絶対パスの文字列の上で先に処理します（`/net/s/a/../b` は `/net/s/b`）。そのため `/net/s/file/..` はファイルの先へ進めずに NOT_DIR とはならず `/net/s` を指します。結果が `/net/<名前>` の外なら、そのパスでローカルを探索します。
 - BUSY の判定は、サーバーに open の fid がある対象だけです。
 - 権限の検査はサーバーが行います。fs の VFS は `/net` と mount 点の探索権限だけを検査します。
 
@@ -485,7 +486,7 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 
 ## 12. 既存仕様への変更
 
-この仕様を実装するときに、合わせて次を変えます。
+この仕様を実装するときに、合わせて次を変えます（すべて反映済み。API の操作は §9.7 `0x0500`／`0x0510`＋n／`0x0580–0x0582`）。
 
 | 文書 | 変更 |
 |---|---|
@@ -499,7 +500,7 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 | 論点 | 現在の案 | 他の案 |
 |---|---|---|
 | mount の場所 | `/net/<名前>`（予約名を 1 つ増やす） | 予約名を増やさず `/dd/<n>` の 4 以降を使う（IDC と番号空間が混ざる） |
-| fs の待ち | fs がネットワーク待ちで止まらない仕組みを入れる | 第 1 版は fs が netfs を同期呼び出しし、最大 15 秒止まることを制限として受け入れる |
+| fs の待ち | **決定**: fs のワーカースレッド 2 本が netfs を呼ぶ（§11.1） | 第 1 版は fs が netfs を同期呼び出しし、最大 15 秒止まることを制限として受け入れる |
 | サーバーの UID | UID 0 のみ | 輸出ごとに UID を写す表を持つ |
 | 名前の上限 | 900 byte | L3P に複数パケットの応答（spec_NET_L3P §12）が入ったら 1024 byte まで扱う |
 | Foundation 上のサーバー | 将来 | 第 1 版から `netfsd` を作り、Foundation 同士で共有する |

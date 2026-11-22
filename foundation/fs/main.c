@@ -175,6 +175,146 @@ static void mount_tmp(void) {
         vfs_mount_fs2(VFS_TMP, vol, FND_VOL_RAM, FND_VOL_NO_SLOT);
 }
 
+/* ---- /net: the workers that talk to netfs (doc/spec_NET_FP.md §11) ------ */
+
+/* A request below /net/<name> may wait up to 15 s for the network, so the
+ * main loop does not call netfs itself: it hands the request (an fs_net_job
+ * from server.c) and the client's token to a worker over a private PORT and
+ * goes on serving. The worker calls netfs and replies to the token. With
+ * NET_WORKERS busy, the main loop waits for one to finish. */
+#define NET_WORKERS 2u
+#define NET_JOB_MAX (sizeof(fs_net_job) + FS_IPC_MAX)
+#define NET_STACK_WORDS 512u
+
+typedef struct {
+    uint8_t job[NET_JOB_MAX] __attribute__((aligned(4)));
+    uint8_t rep[FND_STAT_BYTES] __attribute__((aligned(4)));
+    uint32_t netfs; /* CHANNEL from svc_lookup("netfs"), or 0 */
+    uint32_t stack[NET_STACK_WORDS] __attribute__((aligned(8)));
+} net_worker;
+
+static net_worker *net_workers;
+static uint32_t job_port, job_chan, internal_chan;
+
+/* One call to netfs; finds it again if it was restarted. */
+static fnd_status netfs_call(net_worker *w, fnd_msg *req, fnd_msg *rep) {
+    for (uint32_t tries = 0; tries < 2u; ++tries) {
+        if (!w->netfs) {
+            int32_t h = fnd_sys_svc_lookup("netfs");
+            if (h < 0)
+                return FND_E_NOT_FOUND; /* no netfs: nothing is mounted */
+            w->netfs = (uint32_t)h;
+        }
+        fnd_msg out = *req;
+        memset(rep, 0, sizeof *rep);
+        rep->buf = (uint32_t)(uintptr_t)w->rep;
+        rep->len = sizeof w->rep;
+        fnd_status st = fnd_sys_ipc_call(w->netfs, &out, rep);
+        if (st != FND_E_PEER_GONE && st != FND_E_BAD_HANDLE)
+            return st;
+        fnd_sys_handle_close(w->netfs);
+        w->netfs = 0;
+    }
+    return FND_E_NOT_FOUND;
+}
+
+static void net_do(net_worker *w, uint32_t client) {
+    const fs_net_job *j = (const fs_net_job *)w->job;
+    const uint8_t *path = w->job + sizeof *j;
+    uint32_t cwd_set = j->fs_op == FND_FS_CWD_SET;
+    uint32_t op = cwd_set ? FND_FS_STAT : j->fs_op;
+    fnd_msg req = {FND_NET_FS + (op & 0xFFu), 0, j->a0, j->a1, j->a2, j->a3, (uint32_t)(uintptr_t)path, j->len};
+    fnd_msg rep, out;
+    memset(&out, 0, sizeof out);
+    fnd_status st = netfs_call(w, &req, &rep);
+    if (st != FND_OK) {
+        out.op = (uint32_t)st;
+    } else if (cwd_set) {
+        /* §6.3: a directory; the main loop owns the session, so it sets the
+         * cwd on the internal CHANNEL. */
+        out.op = rep.op;
+        if ((int32_t)rep.op == FND_OK) {
+            if (rep.len < FND_STAT_BYTES || fs_be32(w->rep) != FND_TYPE_DIR) {
+                out.op = (uint32_t)FND_E_NOT_DIR;
+            } else {
+                uint32_t n = j->len;
+                while (n > 0 && path[n - 1] == '/')
+                    --n;
+                /* FS_NET_CWD data: badge, "/net/" and the path, built in
+                 * place in front of the path (the header is 32 bytes). */
+                uint8_t *msg = (uint8_t *)path - 9;
+                uint32_t session = j->session;
+                memcpy(msg, &session, 4);
+                memcpy(msg + 4, "/net/", 5);
+                out.op = (uint32_t)fnd_call(internal_chan, FS_NET_CWD, 0, msg, 9 + n, 0, 0, 0);
+            }
+        }
+        if ((rep.flags & FND_MSG_XFER_HANDLE) && rep.a3)
+            fnd_sys_handle_close(rep.a3);
+    } else {
+        out = rep;
+        out.buf = (uint32_t)(uintptr_t)w->rep;
+        if (out.len > j->reply_cap)
+            out.len = 0, out.op = (uint32_t)FND_E_LIMIT;
+    }
+    if (fnd_sys_ipc_reply(client, &out) != FND_OK && (out.flags & FND_MSG_XFER_HANDLE) && out.a3)
+        fnd_sys_handle_close(out.a3); /* the client is gone */
+}
+
+static void net_worker_main(net_worker *w) {
+    for (;;) {
+        fnd_recv r;
+        memset(&r, 0, sizeof r);
+        r.data = (uint32_t)(uintptr_t)w->job;
+        r.cap = sizeof w->job;
+        r.timeout = FND_FOREVER;
+        if (fnd_sys_ipc_recv(job_port, &r) != FND_OK || !r.token)
+            continue;
+        fnd_msg ack;
+        memset(&ack, 0, sizeof ack);
+        uint32_t client = r.msg.a0;
+        int ok = r.msg.len >= sizeof(fs_net_job) &&
+                 r.msg.len == sizeof(fs_net_job) + ((const fs_net_job *)w->job)->len;
+        ack.op = ok ? FND_OK : (uint32_t)FND_E_BAD_ARG;
+        fnd_sys_ipc_reply(r.token, &ack); /* the main loop goes on */
+        if (ok)
+            net_do(w, client);
+    }
+}
+
+/* One entry per worker: the thread's argument register is not part of the
+ * C ABI the toolchain documents. */
+static void net_worker0(void) { net_worker_main(&net_workers[0]); }
+static void net_worker1(void) { net_worker_main(&net_workers[1]); }
+
+static void net_start(uint32_t port) {
+    int32_t jp = fnd_sys_port_create();
+    if (jp < 0)
+        return;
+    int32_t jc = fnd_sys_chan_create((uint32_t)jp, 1u);
+    uint32_t badge = fs_server_internal();
+    int32_t ic = badge ? fnd_sys_chan_create(port, badge) : FND_E_LIMIT;
+    net_workers = (net_worker *)fs_alloc(NET_WORKERS * sizeof(net_worker));
+    if (jc < 0 || ic < 0 || !net_workers)
+        return; /* /net then answers NOT_FOUND below its mounts */
+    job_port = (uint32_t)jp;
+    job_chan = (uint32_t)jc;
+    internal_chan = (uint32_t)ic;
+    fnd_sys_thread_create(net_worker0, &net_workers[0].stack[NET_STACK_WORDS - 2u], 0);
+    fnd_sys_thread_create(net_worker1, &net_workers[1].stack[NET_STACK_WORDS - 2u], 0);
+}
+
+/* Gives the forwarded request to a worker; FND_OK if one took it. */
+static fnd_status net_forward(uint32_t token, const fs_rep *a) {
+    if (!job_chan)
+        return FND_E_NOT_FOUND;
+    fnd_msg req = {1u, 0, token, 0, 0, 0, (uint32_t)(uintptr_t)a->data, a->len};
+    fnd_msg ack;
+    memset(&ack, 0, sizeof ack);
+    fnd_status st = fnd_sys_ipc_call(job_chan, &req, &ack);
+    return st != FND_OK ? st : (fnd_status)ack.op;
+}
+
 /* ---- the PORT ------------------------------------------------------------- */
 
 int main(void) {
@@ -186,6 +326,7 @@ int main(void) {
     int32_t port = fnd_sys_port_create();
     if (port < 0 || fnd_sys_svc_register("fs", (uint32_t)port) != FND_OK)
         fnd_exit(FND_E_BAD_HANDLE);
+    net_start((uint32_t)port);
     fnd_recv r;
     fnd_msg rep;
     uint32_t token = 0, sent = 0;
@@ -221,6 +362,13 @@ int main(void) {
             fnd_sys_handle_close(r.msg.a3); /* fs takes no handles; the request fails */
         fs_server_request(r.badge, &q, req_data, r.msg.len, r.total, r.reply_cap, &a);
         memset(&rep, 0, sizeof rep);
+        if (a.net) {
+            fnd_status st = net_forward(r.token, &a);
+            if (st == FND_OK)
+                continue; /* the worker replies */
+            memset(&a, 0, sizeof a);
+            a.op = (uint32_t)st;
+        }
         if (a.new_badge) {
             int32_t h = fnd_sys_chan_create((uint32_t)port, a.new_badge);
             if (h < 0) {

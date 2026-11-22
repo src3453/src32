@@ -66,6 +66,22 @@
 /* §9: device services. */
 #define FND_DEV_OPEN 0x0300u
 
+/* §2.3, §9.7: fs and the netfs service (doc/spec_NET_FP.md §11).
+ * FND_NET_SET goes to fs: the names mounted under /net. FND_NET_FS + the
+ * low byte of an FS_* operation is that path operation, forwarded by fs to
+ * netfs with the path below /net. MOUNT, UMOUNT and LIST go to netfs. */
+#define FND_NET_SET 0x0500u
+#define FND_NET_FS 0x0510u
+#define FND_NET_MOUNT 0x0580u
+#define FND_NET_UMOUNT 0x0581u
+#define FND_NET_LIST 0x0582u
+#define FND_NET_MOUNT_RO 1u  /* FND_NET_MOUNT a1 */
+#define FND_NET_MOUNT_ENC 2u
+#define FND_NET_NAME_MAX 31u /* mount and export names */
+/* FND_NET_LIST: a0 = count; per mount addr, flags (FND_NET_MOUNT_*), up
+ * (u32, host order), then name[32] and export[32], NUL-padded. */
+#define FND_NET_LIST_RECORD 76u
+
 /* §10.1 fnd_stat (64 bytes), §10.2 directory entries, §10.3 fnd_volinfo. */
 #define FND_STAT_BYTES 64u
 #define FND_TYPE_FILE 1u
@@ -84,6 +100,7 @@
 #define FND_VOL_DSFS 2u
 #define FND_VOL_RAM 3u
 #define FND_VOL_VIRTUAL 4u
+#define FND_VOL_NET 5u
 #define FND_VOL_READ_ONLY 1u
 #define FND_VOL_NO_SLOT 0xFFFFFFFFu
 

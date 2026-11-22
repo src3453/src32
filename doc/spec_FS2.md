@@ -340,8 +340,9 @@ libfnd / アプリ
 | `/dd/<n>`（n=0〜3） | IDC slot n のFSルート |
 | `/os` | プロセス・カーネル・サービス情報、read-only |
 | `/tmp` | RAM FS |
+| `/net/<名前>` | netfs が mount した CFP の輸出（[spec_NET_FP.md](spec_NET_FP.md) §11、API §9.7）。`/net` は仮想ディレクトリ |
 
-ルートの `dev/dd/os/tmp` はcase非区別の予約名。VFSが下層の同名を隠し、ルート列挙で重複させず、同名の作成・削除・改名を拒否する。
+ルートの `dev/dd/os/tmp/net` はcase非区別の予約名。VFSが下層の同名を隠し、ルート列挙で重複させず、同名の作成・削除・改名を拒否する。
 FS2単体のホストツールでは予約しない。仮想rootとmountpointにもUID/modeを与え、同じ探索権限を検査する。
 仮想ディレクトリの既定値はuid=0、mode=0x002D（owner/other RX）。RAM FSの `/tmp` はuid=0、mode=0x003F（全UID RWX）。
 デバイスノードのUID/modeと許可操作は信頼された起動設定で指定し、設定にないノードは公開しない。

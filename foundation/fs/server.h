@@ -32,7 +32,35 @@ typedef struct {
     uint32_t fwd_handle;
     const uint8_t *data;
     uint32_t len;
+    /* net = 1: the request is below /net/<name> and goes to netfs (doc/
+     * spec_NET_FP.md §11). The main loop does not reply: it hands the
+     * fs_net_job in [data, data + len) and the client's token to its
+     * worker thread, which calls netfs and replies to the token itself, so
+     * that fs keeps serving local paths while the network answers. */
+    uint32_t net;
 } fs_rep;
+
+/* A forwarded request. The netfs operation is FND_NET_FS + (fs_op & 0xFF)
+ * with a0..a3 and the path below /net ("name/a/b", a trailing '/' when the
+ * caller's path named a directory) as data; FS_RENAME sends both paths with
+ * a0 = the length of the first. FS_CWD_SET is sent as FS_STAT, and the
+ * worker then sets the session's cwd with FS_NET_CWD on its internal
+ * CHANNEL (fs_server_internal). */
+typedef struct {
+    uint32_t fs_op;
+    uint32_t a0, a1, a2, a3;
+    uint32_t session;   /* the session's badge (FS_CWD_SET) */
+    uint32_t reply_cap; /* the client's */
+    uint32_t len;       /* path bytes that follow */
+} fs_net_job;
+
+/* fs-internal operation on the CHANNEL of fs_server_internal: data = the
+ * session badge (u32, host order) and the absolute cwd path. */
+#define FS_NET_CWD 0x05F0u
+
+/* Creates the internal object whose badge the worker's CHANNEL carries;
+ * 0 if the object table is full. */
+uint32_t fs_server_internal(void);
 
 void fs_server_init(void);
 
