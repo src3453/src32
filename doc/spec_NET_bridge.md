@@ -1,6 +1,6 @@
 # CNET TCP ブリッジ（telnet／SSH）仕様
 
-> **状態: 第 1 版を実装済み。** ブリッジは `tools/cnet-bridge/cnet_bridge.py`、Foundation のクライアントは `foundation/bin/telnet.c`（`telnet` と `ssh`）、テストは `tools/cnet-bridge/test_cnet_bridge.py` と `foundation/tests/cnet/test_telnet.py` です。
+> **状態: 第 1 版を実装済み。** ブリッジは `tools/cnet-bridge/cnet_bridge.py`、Foundation のクライアントは `foundation/bin/telnet.c`（`telnet` と `ssh`）、テストは `tools/cnet-bridge/test_cnet_bridge.py` と `foundation/tests/cnet/test_telnet.py` です。§3 の独自ストリーム（PROTO `0x40`）は、[L3P](spec_NET_L3P.md) のストリームへ移す予定です（2026-11-22 決定。切り替えと同時に `0x40` を廃止します）。
 
 ## 1. 目的と方針
 
