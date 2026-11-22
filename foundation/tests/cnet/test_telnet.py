@@ -105,7 +105,6 @@ class TelnetTests(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.bridge = cb.Bridge(self.node, ['127.0.0.1'], known_hosts=Path(self.tmp.name) / 'known_hosts')
         self.segment.start()
-        self.bridge.start()
 
     def tearDown(self):
         self.bridge.close()

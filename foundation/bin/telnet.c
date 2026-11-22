@@ -2,11 +2,13 @@
  * ssh [-b ADDR[:SOCK]] [-t TERM] [-p PORT] [USER@]HOST   (ssh.c includes this file)
  *
  * A telnet client over the CNET TCP bridge (doc/spec_NET_bridge.md). The
- * bridge, a host program at CNET address ADDR:SOCK (-b, default .FF01:17, i.e. socket 23), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us; this side
- * always speaks telnet over a reliable stream (PROTO 0x40) of libcnet
- * datagrams. Ctrl+C belongs to the shell (it ends this program), so the
+ * bridge, a host program at CNET address ADDR:SOCK (-b, default .FF01:17,
+ * i.e. socket 23), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us:
+ * we open an L3P stream (WAL l3p, doc/spec_NET_L3P.md §6), send the target
+ * as the first line and wait for the bridge's "OK" line; this side always
+ * speaks telnet. Ctrl+C belongs to the shell (it ends this program), so the
  * escape key Ctrl+] followed by c sends Ctrl+C and q closes the connection. */
-#include <foundation/libcnet.h>
+#include <foundation/l3p.h>
 #include <foundation/sys.h>
 
 #include "cmd.h"
@@ -24,23 +26,9 @@
 
 #define DEFAULT_BRIDGE ".FF01"
 #define BRIDGE_SOCKET 23u
-#define PROTO_STREAM 0x40u
-#define T_OPEN 1u
-#define T_ACCEPT 2u
-#define T_DATA 3u
-#define T_ACK 4u
-#define T_RESET 5u
-#define FLAG_FIN 1u
-#define HDR 16u
-#define MAX_DATA (FND_CNET_MTU - HDR)
-#define RCV_WINDOW (4u * MAX_DATA) /* the card queues 8 datagrams per socket */
-#define SND_CAP 1024u
-#define READY_TICKS 300u
-#define RTO_TICKS 30u
-#define OPEN_RETRY_TICKS 100u
-#define OPEN_TICKS 1500u
-#define LOST_TICKS 3000u
-#define CLOSE_TICKS 100u
+#define MAX_DATA L3P_MAX_PLAIN
+#define ANSWER_TICKS 3000u
+#define CLOSE_TICKS 500u
 
 #define IAC 255u
 #define DONT 254u
@@ -55,98 +43,28 @@
 #define OPT_TTYPE 24u
 #define OPT_NAWS 31u
 
-enum { OPENING, OPEN, CLOSED, RESET, FAILED };
-
-static fnd_handle net;
-static uint32_t bridge, bridge_socket = BRIDGE_SOCKET, conn, state;
-static uint32_t rcv_nxt, snd_una, snd_nxt, peer_window = MAX_DATA;
-static uint8_t sbuf[SND_CAP]; /* unacknowledged and unsent bytes from snd_una */
-static uint32_t slen;
-static int fin_queued, fin_sent, fin_acked, rcv_fin, need_ack;
-static uint32_t rto_tick, progress_tick;
-static char reason[128];
-static uint8_t packet[FND_CNET_MTU];
+static l3p_assoc assoc;
+static uint32_t bridge, bridge_socket = BRIDGE_SOCKET;
 static const char *term = "ansi";
 
 static uint32_t now(void) { return (uint32_t)fnd_sys_time_get(FND_TIME_TICK_LO); }
-
-static void put32(uint8_t *p, uint32_t v) {
-    p[0] = (uint8_t)(v >> 24);
-    p[1] = (uint8_t)(v >> 16);
-    p[2] = (uint8_t)(v >> 8);
-    p[3] = (uint8_t)v;
-}
-
-static uint32_t get32(const uint8_t *p) {
-    return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3];
-}
 
 static int same(const char *a, const char *b) {
     while (*a && *a == *b) ++a, ++b;
     return *a == *b;
 }
 
-/* ---- the stream (doc/spec_NET_bridge.md §3) ---- */
-
-static void send_packet(uint32_t type, uint32_t flags, uint32_t seq, const uint8_t *data, uint32_t len) {
-    packet[0] = (uint8_t)type;
-    packet[1] = (uint8_t)flags;
-    packet[2] = (uint8_t)(conn >> 8);
-    packet[3] = (uint8_t)conn;
-    put32(packet + 4, seq);
-    put32(packet + 8, rcv_nxt);
-    packet[12] = (uint8_t)(RCV_WINDOW >> 8);
-    packet[13] = (uint8_t)RCV_WINDOW;
-    packet[14] = packet[15] = 0;
-    for (uint32_t i = 0; i < len; ++i) packet[HDR + i] = data[i];
-    cnet_sendto(net, bridge, bridge_socket, PROTO_STREAM, packet, HDR + len);
-    if (type == T_DATA) need_ack = 0; /* the ACK field went with it */
-}
-
-static void pump(void) {
-    uint32_t end = snd_una + slen;
-    while (snd_nxt != end && snd_nxt - snd_una < peer_window) {
-        uint32_t off = snd_nxt - snd_una, n = end - snd_nxt;
-        if (n > MAX_DATA) n = MAX_DATA;
-        if (n > peer_window - off) n = peer_window - off;
-        static uint8_t chunk[MAX_DATA];
-        for (uint32_t i = 0; i < n; ++i) chunk[i] = sbuf[off + i];
-        if (snd_nxt == snd_una) rto_tick = now();
-        send_packet(T_DATA, 0, snd_nxt, chunk, n);
-        snd_nxt += n;
-    }
-    if (fin_queued && !fin_sent && snd_nxt == end) {
-        if (snd_nxt == snd_una) rto_tick = now();
-        send_packet(T_DATA, FLAG_FIN, end, 0, 0);
-        fin_sent = 1;
-        snd_nxt = end + 1;
-    }
+static uint32_t send_space(void) {
+    l3p_info_t info;
+    l3p_info(&assoc, &info);
+    return info.send_space;
 }
 
 /* Queues bytes for the peer; 0 if they do not fit (nothing is queued). */
 static int stream_write(const void *data, uint32_t len) {
-    if (fin_queued || len > SND_CAP - slen) return 0;
-    const uint8_t *p = data;
-    for (uint32_t i = 0; i < len; ++i) sbuf[slen + i] = p[i];
-    slen += len;
-    return 1;
-}
-
-static void retransmit(void) {
-    uint32_t t = now();
-    if (snd_nxt == snd_una) {
-        progress_tick = t;
-        return;
-    }
-    if (t - progress_tick > LOST_TICKS) {
-        state = FAILED;
-        return;
-    }
-    if (t - rto_tick >= RTO_TICKS) {
-        snd_nxt = snd_una; /* go-back-N */
-        if (fin_sent && !fin_acked) fin_sent = 0;
-        pump();
-    }
+    uint32_t put;
+    if (send_space() < len) return 0;
+    return l3p_write(&assoc, data, len, &put) == FND_OK && put == len;
 }
 
 /* ---- telnet (RFC 854; NAWS 1073, TTYPE 1091) ---- */
@@ -279,63 +197,22 @@ static void telnet_input(const uint8_t *data, uint32_t len) {
     flush_out();
 }
 
-/* ---- packets from the bridge ---- */
+/* ---- data from the bridge ---- */
 
-static int from_bridge(const cnet_peer *from) {
-    uint32_t want = FND_CNET_NET(bridge), got = FND_CNET_NET(from->addr);
-    return FND_CNET_NODE(from->addr) == FND_CNET_NODE(bridge) && from->socket == bridge_socket &&
-           from->proto == PROTO_STREAM && (!want || !got || want == got);
-}
+static int peer_eof;
 
-/* Handles every datagram waiting; returns 1 if there was one. */
+/* Runs the association and hands what arrived to telnet; 1 if there was data. */
 static int receive(void) {
-    static uint8_t buf[FND_CNET_MTU];
+    static uint8_t buf[MAX_DATA];
     int any = 0;
+    l3p_poll(&assoc);
     for (;;) {
-        cnet_peer from;
-        int32_t n = cnet_recvfrom(net, buf, sizeof buf, FND_CNET_NONBLOCK, &from);
-        if (n < 0) {
-            if (n != FND_E_WOULD_BLOCK) state = FAILED;
-            break;
-        }
+        uint32_t got;
+        int32_t st = l3p_read(&assoc, buf, sizeof buf, &got);
+        if (st == FND_END) peer_eof = 1;
+        if (st != FND_OK) break;
+        telnet_input(buf, got);
         any = 1;
-        if (!from_bridge(&from) || (uint32_t)n < HDR || ((uint32_t)buf[2] << 8 | buf[3]) != conn) continue;
-        uint32_t type = buf[0], flags = buf[1], seq = get32(buf + 4), ack = get32(buf + 8);
-        uint32_t window = (uint32_t)buf[12] << 8 | buf[13], len = (uint32_t)n - HDR;
-        if (type == T_RESET) {
-            if (len > sizeof reason - 1u) len = sizeof reason - 1u;
-            for (uint32_t i = 0; i < len; ++i) reason[i] = (char)buf[HDR + i];
-            reason[len] = 0;
-            state = RESET;
-            break;
-        }
-        if (type != T_ACCEPT && type != T_DATA && type != T_ACK) continue;
-        if (state == OPENING) { /* a DATA also means the ACCEPT was lost */
-            state = OPEN;
-            cmd_out("Connected. Escape character is Ctrl+] (then q: quit, c: send Ctrl+C).\n");
-        }
-        if (type == T_ACCEPT) continue;
-        uint32_t delta = ack - snd_una;
-        if (delta && delta <= snd_nxt - snd_una) {
-            uint32_t taken = delta < slen ? delta : slen;
-            for (uint32_t i = taken; i < slen; ++i) sbuf[i - taken] = sbuf[i];
-            slen -= taken;
-            snd_una = ack;
-            if (fin_sent && snd_una == snd_nxt) fin_acked = 1;
-            progress_tick = rto_tick = now();
-        }
-        peer_window = window < SND_CAP ? window : SND_CAP;
-        if (type == T_DATA) {
-            if (seq == rcv_nxt && !rcv_fin) {
-                telnet_input(buf + HDR, len);
-                rcv_nxt += len;
-                if (flags & FLAG_FIN) {
-                    ++rcv_nxt;
-                    rcv_fin = 1;
-                }
-            }
-            need_ack = 1;
-        }
     }
     return any;
 }
@@ -490,22 +367,47 @@ static int32_t parse_args(uint32_t argc, char *target, uint32_t cap, const char 
 
 static int32_t fail(const char *what, int32_t code) { return cmd_report(NAME, what, code); }
 
+static void print_reset(const char *lead) {
+    l3p_info_t info;
+    l3p_info(&assoc, &info);
+    cmd_err(lead);
+    cmd_err(NAME ": ");
+    cmd_err(info.reset_message[0] ? info.reset_message : "connection refused");
+    cmd_err("\n");
+}
+
+/* Waits for the bridge's answer line; leftover bytes go to telnet. */
+static int32_t wait_answer(void) {
+    static uint8_t line[MAX_DATA + 8];
+    uint32_t len = 0, start = now();
+    for (;;) {
+        int32_t st = l3p_poll(&assoc);
+        if (st != FND_OK) return st;
+        uint32_t got;
+        st = l3p_read(&assoc, line + len, sizeof line - 8u - len, &got);
+        if (st == FND_END) return FND_E_IO;
+        if (st == FND_OK) {
+            len += got;
+            for (uint32_t i = 0; i < len; ++i) {
+                if (line[i] != '\n') continue;
+                if (i != 2u || line[0] != 'O' || line[1] != 'K') return FND_E_FORMAT;
+                cmd_out("Connected. Escape character is Ctrl+] (then q: quit, c: send Ctrl+C).\n");
+                if (len > i + 1u) telnet_input(line + i + 1u, len - i - 1u);
+                return FND_OK;
+            }
+            if (len >= sizeof line - 8u) return FND_E_FORMAT;
+            continue;
+        }
+        if (now() - start > ANSWER_TICKS) return FND_E_TIMEOUT;
+        fnd_sys_sleep(1);
+    }
+}
+
 static int32_t telnet(uint32_t argc) {
     char target[256];
     const char *bridge_text;
     if (parse_args(argc, target, sizeof target, &bridge_text) != FND_OK) return cmd_usage(USAGE);
     if (cnet_parse_endpoint(bridge_text, &bridge, &bridge_socket) != FND_OK) return fail(bridge_text, FND_E_BAD_ARG);
-    int32_t st = cnet_open(0, &net);
-    if (st != FND_OK) return fail("/dev/cnet", st);
-    st = cnet_wait_ready(net, READY_TICKS);
-    if (st != FND_OK) {
-        cnet_close(net);
-        return fail("address", st);
-    }
-    cnet_info info;
-    cnet_info_get(net, &info);
-    conn = ((now() * 2654435761u) ^ (info.socket << 8) ^ info.addr) & 0xFFFFu;
-    if (!conn) conn = 1;
     char addr_text[14];
     cnet_format_endpoint(bridge, bridge_socket, addr_text);
     cmd_out("Trying ");
@@ -514,71 +416,64 @@ static int32_t telnet(uint32_t argc) {
     cmd_out(addr_text);
     cmd_out("...\n");
 
-    /* §3.1: OPEN until ACCEPT, RESET, or a timeout. */
-    state = OPENING;
-    uint32_t start = now(), last = start - OPEN_RETRY_TICKS;
-    while (state == OPENING) {
-        uint32_t t = now();
-        if (t - start > OPEN_TICKS) {
-            state = FAILED;
-            break;
-        }
-        if (t - last >= OPEN_RETRY_TICKS) {
-            send_packet(T_OPEN, 0, 0, (const uint8_t *)target, cmd_len(target));
-            last = t;
-        }
-        if (!receive()) fnd_sys_sleep(1);
+    /* §3: an L3P stream, the target line, then the bridge's OK. */
+    int32_t st = l3p_open(bridge, bridge_socket, L3P_KIND_STREAM, 0, &assoc);
+    if (st == FND_E_IO) {
+        print_reset("");
+        return FND_E_IO;
     }
-    if (state != OPEN) {
-        cnet_close(net);
-        if (state == RESET) {
-            cmd_err(NAME ": ");
-            cmd_err(reason);
-            cmd_err("\n");
-            return FND_E_IO;
-        }
-        return fail(addr_text, FND_E_TIMEOUT);
+    if (st != FND_OK) return fail(addr_text, st);
+    uint32_t n = cmd_len(target);
+    target[n] = '\n';
+    stream_write(target, n + 1u);
+    target[n] = 0;
+    st = wait_answer();
+    if (st != FND_OK) {
+        if (st == FND_E_IO) print_reset("");
+        else fail(addr_text, st);
+        l3p_abort(&assoc);
+        return st == FND_E_IO ? FND_E_IO : st;
     }
     fnd_con_set_mode(FND_CON_RAW);
-    progress_tick = rto_tick = now();
 
-    int quit = 0;
+    int quit = 0, shut = 0;
     uint32_t closing_since = 0;
-    while (state == OPEN) {
+    l3p_info_t info;
+    for (;;) {
         int busy = receive();
-        if (state != OPEN) break;
+        l3p_info(&assoc, &info);
+        if (info.state != L3P_OPEN) break;
         fnd_key_t key;
-        while (!quit && !fin_queued && SND_CAP - slen >= 16u && fnd_con_pollkey(&key) == FND_OK) {
+        while (!quit && !shut && send_space() >= 16u && fnd_con_pollkey(&key) == FND_OK) {
             busy = 1;
             if (!key_input(&key)) quit = 1;
         }
-        if ((quit || rcv_fin) && !fin_queued) {
-            fin_queued = 1;
+        if ((quit || peer_eof) && !shut) {
+            l3p_shutdown(&assoc);
+            shut = 1;
             closing_since = now();
         }
-        pump();
-        if (need_ack) send_packet(T_ACK, 0, 0, 0, 0);
-        retransmit();
-        if (fin_queued && ((fin_acked && (rcv_fin || quit)) || now() - closing_since > CLOSE_TICKS)) {
-            if (!fin_acked) send_packet(T_RESET, 0, 0, 0, 0);
-            state = CLOSED;
+        if (shut) {
+            l3p_info(&assoc, &info);
+            if ((info.sent_all && (peer_eof || quit)) || now() - closing_since > CLOSE_TICKS) break;
         }
-        if (!busy && state == OPEN) fnd_sys_sleep(1);
+        if (!busy) fnd_sys_sleep(1);
     }
     fnd_con_set_mode(FND_CON_LINE);
     fnd_con_write("\033[0m\033[?25h");
-    cnet_close(net);
-    if (state == RESET) {
-        cmd_err("\n" NAME ": ");
-        cmd_err(reason);
-        cmd_err("\n");
+    l3p_info(&assoc, &info);
+    uint32_t state = info.state;
+    if (state == L3P_OPEN) l3p_close(&assoc);
+    else l3p_abort(&assoc);
+    if (state == L3P_BROKEN && info.reset_reason) {
+        print_reset("\n");
         return FND_E_IO;
     }
-    if (state == FAILED) {
+    if (state == L3P_BROKEN) {
         cmd_err("\n" NAME ": connection lost\n");
         return FND_E_TIMEOUT;
     }
-    cmd_out(rcv_fin ? "\nConnection closed by foreign host.\n" : "\nConnection closed.\n");
+    cmd_out(peer_eof ? "\nConnection closed by foreign host.\n" : "\nConnection closed.\n");
     return FND_OK;
 }
 

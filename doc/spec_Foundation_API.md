@@ -76,8 +76,9 @@ Revision 0.1、2026-10-24。Status: **ドラフト（主要な設計判断は確
 | -70 | `FND_E_CROSS_DEVICE` | CROSS_DEVICE。別 mount への rename |
 | -71 | `FND_E_INTERRUPTED` | Ctrl+C による入力待ちの中断（§8.4） |
 | -72 | `FND_E_NEEDS_FSCK` | DIRTY の媒体の通常 mount を拒否した（FS2 §9.1） |
+| -73 | `FND_E_STALE` | ネットワークの相手がセッションやファイルを失った（[L3P](spec_NET_L3P.md) の結合が壊れた後の操作、[CFP](spec_NET_FP.md) の無効になった fid） |
 
-- -73〜-255 は予約です。
+- -74〜-255 は予約です。
 - FS2 の EXISTS、BUSY、LIMIT、ACCESS、READ_ONLY、FORMAT、UNSUPPORTED、NO_MEDIA、IO、NOT_FOUND は、カーネルの同名のコードを使います。
 - 文字列への変換は `fnd_strerror`（§11.9）が行います。
 
@@ -521,6 +522,17 @@ C API は `<foundation/sgc.h>` の `fnd_sgc_get_status`、`fnd_sgc_set_output`�
 - シェルコマンド `cnet`（`foundation/bin/cnet.c`）が利用例です。`cnet` で状態とアドレスを表示し、`cnet ping ADDR [count]` はエコーで応答を確かめ、`cnet send ADDR:SOCK TEXT...` は PROTO 0x80 のテキストを送り、`cnet recv SOCK [count]` は受信して表示します。
 - テストは `foundation/tests/cnet`。testbench の拡張スロット 0 に CNET カードを置き、UDP セグメントの向こう側を Python で書いた独立した CNET ノードにして、ping・送信・受信・タイムアウト・カードなしを確かめます。
 
+#### libl3p（WAL `l3p` 1.0、`/lib/l3p.1.wal`）
+
+CNET の上のトランスポート層 [L3P](spec_NET_L3P.md) のうち、開始側（トランザクション、ストリーム、結合なしの問い合わせ）を実装したライブラリです。ヘッダーは `<foundation/l3p.h>`、実装は `foundation/lib/l3p`。`fnd` だけを import し、libcnet のコード（`foundation/lib/cnet/cnet.c`）を静的に含みます。プロセスの領域は 8 個（Extension P）で、`fnd`・`cnet`・`l3p` の 3 つを import するプログラムは収まらないためです。アドレスの補助関数（`cnet_parse_endpoint` など）が要るプログラムも、`cnet` を import せずに `cnet.c` を一緒にリンクします（`telnet`／`ssh`）。既定のディスクに入ります。
+
+- 結合の状態は呼び出し側の `l3p_assoc`（約 9 KiB）に置きます。結合ごとに動的割当の CNET ソケットを 1 個使います。1 つのスレッドから使います。
+- `l3p_open(addr, socket, kind, opts, &a)` は結合を開き、確立まで（最大 15 秒）待ちます。暗号化（`L3P_OPT_ENC`）はまだ UNSUPPORTED です。
+- トランザクション: `l3p_txn_send`（窓が満ちていれば WOULD_BLOCK）、`l3p_txn_wait`、`l3p_txn_call`。
+- ストリーム: `l3p_write`（入るだけ受け取る）、`l3p_read`（OK、WOULD_BLOCK、相手の FIN の後は END）、`l3p_shutdown`。イベントループは 1 tick ごとに `l3p_poll` を呼び、再送とタイムアウトを進めます。
+- `l3p_close`（未応答の要求や両方向の FIN を待って CLOSE）、`l3p_abort`（RESET ABORT）、`l3p_info`（状態、RESET の理由と文）、`l3p_ucall`（結合なしの問い合わせ。ブロードキャスト可）。
+- エラー: 相手が応答しなくなると TIMEOUT（以後の操作は STALE）、相手の RESET は IO（理由と文は `l3p_info`）、相手が閉じた後は PEER_GONE。
+
 ## 10. 構造体
 
 ### 10.1 `fnd_stat`（64 bytes）
@@ -730,7 +742,7 @@ ASCII の英語の短い文を返します。カーネルのコードの文は [
 | `FND_E_IS_DIR` | `is a directory` | `FND_E_CROSS_DEVICE` | `cross-device move` |
 | `FND_E_NOT_EMPTY` | `directory not empty` | `FND_E_INTERRUPTED` | `interrupted` |
 | `FND_E_BAD_PATH` | `bad path` | `FND_E_NEEDS_FSCK` | `needs fsck` |
-| `FND_E_NAME_TOO_LONG` | `name too long` | | |
+| `FND_E_NAME_TOO_LONG` | `name too long` | `FND_E_STALE` | `stale session` |
 
 ## 12. 起動時のハンドルの受け渡し
 

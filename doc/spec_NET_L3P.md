@@ -3,7 +3,8 @@
 > **状態: 実装中。** 2026-11-22 に起草しました。§13 の「確認が必要な決定」が決まるまでは、バイト配置・番号・時間の具体値を変更できます。
 >
 > - ホスト（Python）: `tools/l3p/l3p.py`（結合・トランザクション・ストリーム・結合なし・暗号化）。テストは `python -m unittest discover -s tools/l3p -v`（暗号化のテストは `cryptography` が必要）。ストアアンドフォワードの中継ノードは未実装。
-> - Foundation: WAL `crypt` 1.1 に X25519・SHA-256・HMAC／HKDF-SHA256・ChaCha20-Poly1305 の AEAD を追加済み（§7.5）。WAL `l3p` と `l3psf` は未実装。
+> - Foundation: WAL `l3p` 1.0（`foundation/lib/l3p`）は開始側のトランザクション・ストリーム・結合なしの問い合わせを実装済み（§10.1）。待ち受けと暗号化は未実装。WAL `crypt` 1.1 に X25519・SHA-256・HMAC／HKDF-SHA256・ChaCha20-Poly1305 の AEAD を追加済み（§7.5）。`l3psf` は未実装。
+> - TCP ブリッジと Foundation の `telnet`／`ssh` は L3P のストリームに移行済み（spec_NET_bridge 第 2 版）。
 
 ## 1. 目的と方針
 
@@ -356,7 +357,11 @@ WATCH は、そのメールボックスにメッセージが届いたときに�
 
 ### 10.1 Foundation（WAL `l3p` 1.0、`/lib/l3p.1.wal`）
 
-`fnd` と `cnet` を import する WAL です。ヘッダーは `<foundation/l3p.h>`、実装は `foundation/lib/l3p`。暗号化を使うときは `crypt` も import します。
+`fnd` だけを import する WAL です。libcnet のコード（`foundation/lib/cnet/cnet.c`）は静的に含みます（プロセスの領域は 8 個で、`fnd`・`cnet`・`l3p` を import するプログラムは収まらないため）。ヘッダーは `<foundation/l3p.h>`、実装は `foundation/lib/l3p`。
+
+**1.0 の実装範囲**: 開始側のトランザクション・ストリーム・結合なしの問い合わせ。結合の状態は呼び出し側の `l3p_assoc` に置き、関数は下表から少し変えています（`l3p_open(addr, socket, kind, opts, &a)` にまとめ、ストリームの読み書きは非ブロッキング、`l3p_ucall` は結果をバッファに並べる。WAL は関数ポインタを渡せないため）。正確な形は `<foundation/l3p.h>` と [API §9.6](spec_Foundation_API.md) を正とします。待ち受け（`l3p_listen` など）と暗号化は未実装です。暗号化を入れるときは `crypt` も import します（領域の数に注意）。
+
+当初の計画（未実装の部分を含む）:
 
 | 関数 | 内容 |
 |---|---|
@@ -371,7 +376,7 @@ WATCH は、そのメールボックスにメッセージが届いたときに�
 
 - 暗号化（オプション）は、WAL `crypt` を import したビルドだけが使えます。`l3p_txn_open` などの opts に ENC を指定し、使えなければ `FND_E_UNSUPPORTED` です。
 - ストアアンドフォワード（オプション）は別の WAL `l3psf` 1.0（`/lib/l3psf.1.wal`、`l3p` を import する）にし、使うアプリだけが import します。関数は `l3p_sf_submit(relay, box, tag, ttl, data, len)`、`l3p_sf_list`、`l3p_sf_fetch`、`l3p_sf_delete`、`l3p_sf_watch` です。`crypt` とともに既定のディスクに入れます。
-- 1 つの CNET ソケット（`/dev/cnet` のストリーム 1 本）の上で、複数の結合を CONN で多重化します。
+- 1.0 は結合ごとに動的割当の CNET ソケットを 1 個使います（多重化しない）。1 つのソケットで複数の結合を CONN で多重化するのは、待ち受けを実装するときに検討します。
 - 再送とタイムアウトは、呼び出しの中で `/dev/cnet` の NONBLOCK の受信と tick で動かします。待ち受けを続けるサービスは、専用のスレッドで `l3p_poll` を回します。
 
 ### 10.2 ホスト（Python、`tools/l3p/`）

@@ -15,6 +15,7 @@
 #define FND_E_CROSS_DEVICE (-70)
 #define FND_E_INTERRUPTED (-71)
 #define FND_E_NEEDS_FSCK (-72)
+#define FND_E_STALE (-73) /* a network peer lost the session or file (L3P, CFP) */
 
 /* §5: stream operations. */
 #define FND_ST_READ 0x0001u

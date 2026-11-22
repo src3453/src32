@@ -1,0 +1,14 @@
+# WAL ABI 1.0 of libl3p; see foundation/include/foundation/l3p.h.
+l3p_open fn(u32,u32,u32,u32,ptr)->i32
+l3p_poll fn(ptr)->i32
+l3p_mtu fn(ptr)->u32
+l3p_info fn(ptr,ptr)->i32
+l3p_txn_send fn(ptr,ptr,u32,ptr)->i32
+l3p_txn_wait fn(ptr,u32,ptr,u32,ptr)->i32
+l3p_txn_call fn(ptr,ptr,u32,ptr,u32,ptr)->i32
+l3p_write fn(ptr,ptr,u32,ptr)->i32
+l3p_read fn(ptr,ptr,u32,ptr)->i32
+l3p_shutdown fn(ptr)->i32
+l3p_close fn(ptr)->i32
+l3p_abort fn(ptr)->i32
+l3p_ucall fn(u32,u32,ptr,u32,ptr,u32,u32,ptr)->i32

@@ -29,7 +29,7 @@ is what a CPU without Extension V runs; otherwise it uses virtual memory when
 CPUID reports V (doc/foundation_vm_plan.md).
 
 Outputs:
-  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal, /lib/crypt.1.wal, /lib/sgc.1.wal and /lib/cnet.1.wal
+  root/           /bin/*.wax (the shell and the commands), /lib/fnd.1.wal, /lib/lzma.1.wal, /lib/rle.1.wal, /lib/code.1.wal, /lib/crypt.1.wal, /lib/sgc.1.wal, /lib/cnet.1.wal and /lib/l3p.1.wal
   foundation.wax  kernel + module-only FNDBOOT as a block at 0x200000; the host
                   loads it directly (§11 without stage1) and fs mounts IDC slot 0 as "/"
   kernel.bin      kernel raw image for 0x00010000, entered by stage1
@@ -97,9 +97,13 @@ SGC_DIR = FOUNDATION / "lib/sgc"
 SGC_COMMANDS = {"chip8"}
 CNET_DIR = FOUNDATION / "lib/cnet"
 # Commands that import /lib/cnet.1.wal (libcnet) as well as fnd.
-CNET_COMMANDS = {"cnet", "telnet", "ssh"}
+CNET_COMMANDS = {"cnet"}
+L3P_DIR = FOUNDATION / "lib/l3p"
+# Commands that import /lib/l3p.1.wal (libl3p) as well as fnd. They link lib/cnet/cnet.c in for the
+# address helpers instead of importing cnet: fnd + cnet + l3p would exceed the 8 regions of a process.
+L3P_COMMANDS = {"telnet", "ssh"}
 # Optional WALs under /lib (fnd is always built). Selected with --libs.
-LIBS = ["lzma", "rle", "code", "crypt", "sgc", "cnet"]
+LIBS = ["lzma", "rle", "code", "crypt", "sgc", "cnet", "l3p"]
 RLE_DIR = FOUNDATION / "lib/rle"
 CODE_DIR = FOUNDATION / "lib/code"
 CRYPT_DIR = FOUNDATION / "lib/crypt"
@@ -257,6 +261,8 @@ def main(argv=None):
             parser.error(f"--commands {name} imports /lib/sgc.1.wal; add sgc to --libs")
         if name in CNET_COMMANDS and "cnet" not in libs:
             parser.error(f"--commands {name} imports /lib/cnet.1.wal; add cnet to --libs")
+        if name in L3P_COMMANDS and "l3p" not in libs:
+            parser.error(f"--commands {name} imports /lib/l3p.1.wal; add l3p to --libs")
     uart_only = fpga and args.console == "uart"
     ramdisk_bytes = 0x01000000 if args.ramdisk == "sdram0-split" else 0x02000000
     if fpga and args.disk_blocks > ramdisk_bytes // 512:
@@ -373,19 +379,27 @@ def main(argv=None):
     cnet_build = importlib.util.module_from_spec(cnet_spec)
     cnet_spec.loader.exec_module(cnet_build)
     cnet_job = pool.submit(cnet_build.build, out / "cnet", fnd, args.clang, args.optimization, run=cached_run) if "cnet" in libs else None
+    # /lib/l3p.1.wal: libl3p (lib/l3p, WAL "l3p" 1.0), the L3P transport; it imports fnd only.
+    l3p_spec = importlib.util.spec_from_file_location("l3p_build", L3P_DIR / "build.py")
+    l3p_build = importlib.util.module_from_spec(l3p_spec)
+    l3p_spec.loader.exec_module(l3p_build)
+    l3p_job = pool.submit(l3p_build.build, out / "l3p", fnd, args.clang, args.optimization,
+                          run=cached_run) if "l3p" in libs else None
     program_jobs = [pool.submit(program, [FOUNDATION / "shell/shell.c"], root / "bin/shell.wax", args,
                                 "foundation.shell", fnd)]
     # The commands that import libsgc go last, so the others start while it builds.
-    for name in sorted(commands, key=lambda name: name in SGC_COMMANDS or name in CNET_COMMANDS):
+    for name in sorted(commands, key=lambda name: name in SGC_COMMANDS or name in CNET_COMMANDS or name in L3P_COMMANDS):
         libs = ([sgc_job.result()] if name in SGC_COMMANDS else []) + \
-               ([cnet_job.result()] if name in CNET_COMMANDS else [])
+               ([cnet_job.result()] if name in CNET_COMMANDS else []) + ([l3p_job.result()] if name in L3P_COMMANDS else [])
         sources = [FOUNDATION / "bin" / f"{name}.c", FOUNDATION / "bin/cmd.c"]
         if name == "sgubplay":
             sources.append(ROOT / "sdk/cpt32/src/sgub.c")
+        if name in L3P_COMMANDS:
+            sources.append(CNET_DIR / "cnet.c")
         program_jobs.append(pool.submit(program, sources,
                                         root / "bin" / f"{name}.wax", args, f"foundation.{name}", fnd, *libs))
     for name, job in (("lzma", lzma_job), ("sgc", sgc_job), ("rle", rle_job), ("code", code_job),
-                      ("crypt", crypt_job), ("cnet", cnet_job)):
+                      ("crypt", crypt_job), ("cnet", cnet_job), ("l3p", l3p_job)):
         if job is not None:
             shutil.copyfile(job.result(), root / f"lib/{name}.1.wal")
     for job in program_jobs:

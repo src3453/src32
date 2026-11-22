@@ -709,11 +709,13 @@ class Assoc:
         with self.cond:
             self._wait(lambda: self.state == 'open', timeout)
 
-    def abort(self, message=''):
+    def abort(self, message='', reason=R_ABORT):
+        """Sends RESET (ABORT, or another REASON such as REFUSED) with a
+        message for the peer to show, and drops the association."""
         with self.cond:
             if self.state in ('closed', 'broken'):
                 return
-            self._fail(L3PError('RESET', R_ABORT, message or 'aborted'), (R_ABORT, message))
+            self._fail(L3PError('RESET', reason, message or 'aborted'), (reason, message))
 
     def close(self, timeout=CLOSE_GIVEUP):
         """Sends CLOSE and waits for CLOSED (or RESET, or the give-up time)."""

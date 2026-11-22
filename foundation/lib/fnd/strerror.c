@@ -58,6 +58,8 @@ const char *fnd_strerror(fnd_status code) {
         return "interrupted";
     case FND_E_NEEDS_FSCK:
         return "needs fsck";
+    case FND_E_STALE:
+        return "stale session";
     default:
         return "error";
     }

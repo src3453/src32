@@ -3,10 +3,10 @@
     python -m unittest discover -s tools/cnet-bridge -v
 
 A Python client stands in for Foundation's telnet: it is a CNET node on the
-far end of a localhost UDP segment and speaks the stream protocol, with
-optional packet loss. The SSH tests need paramiko (they skip without it).
+far end of a localhost UDP segment and opens an L3P stream
+(doc/spec_NET_L3P.md §6) to the bridge, with optional packet loss. The SSH
+tests need paramiko (they skip without it).
 """
-import random
 import socket
 import struct
 import sys
@@ -18,7 +18,10 @@ from pathlib import Path
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+sys.path.insert(0, str(HERE.parent / 'l3p'))
 import cnet_bridge as cb  # noqa: E402
+import l3p  # noqa: E402
+from test_l3p import Lossy  # noqa: E402
 
 try:
     import paramiko
@@ -30,31 +33,17 @@ CLIENT_NODE = 0x0010
 CLIENT_SOCKET = 200
 
 
-class Client:
-    """A CNET node that opens one stream to the bridge."""
+class RawNode:
+    """Sends raw link frames to the bridge and records what comes back."""
 
-    def __init__(self, bridge_port, loss=0.0, seed=1):
+    def __init__(self, bridge_port):
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(('127.0.0.1', 0))
         self.sock.settimeout(0.02)
-        self.port = self.sock.getsockname()[1]
         self.bridge_port = bridge_port
-        self.loss = loss
-        self.rng = random.Random(seed)
         self.sender = 0x0BADF00D
-        self.datagrams = []  # (src_node, src_socket, dst_socket, proto, body) not handled as stream
+        self.datagrams = []  # (src_node, src_socket, dst_socket, proto, body)
         self.links = []      # (kind, dst, src)
-        self.conn = 0x1234
-        self.state = 'closed'
-        self.reset_reason = None
-        self.rcv_nxt = 0
-        self.rcv_fin = False
-        self.received = bytearray()
-        self.snd_una = 0
-        self.snd_nxt = 0
-        self.out = bytearray()
-        self.fin_queued = self.fin_sent = self.fin_acked = False
-        self.last_send = 0.0
 
     def close(self):
         self.sock.close()
@@ -64,106 +53,103 @@ class Client:
         self.sock.sendto(packet, ('127.0.0.1', self.bridge_port))
 
     def send_datagram(self, dst_socket, proto, payload, dst_node=cb.BRIDGE_NODE, dst_net=0):
-        body = cb.datagram(dst_net, dst_node, NET, CLIENT_NODE, dst_socket, CLIENT_SOCKET, proto, payload)
-        self.send_link(cb.link_frame(dst_node, CLIENT_NODE, cb.LINK_DATAGRAM, body))
-
-    def send_stream(self, kind, seq=0, data=b'', flags=0, conn=None):
-        packet = cb.stream_packet(kind, self.conn if conn is None else conn, seq, self.rcv_nxt, 4032, data, flags)
-        self.send_datagram(cb.BRIDGE_SOCKET, cb.PROTO_STREAM, packet)
+        body = l3p.datagram(dst_net, dst_node, NET, CLIENT_NODE, dst_socket, CLIENT_SOCKET, proto, payload)
+        self.send_link(l3p.link_frame(dst_node, CLIENT_NODE, l3p.LINK_DATAGRAM, body))
 
     def poll(self):
         try:
             packet, _ = self.sock.recvfrom(4096)
         except (socket.timeout, OSError):
             return False
-        if self.loss and self.rng.random() < self.loss:
-            return True
         frame = packet[12:]
         dst, src, kind, _, _ = struct.unpack('>HHBBH', frame[:8])
         self.links.append((kind, dst, src))
-        if kind != cb.LINK_DATAGRAM:
-            return True
-        parsed = cb.parse_datagram(frame[8:])
-        assert parsed, 'bad datagram from the bridge'
-        dnet, dnode, snet, snode, dsock, ssock, proto, body = parsed
-        assert (dnet, dnode, dsock) == (NET, CLIENT_NODE, CLIENT_SOCKET), parsed
-        if proto != cb.PROTO_STREAM:
-            self.datagrams.append((snode, ssock, dsock, proto, body))
-            return True
-        kind, flags, conn, seq, ack, window, _ = cb.HEADER.unpack(body[:16])
-        data = body[16:]
-        if conn != self.conn:
-            return True
-        if kind == cb.T_RESET:
-            self.state = 'reset'
-            self.reset_reason = data.decode()
-            return True
-        if kind == cb.T_ACCEPT and self.state == 'opening':
-            self.state = 'open'
-        if kind in (cb.T_DATA, cb.T_ACK):
-            if self.state == 'opening':
-                self.state = 'open'
-            if 0 < ack - self.snd_una <= self.snd_nxt - self.snd_una:
-                taken = min(ack - self.snd_una, len(self.out))
-                del self.out[:taken]
-                self.snd_una = ack
-                if self.fin_sent and self.snd_una == self.snd_nxt:
-                    self.fin_acked = True
-        if kind == cb.T_DATA:
-            if seq == self.rcv_nxt and not self.rcv_fin:
-                self.received += data
-                self.rcv_nxt += len(data)
-                if flags & cb.FLAG_FIN:
-                    self.rcv_nxt += 1
-                    self.rcv_fin = True
-            self.send_stream(cb.T_ACK)
+        if kind == l3p.LINK_DATAGRAM:
+            parsed = l3p.parse_datagram(frame[8:])
+            if parsed:
+                dnet, dnode, snet, snode, dsock, ssock, proto, body = parsed
+                self.datagrams.append((snode, ssock, dsock, proto, body))
         return True
-
-    def pump(self, now):
-        end = self.snd_una + len(self.out)
-        if self.snd_nxt > self.snd_una and now - self.last_send > 0.3:
-            self.snd_nxt = self.snd_una
-            if self.fin_sent and not self.fin_acked:
-                self.fin_sent = False
-        while self.snd_nxt < end:
-            start = self.snd_nxt - self.snd_una
-            chunk = bytes(self.out[start:start + cb.MAX_DATA])
-            self.send_stream(cb.T_DATA, self.snd_nxt, chunk)
-            self.snd_nxt += len(chunk)
-            self.last_send = now
-        if self.fin_queued and not self.fin_sent and self.snd_nxt == end:
-            self.send_stream(cb.T_DATA, end, b'', cb.FLAG_FIN)
-            self.fin_sent = True
-            self.snd_nxt = end + 1
-            self.last_send = now
 
     def run_until(self, done, timeout=10.0):
         deadline = time.monotonic() + timeout
-        last_open = 0.0
-        while time.monotonic() < deadline:
-            if done():
-                return True
-            now = time.monotonic()
-            if self.state == 'opening' and now - last_open > 1.0:
-                self.send_stream(cb.T_OPEN, data=self.target.encode())
-                last_open = now
-            if self.state == 'open':
-                self.pump(now)
-            while self.poll():
-                pass
+        while time.monotonic() < deadline and not done():
+            self.poll()
         return done()
 
+
+class Client:
+    """A CNET node that opens one L3P stream to the bridge, sends the target
+    line and keeps what the bridge sends after its OK line."""
+
+    def __init__(self, bridge_port, loss=0.0):
+        self.segment = l3p.Segment(('127.0.0.1', 0), peers=[('127.0.0.1', bridge_port)])
+        if loss:
+            self.segment.mangle = Lossy(None, drop=loss)
+        self.node = l3p.Node(self.segment, NET, CLIENT_NODE)
+        self.segment.start()
+        self.endpoint = l3p.Endpoint(self.node)
+        self.assoc = None
+        self.state = 'closed'
+        self.reset_reason = None
+        self.received = bytearray()
+        self.rcv_fin = False
+
+    def close(self):
+        self.endpoint.close()
+        self.segment.close()
+
+    @property
+    def fin_acked(self):
+        return bool(self.assoc and self.assoc.fin_acked)
+
     def open(self, target):
-        self.target = target
-        self.state = 'opening'
-        self.run_until(lambda: self.state != 'opening')
+        try:
+            self.assoc = self.endpoint.open_stream(NET, cb.BRIDGE_NODE, cb.BRIDGE_SOCKET)
+            self.assoc.write(target.encode() + b'\n')
+            line = bytearray()
+            while b'\n' not in line:
+                chunk = self.assoc.read(timeout=20)
+                if not chunk:
+                    self.state = 'closed'
+                    return self.state
+                line += chunk
+        except l3p.L3PError as error:
+            self.state = 'reset'
+            self.reset_reason = error.message
+            return self.state
+        first, _, rest = bytes(line).partition(b'\n')
+        if first != b'OK':
+            self.state = 'bad answer'
+            return self.state
+        self.received += rest
+        self.state = 'open'
+        threading.Thread(target=self.reader, daemon=True).start()
         return self.state
 
+    def reader(self):
+        try:
+            while True:
+                chunk = self.assoc.read()
+                if not chunk:
+                    self.rcv_fin = True
+                    return
+                self.received += chunk
+        except l3p.L3PError as error:
+            self.state = 'reset'
+            self.reset_reason = error.message
+
     def write(self, data):
-        self.out += data
+        self.assoc.write(data)
 
     def close_write(self):
-        self.fin_queued = True
+        self.assoc.close_write()
+
+    def run_until(self, done, timeout=10.0):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline and not done():
+            time.sleep(0.02)
+        return done()
 
 
 class TcpServer:
@@ -218,7 +204,6 @@ class BridgeHarness(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.bridge = cb.Bridge(self.node, self.allow, known_hosts=Path(self.tmp.name) / 'known_hosts')
         self.segment.start()
-        self.bridge.start()
         self.clients = []
 
     def tearDown(self):
@@ -233,20 +218,25 @@ class BridgeHarness(unittest.TestCase):
         self.clients.append(client)
         return client
 
+    def raw(self):
+        node = RawNode(self.segment.port)
+        self.clients.append(node)
+        return node
+
 
 class NodeTests(BridgeHarness):
     def test_echo_and_probe(self):
-        c = self.client()
-        c.send_datagram(cb.ECHO_SOCKET, cb.PROTO_ECHO, b'\x01ping')
-        c.send_link(cb.link_frame(cb.BRIDGE_NODE, 0, cb.LINK_PROBE, b'abcd'))
-        c.run_until(lambda: c.datagrams and any(k == cb.LINK_IN_USE for k, _, _ in c.links), 3)
-        self.assertEqual(c.datagrams[0], (cb.BRIDGE_NODE, cb.ECHO_SOCKET, CLIENT_SOCKET, cb.PROTO_ECHO, b'\x02ping'))
-        self.assertIn((cb.LINK_IN_USE, cb.BRIDGE_NODE, cb.BRIDGE_NODE), c.links)
+        c = self.raw()
+        c.send_datagram(l3p.ECHO_SOCKET, l3p.PROTO_ECHO, b'\x01ping')
+        c.send_link(l3p.link_frame(cb.BRIDGE_NODE, 0, l3p.LINK_PROBE, b'abcd'))
+        c.run_until(lambda: c.datagrams and any(k == l3p.LINK_IN_USE for k, _, _ in c.links), 3)
+        self.assertEqual(c.datagrams[0], (cb.BRIDGE_NODE, l3p.ECHO_SOCKET, CLIENT_SOCKET, l3p.PROTO_ECHO, b'\x02ping'))
+        self.assertIn((l3p.LINK_IN_USE, cb.BRIDGE_NODE, cb.BRIDGE_NODE), c.links)
 
     def test_learns_the_client_as_a_peer(self):
         # The bridge has no --peer: it answers the address that sent the frame.
-        c = self.client()
-        c.send_datagram(cb.ECHO_SOCKET, cb.PROTO_ECHO, b'\x01x')
+        c = self.raw()
+        c.send_datagram(l3p.ECHO_SOCKET, l3p.PROTO_ECHO, b'\x01x')
         self.assertTrue(c.run_until(lambda: c.datagrams, 3))
 
 
@@ -270,7 +260,7 @@ class TelnetTests(BridgeHarness):
         self.assertTrue(c.run_until(lambda: c.rcv_fin and c.fin_acked))
 
     def test_bulk_transfer_survives_packet_loss(self):
-        c = self.client(loss=0.2, seed=7)
+        c = self.client(loss=0.2)
         self.assertEqual(c.open(f'telnet://127.0.0.1:{self.server.port}'), 'open')
         c.write(b'big\r\n')
         self.assertTrue(c.run_until(lambda: c.rcv_fin, 60), len(c.received))
@@ -293,19 +283,28 @@ class TelnetTests(BridgeHarness):
     def test_bad_target_and_unknown_connection(self):
         c = self.client()
         self.assertEqual(c.open('gopher://127.0.0.1'), 'reset')
-        c.state = 'open'
-        c.reset_reason = None
-        c.send_stream(cb.T_DATA, 0, b'x', conn=c.conn)
-        self.assertTrue(c.run_until(lambda: c.state == 'reset'))
-        self.assertEqual(c.reset_reason, 'no such connection')
+        self.assertIn('bad target', c.reset_reason)
+        raw = self.raw()
+        header = l3p.HEADER.pack(0x12, l3p.T_DATA, 0, 0, 0x1234, 0, 0, 0, 0)
+        raw.send_datagram(cb.BRIDGE_SOCKET, l3p.PROTO_L3P, header + b'x')
+        self.assertTrue(raw.run_until(lambda: raw.datagrams, 3))
+        body = raw.datagrams[0][4]
+        self.assertEqual((body[1], l3p.parse_reset(body[20:])[0]), (l3p.T_RESET, l3p.R_UNKNOWN_CONN))
 
-    def test_duplicate_open_keeps_the_connection(self):
+    def test_target_line_is_required(self):
+        c = self.client()
+        c.assoc = c.endpoint.open_stream(NET, cb.BRIDGE_NODE, cb.BRIDGE_SOCKET)
+        c.assoc.close_write()  # EOF before a target line
+        with self.assertRaises(l3p.L3PError) as cm:
+            c.assoc.read(timeout=10)
+        self.assertEqual(cm.exception.reason, l3p.R_REFUSED)
+
+    def test_one_association_per_session(self):
         c = self.client()
         self.assertEqual(c.open(f'telnet://127.0.0.1:{self.server.port}'), 'open')
-        c.send_stream(cb.T_OPEN, data=c.target.encode())  # a retransmitted OPEN
         c.write(b'abc')
         self.assertTrue(c.run_until(lambda: b'ABC' in c.received))
-        self.assertEqual(len(self.bridge.sessions), 1)
+        self.assertEqual(self.bridge.endpoint.count(), 1)
 
 
 class PureTests(unittest.TestCase):
