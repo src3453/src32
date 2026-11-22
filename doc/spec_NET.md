@@ -294,11 +294,11 @@ expansion_card:
 
 ## 9. Foundation から使う
 
-Foundation OS はカーネルドライバ `/dev/cnet` と WAL `libcnet`（`/lib/cnet.1.wal`）でこのカードを使います。1 本のストリームが 1 個のソケットです。契約は [Foundation API §9.6](spec_Foundation_API.md#96-cnet-ネットワーク-devcnet) を参照してください。2 台のエミュレータでチャットするデモは [`examples/cnet-chat`](../examples/cnet-chat/README.md) にあります。
+Foundation OS はカーネルドライバ `/dev/cnet` と WAL `libcnet`（`/lib/cnet.1.wal`）でこのカードを使います。1 本のストリームが 1 個のソケットです。契約は [Foundation API §9.6](spec_Foundation_API.md#96-cnet-ネットワーク-devcnet) を参照してください。2 台のエミュレータでチャットするデモは [`examples/cnet-chat`](../examples/cnet-chat/README.md) にあります。ホストの [TCP ブリッジ](spec_NET_bridge.md) を経由すると、シェルの `telnet`／`ssh` で外部のサーバーに接続できます。
 
 ## 10. 将来の拡張
 
-- **TCP/IP ブリッジ**: セグメント上の 1 ノードとして作ります。予約ノード `0xFF00–0xFFFE` の既知の番号と既知ソケットで待ち受け、PROTO `0x40–0x7F` で IP やストリームをカプセル化します。外部 IP 接続、DNS、宛先制限、利用者の許可はすべてブリッジ側の責任にします。カードと物理層は変えません。ホスト側の独立プログラムとするか、ルータモードのカードとするかは未定です。
+- **TCP/IP ブリッジ**: セグメント上の 1 ノードとして作ります。予約ノード `0xFF00–0xFFFE` の既知の番号と既知ソケットで待ち受け、PROTO `0x40–0x7F` で IP やストリームをカプセル化します。外部 IP 接続、DNS、宛先制限、利用者の許可はすべてブリッジ側の責任にします。カードと物理層は変えません。第 1 版として、ホスト側の独立プログラムで telnet と SSH を中継する [TCP ブリッジ](spec_NET_bridge.md)（ノード `0xFF01`、ソケット 23、PROTO `0x40`）を実装しました。
 - **ルーティング**: RTMP 風の経路交換で、複数のネットワーク番号をつなぎます。ルータは NET を学習し、ノードは「NET が一致しない宛先」をルータへ送ります。hop count はそのための予約です。
 - **信頼性のあるストリーム**（ADSP 風）と**名前解決**（NBP 風）は、カード内に置く上位サービスとして追加します。
 

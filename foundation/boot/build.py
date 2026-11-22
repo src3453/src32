@@ -79,7 +79,7 @@ DISK_INODES = 256
 MODE_EXEC = 0x003D  # owner RWX, other RX (doc/spec_FS2.md §8): /bin and /lib
 
 COMMANDS = ["cat", "clear", "cp", "echo", "free", "hex", "ls", "mkdir", "mode", "mv", "ps", "pwd", "rm", "rmdir", "top",
-            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay", "cnet"]
+            "tree", "uname", "tinybasic", "chip8", "bmpview", "sgubplay", "wavplay", "cnet", "telnet", "ssh"]
 
 INCLUDES = ["-I", str(ROOT / "sdk/cpt32/include"), "-I", str(FOUNDATION / "include"),
             "-I", str(FOUNDATION / "lib/fnd")]
@@ -97,7 +97,7 @@ SGC_DIR = FOUNDATION / "lib/sgc"
 SGC_COMMANDS = {"chip8"}
 CNET_DIR = FOUNDATION / "lib/cnet"
 # Commands that import /lib/cnet.1.wal (libcnet) as well as fnd.
-CNET_COMMANDS = {"cnet"}
+CNET_COMMANDS = {"cnet", "telnet", "ssh"}
 # Optional WALs under /lib (fnd is always built). Selected with --libs.
 LIBS = ["lzma", "rle", "code", "crypt", "sgc", "cnet"]
 RLE_DIR = FOUNDATION / "lib/rle"
