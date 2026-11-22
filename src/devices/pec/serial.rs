@@ -31,9 +31,7 @@ impl UART {
         self.tx_ready = false; // Not ready to transmit until the buffer is processed
         // UART carries bytes. Formatting `data as char` would re-encode every
         // byte >= 0x80, corrupting UTF-8 and binary output.
-        let mut stdout = std::io::stdout().lock();
-        stdout.write_all(&[data]).unwrap();
-        stdout.flush().unwrap();
+        write_host_byte(&mut std::io::stdout().lock(), data);
         // Host output is synchronous: this byte has left the transmit queue.
         self.process_tx();
     }
@@ -65,6 +63,20 @@ impl UART {
         self.rx_buffer.push(data);
         self.rx_ready = true; // Data is available to read
     }
+}
+
+/// Mirrors one guest UART byte to the host terminal. Guest output must never
+/// take the emulator down: a Windows console rejects bytes that are not valid
+/// UTF-8 (`InvalidData`), so such a byte is shown as U+FFFD, and any other host
+/// I/O error (closed pipe etc.) is ignored. The guest still sees the byte sent.
+fn write_host_byte<W: Write>(out: &mut W, data: u8) {
+    match out.write_all(&[data]) {
+        Err(e) if e.kind() == std::io::ErrorKind::InvalidData => {
+            let _ = out.write_all("\u{FFFD}".as_bytes());
+        }
+        _ => {}
+    }
+    let _ = out.flush();
 }
 
 const UART_BASE_ADDR: u32 = 0x80040000; // Base address for the UART device
@@ -213,4 +225,61 @@ pub fn connect_uart_with_stdin(bus: &mut crate::bus::Bus, with_stdin: bool) {
         "PeC UART MMIO",
         Box::new(UARTDevice::new(with_stdin)),
     );
+}
+
+#[cfg(test)]
+mod tests {
+    use super::write_host_byte;
+    use std::io::{self, Write};
+
+    /// Behaves like a Windows console: rejects a byte that is not ASCII.
+    struct StrictConsole(Vec<u8>);
+
+    impl Write for StrictConsole {
+        fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+            if buf.iter().any(|&b| b >= 0x80) {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, "non-UTF-8"));
+            }
+            self.0.extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    struct BrokenPipe;
+
+    impl Write for BrokenPipe {
+        fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Err(io::ErrorKind::BrokenPipe.into())
+        }
+    }
+
+    #[test]
+    fn host_write_passes_bytes_through() {
+        let mut out = Vec::new();
+        for b in [b'A', 0xE3, 0x81, 0x82, 0xFF] {
+            write_host_byte(&mut out, b);
+        }
+        assert_eq!(out, [b'A', 0xE3, 0x81, 0x82, 0xFF]);
+    }
+
+    #[test]
+    fn rejected_byte_becomes_replacement_char_instead_of_panicking() {
+        let mut out = StrictConsole(Vec::new());
+        write_host_byte(&mut out, b'A');
+        write_host_byte(&mut out, 0xFF);
+        write_host_byte(&mut out, b'B');
+        // The strict writer also rejects U+FFFD's bytes, so only ASCII survives.
+        assert_eq!(out.0, b"AB");
+    }
+
+    #[test]
+    fn other_host_errors_are_ignored() {
+        write_host_byte(&mut BrokenPipe, b'A');
+    }
 }
