@@ -24,8 +24,8 @@ class ChatDemoTests(unittest.TestCase):
                                 errors='replace', timeout=1200)
         self.assertEqual(result.returncode, 0, result.stdout[-4000:] + result.stderr[-4000:])
         self.assertIn("both sides received the other's messages", result.stdout)
-        self.assertIn('CNET chat: 0001.0010:77 -> 0001.0020:77', result.stdout)
-        self.assertIn('CNET chat: 0001.0020:77 -> 0001.0010:77', result.stdout)
+        self.assertIn('CNET chat: 1.16:77 -> 1.32:77', result.stdout)
+        self.assertIn('CNET chat: 1.32:77 -> 1.16:77', result.stdout)
 
 
 if __name__ == '__main__':

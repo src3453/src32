@@ -1,7 +1,8 @@
 /* cnet [info] | cnet ping ADDR [count] | cnet send ADDR:SOCK TEXT... | cnet recv SOCK [count]
  * CNET datagrams over libcnet (doc/spec_Foundation_API.md §9.6). ADDR is
- * NET.NODE in hex, or .NODE / NODE for the local network; SOCK is a hex
- * socket, written after the address as NET.NODE:SOCK (doc/spec_NET.md §2). */
+ * NET.NODE in decimal (a trailing H makes the whole string hex), or .NODE /
+ * NODE for the local network; SOCK is written after the address as
+ * NET.NODE:SOCK (doc/spec_NET.md §2). */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 
@@ -24,17 +25,23 @@ static int32_t parse_dec(const char *text, uint32_t max, uint32_t *out) {
 }
 
 static int32_t parse_socket(const char *text, uint32_t *out) {
-    uint32_t value = 0, digits = 0;
+    uint32_t value = 0, digits = 0, base = 10u;
+    uint32_t n = 0;
     if (*text == ':') ++text; /* ":SOCK" is the same socket on this node */
-    for (; *text; ++text, ++digits) {
-        char c = *text;
+    while (text[n]) ++n;
+    if (n && (text[n - 1u] == 'H' || text[n - 1u] == 'h')) { /* trailing H: hex */
+        base = 16u;
+        --n;
+    }
+    for (uint32_t i = 0; i < n; ++i, ++digits) {
+        char c = text[i];
         uint32_t d;
         if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
-        else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+        else if (base == 16u && c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+        else if (base == 16u && c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
         else return FND_E_BAD_ARG;
-        if (digits == 2u) return FND_E_BAD_ARG;
-        value = value << 4 | d;
+        if (digits == 3u) return FND_E_BAD_ARG;
+        value = value * base + d;
     }
     if (!digits || !value || value > 0xFEu) return FND_E_BAD_ARG;
     *out = value;
@@ -47,13 +54,13 @@ static int same(const char *a, const char *b) {
 }
 
 static void out_addr(uint32_t addr) {
-    char text[10];
+    char text[16];
     cnet_format_addr(addr, text);
     cmd_out(text);
 }
 
 static void out_endpoint(uint32_t addr, uint32_t socket) {
-    char text[14];
+    char text[16];
     cnet_format_endpoint(addr, socket, text);
     cmd_out(text);
 }

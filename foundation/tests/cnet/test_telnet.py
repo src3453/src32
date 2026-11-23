@@ -143,7 +143,7 @@ class TelnetTests(unittest.TestCase):
         self.addCleanup(server.close)
         text = self.run_shell((30, f'telnet 127.0.0.1 {server.port}\\n'), (150, 'hello\\n'),
                               (270, 'bye\\n'), (450, 'echo status=$?\\n'))
-        self.assertIn(f'Trying telnet://127.0.0.1:{server.port} via 0000.FF01:17...', text)
+        self.assertIn(f'Trying telnet://127.0.0.1:{server.port} via 0.65281:23...', text)
         self.assertIn('Connected. Escape character is Ctrl+]', text)
         self.assertIn('welcome', text)
         self.assertIn('$ hello', text)  # echoed by the server (it said WILL ECHO), not twice
@@ -164,9 +164,9 @@ class TelnetTests(unittest.TestCase):
         self.assertNotIn('status=0', text)
 
     def test_bridge_address_option(self):
-        # Nobody answers at FF02; the 15 s OPEN timeout is longer than the run.
-        text = self.run_shell((30, 'telnet -b .FF02 127.0.0.1\\n'))
-        self.assertIn('Trying telnet://127.0.0.1:23 via 0000.FF02:17...', text)
+        # Nobody answers at 65282; the 15 s OPEN timeout is longer than the run.
+        text = self.run_shell((30, 'telnet -b .65282 127.0.0.1\\n'))
+        self.assertIn('Trying telnet://127.0.0.1:23 via 0.65282:23...', text)
 
     @unittest.skipUnless(test_cnet_bridge.paramiko, 'paramiko is not installed')
     def test_ssh_login_through_the_bridge(self):
@@ -175,7 +175,7 @@ class TelnetTests(unittest.TestCase):
         text = self.run_shell((30, f'ssh -p {server.port} cpt@127.0.0.1\\n'), (150, 'yes\\n'),
                               (230, 'secret\\n'), (300, 'ls\\n'), (330, 'exit\\n'),
                               (450, 'echo status=$?\\n'))  # the kernel stops at about frame 480
-        self.assertIn(f'Trying ssh://cpt@127.0.0.1:{server.port} via 0000.FF01:17...', text)
+        self.assertIn(f'Trying ssh://cpt@127.0.0.1:{server.port} via 0.65281:23...', text)
         self.assertIn("The authenticity of host", text)
         self.assertIn("cpt@127.0.0.1's password:", text)
         self.assertNotIn('secret', text)

@@ -1,20 +1,20 @@
 /* chat ADDR[:SOCK] -- a two-window CNET chat for Foundation (libcnet).
  *
  * Every line typed is sent as one datagram (PROTO 0x80) to socket SOCK
- * (default 77, hex like the address) at ADDR, and we listen on the same socket number; datagrams
+ * (default 77, decimal like the address) at ADDR, and we listen on the same socket number; datagrams
  * arriving there are printed above the input line with the sender's address. Esc quits. Run it in two emulators, each
  * pointing at the other's node (examples/cnet-chat/run_demo.py). */
 #include <foundation/libcnet.h>
 #include <foundation/sys.h>
 
-#define DEFAULT_SOCKET 0x77u
+#define DEFAULT_SOCKET 77u
 #define TEXT_PROTO 0x80u
 #define LINE_MAX 200u
 
 static void out(const char *text) { fnd_con_write(text); }
 
 static void out_addr(uint32_t addr) {
-    char text[10];
+    char text[16];
     cnet_format_addr(addr, text);
     out(text);
 }
@@ -29,7 +29,7 @@ static int32_t fail(const char *what, int32_t st) {
 }
 
 static void out_endpoint(uint32_t addr, uint32_t socket) {
-    char text[14];
+    char text[16];
     cnet_format_endpoint(addr, socket, text);
     out(text);
 }

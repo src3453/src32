@@ -9,7 +9,7 @@ host directories or FS2 images:
         --peer 127.0.0.1:32032 --net 1 --export share=C:/cpt32/share \\
         --export disk=build/foundation.fs2,ro
 
-Foundation mounts an export with ``netfs mount .FF02 share s``. The module
+Foundation mounts an export with ``netfs mount .65282 share s``. The module
 also has ``CfpClient``, a small Python client used by the tests.
 """
 import argparse
@@ -499,9 +499,10 @@ class Fs2Image:
 # ---- the protocol ----
 
 class Fid:
-    __slots__ = ('export', 'node', 'state', 'flags', 'snapshot')
+    __slots__ = ('export', 'node', 'state', 'flags', 'snapshot', 'path')
 
-    def __init__(self, export, node, state='walked', flags=0):
+    def __init__(self, export, node, state='walked', flags=0, path=()):
+        self.path = tuple(path)       # names below the export root (for --verbose)
         self.export = export
         self.node = node
         self.state = state            # walked, file, dir
@@ -567,6 +568,7 @@ class Session:
     def __init__(self):
         self.hello = None
         self.fids = {}
+        self.note = ''                # what the current request touched (for --verbose)
 
 
 class CfpServer:
@@ -611,6 +613,7 @@ class CfpServer:
     def on_request(self, assoc, payload):
         session = assoc.user if isinstance(assoc.user, Session) else Session()
         assoc.user = session
+        session.note = ''
         try:
             if len(payload) < 4:
                 raise CfpError('BAD_ARG', 'short message')
@@ -636,11 +639,11 @@ class CfpServer:
                     answer = handler(self, session, Reader(body))
             out = HDR.pack(ptype | 0x80, 0, 0) + answer
             if self.verbose:
-                l3p.log(assoc.name, NAMES.get(ptype, hex(ptype)), 'ok')
+                l3p.log(assoc.name, NAMES.get(ptype, hex(ptype)), session.note, 'ok')
             return out
         except CfpError as error:
             if self.verbose:
-                l3p.log(assoc.name, NAMES.get(payload[0] if payload else 0, '?'), error)
+                l3p.log(assoc.name, NAMES.get(payload[0] if payload else 0, '?'), session.note, error)
             return error_body(error.code, error.message)
 
     def tick(self):
@@ -709,6 +712,14 @@ class CfpServer:
     def _all_sessions(self):
         return list(self.sessions.values())
 
+    @staticmethod
+    def _where(export, path):
+        return f'{export.name}:/' + '/'.join(path)
+
+    def _note(self, session, fid, *extra):
+        if self.verbose:
+            session.note = ' '.join((self._where(fid.export, fid.path),) + extra)
+
     def _writable(self, export):
         if export.read_only:
             raise CfpError('READ_ONLY')
@@ -737,6 +748,7 @@ class CfpServer:
             raise CfpError('ACCESS', 'this server accepts UID 0 only')
         node = export.backend.root()
         session.fids[number] = Fid(export, node)
+        self._note(session, session.fids[number], f'uid={uid}')
         return pack_qid(export.backend.qid(node)) + struct.pack('>I', 1 if export.read_only else 0)
 
     def op_walk(self, session, r):
@@ -751,30 +763,36 @@ class CfpServer:
         node = fid.node
         qids = []
         status = 0
+        path = list(fid.path)
         for i, name in enumerate(names):
             try:
                 if name == '..':
                     if node != backend.root():
                         node = backend.parent(node)
+                        if path:
+                            path.pop()
                 else:
                     check_name(name)
                     if backend.kind(node) != DIR:
                         raise CfpError('NOT_DIR')
                     node = backend.lookup(node, name)
+                    path.append(name)
                 qids.append(pack_qid(backend.qid(node)))
             except CfpError as error:
                 if i == 0:
                     raise
                 status = E.get(error.code, E['IO'])
                 break
+        if self.verbose:
+            session.note = self._where(fid.export, fid.path) + ' -> ' + self._where(fid.export, path)
         if status == 0:
-            session.fids[newfid] = Fid(fid.export, node)
+            session.fids[newfid] = Fid(fid.export, node, path=path)
         return struct.pack('>HHi', len(qids), 0, status) + b''.join(qids)
 
     def op_clunk(self, session, r):
         number, = r.take('>I')
         r.end()
-        self._fid(session, number)
+        self._note(session, self._fid(session, number))
         self._clunk(session, number)
         return b''
 
@@ -792,6 +810,7 @@ class CfpServer:
         number, flags = r.take('>II')
         r.end()
         fid = self._fid(session, number, 'walked')
+        self._note(session, fid, f'flags=0x{flags:X}')
         backend = fid.export.backend
         if backend.kind(fid.node) == DIR:
             if flags != O_READ:
@@ -813,6 +832,7 @@ class CfpServer:
         name = r.name(length)
         r.end()
         fid = self._fid(session, number, 'walked')
+        self._note(session, fid, ('file' if kind == FILE else 'dir') + f' {name!r}')
         check_name(name)
         if kind == FILE:
             self._check_open_flags(flags, fid.export)
@@ -826,6 +846,8 @@ class CfpServer:
             raise CfpError('NOT_DIR')
         node = backend.create(fid.node, name, kind, mode)
         fid.node = node
+        fid.path += (name,)
+        self._note(session, fid, 'created')
         fid.state = 'file' if kind == FILE else 'walked'
         fid.flags = flags if kind == FILE else 0
         return pack_qid(backend.qid(node)) + struct.pack('>HH', IOUNIT, 0)
@@ -834,6 +856,7 @@ class CfpServer:
         number, offset, count, rsv = r.take('>IQHH')
         r.end()
         fid = self._fid(session, number, 'file')
+        self._note(session, fid, f'offset={offset} count={count}')
         if rsv or not 1 <= count <= IOUNIT:
             raise CfpError('BAD_ARG')
         if not fid.flags & (O_READ | O_EXEC):
@@ -844,6 +867,7 @@ class CfpServer:
     def op_write(self, session, r):
         number, offset, count, rsv = r.take('>IQHH')
         fid = self._fid(session, number, 'file')
+        self._note(session, fid, f'offset={offset} count={count}')
         if rsv or not 1 <= count <= IOUNIT:
             raise CfpError('BAD_ARG')
         data = r.bytes(count)
@@ -858,6 +882,7 @@ class CfpServer:
         number, cookie, limit, rsv = r.take('>IIHH')
         r.end()
         fid = self._fid(session, number, 'dir')
+        self._note(session, fid, f'cookie={cookie}')
         if rsv or not 76 <= limit <= MAX_BODY:
             raise CfpError('BAD_ARG')
         backend = fid.export.backend
@@ -894,6 +919,7 @@ class CfpServer:
         number, = r.take('>I')
         r.end()
         fid = self._fid(session, number)
+        self._note(session, fid)
         backend = fid.export.backend
         return pack_qid(backend.qid(fid.node)) + backend.stat(fid.node)
 
@@ -901,6 +927,7 @@ class CfpServer:
         number, mask, mode, uid, size, sec, ms, rsv = r.take('>IIIIQqHH')
         r.end()
         fid = self._fid(session, number, 'walked', 'file')
+        self._note(session, fid, f'mask=0x{mask:X}')
         if rsv or mask == 0 or mask & ~0xF or ms > 999:
             raise CfpError('BAD_ARG')
         self._writable(fid.export)
@@ -926,6 +953,7 @@ class CfpServer:
         number, flags = r.take('>II')
         r.end()
         fid = self._fid(session, number)
+        self._note(session, fid, 'dir' if flags & 1 else '')
         try:
             if flags & ~1:
                 raise CfpError('BAD_ARG')
@@ -949,6 +977,9 @@ class CfpServer:
         r.end()
         old = self._fid(session, old_number, 'walked')
         new = self._fid(session, new_number, 'walked')
+        if self.verbose:
+            session.note = (self._where(old.export, old.path + (old_name,)) + ' -> ' +
+                            self._where(new.export, new.path + (new_name,)))
         check_name(old_name)
         check_name(new_name)
         if old.export is not new.export:
@@ -967,6 +998,7 @@ class CfpServer:
         number, = r.take('>I')
         r.end()
         fid = self._fid(session, number)
+        self._note(session, fid)
         fid.export.backend.sync(fid.node)
         return b''
 
@@ -974,6 +1006,7 @@ class CfpServer:
         number, = r.take('>I')
         r.end()
         fid = self._fid(session, number)
+        self._note(session, fid)
         backend = fid.export.backend
         total, free = backend.statfs()
         return struct.pack('>IIIIIIII', backend.fs_type, 1 if fid.export.read_only else 0,
@@ -1152,8 +1185,8 @@ def main(argv=None):
     parser.add_argument('--multicast', help='multicast group of the segment (GROUP:PORT)')
     parser.add_argument('--peer', action='append', default=[], help='unicast peer (HOST:PORT), repeatable')
     parser.add_argument('--segment-id', type=lambda t: int(t, 0), default=0)
-    parser.add_argument('--net', type=lambda t: int(t, 0), default=0, help='network number of the segment')
-    parser.add_argument('--node', type=lambda t: int(t, 16), default=CFP_NODE, help='node number in hex (default FF02)')
+    parser.add_argument('--net', type=l3p.parse_node, default=0, help='network number of the segment (decimal, or hex with a trailing H)')
+    parser.add_argument('--node', type=l3p.parse_node, default=CFP_NODE, help='node number: decimal, or hex with a trailing H (default 65282)')
     parser.add_argument('--export', action='append', default=[], help='NAME=PATH[,ro]; repeatable')
     parser.add_argument('--allow', action='append', default=[], help='permitted CNET address; repeatable')
     parser.add_argument('--allow-any', action='store_true')
@@ -1173,7 +1206,7 @@ def main(argv=None):
     except (ValueError, OSError, fs2.Fs2Error) as error:
         parser.error(str(error))
     if not args.allow and not args.allow_any and any(isinstance(e.backend, HostDir) for e in exports):
-        l3p.log(f'warning: every node of network {args.net:04X} may use the exported host directories')
+        l3p.log(f'warning: every node of network {args.net} may use the exported host directories')
     key = None
     if l3p.HAVE_CRYPTO:
         key = l3p.load_or_create_key(args.key)

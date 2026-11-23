@@ -12,6 +12,6 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 - 暗号化（`--require-encryption`、`--allow-key FINGERPRINT`、`--key PATH`）には `cryptography` が必要です。起動時にサーバーの鍵の指紋を表示します。
 - FS2 イメージは、構造の変更ごと、書き込みは CLUNK・SYNC・1 秒後に、`tools/fs2` の検証を通してから書き戻します。エミュレータの IDC が同じイメージを使っている間は輸出しないでください。
 
-Foundation からは `netfs exports`、`netfs mount .FF02 share s` で `/net/s` に mount して使います（[CFP 仕様 §11](../../doc/spec_NET_FP.md)、`foundation/tests/cfp`）。Python のクライアント `CfpClient` と `list_exports` が `cfp_server.py` にあります。
+Foundation からは `netfs exports`、`netfs mount .65282 share s` で `/net/s` に mount して使います（[CFP 仕様 §11](../../doc/spec_NET_FP.md)、`foundation/tests/cfp`）。Python のクライアント `CfpClient` と `list_exports` が `cfp_server.py` にあります。
 
 テスト: `python -m unittest discover -s tools/cfp-server -v`（約 7 分。20% の損失を入れた転送を含みます）。

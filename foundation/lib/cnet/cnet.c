@@ -65,80 +65,112 @@ int32_t cnet_recvfrom(fnd_handle h, void *buf, uint32_t cap, uint32_t flags, cne
     return (int32_t)rep.len;
 }
 
-static int32_t hex_value(const char *text, uint32_t *out) {
+/* One number in `base` (10 or 16) with at most `max` value. Digits outside the
+ * base (so A-F in a decimal string) are errors: the two notations never mix. */
+static int32_t number_value(const char *text, uint32_t base, uint32_t max, uint32_t *out) {
     uint32_t value = 0, digits = 0;
     for (; *text; ++text, ++digits) {
         char c = *text;
         uint32_t d;
         if (c >= '0' && c <= '9') d = (uint32_t)(c - '0');
-        else if (c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
-        else if (c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
+        else if (base == 16u && c >= 'a' && c <= 'f') d = (uint32_t)(c - 'a' + 10);
+        else if (base == 16u && c >= 'A' && c <= 'F') d = (uint32_t)(c - 'A' + 10);
         else return FND_E_BAD_ARG;
-        if (digits == 4u) return FND_E_BAD_ARG;
-        value = value << 4 | d;
+        if (d >= base || digits >= 8u) return FND_E_BAD_ARG;
+        value = value * base + d;
+        if (value > max) return FND_E_BAD_ARG;
     }
     if (!digits) return FND_E_BAD_ARG;
     *out = value;
     return FND_OK;
 }
 
-int32_t cnet_parse_addr(const char *text, uint32_t *addr) {
-    if (!text || !addr) return FND_E_BAD_ARG;
-    char net[5];
-    uint32_t i = 0;
-    const char *dot = text;
+/* Copies text into buf (cap bytes), dropping a trailing H/h. *base is 16 when
+ * the suffix was there, else 10. */
+static int32_t strip_hex_suffix(const char *text, char *buf, uint32_t cap, uint32_t *base) {
+    uint32_t n = 0;
+    while (text[n]) {
+        if (n + 1u >= cap) return FND_E_BAD_ARG;
+        buf[n] = text[n];
+        ++n;
+    }
+    *base = 10u;
+    if (n && (buf[n - 1u] == 'H' || buf[n - 1u] == 'h')) {
+        *base = 16u;
+        --n;
+    }
+    buf[n] = 0;
+    return FND_OK;
+}
+
+static int32_t parse_addr_body(char *text, uint32_t base, uint32_t *addr) {
+    char *dot = text;
     while (*dot && *dot != '.') ++dot;
     uint32_t n = 0, node;
     if (*dot == '.' && dot == text) {
         /* ".NODE" is this network, the same as "NODE". */
-        if (hex_value(dot + 1, &node) != FND_OK) return FND_E_BAD_ARG;
+        if (number_value(dot + 1, base, 0xFFFFu, &node) != FND_OK) return FND_E_BAD_ARG;
     } else if (*dot) {
-        if (dot - text > 4) return FND_E_BAD_ARG;
-        for (i = 0; text + i < dot; ++i) net[i] = text[i];
-        net[i] = 0;
-        if (hex_value(net, &n) != FND_OK || hex_value(dot + 1, &node) != FND_OK) return FND_E_BAD_ARG;
-    } else if (hex_value(text, &node) != FND_OK) {
+        *dot = 0;
+        if (number_value(text, base, 0xFFFFu, &n) != FND_OK ||
+            number_value(dot + 1, base, 0xFFFFu, &node) != FND_OK) return FND_E_BAD_ARG;
+    } else if (number_value(text, base, 0xFFFFu, &node) != FND_OK) {
         return FND_E_BAD_ARG;
     }
     *addr = FND_CNET_ADDR(n, node);
     return FND_OK;
 }
 
+int32_t cnet_parse_addr(const char *text, uint32_t *addr) {
+    if (!text || !addr) return FND_E_BAD_ARG;
+    char buf[24];
+    uint32_t base;
+    if (strip_hex_suffix(text, buf, sizeof buf, &base) != FND_OK) return FND_E_BAD_ARG;
+    return parse_addr_body(buf, base, addr);
+}
+
 int32_t cnet_parse_endpoint(const char *text, uint32_t *addr, uint32_t *socket) {
     if (!text || !addr || !socket) return FND_E_BAD_ARG;
-    char head[10];
-    uint32_t i = 0;
-    for (; text[i] && text[i] != ':'; ++i) {
-        if (i + 1u >= sizeof head) return FND_E_BAD_ARG;
-        head[i] = text[i];
-    }
-    head[i] = 0;
-    uint32_t a, s = *socket;
-    if (cnet_parse_addr(head, &a) != FND_OK) return FND_E_BAD_ARG;
-    if (text[i] == ':') {
-        /* Hex like NET and NODE, at most 2 digits: 1..FE (0 and FF are not sockets). */
-        if (hex_value(text + i + 1, &s) != FND_OK || !s || s > 0xFEu) return FND_E_BAD_ARG;
-    }
+    char buf[24];
+    uint32_t base, a, s = *socket;
+    if (strip_hex_suffix(text, buf, sizeof buf, &base) != FND_OK) return FND_E_BAD_ARG;
+    char *colon = buf;
+    while (*colon && *colon != ':') ++colon;
+    char *sock_text = *colon == ':' ? colon + 1 : 0;
+    *colon = 0;
+    if (parse_addr_body(buf, base, &a) != FND_OK) return FND_E_BAD_ARG;
+    /* One suffix covers the whole string, so SOCK uses the same base. 0..255. */
+    if (sock_text && number_value(sock_text, base, 0xFFu, &s) != FND_OK) return FND_E_BAD_ARG;
     *addr = a;
     *socket = s;
     return FND_OK;
 }
 
-void cnet_format_addr(uint32_t addr, char *out) {
-    static const char digits[] = "0123456789ABCDEF";
-    for (uint32_t i = 0; i < 8u; ++i) {
-        uint32_t nibble = (addr >> (28u - 4u * i)) & 0xFu;
-        out[i < 4u ? i : i + 1u] = digits[nibble];
-    }
-    out[4] = '.';
-    out[9] = 0;
+static uint32_t put_decimal(uint32_t value, char *out) {
+    char tmp[10];
+    uint32_t n = 0, len = 0;
+    do {
+        tmp[n++] = (char)('0' + value % 10u);
+        value /= 10u;
+    } while (value);
+    while (n) out[len++] = tmp[--n];
+    return len;
 }
 
+/* Decimal "NET.NODE" (at most 11 characters plus the terminator). */
+void cnet_format_addr(uint32_t addr, char *out) {
+    uint32_t len = put_decimal(addr >> 16, out);
+    out[len++] = '.';
+    len += put_decimal(addr & 0xFFFFu, out + len);
+    out[len] = 0;
+}
+
+/* Decimal "NET.NODE:SOCK" (at most 15 characters plus the terminator). */
 void cnet_format_endpoint(uint32_t addr, uint32_t socket, char *out) {
-    static const char digits[] = "0123456789ABCDEF";
     cnet_format_addr(addr, out);
-    out[9] = ':';
-    out[10] = digits[(socket >> 4) & 0xFu];
-    out[11] = digits[socket & 0xFu];
-    out[12] = 0;
+    uint32_t len = 0;
+    while (out[len]) ++len;
+    out[len++] = ':';
+    len += put_decimal(socket & 0xFFu, out + len);
+    out[len] = 0;
 }

@@ -2,7 +2,7 @@
  * ssh [-b ADDR[:SOCK]] [-t TERM] [-p PORT] [USER@]HOST   (ssh.c includes this file)
  *
  * A telnet client over the CNET TCP bridge (doc/spec_NET_bridge.md). The
- * bridge, a host program at CNET address ADDR:SOCK (-b, default .FF01:17,
+ * bridge, a host program at CNET address ADDR:SOCK (-b, default .65281:23,
  * i.e. socket 23), opens telnet://HOST:PORT or ssh://USER@HOST:PORT for us:
  * we open an L3P stream (WAL l3p, doc/spec_NET_L3P.md §6), send the target
  * as the first line and wait for the bridge's "OK" line; this side always
@@ -24,7 +24,7 @@
 #define USAGE "telnet [-b ADDR[:SOCK]] [-t TERM] HOST [PORT]"
 #endif
 
-#define DEFAULT_BRIDGE ".FF01"
+#define DEFAULT_BRIDGE ".65281"
 #define BRIDGE_SOCKET 23u
 #define MAX_DATA L3P_MAX_PLAIN
 #define ANSWER_TICKS 3000u
@@ -408,7 +408,7 @@ static int32_t telnet(uint32_t argc) {
     const char *bridge_text;
     if (parse_args(argc, target, sizeof target, &bridge_text) != FND_OK) return cmd_usage(USAGE);
     if (cnet_parse_endpoint(bridge_text, &bridge, &bridge_socket) != FND_OK) return fail(bridge_text, FND_E_BAD_ARG);
-    char addr_text[14];
+    char addr_text[16];
     cnet_format_endpoint(bridge, bridge_socket, addr_text);
     cmd_out("Trying ");
     cmd_out(target);

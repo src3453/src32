@@ -373,7 +373,7 @@ Foundation の netfs ──CFP／L3P／CNET── cfp_server.py ──▶ ホス
 | 置き場所 | `tools/cfp-server/cfp_server.py`、使い方は `tools/cfp-server/README.md`、テストは `tools/cfp-server/test_cfp_server.py` |
 | 依存 | L3P と CNET の共有モジュール `tools/l3p/l3p.py`（spec_NET_L3P §10.2）。FS2 イメージの輸出は `tools/fs2/fs2.py` を import して使う。暗号化を使うときだけ X25519・ChaCha20-Poly1305 のライブラリ（`cryptography`）が要る |
 | CNET への参加 | ブリッジと同じく、CNET の UDP カプセル化（spec_NET §8.3）を自分で話す 1 ノード。その処理と L3P は `tools/l3p/l3p.py` が受け持つ |
-| ノードの役割 | 自分のノードへの PROBE に IN_USE を返し（spec_NET §5）、ソケット 4 のエコー（spec_NET §4.3）に応答する。`cnet ping .FF02` で到達を確かめられる |
+| ノードの役割 | 自分のノードへの PROBE に IN_USE を返し（spec_NET §5）、ソケット 4 のエコー（spec_NET §4.3）に応答する。`cnet ping .65282` で到達を確かめられる |
 | 受け付けるもの | DST_NET が 0 か自分の `--net` に一致し、DST_NODE が自分かブロードキャストで、ソケット 9 の L3P（PROTO `0x04`）のトランザクション |
 | 並行性 | 1 つのスレッドで受信と処理を行い、要求を 1 つずつ実行する（結合ごとの順序は L3P が保証する、spec_NET_L3P §5.2）。L3P の再送とタイムアウトは実時間で計る |
 
@@ -388,7 +388,7 @@ Foundation の netfs ──CFP／L3P／CNET── cfp_server.py ──▶ ホス
 | `--peer HOST:PORT` | ユニキャストの相手（複数可）。マルチキャストを使わないときは、届いたフレームの送信元も相手として覚える |
 | `--segment-id N` | `udp.segment_id` と同じ値（既定 0） |
 | `--net N` | セグメントのネットワーク番号（既定 0） |
-| `--node HEX` | サーバーのノード番号（既定 `FF02`） |
+| `--node N` | サーバーのノード番号（10 進、末尾に `H` で 16 進。既定 `65282`） |
 | `--export NAME=PATH[,ro]` | 輸出（複数可）。PATH がディレクトリならホストのディレクトリ、ファイルなら FS2 イメージ。`ro` で読み取り専用 |
 | `--allow ADDR` | 要求を受け付ける CNET アドレス（複数可、§10） |
 | `--allow-any` | すべての送信元を受け付ける |
@@ -406,8 +406,8 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 ```
 
 ```
-/> netfs exports .FF02
-/> netfs mount .FF02 share s
+/> netfs exports .65282
+/> netfs mount .65282 share s
 /> ls /net/s
 ```
 
@@ -482,7 +482,7 @@ python tools/cfp-server/cfp_server.py --bind 127.0.0.1:32041 --peer 127.0.0.1:32
 | `netfs mount ADDR EXPORT NAME [-r] [-e]` | `/net/NAME` に mount する。`-r` は読み取り専用、`-e` は L3P の暗号化を使う（初回はサーバーの鍵の指紋を表示して確認する） |
 | `netfs umount NAME` | mount を外す。開いているファイルがあれば `BUSY` |
 
-アドレスの書き方は spec_NET §2 と同じです（`1.20`、`.FF02`）。
+アドレスの書き方は spec_NET §2 と同じです（10 進の `1.20`、`.65282`、16 進の `1.14H`、`.FF02H`）。
 
 ## 12. 既存仕様への変更
 

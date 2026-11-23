@@ -594,9 +594,9 @@ def main(argv=None):
     parser.add_argument('--multicast', help='multicast group of the segment (GROUP:PORT)')
     parser.add_argument('--peer', action='append', default=[], help='unicast peer (HOST:PORT), repeatable')
     parser.add_argument('--segment-id', type=lambda t: int(t, 0), default=0)
-    parser.add_argument('--net', type=lambda t: int(t, 0), default=0, help='network number of the segment')
-    parser.add_argument('--node', type=lambda t: int(t, 16), default=BRIDGE_NODE,
-                        help='bridge node number in hex (default FF01)')
+    parser.add_argument('--net', type=l3p.parse_node, default=0, help='network number of the segment (decimal, or hex with a trailing H)')
+    parser.add_argument('--node', type=l3p.parse_node, default=BRIDGE_NODE,
+                        help='bridge node number: decimal, or hex with a trailing H (default 65281)')
     parser.add_argument('--allow', action='append', default=[],
                         help='permitted target: HOST, HOST:PORT, wildcards allowed; repeatable')
     parser.add_argument('--allow-any', action='store_true', help='permit every target')
@@ -615,7 +615,7 @@ def main(argv=None):
     node = Node(segment, args.net, args.node)
     bridge = Bridge(node, args.allow, args.allow_any, args.max_sessions, args.known_hosts, args.identity)
     segment.start()
-    log(f'CNET bridge {args.net:04X}.{args.node:04X} socket {BRIDGE_SOCKET} on UDP port {segment.port}')
+    log(f'CNET bridge {l3p.format_addr(args.net, args.node)} socket {BRIDGE_SOCKET} on UDP port {segment.port}')
     try:
         while True:
             time.sleep(3600)

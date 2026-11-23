@@ -455,5 +455,23 @@ class EncryptionTests(Base):
             self.assertEqual(l3p.private_bytes(l3p.load_or_create_key(Path(tmp) / 'key')), l3p.private_bytes(key))
 
 
+class NotationTests(unittest.TestCase):
+    """doc/spec_NET.md §2: decimal by default, one trailing H makes it all hex."""
+
+    def test_decimal_and_hex(self):
+        self.assertEqual(l3p.parse_endpoint('65535.65535:255'), (65535, 65535, 255))
+        self.assertEqual(l3p.parse_endpoint('FFFF.FFFF:FFH'), (65535, 65535, 255))
+        self.assertEqual(l3p.parse_endpoint('ffff.ffffh'), (65535, 65535, None))
+        self.assertEqual(l3p.parse_endpoint('.18'), (0, 18, None))
+        self.assertEqual(l3p.parse_endpoint('12H'), (0, 18, None))
+        self.assertEqual(l3p.parse_addr('1.20H'), (1, 32))
+        self.assertEqual(l3p.format_addr(1, 65282), '1.65282')
+
+    def test_mixing_and_range_are_errors(self):
+        for bad in ('FFFF.1', '1.A', '65536.1', '1.2:256', '1.2:100H', 'FFFFH.1H', '', 'H', '1.2:'):
+            with self.assertRaises(ValueError, msg=bad):
+                l3p.parse_endpoint(bad)
+
+
 if __name__ == '__main__':
     unittest.main()

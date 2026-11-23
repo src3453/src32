@@ -2,7 +2,7 @@
 
 Foundation runs with the CNET card on a UDP segment whose only peer is the
 CFP server tools/cfp-server/cfp_server.py, run in this process at node
-FF02 with a temporary host directory as the export "share". The shell then
+65282 with a temporary host directory as the export "share". The shell then
 mounts it on /net/s and works on it with the usual commands.
 
     python -m unittest discover -s foundation/tests/cfp -v
@@ -109,13 +109,13 @@ class NetfsTests(unittest.TestCase):
         return '\n'.join(row.rstrip() for row in rows)
 
     def test_mount_list_read_and_exports(self):
-        text = self.run_shell('netfs exports', 'netfs mount .FF02 share s', 'netfs', 'ls /net',
+        text = self.run_shell('netfs exports', 'netfs mount .65282 share s', 'netfs', 'ls /net',
                               'ls /net/s', 'cat /net/s/hello.txt', 'cat /net/s/sub/inner.txt',
                               'cat /net/S/sub/../HELLO.TXT', 'echo status=$?')
-        self.assertIn('0001.FF02  share', text)
-        self.assertIn('0001.FF02  ro ro', text)
-        self.assertIn('/net/s: share on 0000.FF02', text)
-        self.assertIn('/net/s           0000.FF02  share       up', text)
+        self.assertIn('1.65282     share', text)
+        self.assertIn('1.65282     ro ro', text)
+        self.assertIn('/net/s: share on 0.65282', text)
+        self.assertIn('/net/s           0.65282     share       up', text)
         self.assertIn('/> ls /net\ns', text)
         for name in ('big.bin', 'hello.txt', 'sub'):
             self.assertIn(name, text)
@@ -124,7 +124,7 @@ class NetfsTests(unittest.TestCase):
         self.assertIn('status=0', text)
 
     def test_write_mkdir_copy_move_remove(self):
-        text = self.run_shell('netfs mount .FF02 share s', 'echo written > /net/s/new.txt',
+        text = self.run_shell('netfs mount .65282 share s', 'echo written > /net/s/new.txt',
                               'echo more >> /net/s/new.txt', 'mkdir /net/s/d',
                               'cp /net/s/big.bin /net/s/d/copy.bin', 'mv /net/s/new.txt /net/s/d/moved.txt',
                               'cp /net/s/hello.txt /tmp/local.txt', 'cat /tmp/local.txt',
@@ -141,7 +141,7 @@ class NetfsTests(unittest.TestCase):
         self.assertNotIn('status=0', text)  # the last mv failed
 
     def test_cwd_relative_paths_and_read_only(self):
-        text = self.run_shell('netfs mount .FF02 share s', 'netfs mount .FF02 ro r -r', 'cd /net/s/sub',
+        text = self.run_shell('netfs mount .65282 share s', 'netfs mount .65282 ro r -r', 'cd /net/s/sub',
                               'pwd', 'cat inner.txt', 'cat ../hello.txt', 'ls ..', 'cd ..', 'pwd',
                               'cd ../r', 'cat note.txt', 'echo x > note.txt', 'cd /', 'netfs umount r',
                               'ls /net', 'echo done=$?')
@@ -160,13 +160,13 @@ class NetfsTests(unittest.TestCase):
         # node and socket; libl3p must not repeat its NONCE (spec_NET_L3P
         # §4.1), or the server answers with that old association.
         for _ in range(2):
-            text = self.run_shell('netfs mount .FF02 share s', 'cat /net/s/hello.txt')
-            self.assertIn('/net/s: share on 0000.FF02', text)
+            text = self.run_shell('netfs mount .65282 share s', 'cat /net/s/hello.txt')
+            self.assertIn('/net/s: share on 0.65282', text)
             self.assertIn('hello from the host', text)
 
     def test_errors(self):
-        text = self.run_shell('netfs mount .FF02 nothere x', 'netfs mount .FF02 share s',
-                              'netfs mount .FF02 share s', 'cat /net/s/missing', 'cat /net/none/x',
+        text = self.run_shell('netfs mount .65282 nothere x', 'netfs mount .65282 share s',
+                              'netfs mount .65282 share s', 'cat /net/s/missing', 'cat /net/none/x',
                               'mkdir /net/new', 'netfs umount nope', 'echo done=$?')
         self.assertIn('netfs: x: not found', text)
         self.assertIn('netfs: s: already exists', text)

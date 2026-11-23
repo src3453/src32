@@ -71,7 +71,7 @@ CHIP-8 エミュレータの起動・キー配列・互換性は [CHIP-8 仕様�
 
 `/dev/cnet` は CNET ネットワークカード（拡張スロット）のデータグラムソケットを公開し、WAL `libcnet`（`/lib/cnet.1.wal`）とシェルコマンド `cnet`（`cnet ping 1.20` など）から使えます（[API §9.6](../doc/spec_Foundation_API.md#96-cnet-ネットワーク-devcnet)、[CNET 仕様](../doc/spec_NET.md)）。2 台のエミュレータでのチャットのデモは [`examples/cnet-chat`](../examples/cnet-chat/README.md)（`python examples/cnet-chat/run_demo.py`）。ホストの [TCP ブリッジ](../tools/cnet-bridge/README.md)（`tools/cnet-bridge/cnet_bridge.py`）を同じセグメントに置くと、`telnet HOST` と `ssh USER@HOST` で外部の telnet・SSH サーバーに接続できます（[仕様](../doc/spec_NET_bridge.md)）。検証は `python -m unittest discover -s foundation/tests/cnet -v`（testbench・Clang・Cargo と wasm32 ターゲット・localhost UDP が必要）。
 
-ホストの [CFP サーバー](../tools/cfp-server/README.md)（`tools/cfp-server/cfp_server.py`）を同じセグメントに置くと、`netfs mount .FF02 share s` でその輸出を `/net/s` に mount し、`ls`・`cat`・`cp`・`mv`・`rm`・`cd` で使えます（`netfs exports` で輸出を探せます）。mount は同梱モジュールの netfs サービス（`services/netfs`）が持ち、fs は `/net/<名前>` の下の操作をワーカースレッドから netfs へ転送します（[CFP 仕様 §11](../doc/spec_NET_FP.md)、[API §9.7](../doc/spec_Foundation_API.md)）。検証は `python -m unittest discover -s foundation/tests/cfp -v`。
+ホストの [CFP サーバー](../tools/cfp-server/README.md)（`tools/cfp-server/cfp_server.py`）を同じセグメントに置くと、`netfs mount .65282 share s` でその輸出を `/net/s` に mount し、`ls`・`cat`・`cp`・`mv`・`rm`・`cd` で使えます（`netfs exports` で輸出を探せます）。mount は同梱モジュールの netfs サービス（`services/netfs`）が持ち、fs は `/net/<名前>` の下の操作をワーカースレッドから netfs へ転送します（[CFP 仕様 §11](../doc/spec_NET_FP.md)、[API §9.7](../doc/spec_Foundation_API.md)）。検証は `python -m unittest discover -s foundation/tests/cfp -v`。
 
 `/dev/sgu` は SGU 2基・16チャンネルと共有 PCMRAM を1ストリームで公開します（[API §9.2](../doc/spec_Foundation_API.md#92-sgu-2基と共有-pcmram-devsgu)）。
 

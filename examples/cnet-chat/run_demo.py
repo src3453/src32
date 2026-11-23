@@ -3,11 +3,11 @@
 Builds Foundation, the CNET card and the chat program, then starts two
 emulators on one UDP segment on this machine:
 
-    A  node 0001.0010   type:  chat 20
-    B  node 0001.0020   type:  chat 10
+    A  node 1.16   type:  chat 32
+    B  node 1.32   type:  chat 16
 
 Each window then sends every typed line to the other. The shell's own
-`cnet ping 20` / `cnet send 20:77 hello` work as well.
+`cnet ping 32` / `cnet send 32:77 hello` work as well.
 
     python examples/cnet-chat/run_demo.py [--clang PATH]
     python examples/cnet-chat/run_demo.py --headless   # scripted, two testbenches
@@ -39,8 +39,8 @@ import fs2  # noqa: E402
 
 # Headless script: frame -> text for each side (60 frames per second).
 SCRIPT = {
-    "A": [(150, "chat 20\\n"), (300, "hello from A\\n"), (520, "fine, bye\\n")],
-    "B": [(150, "chat 10\\n"), (420, "hi A, this is B\\n")],
+    "A": [(150, "chat 32\\n"), (300, "hello from A\\n"), (520, "fine, bye\\n")],
+    "B": [(150, "chat 16\\n"), (420, "hi A, this is B\\n")],
 }
 HEADLESS_FRAMES = 660
 
@@ -141,10 +141,10 @@ def headless(image, directories):
         if process.returncode != 0:
             raise SystemExit(f"testbench {name} failed:\n{stdout}\n{stderr}")
         screens[name] = screen(stdout)
-        print(f"===== {name} (node {NET:04X}.{NODES[name]:04X}) =====")
+        print(f"===== {name} (node {NET}.{NODES[name]}) =====")
         print("\n".join(screens[name]))
-    expected = {"A": ["<0001.0020> hi A, this is B"],
-                "B": ["<0001.0010> hello from A", "<0001.0010> fine, bye"]}
+    expected = {"A": ["<1.32> hi A, this is B"],
+                "B": ["<1.16> hello from A", "<1.16> fine, bye"]}
     missing = [(name, line) for name, lines in expected.items() for line in lines
                if not any(line in row for row in screens[name])]
     if missing:
@@ -168,7 +168,7 @@ def main():
         return headless(image, directories)
     run(["cargo", "build", "--release", "--bin", "cpt32"])
     executable = ROOT / "target/release" / ("cpt32.exe" if os.name == "nt" else "cpt32")
-    print("A: type `chat 20`   B: type `chat 10`", flush=True)
+    print("A: type `chat 32`   B: type `chat 16`", flush=True)
     processes = [subprocess.Popen([str(executable), str(image)], cwd=directory)
                  for directory in directories.values()]
     return max(process.wait() for process in processes)

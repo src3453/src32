@@ -46,18 +46,19 @@ int32_t cnet_sendto(fnd_handle h, uint32_t addr, uint32_t socket, uint32_t proto
  * FND_E_LIMIT if cap is too small; the datagram then stays queued.
  * from may be 0. */
 int32_t cnet_recvfrom(fnd_handle h, void *buf, uint32_t cap, uint32_t flags, cnet_peer *from);
-/* Parses "NET.NODE" (hex) into *addr. A node on the local network may be
+/* Parses "NET.NODE" into *addr: decimal, or all hex with a trailing H/h
+ * ("FFFF.FFFFH"); the two never mix. A node on the local network may be
  * written ".NODE" or "NODE"; both give NET 0 (this network).
  * FND_E_BAD_ARG otherwise. */
 int32_t cnet_parse_addr(const char *text, uint32_t *addr);
-/* Writes "NNNN.NNNN" and a NUL into out[10]. */
+/* Writes decimal "NET.NODE" and a NUL into out[12]. */
 void cnet_format_addr(uint32_t addr, char *out);
 /* Parses an endpoint "ADDR:SOCK": ADDR as for cnet_parse_addr, SOCK a
- * socket 1..FE in hex (leading zeros may be dropped). Without ":SOCK", *socket keeps the caller's
+ * socket 0..255 (the trailing H, if any, covers the whole string). Without ":SOCK", *socket keeps the caller's
  * value (a default); a caller that requires a socket presets 0 and checks.
  * FND_E_BAD_ARG otherwise; *addr and *socket are then unchanged. */
 int32_t cnet_parse_endpoint(const char *text, uint32_t *addr, uint32_t *socket);
-/* Writes "NNNN.NNNN:SS" (all hex) and a NUL into out[13]. */
+/* Writes decimal "NET.NODE:SOCK" and a NUL into out[16]. */
 void cnet_format_endpoint(uint32_t addr, uint32_t socket, char *out);
 
 #endif

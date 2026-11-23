@@ -87,20 +87,56 @@ def parse_hostport(text, default_port=None):
     return host.strip('[]') or '0.0.0.0', int(port)
 
 
+def _number(text, base, limit):
+    digits = '0123456789ABCDEF'[:base]
+    if not text or any(c not in digits for c in text.upper()):
+        raise ValueError(f'bad number {text!r}')
+    value = int(text, base)
+    if value > limit:
+        raise ValueError(f'{text}: out of range')
+    return value
+
+
+def split_notation(text):
+    """(body, base) for the spec_NET §2 notation: decimal by default, all
+    hexadecimal when the whole string ends in H/h. The two never mix."""
+    if text[-1:] in ('H', 'h'):
+        return text[:-1], 16
+    return text, 10
+
+
+def parse_node(text):
+    """A bare node number: decimal, or hex with a trailing H."""
+    body, base = split_notation(text)
+    return _number(body, base, 0xFFFF)
+
+
+def parse_endpoint(text):
+    """CNET NET.NODE[:SOCK] (spec_NET §2). NET and NODE are 0-65535, SOCK
+    0-255 (decimal, or all hex with a trailing H). .NODE and NODE mean NET 0.
+    Returns (net, node, sock or None)."""
+    try:
+        body, base = split_notation(text)
+        addr, sep, sock = body.partition(':')
+        net, dot, node = addr.rpartition('.')
+        if not dot:
+            net, node = '', addr
+        return (_number(net, base, 0xFFFF) if net else 0, _number(node, base, 0xFFFF),
+                _number(sock, base, 0xFF) if sep else None)
+    except ValueError:
+        raise ValueError(f'{text}: bad CNET address') from None
+
+
 def parse_addr(text):
-    """CNET address in the spec_NET §2 notation: NET.NODE, .NODE or NODE (hex)."""
-    net, sep, node = text.rpartition('.')
-    if not sep:
-        net, node = '', text
-    net = int(net, 16) if net else 0
-    node = int(node, 16)
-    if not 0 <= net <= 0xFFFE or not 1 <= node <= 0xFFFF:
+    """CNET address in the spec_NET §2 notation: NET.NODE, .NODE or NODE."""
+    net, node, sock = parse_endpoint(text)
+    if sock is not None or not 0 <= net <= 0xFFFE or not 1 <= node <= 0xFFFF:
         raise ValueError(f'{text}: bad CNET address')
     return net, node
 
 
 def format_addr(net, node):
-    return f'{net:04X}.{node:04X}'
+    return f'{net}.{node}'
 
 
 def log(*args):
@@ -605,7 +641,7 @@ class Assoc:
     @property
     def name(self):
         net, node, sock = self.peer
-        return f'{format_addr(net, node)}:{sock:02X} #{self.conn:08X}'
+        return f'{format_addr(net, node)}:{sock} #{self.conn:08X}'
 
     @property
     def encrypted(self):
@@ -1387,7 +1423,7 @@ class Endpoint:
 
         def refuse(reason, message=''):
             if self.verbose:
-                log(f'{format_addr(net, node)}:{sock:02X}', 'refused:', REASONS[reason], message)
+                log(f'{format_addr(net, node)}:{sock}', 'refused:', REASONS[reason], message)
             self._reset(peer, kind, 0, reason, message, seq=nonce)
 
         if nonce == 0 or options & ~(OPT_ENC | OPT_PSK) or (options & OPT_PSK and not options & OPT_ENC):

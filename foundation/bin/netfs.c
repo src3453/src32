@@ -64,14 +64,14 @@ static int32_t cmd_list(void) {
         const uint8_t *r = buf + i * FND_NET_LIST_RECORD;
         uint32_t w[3];
         copy(w, r, 12);
-        char addr[10], name[33], export_name[33];
+        char addr[16], name[33], export_name[33];
         copy(name, r + 12, 32);
         copy(export_name, r + 44, 32);
         name[32] = export_name[32] = 0;
         cnet_format_addr(w[0], addr);
         cmd_out("/net/");
         out_padded(name, 12);
-        out_padded(addr, 11);
+        out_padded(addr, 12);
         out_padded(export_name, 12);
         cmd_out(w[2] ? "up" : "down");
         if (w[1] & FND_NET_MOUNT_RO) cmd_out(" ro");
@@ -101,7 +101,7 @@ static int32_t cmd_exports(uint32_t argc) {
         uint32_t n = w[2];
         at += 12u + ((n + 3u) & ~3u);
         if (n < 8u || m[0] != (T_EXPORTS | 0x80u)) continue;
-        char from[10];
+        char from[16];
         cnet_format_addr(w[0], from);
         uint32_t entries = rd16(m + 4), off = 8;
         for (uint32_t e = 0; e < entries && off + 4u <= n; ++e) {
@@ -111,7 +111,7 @@ static int32_t cmd_exports(uint32_t argc) {
             copy(name, m + off + 4, nl);
             name[nl] = 0;
             off += (4u + nl + 3u) & ~3u;
-            out_padded(from, 11);
+            out_padded(from, 12);
             cmd_out(name);
             if (flags & 1u) cmd_out(" ro");
             if (flags & 2u) cmd_out(" enc");
@@ -149,7 +149,7 @@ static int32_t cmd_mount(uint32_t argc) {
     st = fnd_call(svc, FND_NET_MOUNT, args, data, el + nl, 0, 0, 0);
     fnd_sys_handle_close(svc);
     if (st != FND_OK) return cmd_report("netfs", pos[2], st);
-    char text[10];
+    char text[16];
     cnet_format_addr(addr, text);
     cmd_out("/net/");
     cmd_out(pos[2]);
