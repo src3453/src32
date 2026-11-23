@@ -799,12 +799,13 @@ impl Bus {
         true
     }
 
-    /// Experimental idle-device batching. Active transfers and expansion cards
-    /// retain the ordinary cycle-by-cycle path. Bus accesses flush the batch.
+    /// Experimental idle-device batching. Active transfers retain the ordinary
+    /// cycle-by-cycle path. Bus accesses flush the batch. Expansion-card
+    /// deadlines end the window like timer deadlines (`cycles_until_next_event`);
+    /// network frames that arrive during a batch are delivered when it flushes.
     pub(crate) fn tick_relaxed_devices(&mut self) {
         if self.relaxed_cycles == 0 {
-            if self.has_expansion_cards
-                || self.has_pending_dma()
+            if self.has_pending_dma()
                 || self
                     .dmac
                     .as_ref()
@@ -832,8 +833,7 @@ impl Bus {
         if self.relaxed_cycles != 0 {
             return self.relaxed_limit.saturating_sub(self.relaxed_cycles + 1);
         }
-        if self.has_expansion_cards
-            || self.has_pending_dma()
+        if self.has_pending_dma()
             || self
                 .dmac
                 .as_ref()
@@ -882,16 +882,15 @@ impl Bus {
     /// CPU cycles from now during which per-cycle device ticks are known to
     /// change nothing but clocks: no DMA request, IDC deadline, timer/RTC IRQ
     /// or expansion event. Pure reads observe constant values meanwhile.
-    /// Host input arrives asynchronously and is not covered.
+    /// Host input and network frames for expansion cards arrive asynchronously
+    /// and are not covered: they are taken at the end of the window.
     /// A transfer the spin fast-forward can run in bulk (`Dmac::spin_channel`)
     /// does not end the window; its beats are accounted by `advance_spin`.
     pub(crate) fn quiet_cycles(&self) -> u64 {
-        if self.has_expansion_cards
-            || self.dmac.as_ref().is_some_and(|dmac| {
-                let dmac = dmac.borrow();
-                dmac.request_mask() != 0 && dmac.spin_channel().is_none()
-            })
-        {
+        if self.dmac.as_ref().is_some_and(|dmac| {
+            let dmac = dmac.borrow();
+            dmac.request_mask() != 0 && dmac.spin_channel().is_none()
+        }) {
             return 0;
         }
         let mut quiet = self.idc.as_ref().map_or(u64::MAX, |idc| {
@@ -1699,7 +1698,7 @@ mod relaxed_device_tests {
     }
 
     #[test]
-    fn relaxed_ticks_stop_at_timer_deadline_and_disable_for_cards() {
+    fn relaxed_ticks_stop_at_timer_deadline() {
         let mut bus = Bus::new();
         connect_pec_timer_rtc(&mut bus);
         let irq = crate::devices::irqc::irqc::connect_irqc(&mut bus);
@@ -1714,8 +1713,94 @@ mod relaxed_device_tests {
         bus.tick_relaxed_devices();
         assert_eq!(bus.system_cycles(), 7);
         assert_ne!(irq.borrow().pending() & (1 << 4), 0);
+    }
+
+    /// Expansion card stand-in: one scheduled event that asserts its IRQ.
+    struct DeadlineCard {
+        deadline: Rc<std::cell::Cell<Option<u64>>>,
+        ran_at: Rc<std::cell::Cell<Option<u64>>>,
+    }
+
+    impl Device for DeadlineCard {
+        fn read(&mut self, _addr: u32) -> u8 {
+            0
+        }
+        fn write(&mut self, _addr: u32, _value: u8) {}
+        fn size(&self) -> u32 {
+            EXPANSION_SLOT_SIZE
+        }
+        fn next_event_cycle(&self) -> Option<u64> {
+            self.deadline.get()
+        }
+        fn run_scheduled_event(&mut self, cycle: u64) {
+            self.deadline.set(None);
+            self.ran_at.set(Some(cycle));
+        }
+        fn irq_asserted(&self) -> bool {
+            self.ran_at.get().is_some()
+        }
+    }
+
+    fn install_deadline_card(
+        bus: &mut Bus,
+        deadline: u64,
+    ) -> (
+        Rc<std::cell::Cell<Option<u64>>>,
+        Rc<std::cell::Cell<Option<u64>>>,
+    ) {
+        let deadline = Rc::new(std::cell::Cell::new(Some(deadline)));
+        let ran_at = Rc::new(std::cell::Cell::new(None));
+        bus.add_device(
+            EXPANSION_BASE,
+            "test card",
+            Box::new(DeadlineCard {
+                deadline: Rc::clone(&deadline),
+                ran_at: Rc::clone(&ran_at),
+            }),
+        );
+        bus.expansion_devices[0] = Some(bus.devices.len() - 1);
         bus.has_expansion_cards = true;
+        (deadline, ran_at)
+    }
+
+    #[test]
+    fn installed_cards_keep_relaxed_batching_until_their_deadline() {
+        let mut bus = Bus::new();
+        let irq = crate::devices::irqc::irqc::connect_irqc(&mut bus);
+        bus.attach_irq_controller(Rc::clone(&irq));
+        let (deadline, ran_at) = install_deadline_card(&mut bus, 100);
+        // Batched up to the card deadline, which ends the window on time.
+        for _ in 0..99 {
+            bus.tick_relaxed_devices();
+        }
+        assert_eq!(bus.system_cycles(), 0);
         bus.tick_relaxed_devices();
-        assert_eq!(bus.system_cycles(), 8);
+        assert_eq!(bus.system_cycles(), 100);
+        assert_eq!(ran_at.get(), Some(100));
+        // Slot 0 is IRQ source 5.
+        assert_ne!(irq.borrow().pending() & (1 << 5), 0);
+        // With nothing scheduled the window is the default batch.
+        assert_eq!(deadline.get(), None);
+        assert_eq!(bus.quiet_cycles(), u64::MAX);
+        for _ in 0..RELAXED_DEVICE_WINDOW {
+            bus.tick_relaxed_devices();
+        }
+        assert_eq!(bus.system_cycles(), 100 + RELAXED_DEVICE_WINDOW);
+        // A card access observes current device time.
+        bus.tick_relaxed_devices();
+        bus.read_u8(EXPANSION_BASE);
+        assert_eq!(bus.system_cycles(), 101 + RELAXED_DEVICE_WINDOW);
+    }
+
+    #[test]
+    fn quiet_window_ends_before_a_card_deadline() {
+        let mut bus = Bus::new();
+        let (deadline, ran_at) = install_deadline_card(&mut bus, 50);
+        assert_eq!(bus.quiet_cycles(), 49);
+        bus.advance_quiet_cycles(49);
+        assert_eq!(ran_at.get(), None);
+        // An event due now (a queued network frame) leaves no quiet window.
+        deadline.set(Some(bus.system_cycles()));
+        assert_eq!(bus.quiet_cycles(), 0);
     }
 }
