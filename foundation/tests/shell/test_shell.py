@@ -256,24 +256,24 @@ class ShellTests(unittest.TestCase):
                            'ls /nope\\n', 'ls -x\\n')
         self.assertEqual(rows[:2], BANNER)
         self.assertIn('/> ls', rows)
-        self.assertTrue(any(row.startswith('a.txt   B.txt   ') for row in rows), rows)
+        self.assertTrue(any(row.startswith('a.txt  B.txt  ') for row in rows), rows)
         self.assertIn('/bin/echo.wax', rows)
         self.assertIn('ls: /nope: not found (-10)', rows)
-        self.assertIn('usage: ls [-l] [path...]', rows)
+        self.assertIn('usage: ls [-1l] [path...]', rows)
 
-    def test_ls_tab_output(self):
-        # Check actual HT/LF bytes as well as console expansion and boundaries.
+    def test_ls_output_boundaries(self):
+        # Check redirected LF bytes and console spacing between path listings.
         rows = self.screen('mkdir /names\\n', 'mkdir /empty\\n',
                            'echo a > /names/B.txt\\n', 'echo a > /names/a.txt\\n',
                            'ls /names > /list.txt\\n', 'ls /empty > /empty.txt\\n',
                            'ls /names /empty /names/a.txt\\n')
         self.assertEqual(rows[-9:], [
             '/> ls /names /empty /names/a.txt',
-            '/names:', 'a.txt   B.txt', '', '/empty:', '',
+            '/names:', 'a.txt  B.txt', '', '/empty:', '',
             '/names/a.txt:', '/names/a.txt', '/>',
         ])
         vol = fs2.Volume(bytearray((self.last_run / 'disk.img').read_bytes()), allow_dirty=True)
-        self.assertEqual(vol.read(vol.resolve('/list.txt')), b'a.txt\tB.txt\n')
+        self.assertEqual(vol.read(vol.resolve('/list.txt')), b'a.txt\nB.txt\n')
         self.assertEqual(vol.read(vol.resolve('/empty.txt')), b'')
 
     def test_tree(self):
@@ -291,6 +291,16 @@ class ShellTests(unittest.TestCase):
         self.assertIn('/f.txt', rows)
         self.assertIn('0 directories, 1 file', rows)
         self.assertIn('usage: tree [-d] [path...]', rows)
+
+    def test_ls_column_width(self):
+        long_name = 'b' * 68
+        rows = self.screen('mkdir /names\\n', 'echo a > /names/a.txt\\n',
+                           f'echo a > /names/{long_name}\\n', 'echo a > /names/c.txt\\n',
+                           'ls /names\\n', 'ls -1 /names\\n')
+        self.assertEqual(rows[-8:], [
+            '/> ls /names', 'a.txt'.ljust(70) + 'c.txt', long_name,
+            '/> ls -1 /names', 'a.txt', long_name, 'c.txt', '/>',
+        ])
 
     def test_hex(self):
         # Cursor edit both nibbles, ASCII edit, exact goto, legacy command,

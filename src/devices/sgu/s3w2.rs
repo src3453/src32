@@ -75,8 +75,10 @@ pub enum SguVersion {
     /// v2.1 plus the 34SI22 record/playback interface chip (doc/spec_34SI22.md).
     V3,
     /// 3WS8PNB: per-channel wavetable length and interpolation control.
-    #[default]
     V3_1,
+    /// v3.1 with the 34SI22A (34SI22 plus a FIFO DAC; doc/spec_34SI22.md section 11).
+    #[default]
+    V3_2,
 }
 
 impl SguVersion {
@@ -87,6 +89,7 @@ impl SguVersion {
             "2.1" => Some(Self::V2_1),
             "3" | "3.0" => Some(Self::V3),
             "3.1" => Some(Self::V3_1),
+            "3.2" => Some(Self::V3_2),
             _ => None,
         }
     }
@@ -97,12 +100,22 @@ impl SguVersion {
     }
 
     fn has_3ws8pna(self) -> bool {
-        matches!(self, Self::V2_1 | Self::V3 | Self::V3_1)
+        matches!(self, Self::V2_1 | Self::V3 | Self::V3_1 | Self::V3_2)
     }
 
-    /// True when the 34SI22 is mapped next to the SGU cores.
+    /// 3WS8PNB features (SAMPLE_CONTROL): v3.1 and later.
+    fn has_3ws8pnb(self) -> bool {
+        matches!(self, Self::V3_1 | Self::V3_2)
+    }
+
+    /// True when the 34SI22 (or 34SI22A) is mapped next to the SGU cores.
     pub fn has_34si22(self) -> bool {
-        matches!(self, Self::V3 | Self::V3_1)
+        matches!(self, Self::V3 | Self::V3_1 | Self::V3_2)
+    }
+
+    /// True when that chip is the 34SI22A (FIFO DAC).
+    pub fn has_34si22a(self) -> bool {
+        self == Self::V3_2
     }
 }
 
@@ -467,7 +480,7 @@ impl S3w2Sound {
                 0x0E | 0x0F if self.version.has_3ws8pna() => {
                     (self.channels[ch].fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
                 }
-                0x1A if self.version == SguVersion::V3_1 => self.channels[ch].sample_control,
+                0x1A if self.version.has_3ws8pnb() => self.channels[ch].sample_control,
                 0x10..=0x19 => self.read_channel_pcm_reg(ch, offset - 0x10),
                 _ => 0,
             }
@@ -581,7 +594,7 @@ impl S3w2Sound {
                     c.fifo.push_back(i16::from_be_bytes([c.fifo_latch, value]));
                 }
             }
-            0x1A if version == SguVersion::V3_1 => c.sample_control = value & 7,
+            0x1A if version.has_3ws8pnb() => c.sample_control = value & 7,
             _ => {}
         }
     }
@@ -613,7 +626,7 @@ impl S3w2Sound {
                 0
             }
             0x0B => c.modulation_targeting_mode & 0x01,
-            0x1A if self.version == SguVersion::V3_1 => c.sample_control,
+            0x1A if self.version.has_3ws8pnb() => c.sample_control,
             0x0E | 0x0F if self.version.has_3ws8pna() => {
                 (c.fifo.len() as u16 >> ((0x0F - offset) * 8)) as u8
             }
@@ -764,11 +777,11 @@ impl S3w2Sound {
     /// unless 3WS8PNB SAMPLE_CONTROL bit 2 selects sample hold).
     pub fn interpolates(&self, ch: usize) -> bool {
         self.version.has_3ws8pna()
-            && (self.version != SguVersion::V3_1 || self.channels[ch].sample_control & 4 == 0)
+            && (!self.version.has_3ws8pnb() || self.channels[ch].sample_control & 4 == 0)
     }
 
     fn wavetable_mask(&self, ch: usize) -> u64 {
-        if self.version == SguVersion::V3_1 {
+        if self.version.has_3ws8pnb() {
             (256u64 >> (self.channels[ch].sample_control & 3)) - 1
         } else {
             255
@@ -1566,7 +1579,8 @@ mod tests {
         assert_eq!(SguVersion::parse("3"), Some(SguVersion::V3));
         assert_eq!(SguVersion::parse("4"), None);
         assert_eq!(SguVersion::parse("3.1"), Some(SguVersion::V3_1));
-        assert_eq!(SguVersion::default(), SguVersion::V3_1);
+        assert_eq!(SguVersion::parse("3.2"), Some(SguVersion::V3_2));
+        assert_eq!(SguVersion::default(), SguVersion::V3_2);
     }
 
     #[test]

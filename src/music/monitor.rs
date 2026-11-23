@@ -19,7 +19,7 @@ use crate::devices::sgu::s3w2::{
     SAMPLE_RATE, SQV4_FREQ_MAX, SguVersion, WaveformType, saturate_output,
 };
 use crate::devices::sgu::sgu::Si22Unit;
-use crate::devices::sgu::si22::Si22;
+use crate::devices::sgu::si22::{Si22, Si22Variant};
 use crate::devices::sgu::sqv4;
 
 /// Voices across both SGU cores.
@@ -713,7 +713,7 @@ impl Engine {
         let (cores, pcm_ram) = new_cores(version);
         Ok(Self {
             cores,
-            si22: Si22Unit::new(pcm_ram),
+            si22: Si22Unit::new(pcm_ram, si22_variant(version)),
             cards,
             player,
             bytes,
@@ -1078,7 +1078,7 @@ impl Engine {
         self.player = player;
         let (cores, pcm_ram) = new_cores(self.version);
         self.cores = cores;
-        self.si22 = Si22Unit::new(pcm_ram);
+        self.si22 = Si22Unit::new(pcm_ram, si22_variant(self.version));
         for card in &mut self.cards {
             card.reset();
         }
@@ -1127,6 +1127,15 @@ pub fn apply_gain(sample: i32, gain: u16) -> i32 {
         sample
     } else {
         sample * i32::from(gain) / i32::from(UNITY_GAIN)
+    }
+}
+
+/// The 34SI22 revision the SGU version carries (34SI22A from v3.2 on).
+fn si22_variant(version: SguVersion) -> Si22Variant {
+    if version.has_34si22a() {
+        Si22Variant::A
+    } else {
+        Si22Variant::Base
     }
 }
 
