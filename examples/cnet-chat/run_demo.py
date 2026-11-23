@@ -60,7 +60,7 @@ def build(args):
          "--target", "wasm32-unknown-unknown"])
     card = OUT / "cnet.cpt32card"
     with zipfile.ZipFile(card, "w", compression=zipfile.ZIP_DEFLATED) as package:
-        package.writestr("manifest.yaml", "abi_version: 1\nmodule: card.wasm\ncapabilities: [network]\n")
+        package.writestr("manifest.yaml", "abi_version: 1\nmodule: card.wasm\ncapabilities: [network, gui]\n")
         package.write(CARD_WASM, "card.wasm")
     chat = OUT / "chat.wax"
     command = [sys.executable, ROOT / "tools/llvm-src32/driver.py", HERE / "chat.c",

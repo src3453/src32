@@ -15,6 +15,7 @@ use cpt32::cpu_privilege::{DebugTranslation, describe_cause};
 use cpt32::cpu_select::{AnyCpu, CpuKind, resolve_cpu_kind, split_cpu_arg};
 use cpt32::devices::expansion::{
     EXPANSION_SLOT_COUNT, ExpansionCallKind, ExpansionCallStats, ExpansionCardDebugInfo,
+    ExpansionUiEvent, ExpansionUiItem,
 };
 use cpt32::devices::pec::idc::idc::connect_idc_from_config;
 use cpt32::devices::pec::pec::{HostInputEvent, connect_pec_input, pec_trace_enabled};
@@ -1293,6 +1294,8 @@ struct ExpansionDebugState {
     /// (calls, fuel) per entry point since the previous GUI frame.
     frame: [[(u64, u64); ExpansionCallKind::COUNT]; EXPANSION_SLOT_COUNT as usize],
     detail_open: [bool; EXPANSION_SLOT_COUNT as usize],
+    /// Card panels (`gui` capability, `doc/spec_WASM_expansion_card.md` §3.4).
+    panel_open: [bool; EXPANSION_SLOT_COUNT as usize],
 }
 
 impl ExpansionDebugState {
@@ -1318,6 +1321,77 @@ impl ExpansionDebugState {
         self.frame[usize::from(slot)]
             .iter()
             .fold((0, 0), |(calls, fuel), &(c, f)| (calls + c, fuel + f))
+    }
+}
+
+/// Draw widgets described by a card's `cpt32_ui` and collect user input.
+fn draw_expansion_ui_items(
+    ui: &Ui,
+    items: &[ExpansionUiItem],
+    events: &mut Vec<(i32, ExpansionUiEvent)>,
+) {
+    for item in items {
+        match item {
+            ExpansionUiItem::Text { text, color: None } => ui.text(text),
+            ExpansionUiItem::Text {
+                text,
+                color: Some(color),
+            } => ui.text_colored(*color, text),
+            ExpansionUiItem::Separator => ui.separator(),
+            ExpansionUiItem::SameLine => ui.same_line(),
+            ExpansionUiItem::Button { id, label } => {
+                let _id = ui.push_id_int(*id);
+                if ui.button(label) {
+                    events.push((*id, ExpansionUiEvent::Clicked));
+                }
+            }
+            ExpansionUiItem::Checkbox { id, label, value } => {
+                let _id = ui.push_id_int(*id);
+                let mut value = *value;
+                if ui.checkbox(label, &mut value) {
+                    events.push((*id, ExpansionUiEvent::Checkbox(value)));
+                }
+            }
+            ExpansionUiItem::InputInt {
+                id,
+                label,
+                value,
+                min,
+                max,
+            } => {
+                let _id = ui.push_id_int(*id);
+                let mut edited = *value;
+                if ui.input_int(label, &mut edited).build() {
+                    let edited = edited.clamp(*min, *max);
+                    if edited != *value {
+                        events.push((*id, ExpansionUiEvent::Int(edited)));
+                    }
+                }
+            }
+            ExpansionUiItem::InputText {
+                id,
+                label,
+                value,
+                capacity,
+            } => {
+                let _id = ui.push_id_int(*id);
+                // While the field is active ImGui edits its own copy; the
+                // card's value is shown again after Enter or focus loss.
+                let mut text = value.clone();
+                if ui
+                    .input_text(label, &mut text)
+                    .enter_returns_true(true)
+                    .build()
+                {
+                    let mut end = text.len().min(*capacity);
+                    while !text.is_char_boundary(end) {
+                        end -= 1;
+                    }
+                    text.truncate(end);
+                    events.push((*id, ExpansionUiEvent::Text(text)));
+                }
+            }
+        }
     }
 }
 
@@ -1523,6 +1597,13 @@ impl DebugUiState {
                     if ui.menu_item_config(label).selected(*open).build() {
                         *open = !*open;
                     }
+                    if card.gui_capable {
+                        let open = &mut self.expansion.panel_open[usize::from(card.slot)];
+                        let label = format!("Slot {} panel", card.slot);
+                        if ui.menu_item_config(label).selected(*open).build() {
+                            *open = !*open;
+                        }
+                    }
                 }
             });
             ui.menu("Help", || {
@@ -1594,6 +1675,42 @@ impl DebugUiState {
             self.draw_mmu(ui, cpu);
         }
         self.draw_expansion_details(ui, cpu);
+        self.draw_expansion_panels(ui, cpu);
+    }
+
+    /// Draw the panel of each open `gui` card. The card describes its widgets
+    /// in `cpt32_ui`; input is queued and returned to it on the next frame.
+    fn draw_expansion_panels(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
+        for card in &self.expansion.cards {
+            let slot = usize::from(card.slot);
+            if !card.gui_capable || !self.expansion.panel_open[slot] {
+                continue;
+            }
+            // Faulted cards are not called; the panel shows the reason instead.
+            let items = cpu.expansion_card_ui(card.slot);
+            let fault = card.fault_reason.clone().or_else(|| {
+                items
+                    .is_none()
+                    .then(|| "the card faulted while drawing its panel".to_string())
+            });
+            let mut events = Vec::new();
+            ui.window(format!(
+                "Panel slot {}: {}###wasm_panel_{slot}",
+                card.slot, card.label
+            ))
+            .opened(&mut self.expansion.panel_open[slot])
+            .size([520.0, 420.0], Condition::FirstUseEver)
+            .build(|| match &items {
+                Some(items) => draw_expansion_ui_items(ui, items, &mut events),
+                None => ui.text_colored(
+                    [1.0, 0.4, 0.4, 1.0],
+                    format!("Fault: {}", fault.as_deref().unwrap_or("unknown")),
+                ),
+            });
+            for (id, event) in events {
+                cpu.expansion_card_ui_event(card.slot, id, event);
+            }
+        }
     }
 
     fn draw_expansion_overview(&mut self, ui: &Ui, cpu: &mut AnyCpu) {
@@ -1647,6 +1764,13 @@ impl DebugUiState {
                         let open = &mut self.expansion.detail_open[usize::from(card.slot)];
                         if ui.small_button(format!("Details##card{}", card.slot)) {
                             *open = true;
+                        }
+                        if card.gui_capable {
+                            ui.same_line();
+                            let open = &mut self.expansion.panel_open[usize::from(card.slot)];
+                            if ui.small_button(format!("Panel##card{}", card.slot)) {
+                                *open = true;
+                            }
                         }
                     }
                 }

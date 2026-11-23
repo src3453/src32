@@ -589,6 +589,32 @@ impl AnyCpu {
         }
     }
 
+    pub fn expansion_card_ui(
+        &mut self,
+        slot: u8,
+    ) -> Option<Vec<crate::devices::expansion::ExpansionUiItem>> {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.expansion_card_ui(slot)
+            }
+            AnyCpu::Pipelined(cpu) => cpu.expansion_card_ui(slot),
+        }
+    }
+
+    pub fn expansion_card_ui_event(
+        &mut self,
+        slot: u8,
+        id: i32,
+        event: crate::devices::expansion::ExpansionUiEvent,
+    ) {
+        match self {
+            AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {
+                cpu.expansion_card_ui_event(slot, id, event)
+            }
+            AnyCpu::Pipelined(cpu) => cpu.expansion_card_ui_event(slot, id, event),
+        }
+    }
+
     pub fn decode_at(&mut self, addr: u32, mode: InstructionMode) -> DecodedInstruction {
         match self {
             AnyCpu::Scalar(cpu) | AnyCpu::Cached(cpu) | AnyCpu::Jit(cpu) => {

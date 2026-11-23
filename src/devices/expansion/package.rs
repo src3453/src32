@@ -19,7 +19,7 @@ struct Manifest {
     module: String,
     #[serde(default)]
     asset: Vec<ManifestAsset>,
-    /// Host services the card asks for (`network`). A request is not a grant.
+    /// Host services the card asks for (`network`, `gui`). A request is not a grant.
     #[serde(default)]
     capabilities: Vec<String>,
 }
@@ -37,6 +37,7 @@ pub(super) struct PackageAssets<R: Read + Seek> {
     sizes: Vec<u64>,
     cache: Vec<Option<Vec<u8>>>,
     network: bool,
+    gui: bool,
 }
 
 impl PackageAssets<Box<dyn ReadSeek>> {
@@ -95,12 +96,17 @@ impl<R: Read + Seek> PackageAssets<R> {
             ));
         }
         let mut network = false;
+        let mut gui = false;
         for capability in &manifest.capabilities {
-            match capability.as_str() {
-                "network" if !network => network = true,
-                "network" => return Err("duplicate capability \"network\"".to_owned()),
+            let flag = match capability.as_str() {
+                "network" => &mut network,
+                "gui" => &mut gui,
                 other => return Err(format!("unknown capability {other:?}")),
+            };
+            if *flag {
+                return Err(format!("duplicate capability {capability:?}"));
             }
+            *flag = true;
         }
         validate_manifest_path(&manifest.module)?;
         if manifest.module == MANIFEST_PATH {
@@ -160,6 +166,7 @@ impl<R: Read + Seek> PackageAssets<R> {
                 sizes,
                 cache: std::iter::repeat_with(|| None).take(count).collect(),
                 network,
+                gui,
             },
         ))
     }
@@ -167,6 +174,11 @@ impl<R: Read + Seek> PackageAssets<R> {
     /// Whether the manifest declares the `network` capability.
     pub(super) fn network_capability(&self) -> bool {
         self.network
+    }
+
+    /// Whether the manifest declares the `gui` capability.
+    pub(super) fn gui_capability(&self) -> bool {
+        self.gui
     }
 
     pub(super) fn count(&self) -> i32 {

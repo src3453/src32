@@ -223,8 +223,10 @@ manifest に任意フィールド `capabilities` を追加します。
 ```yaml
 abi_version: 1
 module: "wasm/cnet.wasm"
-capabilities: [network]
+capabilities: [network, gui]
 ```
+
+`gui` はデバッグ GUI のカードパネル（[WASM カード ABI §3.4](spec_WASM_expansion_card.md#34-guiパネル拡張)）を使うための宣言で、ネットワークの動作には関係しません。パネルの内容は §8.4 を参照してください。
 
 `network` を宣言したカードだけが §7.2 の import を使えます。宣言せずに import すると起動エラーです。`capabilities` を知らない旧ホストは `deny_unknown_fields` によってロードを拒否します。ネットワークを提供できないホストでカードが黙って動くより安全なので、この挙動を仕様とします。宣言は許可ではありません。許可は §8 の設定で与えます。
 
@@ -293,6 +295,14 @@ expansion_card:
 | 12 | n | FRAME | リンクフレーム（§3） |
 
 受信側は MAGIC・VERSION・SEGMENT_ID 不一致、自分の SENDER、FRAME 長不正を捨てます。ユニキャストの `peers` へは、マルチキャストと同じ内容をそれぞれ送ります。受信元アドレスで送信元を制限することはしません。外部から受信するデータはすべて信頼できない入力として、カードの検査（§3・§4）に任せます。
+
+### 8.4 カードのパネル（デバッグ GUI）
+
+`examples/wasm-cnet` のカードは `gui` capability でパネルを持ちます。エミュレータの Expansion Cards → Overview の表で、カードの行の Panel ボタンか、Expansion Cards メニューの「Slot N panel」から開きます。表示と設定はゲストの MMIO 契約の外にあり、ゲストからは読めません。
+
+- 表示: リンク状態（接続先のネットワーク番号）、アドレス状態（`NET.NODE`、probe 中の候補と回数、衝突）、config の固定ノード、IRQ status/enable、送受信のリンクフレーム数とバイト数（probe などの制御フレームを含む）と速度、破棄の内訳（模擬ロス、ホスト送信キュー満杯、ソケット受信キュー満杯）、送ったエコー応答の数、開いているソケット（ハンドル、ソケット番号、受信キューの数、DROPPED）。速度は仮想時間 0.5 秒以上の区間で計算するので、エミュレータを止めると最後の値のままです。
+- 設定: Link enabled（`CONTROL` の ENABLE を書くのと同じ。外すとソケットも閉じる）、Node hint（16 進で入力し Enter で `NODE_HINT` に書く。空で 0）、Re-acquire address（ソケットを開いたままノード番号を取り直す）、Reset counters、Simulated TX loss（0〜100 %。送信するデータグラムのフレームをこの確率で黙って捨てる。送信側の RESULT は OK のまま。probe などの制御フレームは捨てない）。
+- Simulated TX loss はカード reset をまたいで保持し、カウンタは reset で 0 に戻ります。どちらもエミュレータを再起動すると初期値です。
 
 ## 9. Foundation から使う
 

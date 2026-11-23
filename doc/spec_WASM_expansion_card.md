@@ -40,7 +40,7 @@ moduleは次の5つのfunction exportをすべて持たなければならない�
 
 任意export `cpt32_debug_read: (i32) -> i32` はデバッガの受動snapshot用である。引数はslot内byte offset、戻り値`0..255`は読み出し値、`-1`は安全なsnapshotを提供しないことを示す。この関数はカード状態・host状態を変更してはならず、`cpt32_mmio_read`を呼び出す代用にはしない。exportがない旧moduleは従来どおりロードでき、そのカードのDebug Readは利用不可として扱う。SDKは`Card::debug_read(&self, offset) -> Option<u8>`からこのexportを生成する。
 
-moduleは次節と§3.3に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
+moduleは次節、§3.3、§3.4に列挙したimport以外を持ってはならない。WASIを含む他のnamespace/import、shared memory、table/global import、未定義importは許可しない。独自DMA importはない。module start functionを含むすべてのguest実行にfuel制限を適用する。
 
 ### 3.1 許可host imports
 
@@ -73,6 +73,31 @@ GUIの既存音声フレーム処理から、SGU/IDCの後にslot昇順で加算
 ### 3.3 ネットワーク拡張
 
 manifestに`capabilities: [network]`を宣言したカードは、`cpt32_host`の`net_info: (i32) -> i32`、`net_send: (i32, i32) -> i32`、`net_recv: (i32, i32) -> i32`をimportでき、任意export `cpt32_net_rx: () -> ()` をhostから呼ばれる。宣言のないカードがこれらをimportすると起動エラー。`net_send`/`net_recv`をimportするカードは`memory`をexportしなければならない。`capabilities`を知らない旧hostはmanifestの未知fieldとしてロードを拒否する。契約の詳細、設定（`network_segment`、`expansion_card[].network`）、MMIOは[CNET仕様](spec_NET.md)を参照。
+
+### 3.4 GUIパネル拡張
+
+manifestの`capabilities`に`gui`を宣言したカードは、エミュレータのデバッグGUIに自分のパネルを持てる。カードは状態の表示（テキスト）と、利用者からの入力（ボタン、チェックボックス、整数・テキストの入力欄）を受け取れる。用途はカードのランタイム設定や統計の表示で、ゲストから見えるMMIO契約を置き換えるものではない。
+
+`gui`カードは任意export `cpt32_ui: () -> ()` と `memory` をexportしなければならない。どちらかがなければ起動エラー。宣言のないカードが下表のimportを持つと起動エラー。宣言のないカードが`cpt32_ui`をexportしても呼ばれない（SDKはすべてのカードでexportする）。
+
+GUIのExpansion Cards Overview表で`gui`カードの行には2つ目のボタン（Panel）が出る（Expansion Cardsメニューにも「Slot N panel」が出る）。パネルウィンドウが開いている間、hostはGUIフレームごとに最大1回、エミュレーションのフレームの合間に`cpt32_ui`を呼ぶ。パネルが閉じていれば呼ばない。testbench/monitorは呼ばない。カードは`cpt32_ui`の中で下表のimportを呼んで、そのフレームのwidget列を上から順に記述する（immediate mode）。hostは記述された列を描画し、利用者の操作をwidget IDごとの入力イベントとして保持し、**次の**`cpt32_ui`呼び出しで同じIDのwidget importの戻り値としてカードへ渡す（1 GUIフレーム遅れ）。イベントはその次の呼び出しの終了時に、対応するwidgetがなくても破棄する。
+
+`cpt32_ui`は通常のguest呼出しで、10,000,000 fuelの上限、trap/fuel枯渇によるfaultは他のexportと同じ。カード状態の変更や他のimport（`irq_set`、`schedule_tick`、`net_send`など）を呼んでよい。hostは呼出し後にIRQ levelを再サンプルする。`ui_*` importを`cpt32_ui`の外から呼ぶとtrapする。
+
+| Import | WASM function type | 契約 |
+|---|---|---|
+| `ui_text` | `(i32 ptr, i32 len) -> ()` | 1行のテキスト。 |
+| `ui_text_colored` | `(i32 rgba, i32 ptr, i32 len) -> ()` | 色付きテキスト。`rgba`のbit patternは`0xRRGGBBAA`。 |
+| `ui_separator` | `() -> ()` | 区切り線。 |
+| `ui_same_line` | `() -> ()` | 次のwidgetを直前のwidgetと同じ行に置く。 |
+| `ui_button` | `(i32 id, i32 ptr, i32 len) -> i32` | ボタン。前回の描画以降に押されていれば`1`、そうでなければ`0`。 |
+| `ui_checkbox` | `(i32 id, i32 ptr, i32 len, i32 value) -> i32` | 現在値`value`（0/1、他はtrap）を表示し、利用者が変えていれば新しい値、そうでなければ`value`を返す。 |
+| `ui_input_int` | `(i32 id, i32 ptr, i32 len, i32 value, i32 min, i32 max) -> i32` | 整数入力欄。`min > max`はtrap。表示値は`value`を`min..=max`に丸めたもの。利用者が変えていれば丸めた新しい値、そうでなければ丸めた`value`を返す。 |
+| `ui_input_text` | `(i32 id, i32 label_ptr, i32 label_len, i32 buf_ptr, i32 cap, i32 len) -> i32` | テキスト入力欄。`buf[0..len]`（UTF-8）を現在値として表示する。利用者がEnterで確定していれば、その文字列を`buf`へ書き込み（`cap`を超える分は文字境界で切り詰め）その長さを返す。確定がなければ`-1`で、`buf`を変更しない。`0 <= len <= cap <= 256`でなければtrap。 |
+
+`ptr, len`の組はlinear memory上のUTF-8文字列で、`0 <= len <= 256`。範囲外はtrapする。不正なUTF-8は置換文字で表示する。1回の`cpt32_ui`で記述できるwidgetは512個まで、超えるとtrapする。`id`は任意の`i32`だが、入力widget（button/checkbox/input_int/input_text）のIDは1回の呼出しの中で重複してはならず、重複はtrapする。
+
+faultしたカードのパネルはfault理由だけを表示する。cardのresetはhostが保持する未配送の入力イベントを破棄する。
 
 ## 4. Reset、IRQ、DMA
 

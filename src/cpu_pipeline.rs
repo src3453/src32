@@ -727,6 +727,22 @@ impl PipelineCpu {
         self.bus.reset_expansion_card_debug_stats();
     }
 
+    pub fn expansion_card_ui(
+        &mut self,
+        slot: u8,
+    ) -> Option<Vec<crate::devices::expansion::ExpansionUiItem>> {
+        self.bus.expansion_card_ui(slot)
+    }
+
+    pub fn expansion_card_ui_event(
+        &mut self,
+        slot: u8,
+        id: i32,
+        event: crate::devices::expansion::ExpansionUiEvent,
+    ) {
+        self.bus.expansion_card_ui_event(slot, id, event);
+    }
+
     pub fn read_debug_mem_u8(&mut self, addr: u32) -> Option<u8> {
         self.bus.set_access_source(BusAccessSource::Debugger);
         let value = self.bus.read_debug_u8(addr);

@@ -46,7 +46,7 @@ def main() -> int:
     parser.add_argument(
         "--capability",
         action="append",
-        choices=["network"],
+        choices=["network", "gui"],
         default=[],
         help="declare a host capability in manifest.yaml (repeatable)",
     )

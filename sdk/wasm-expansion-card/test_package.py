@@ -76,6 +76,18 @@ class PackageBuilderTests(unittest.TestCase):
         )
         self.assertNotEqual(duplicate.returncode, 0)
 
+    def test_gui_capability_is_written_after_network(self):
+        output = self.root / "panel.cpt32card"
+        result = self.run_builder(
+            "--capability", "network", "--capability", "gui", self.module, output
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        with zipfile.ZipFile(output) as package:
+            self.assertEqual(
+                package.read("manifest.yaml").decode(),
+                'abi_version: 1\nmodule: "wasm/card.wasm"\ncapabilities: [network, gui]\n',
+            )
+
     def test_unsafe_asset_path_is_rejected_before_creating_package(self):
         asset = self.root / "asset.bin"
         asset.write_bytes(b"data")

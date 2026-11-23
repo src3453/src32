@@ -14,7 +14,7 @@ use crate::devices::bmc::{Bmc, MEMORY_WINDOW_BASES, connect_bmc};
 use crate::devices::dmac::dmac::{Dmac, DmacSpinState, connect_dmac};
 use crate::devices::expansion::{
     EXPANSION_BASE, EXPANSION_SLOT_COUNT, EXPANSION_SLOT_SIZE, ExpansionCard,
-    ExpansionCardDebugInfo,
+    ExpansionCardDebugInfo, ExpansionUiEvent, ExpansionUiItem,
 };
 use crate::devices::irqc::irqc::IrqController;
 use crate::devices::pec::idc::idc::{IDC_BASE, IDC_DATA_ADDRESS, IDC_SIZE, Idc};
@@ -101,6 +101,11 @@ pub trait Device {
         None
     }
     fn reset_expansion_card_debug_stats(&mut self) {}
+    /// Run a `gui` expansion card's `cpt32_ui`; other devices return `None`.
+    fn expansion_card_ui(&mut self) -> Option<Vec<ExpansionUiItem>> {
+        None
+    }
+    fn expansion_card_ui_event(&mut self, _id: i32, _event: ExpansionUiEvent) {}
     /// Side-effect-free storage: accesses never fault, never touch other
     /// devices and cannot change any IRQ source. The Bus then skips IRQ
     /// re-sampling after the access and may arbitrate a word only once.
@@ -639,6 +644,24 @@ impl Bus {
             self.devices[index]
                 .device
                 .reset_expansion_card_debug_stats();
+        }
+    }
+
+    /// Run the panel of the `gui` card in `slot` (`doc/spec_WASM_expansion_card.md`
+    /// §3.4). The call may change card state, so IRQs are re-sampled afterwards.
+    pub fn expansion_card_ui(&mut self, slot: u8) -> Option<Vec<ExpansionUiItem>> {
+        let index = (*self.expansion_devices.get(usize::from(slot))?)?;
+        let items = self.devices[index].device.expansion_card_ui();
+        self.refresh_device_irqs();
+        items
+    }
+
+    /// Queue user input for widget `id` of the card in `slot`.
+    pub fn expansion_card_ui_event(&mut self, slot: u8, id: i32, event: ExpansionUiEvent) {
+        if let Some(Some(index)) = self.expansion_devices.get(usize::from(slot)).copied() {
+            self.devices[index]
+                .device
+                .expansion_card_ui_event(id, event);
         }
     }
 

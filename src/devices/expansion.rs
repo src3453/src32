@@ -1,5 +1,6 @@
 mod network;
 mod package;
+mod ui;
 use std::cell::Cell;
 use std::io::Cursor;
 use std::path::Path;
@@ -12,6 +13,7 @@ use wasmtime::{
 
 use crate::bus::Device;
 use network::{MAX_FRAME, NetPort, Segments};
+pub use ui::{ExpansionUiEvent, ExpansionUiItem, UI_MAX_ITEMS, UI_MAX_TEXT};
 
 pub const EXPANSION_SLOT_COUNT: u8 = 8;
 pub const EXPANSION_SLOT_SIZE: u32 = 0x0200_0000;
@@ -33,10 +35,11 @@ pub enum ExpansionCallKind {
     DebugRead,
     AudioRender,
     NetRx,
+    Ui,
 }
 
 impl ExpansionCallKind {
-    pub const COUNT: usize = 8;
+    pub const COUNT: usize = 9;
     pub const ALL: [Self; Self::COUNT] = [
         Self::Start,
         Self::Reset,
@@ -46,6 +49,7 @@ impl ExpansionCallKind {
         Self::DebugRead,
         Self::AudioRender,
         Self::NetRx,
+        Self::Ui,
     ];
 
     pub fn label(self) -> &'static str {
@@ -58,6 +62,7 @@ impl ExpansionCallKind {
             Self::DebugRead => "cpt32_debug_read",
             Self::AudioRender => "cpt32_audio_render",
             Self::NetRx => "cpt32_net_rx",
+            Self::Ui => "cpt32_ui",
         }
     }
 }
@@ -105,6 +110,8 @@ pub struct ExpansionCardDebugInfo {
     pub network_capable: bool,
     /// CNET segment the card is attached to, if any.
     pub network_segment: Option<String>,
+    /// Whether the manifest declares the `gui` capability (a panel exists).
+    pub gui_capable: bool,
 }
 
 impl ExpansionCardDebugInfo {
@@ -147,6 +154,9 @@ impl ExpansionCardDebugInfo {
         }
         if self.network_capable {
             features.push("network");
+        }
+        if self.gui_capable {
+            features.push("GUI panel");
         }
         features
     }
@@ -218,7 +228,8 @@ impl ExpansionRuntime {
         let module =
             Module::new(&self.engine, bytes).map_err(|error| context(error.to_string()))?;
         let network_capable = assets.network_capability();
-        validate_module(&module, network_capable).map_err(context)?;
+        let gui_capable = assets.gui_capability();
+        validate_module(&module, network_capable, gui_capable).map_err(context)?;
         if net.is_some() && !network_capable {
             return Err(context(
                 "config attaches a network segment but the manifest does not declare \"network\""
@@ -233,6 +244,7 @@ impl ExpansionRuntime {
             deadline: None,
             irq_asserted: false,
             faulted: false,
+            ui: ui::UiHost::default(),
             assets,
             limits: StoreLimitsBuilder::new()
                 .memory_size(MEMORY_LIMIT)
@@ -381,6 +393,7 @@ impl ExpansionRuntime {
                 },
             )
             .map_err(|error| context(error.to_string()))?;
+        ui::add_imports(&mut linker).map_err(|error| context(error.to_string()))?;
         // Fuel is present before instantiation because a module start function is guest code.
         let instance = linker
             .instantiate(&mut store, &module)
@@ -457,6 +470,17 @@ impl ExpansionRuntime {
             None
         };
 
+        // Only `gui` cards are asked for a panel; validation ensured the export.
+        let ui = if gui_capable {
+            Some(
+                instance
+                    .get_typed_func::<(), ()>(&mut store, "cpt32_ui")
+                    .map_err(|error| context(error.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         let memory = instance.get_memory(&mut store, "memory");
         let imports = module
             .imports()
@@ -481,6 +505,7 @@ impl ExpansionRuntime {
             tick,
             audio,
             net_rx,
+            ui,
         })
     }
 }
@@ -489,7 +514,7 @@ fn guest_memory(caller: &mut Caller<'_, HostState>) -> wasmtime::Result<Memory> 
     caller
         .get_export("memory")
         .and_then(wasmtime::Extern::into_memory)
-        .ok_or_else(|| wasmtime::Error::msg("network imports require exported memory"))
+        .ok_or_else(|| wasmtime::Error::msg("host imports require exported memory"))
 }
 
 #[derive(Debug)]
@@ -707,6 +732,7 @@ struct HostState {
     deadline: Option<u64>,
     irq_asserted: bool,
     faulted: bool,
+    ui: ui::UiHost,
     assets: package::PackageAssets<Box<dyn package::ReadSeek>>,
     limits: StoreLimits,
 }
@@ -728,6 +754,7 @@ pub(crate) struct ExpansionCard {
     tick: TypedFunc<(), ()>,
     audio: Option<(TypedFunc<(i32, i32), i32>, Memory)>,
     net_rx: Option<TypedFunc<(), ()>>,
+    ui: Option<TypedFunc<(), ()>>,
 }
 
 impl ExpansionCard {
@@ -758,6 +785,7 @@ impl ExpansionCard {
             asset_count: state.assets.count(),
             network_capable: state.assets.network_capability(),
             network_segment: state.net.as_ref().map(|net| net.segment_name().to_owned()),
+            gui_capable: self.ui.is_some(),
         }
     }
 
@@ -788,6 +816,7 @@ impl ExpansionCard {
             let state = self.store.data_mut();
             state.deadline = None;
             state.irq_asserted = false;
+            state.ui.clear_events();
             if let Some(net) = &state.net {
                 net.clear();
             }
@@ -834,6 +863,32 @@ impl ExpansionCard {
         let tick = self.tick.clone();
         if let Err(error) = self.call_guest(ExpansionCallKind::Tick, |store| tick.call(store, ())) {
             self.fault(format!("cpt32_tick trapped: {error}"));
+        }
+    }
+
+    /// Run `cpt32_ui` and return the panel widgets. `None` for cards without
+    /// the `gui` capability and for faulted cards (including a fault in this call).
+    pub fn run_ui(&mut self) -> Option<Vec<ExpansionUiItem>> {
+        let ui = self.ui.clone()?;
+        if self.is_faulted() {
+            return None;
+        }
+        self.store.data_mut().ui.begin();
+        let result = self.call_guest(ExpansionCallKind::Ui, |store| ui.call(store, ()));
+        let items = self.store.data_mut().ui.finish();
+        match result {
+            Ok(()) => Some(items),
+            Err(error) => {
+                self.fault(format!("cpt32_ui trapped: {error:#}"));
+                None
+            }
+        }
+    }
+
+    /// Queue user input for the widget `id`; the next [`Self::run_ui`] delivers it.
+    pub fn queue_ui_event(&mut self, id: i32, event: ExpansionUiEvent) {
+        if self.ui.is_some() && !self.is_faulted() {
+            self.store.data_mut().ui.queue(id, event);
         }
     }
 
@@ -992,6 +1047,14 @@ impl Device for ExpansionCard {
     fn reset_expansion_card_debug_stats(&mut self) {
         self.reset_debug_stats();
     }
+
+    fn expansion_card_ui(&mut self) -> Option<Vec<ExpansionUiItem>> {
+        self.run_ui()
+    }
+
+    fn expansion_card_ui_event(&mut self, id: i32, event: ExpansionUiEvent) {
+        self.queue_ui_event(id, event);
+    }
 }
 
 fn function_type_matches(
@@ -1007,8 +1070,30 @@ fn function_type_matches(
     actual.matches(&expected)
 }
 
-fn validate_module(module: &Module, network_capable: bool) -> Result<(), String> {
+/// `ui_*` imports: name, i32 parameter count, i32 result count.
+const UI_IMPORTS: [(&str, usize, usize); 8] = [
+    ("ui_text", 2, 0),
+    ("ui_text_colored", 3, 0),
+    ("ui_separator", 0, 0),
+    ("ui_same_line", 0, 0),
+    ("ui_button", 3, 1),
+    ("ui_checkbox", 4, 1),
+    ("ui_input_int", 6, 1),
+    ("ui_input_text", 6, 1),
+];
+
+fn validate_module(
+    module: &Module,
+    network_capable: bool,
+    gui_capable: bool,
+) -> Result<(), String> {
     let engine = module.engine();
+    let ui_export = module.exports().find(|export| export.name() == "cpt32_ui");
+    if let Some(export) = &ui_export {
+        if !function_type_matches(engine, &export.ty(), &[], &[]) {
+            return Err("wrong type for export cpt32_ui".into());
+        }
+    }
     if let Some(export) = module
         .exports()
         .find(|export| export.name() == "cpt32_net_rx")
@@ -1047,6 +1132,15 @@ fn validate_module(module: &Module, network_capable: bool) -> Result<(), String>
             return Err("audio requires exported memory".into());
         }
     }
+    if gui_capable {
+        if ui_export.is_none() {
+            return Err("the \"gui\" capability requires export cpt32_ui".into());
+        }
+        if !exports_memory {
+            return Err("the \"gui\" capability requires exported memory".into());
+        }
+    }
+    let i32s = |count: usize| vec![ValType::I32; count];
     for import in module.imports() {
         if import.module() != "cpt32_host" {
             return Err(format!("unsupported import namespace {}", import.module()));
@@ -1084,6 +1178,19 @@ fn validate_module(module: &Module, network_capable: bool) -> Result<(), String>
                     &[ValType::I32, ValType::I32],
                     &[ValType::I32],
                 )
+            }
+            name if UI_IMPORTS.iter().any(|(n, ..)| *n == name) => {
+                if !gui_capable {
+                    return Err(format!(
+                        "import cpt32_host::{name} requires the \"gui\" capability in manifest.yaml"
+                    ));
+                }
+                let (_, params, results) = UI_IMPORTS
+                    .iter()
+                    .copied()
+                    .find(|(n, ..)| *n == name)
+                    .unwrap();
+                function_type_matches(engine, &import.ty(), &i32s(params), &i32s(results))
             }
             name => return Err(format!("unsupported import cpt32_host::{name}")),
         };

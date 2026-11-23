@@ -36,7 +36,14 @@ pub trait Card: Default {
     /// Called after the host queued received CNET link frames (`network`
     /// capability). Drain them with [`net_recv`] until it returns `None`.
     fn net_rx(&mut self) {}
+
+    /// Describe the debug-GUI panel with the [`ui`] functions (`gui`
+    /// capability). Called once per GUI frame while the panel is open; input
+    /// from the previous frame comes back through the widget functions.
+    fn ui(&mut self) {}
 }
+
+pub mod ui;
 
 #[link(wasm_import_module = "cpt32_host")]
 unsafe extern "C" {
@@ -248,6 +255,11 @@ macro_rules! export_card {
         #[unsafe(no_mangle)]
         pub extern "C" fn cpt32_net_rx() {
             <$card as $crate::Card>::net_rx(__cpt32_card_mut());
+        }
+
+        #[unsafe(no_mangle)]
+        pub extern "C" fn cpt32_ui() {
+            <$card as $crate::Card>::ui(__cpt32_card_mut());
         }
 
         #[unsafe(no_mangle)]

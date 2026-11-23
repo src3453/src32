@@ -4,7 +4,9 @@
 //! (or `CPT32_CNET_CARD_WASM=<path>`).
 
 use cpt32::bus::Bus;
-use cpt32::devices::expansion::{EXPANSION_BASE, EXPANSION_SLOT_SIZE, load_expansion_cards};
+use cpt32::devices::expansion::{
+    EXPANSION_BASE, EXPANSION_SLOT_SIZE, ExpansionUiEvent, ExpansionUiItem, load_expansion_cards,
+};
 use std::fs;
 use std::io::{Cursor, Write};
 use std::net::UdpSocket;
@@ -23,16 +25,12 @@ fn temporary_directory() -> PathBuf {
     path
 }
 
-fn write_package(path: &Path, wasm: &[u8], network: bool) {
+fn write_package(path: &Path, wasm: &[u8], capabilities: &[&str]) {
     let mut archive = ZipWriter::new(Cursor::new(Vec::new()));
     let options = SimpleFileOptions::default().compression_method(CompressionMethod::Deflated);
     let manifest = format!(
-        "abi_version: 1\nmodule: card.wasm\n{}",
-        if network {
-            "capabilities: [network]\n"
-        } else {
-            ""
-        }
+        "abi_version: 1\nmodule: card.wasm\ncapabilities: [{}]\n",
+        capabilities.join(", ")
     );
     archive.start_file("manifest.yaml", options).unwrap();
     archive.write_all(manifest.as_bytes()).unwrap();
@@ -95,7 +93,7 @@ fn loopback_segment_carries_frames_between_cards_at_the_next_event_point() {
     write_package(
         &dir.join("relay.cpt32card"),
         &wat::parse_str(RELAY).unwrap(),
-        true,
+        &["network"],
     );
     let config = write_config(
         &dir,
@@ -165,7 +163,7 @@ expansion_card:
 fn network_imports_and_attachment_require_the_manifest_capability() {
     let dir = temporary_directory();
     let relay = wat::parse_str(RELAY).unwrap();
-    write_package(&dir.join("undeclared.cpt32card"), &relay, false);
+    write_package(&dir.join("undeclared.cpt32card"), &relay, &[]);
     let config = write_config(
         &dir,
         "expansion_card:\n  - slot: 0\n    package: undeclared.cpt32card\n",
@@ -184,7 +182,7 @@ fn network_imports_and_attachment_require_the_manifest_capability() {
           (func (export "cpt32_mmio_write") (param i32 i32)))"#,
     )
     .unwrap();
-    write_package(&dir.join("plain.cpt32card"), &plain, false);
+    write_package(&dir.join("plain.cpt32card"), &plain, &[]);
     let config = write_config(
         &dir,
         "network_segment:\n  - { name: t, loopback: true }\nexpansion_card:\n  - slot: 0\n    package: plain.cpt32card\n    network: { segment: t }\n",
@@ -196,7 +194,7 @@ fn network_imports_and_attachment_require_the_manifest_capability() {
     write_package(
         &dir.join("nomem.cpt32card"),
         &wat::parse_str(&no_memory).unwrap(),
-        true,
+        &["network"],
     );
     let config = write_config(
         &dir,
@@ -213,7 +211,7 @@ fn invalid_network_configuration_fails_before_registration() {
     write_package(
         &dir.join("relay.cpt32card"),
         &wat::parse_str(RELAY).unwrap(),
-        true,
+        &["network"],
     );
     let card = "expansion_card:\n  - slot: 0\n    package: relay.cpt32card\n";
     for (yaml, expected) in [
@@ -367,7 +365,11 @@ fn card(bus: &mut Bus, slot: u8) -> Card<'_> {
 }
 
 fn load_cnet(dir: &Path, yaml: &str) -> Bus {
-    write_package(&dir.join("cnet.cpt32card"), &cnet_wasm(), true);
+    write_package(
+        &dir.join("cnet.cpt32card"),
+        &cnet_wasm(),
+        &["network", "gui"],
+    );
     let config = write_config(dir, yaml);
     let mut bus = Bus::new();
     load_expansion_cards(&config, &mut bus).unwrap();
@@ -513,6 +515,121 @@ fn cnet_receive_queue_overflow_counts_drops() {
     assert_eq!(b.head(0).5, vec![0]);
     b.w8(Card::h(0) + 5, 0);
     assert_eq!(b.r8(Card::h(0) + 5), 0);
+    fs::remove_dir_all(dir).unwrap();
+}
+
+/// Texts of the panel widgets and the ID of the widget whose label contains `label`.
+fn panel(bus: &mut Bus, slot: u8) -> Vec<ExpansionUiItem> {
+    bus.expansion_card_ui(slot)
+        .expect("gui card returns a panel")
+}
+
+fn panel_text(items: &[ExpansionUiItem]) -> String {
+    items
+        .iter()
+        .filter_map(|item| match item {
+            ExpansionUiItem::Text { text, .. } => Some(text.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn widget_id(items: &[ExpansionUiItem], label: &str) -> i32 {
+    items
+        .iter()
+        .find_map(|item| match item {
+            ExpansionUiItem::Button { id, label: l }
+            | ExpansionUiItem::Checkbox { id, label: l, .. }
+            | ExpansionUiItem::InputInt { id, label: l, .. }
+            | ExpansionUiItem::InputText { id, label: l, .. }
+                if l.contains(label) =>
+            {
+                Some(*id)
+            }
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no widget {label:?} in {items:?}"))
+}
+
+#[test]
+fn cnet_panel_shows_address_traffic_and_applies_runtime_settings() {
+    let dir = temporary_directory();
+    let mut bus = load_cnet(&dir, TWO_CARDS);
+    let items = panel(&mut bus, 0);
+    let text = panel_text(&items);
+    assert!(text.contains("Link: attached, network 0001"), "{text}");
+    assert!(text.contains("Address: none"), "{text}");
+    let unattached = panel_text(&panel(&mut bus, 2));
+    assert!(unattached.contains("not attached"), "{unattached}");
+
+    // The checkbox enables the link like CONTROL.ENABLE.
+    let enable = widget_id(&items, "Link enabled");
+    bus.expansion_card_ui_event(0, enable, ExpansionUiEvent::Checkbox(true));
+    let _ = panel(&mut bus, 0);
+    assert_eq!(card(&mut bus, 0).r16(CONTROL), 1);
+    card(&mut bus, 1).w16(CONTROL, 1);
+    bus.advance_system_cycles(ACQUIRE_CYCLES);
+    assert_eq!(card(&mut bus, 0).r16(NODE), 0x10);
+    let text = panel_text(&panel(&mut bus, 0));
+    assert!(text.contains("Address: 0001.0010"), "{text}");
+    // Probes were counted too; start the traffic check from zero.
+    assert!(text.contains("TX: 4 frames, 48 bytes"), "{text}");
+    for slot in [0, 1] {
+        let reset = widget_id(&panel(&mut bus, slot), "Reset counters");
+        bus.expansion_card_ui_event(slot, reset, ExpansionUiEvent::Clicked);
+        let _ = panel(&mut bus, slot);
+    }
+
+    card(&mut bus, 1).open(0, 0x40);
+    card(&mut bus, 0).open(0, 0x41);
+    for _ in 0..3 {
+        assert_eq!(card(&mut bus, 0).send(0, 0, 0x20, 0x40, 0x80, b"hello"), 0);
+        bus.advance_system_cycles(1);
+    }
+    // Rates need a window of virtual time.
+    bus.advance_system_cycles(48_000_000);
+    let text = panel_text(&panel(&mut bus, 0));
+    // 3 datagrams of 8 + 16 + 5 bytes.
+    assert!(text.contains("TX: 3 frames, 87 bytes"), "{text}");
+    assert!(text.contains("handle  0: socket 41"), "{text}");
+    let text = panel_text(&panel(&mut bus, 1));
+    assert!(text.contains("RX: 3 frames, 87 bytes"), "{text}");
+
+    // 100 % simulated loss: sends succeed but nothing arrives.
+    let items = panel(&mut bus, 0);
+    bus.expansion_card_ui_event(0, widget_id(&items, "loss"), ExpansionUiEvent::Int(250));
+    let items = panel(&mut bus, 0);
+    assert!(
+        items
+            .iter()
+            .any(|item| matches!(item, ExpansionUiItem::InputInt { value: 100, .. }))
+    );
+    assert_eq!(card(&mut bus, 0).send(0, 0, 0x20, 0x40, 0x80, b"lost"), 0);
+    bus.advance_system_cycles(1);
+    assert_eq!(card(&mut bus, 1).rx_count(0), 3);
+    assert!(panel_text(&panel(&mut bus, 0)).contains("simulated loss 1,"));
+
+    // The node hint box writes NODE_HINT; invalid input shows an error.
+    let hint = widget_id(&items, "Node hint");
+    bus.expansion_card_ui_event(0, hint, ExpansionUiEvent::Text("12ab".into()));
+    let _ = panel(&mut bus, 0);
+    assert_eq!(card(&mut bus, 0).r16(NODE_HINT), 0x12AB);
+    bus.expansion_card_ui_event(0, hint, ExpansionUiEvent::Text("zz".into()));
+    assert!(panel_text(&panel(&mut bus, 0)).contains("must be 1..FEFF"));
+    assert_eq!(card(&mut bus, 0).r16(NODE_HINT), 0x12AB);
+
+    // Reset counters clears the traffic lines.
+    bus.expansion_card_ui_event(
+        0,
+        widget_id(&items, "Reset counters"),
+        ExpansionUiEvent::Clicked,
+    );
+    let _ = panel(&mut bus, 0);
+    assert!(panel_text(&panel(&mut bus, 0)).contains("TX: 0 frames, 0 bytes, 0 B/s"));
+
+    // Non-gui slots have no panel.
+    assert!(bus.expansion_card_ui(5).is_none());
     fs::remove_dir_all(dir).unwrap();
 }
 

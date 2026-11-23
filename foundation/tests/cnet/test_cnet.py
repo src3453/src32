@@ -149,7 +149,7 @@ class CnetTests(unittest.TestCase):
             raise RuntimeError(f'build the CNET card first: {CARD_WASM}')
         buffer = io.BytesIO()
         with zipfile.ZipFile(buffer, 'w') as package:
-            package.writestr('manifest.yaml', 'abi_version: 1\nmodule: card.wasm\ncapabilities: [network]\n')
+            package.writestr('manifest.yaml', 'abi_version: 1\nmodule: card.wasm\ncapabilities: [network, gui]\n')
             package.writestr('card.wasm', CARD_WASM.read_bytes())
         cls.card = buffer.getvalue()
 

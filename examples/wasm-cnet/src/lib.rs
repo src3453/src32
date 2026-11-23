@@ -5,8 +5,8 @@
 
 use core::panic::PanicInfo;
 use cpt32_wasm_expansion_card::{
-    Card, NET_MAX_FRAME, NetSend, irq_set, net_link, net_network, net_recv, net_seed, net_send,
-    net_static_node, schedule_tick,
+    Card, NET_MAX_FRAME, NetSend, current_cycles, irq_set, net_link, net_network, net_recv,
+    net_seed, net_send, net_static_node, schedule_tick, ui, ui_text, ui_text_colored,
 };
 
 // --- Protocol constants -----------------------------------------------------
@@ -63,6 +63,46 @@ const R_NO_ADDR: u8 = 6;
 const R_NO_LINK: u8 = 7;
 const R_DROPPED: u8 = 8;
 const R_NO_ROUTE: u8 = 9;
+
+// --- Debug-GUI panel ----------------------------------------------------------
+
+const RATE_WINDOW: u64 = 500 * CYCLES_PER_MS;
+const GREEN: u32 = 0x60E060FF;
+const YELLOW: u32 = 0xE0D040FF;
+const RED: u32 = 0xFF6060FF;
+const GREY: u32 = 0xA0A0A0FF;
+
+const ID_ENABLED: i32 = 1;
+const ID_NODE_HINT: i32 = 2;
+const ID_REACQUIRE: i32 = 3;
+const ID_RESET_COUNTERS: i32 = 4;
+const ID_LOSS: i32 = 5;
+
+/// Link-level traffic counters shown in the panel (not guest-visible).
+#[derive(Clone, Copy, Default)]
+struct Counters {
+    tx_frames: u64,
+    tx_bytes: u64,
+    rx_frames: u64,
+    rx_bytes: u64,
+    /// Datagram frames dropped by the simulated loss setting.
+    tx_lost: u64,
+    /// Frames the host refused because its send queue was full.
+    tx_queue_full: u64,
+    /// Datagrams dropped because a socket receive queue was full.
+    rx_socket_drops: u64,
+    echo_replies: u64,
+}
+
+/// Byte rates over a window of virtual time.
+#[derive(Clone, Copy, Default)]
+struct Rates {
+    since: u64,
+    tx_base: u64,
+    rx_base: u64,
+    tx: u64,
+    rx: u64,
+}
 
 // --- State ------------------------------------------------------------------
 
@@ -169,6 +209,15 @@ struct CnetCard {
     handles: [Handle; HANDLES],
     frame: [u8; NET_MAX_FRAME],
     scratch: Datagram,
+    counters: Counters,
+    rates: Rates,
+    /// Panel setting kept across card resets: percent of outgoing datagram
+    /// frames silently dropped.
+    loss_percent: i32,
+    loss_rng: u32,
+    hint_text: [u8; 8],
+    hint_len: usize,
+    hint_error: bool,
 }
 
 impl Default for CnetCard {
@@ -186,6 +235,13 @@ impl Default for CnetCard {
             handles: [CLOSED_HANDLE; HANDLES],
             frame: [0; NET_MAX_FRAME],
             scratch: EMPTY_DATAGRAM,
+            counters: Counters::default(),
+            rates: Rates::default(),
+            loss_percent: 0,
+            loss_rng: 0,
+            hint_text: [0; 8],
+            hint_len: 0,
+            hint_error: false,
         }
     }
 }
@@ -370,6 +426,11 @@ impl CnetCard {
     }
 
     fn send_link(&mut self, dst: u16, src: u16, kind: u8, payload: &[u8]) -> NetSend {
+        if kind == TYPE_DATAGRAM && self.simulated_loss() {
+            // Lost on the wire: the sender cannot tell.
+            self.counters.tx_lost += 1;
+            return NetSend::Accepted;
+        }
         let frame = &mut self.frame;
         put16(frame, 0, dst);
         put16(frame, 2, src);
@@ -377,7 +438,32 @@ impl CnetCard {
         frame[5] = 0;
         put16(frame, 6, payload.len() as u16);
         frame[LINK_HEADER..LINK_HEADER + payload.len()].copy_from_slice(payload);
-        net_send(&frame[..LINK_HEADER + payload.len()])
+        let length = LINK_HEADER + payload.len();
+        let result = net_send(&frame[..length]);
+        match result {
+            NetSend::Accepted => {
+                self.counters.tx_frames += 1;
+                self.counters.tx_bytes += length as u64;
+            }
+            NetSend::QueueFull => self.counters.tx_queue_full += 1,
+            NetSend::NoLink => {}
+        }
+        result
+    }
+
+    fn simulated_loss(&mut self) -> bool {
+        if self.loss_percent <= 0 {
+            return false;
+        }
+        if self.loss_rng == 0 {
+            self.loss_rng = net_seed() | 1;
+        }
+        let mut x = self.loss_rng;
+        x ^= x << 13;
+        x ^= x >> 17;
+        x ^= x << 5;
+        self.loss_rng = x;
+        (x % 100) < self.loss_percent as u32
     }
 
     // --- Receive path -------------------------------------------------------
@@ -385,6 +471,8 @@ impl CnetCard {
     fn receive_all(&mut self) {
         let mut frame = [0u8; NET_MAX_FRAME];
         while let Some(length) = net_recv(&mut frame) {
+            self.counters.rx_frames += 1;
+            self.counters.rx_bytes += length as u64;
             self.receive_frame(&frame[..length]);
         }
     }
@@ -458,6 +546,7 @@ impl CnetCard {
                 let mut reply = [0u8; MTU];
                 reply[..len].copy_from_slice(payload);
                 reply[0] = 2;
+                self.counters.echo_replies += 1;
                 let dst_net = if src_net == self.network { 0 } else { src_net };
                 let _ = self.send_datagram(
                     dst_net,
@@ -491,7 +580,9 @@ impl CnetCard {
         };
         let was_empty = self.handles[index].count == 0;
         let scratch = self.scratch;
-        if self.handles[index].push(&scratch) && was_empty {
+        if !self.handles[index].push(&scratch) {
+            self.counters.rx_socket_drops += 1;
+        } else if was_empty {
             self.raise(IRQ_RX);
         }
     }
@@ -746,11 +837,218 @@ impl CnetCard {
     }
 }
 
+// --- Debug-GUI panel ----------------------------------------------------------
+
+fn parse_hex16(text: &[u8]) -> Option<u16> {
+    if text.is_empty() || text.len() > 4 {
+        return None;
+    }
+    let mut value = 0u16;
+    for &byte in text {
+        let digit = (byte as char).to_digit(16)?;
+        value = value << 4 | digit as u16;
+    }
+    Some(value)
+}
+
+/// Format a byte rate as `B/s` or `KiB/s` with one decimal.
+fn show_rate(label: &str, frames: u64, bytes: u64, rate: u64) {
+    if rate < 1024 {
+        ui_text!("{label}: {frames} frames, {bytes} bytes, {rate} B/s");
+    } else {
+        let tenths = rate * 10 / 1024;
+        ui_text!(
+            "{label}: {frames} frames, {bytes} bytes, {}.{} KiB/s",
+            tenths / 10,
+            tenths % 10
+        );
+    }
+}
+
+impl CnetCard {
+    fn update_rates(&mut self) {
+        let now = current_cycles();
+        let rates = &mut self.rates;
+        let counters = &self.counters;
+        if rates.since == 0
+            || counters.tx_bytes < rates.tx_base
+            || counters.rx_bytes < rates.rx_base
+        {
+            *rates = Rates {
+                since: now,
+                tx_base: counters.tx_bytes,
+                rx_base: counters.rx_bytes,
+                ..Rates::default()
+            };
+            return;
+        }
+        let elapsed = now.saturating_sub(rates.since);
+        if elapsed < RATE_WINDOW {
+            return;
+        }
+        let per_second = |delta: u64| delta * (CYCLES_PER_MS * 1000) / elapsed;
+        rates.tx = per_second(counters.tx_bytes - rates.tx_base);
+        rates.rx = per_second(counters.rx_bytes - rates.rx_base);
+        rates.since = now;
+        rates.tx_base = counters.tx_bytes;
+        rates.rx_base = counters.rx_bytes;
+    }
+
+    /// Restart node acquisition without closing sockets.
+    fn reacquire(&mut self) {
+        if !self.enabled || !net_link() {
+            return;
+        }
+        self.node = 0;
+        self.nonce = self.next_random();
+        let candidate = match net_static_node() {
+            Some(node) => node,
+            None if (1..=0xFEFF).contains(&self.node_hint) => self.node_hint,
+            None => self.random_node(),
+        };
+        self.start_probe(candidate, 0);
+    }
+
+    fn panel(&mut self) {
+        self.update_rates();
+
+        if net_link() {
+            ui_text_colored!(GREEN, "Link: attached, network {:04X}", net_network());
+        } else {
+            ui_text_colored!(
+                GREY,
+                "Link: not attached (config.yaml expansion_card[].network)"
+            );
+        }
+        match self.addr {
+            Addr::Idle => ui::text_colored(GREY, "Address: none (link disabled)"),
+            Addr::Probing {
+                candidate,
+                sent,
+                retries,
+            } => ui_text_colored!(
+                YELLOW,
+                "Address: probing {:04X}.{candidate:04X} (probe {sent}/{PROBE_COUNT}, retry {retries})",
+                self.network
+            ),
+            Addr::Ready => {
+                ui_text_colored!(GREEN, "Address: {:04X}.{:04X}", self.network, self.node)
+            }
+            Addr::Conflict => ui::text_colored(RED, "Address: conflict (node in use)"),
+        }
+        if let Some(node) = net_static_node() {
+            ui_text!("Static node from config: {node:04X}");
+        }
+        ui_text!(
+            "IRQ status {:04X} / enable {:04X}",
+            self.irq_status,
+            self.irq_enable
+        );
+
+        ui::separator();
+        ui::text("Traffic (link frames, rates over virtual time)");
+        let counters = self.counters;
+        show_rate("TX", counters.tx_frames, counters.tx_bytes, self.rates.tx);
+        show_rate("RX", counters.rx_frames, counters.rx_bytes, self.rates.rx);
+        ui_text!(
+            "Dropped: simulated loss {}, host queue full {}, socket queue full {}",
+            counters.tx_lost,
+            counters.tx_queue_full,
+            counters.rx_socket_drops
+        );
+        ui_text!("Echo replies sent: {}", counters.echo_replies);
+
+        ui::separator();
+        ui::text("Open sockets");
+        let mut any = false;
+        for (index, handle) in self.handles.iter().enumerate() {
+            if handle.open {
+                any = true;
+                ui_text!(
+                    "  handle {index:2}: socket {:02X}  rx queue {}/{QUEUE_DEPTH}  dropped {}",
+                    handle.socket,
+                    handle.count,
+                    handle.dropped
+                );
+            }
+        }
+        if !any {
+            ui::text_colored(GREY, "  (none)");
+        }
+
+        ui::separator();
+        ui::text("Runtime settings");
+        let mut enabled = self.enabled;
+        if ui::checkbox(ID_ENABLED, "Link enabled (CONTROL.ENABLE)", &mut enabled) {
+            if enabled {
+                self.enable();
+            } else {
+                self.disable();
+            }
+        }
+
+        // Show the current register unless the user just submitted a value.
+        let mut text = [0u8; 8];
+        let mut len = 0;
+        if self.node_hint != 0 {
+            let shown = ui::format(format_args!("{:04X}", self.node_hint));
+            len = shown.as_str().len();
+            text[..len].copy_from_slice(shown.as_str().as_bytes());
+        }
+        self.hint_text = text;
+        self.hint_len = len;
+        if ui::input_text(
+            ID_NODE_HINT,
+            "Node hint (hex, Enter to apply)",
+            &mut self.hint_text[..4],
+            &mut self.hint_len,
+        ) {
+            let submitted = &self.hint_text[..self.hint_len];
+            match parse_hex16(submitted) {
+                Some(node) if node <= 0xFEFF => {
+                    self.node_hint = node;
+                    self.hint_error = false;
+                }
+                _ if submitted.is_empty() => {
+                    self.node_hint = 0;
+                    self.hint_error = false;
+                }
+                _ => self.hint_error = true,
+            }
+        }
+        if self.hint_error {
+            ui::text_colored(RED, "Node hint must be 1..FEFF in hex (empty = random)");
+        }
+
+        if ui::button(ID_REACQUIRE, "Re-acquire address") {
+            self.reacquire();
+        }
+        ui::same_line();
+        if ui::button(ID_RESET_COUNTERS, "Reset counters") {
+            self.counters = Counters::default();
+            self.rates = Rates::default();
+        }
+        ui::input_int(
+            ID_LOSS,
+            "Simulated TX loss (%)",
+            &mut self.loss_percent,
+            0,
+            100,
+        );
+    }
+}
+
 impl Card for CnetCard {
     fn reset(&mut self) {
         let _ = schedule_tick(0);
+        let loss_percent = self.loss_percent;
         *self = Self::default();
+        self.loss_percent = loss_percent;
         irq_set(false);
+    }
+
+    fn ui(&mut self) {
+        self.panel();
     }
 
     fn mmio_read(&mut self, offset: u32) -> u8 {

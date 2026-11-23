@@ -6,7 +6,7 @@ CPT32 用ネットワークの WASM 拡張カードです。データリンク�
 
 ```sh
 cargo build --manifest-path examples/wasm-cnet/Cargo.toml --release --target wasm32-unknown-unknown
-python sdk/wasm-expansion-card/package.py --capability network \
+python sdk/wasm-expansion-card/package.py --capability network --capability gui \
   examples/wasm-cnet/target/wasm32-unknown-unknown/release/cpt32_wasm_cnet_card.wasm \
   plugins/cnet.cpt32card
 ```
@@ -30,6 +30,10 @@ expansion_card:
 ```
 
 `network` を書かないとカードはセグメントにつながらず、外部との通信は一切起きません。同じ PC で複数のエミュレータを動かす場合も、同じマルチキャストグループを使えばつながります。マルチキャストが届かない環境では、`udp.peers` に相手の `アドレス:ポート` を列挙します。
+
+## パネル
+
+`gui` capability を宣言しているので、エミュレータの Expansion Cards → Overview の表に Panel ボタンが出ます。アドレス、送受信のバイト数と速度、開いているソケットを表示し、リンクの有効化、ノード番号のヒント、アドレスの取り直し、模擬パケットロスを操作できます（[`doc/spec_NET.md`](../../doc/spec_NET.md) §8.4）。
 
 ## ゲストからの使い方（概略）
 
